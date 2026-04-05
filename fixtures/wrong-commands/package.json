@@ -1,0 +1,7 @@
+{
+  "name": "wrong-commands",
+  "scripts": {
+    "build": "tsc",
+    "lint": "eslint ."
+  }
+}

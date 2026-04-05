@@ -1,0 +1,7 @@
+{
+  "name": "healthy-project",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  }
+}
