@@ -7,13 +7,13 @@ Your `CLAUDE.md` is lying to your agent. ctxlint catches it.
 ## Install
 
 ```bash
-npm install -g ctxlint
+npm install -g @yawlabs/ctxlint
 ```
 
 Or run directly:
 
 ```bash
-npx ctxlint
+npx @yawlabs/ctxlint
 ```
 
 ## What It Checks
@@ -86,7 +86,7 @@ Options:
 
 ```yaml
 - name: Lint context files
-  run: npx ctxlint --strict
+  run: npx @yawlabs/ctxlint --strict
 ```
 
 Exits with code 1 if any errors or warnings are found.
@@ -106,7 +106,7 @@ claude mcp add ctxlint -- node /path/to/ctxlint/dist/mcp/server.js
 ## JSON Output
 
 ```bash
-npx ctxlint --format json
+npx @yawlabs/ctxlint --format json
 ```
 
 Returns structured JSON with all file results, issues, and summary — useful for building integrations or dashboards.
