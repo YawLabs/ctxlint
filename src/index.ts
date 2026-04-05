@@ -12,8 +12,7 @@ import { freeEncoder } from './utils/tokens.js';
 import { resetGit } from './utils/git.js';
 import type { LintResult, LintOptions, FileResult, CheckName, LintIssue } from './core/types.js';
 import * as path from 'node:path';
-
-const VERSION = '0.1.0';
+import { VERSION } from './version.js';
 
 const ALL_CHECKS: CheckName[] = ['paths', 'commands', 'staleness', 'tokens', 'redundancy'];
 

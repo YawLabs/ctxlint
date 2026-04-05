@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import * as path from 'node:path';
+import { VERSION } from '../../version.js';
 
 const CLI = path.resolve(__dirname, '../../../dist/index.js');
 const FIXTURES = path.resolve(__dirname, '../../../fixtures');
@@ -37,7 +38,7 @@ describe('CLI integration', () => {
   it('outputs valid JSON with --format json', () => {
     const { stdout } = run('healthy-project', ['--format', 'json']);
     const parsed = JSON.parse(stdout);
-    expect(parsed.version).toBe('0.1.0');
+    expect(parsed.version).toBe(VERSION);
     expect(parsed.files).toBeInstanceOf(Array);
   });
 

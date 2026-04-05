@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { formatText, formatJson, formatTokenReport } from '../reporter.js';
+import { VERSION as PKG_VERSION } from '../../version.js';
 import type { LintResult } from '../types.js';
 
 function makeResult(overrides?: Partial<LintResult>): LintResult {
   return {
-    version: '0.1.0',
+    version: PKG_VERSION,
     scannedAt: '2026-04-06T10:00:00Z',
     projectRoot: '/test/project',
     files: [
@@ -45,7 +46,7 @@ function makeResult(overrides?: Partial<LintResult>): LintResult {
 describe('formatText', () => {
   it('includes version and project root', () => {
     const output = formatText(makeResult());
-    expect(output).toContain('ctxlint v0.1.0');
+    expect(output).toContain(`ctxlint v${PKG_VERSION}`);
     expect(output).toContain('/test/project');
   });
 
@@ -93,7 +94,7 @@ describe('formatJson', () => {
   it('returns valid JSON', () => {
     const output = formatJson(makeResult());
     const parsed = JSON.parse(output);
-    expect(parsed.version).toBe('0.1.0');
+    expect(parsed.version).toBe(PKG_VERSION);
     expect(parsed.files).toHaveLength(1);
     expect(parsed.summary.errors).toBe(1);
   });

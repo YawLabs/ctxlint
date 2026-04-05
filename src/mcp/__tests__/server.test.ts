@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import * as path from 'node:path';
+import { VERSION } from '../../version.js';
 
 const SERVER_JS = path.resolve(__dirname, '../../../dist/mcp/server.js');
 const FIXTURES = path.resolve(__dirname, '../../../fixtures');
@@ -79,7 +80,7 @@ describe('MCP server tools', () => {
         projectPath: path.join(FIXTURES, 'broken-paths'),
         checks: ['paths'],
       });
-      expect(result.version).toBe('0.1.0');
+      expect(result.version).toBe(VERSION);
       expect(result.files).toBeDefined();
       expect((result as any).summary.errors).toBeGreaterThan(0);
     });
@@ -89,7 +90,7 @@ describe('MCP server tools', () => {
         projectPath: path.join(FIXTURES, 'healthy-project'),
         checks: ['paths', 'commands'],
       });
-      expect(result.version).toBe('0.1.0');
+      expect(result.version).toBe(VERSION);
       expect((result as any).summary.errors).toBe(0);
     });
 
