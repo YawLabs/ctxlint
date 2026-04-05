@@ -38,6 +38,13 @@ export interface ParsedContextFile {
   };
 }
 
+export interface FixAction {
+  file: string;
+  line: number;
+  oldText: string;
+  newText: string;
+}
+
 export interface LintIssue {
   severity: Severity;
   check: CheckName;
@@ -45,6 +52,7 @@ export interface LintIssue {
   message: string;
   suggestion?: string;
   detail?: string;
+  fix?: FixAction;
 }
 
 export interface FileResult {

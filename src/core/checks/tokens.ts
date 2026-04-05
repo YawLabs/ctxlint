@@ -1,8 +1,28 @@
 import type { ParsedContextFile, LintIssue } from '../types.js';
 
-const INFO_THRESHOLD = 1000;
-const WARNING_THRESHOLD = 3000;
-const ERROR_THRESHOLD = 8000;
+export interface TokenThresholds {
+  info: number;
+  warning: number;
+  error: number;
+  aggregate: number;
+}
+
+const DEFAULT_THRESHOLDS: TokenThresholds = {
+  info: 1000,
+  warning: 3000,
+  error: 8000,
+  aggregate: 5000,
+};
+
+let currentThresholds = DEFAULT_THRESHOLDS;
+
+export function setTokenThresholds(overrides: Partial<TokenThresholds>): void {
+  currentThresholds = { ...DEFAULT_THRESHOLDS, ...overrides };
+}
+
+export function resetTokenThresholds(): void {
+  currentThresholds = DEFAULT_THRESHOLDS;
+}
 
 export async function checkTokens(
   file: ParsedContextFile,
@@ -11,7 +31,7 @@ export async function checkTokens(
   const issues: LintIssue[] = [];
   const tokens = file.totalTokens;
 
-  if (tokens >= ERROR_THRESHOLD) {
+  if (tokens >= currentThresholds.error) {
     issues.push({
       severity: 'error',
       check: 'tokens',
@@ -19,7 +39,7 @@ export async function checkTokens(
       message: `${tokens.toLocaleString()} tokens — consumes significant context window space`,
       suggestion: 'Consider splitting into focused sections or removing redundant content.',
     });
-  } else if (tokens >= WARNING_THRESHOLD) {
+  } else if (tokens >= currentThresholds.warning) {
     issues.push({
       severity: 'warning',
       check: 'tokens',
@@ -27,7 +47,7 @@ export async function checkTokens(
       message: `${tokens.toLocaleString()} tokens — large context file`,
       suggestion: 'Consider trimming — research shows diminishing returns past ~300 lines.',
     });
-  } else if (tokens >= INFO_THRESHOLD) {
+  } else if (tokens >= currentThresholds.info) {
     issues.push({
       severity: 'info',
       check: 'tokens',
@@ -41,7 +61,7 @@ export async function checkTokens(
 
 export function checkAggregateTokens(files: { path: string; tokens: number }[]): LintIssue | null {
   const total = files.reduce((sum, f) => sum + f.tokens, 0);
-  if (total > 5000 && files.length > 1) {
+  if (total > currentThresholds.aggregate && files.length > 1) {
     return {
       severity: 'warning',
       check: 'tokens',

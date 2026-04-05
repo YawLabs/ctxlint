@@ -75,11 +75,15 @@ Options:
   --strict             Exit code 1 on any warning or error (for CI)
   --checks <list>      Comma-separated: paths, commands, staleness, tokens, redundancy
   --ignore <list>      Comma-separated checks to skip
+  --fix                Auto-fix broken paths using git history and fuzzy matching
   --format json        Output as JSON (for programmatic use)
   --tokens             Show token breakdown per file
   --verbose            Show passing checks too
   -V, --version        Output the version number
   -h, --help           Display help
+
+Commands:
+  init                 Set up a git pre-commit hook
 ```
 
 ## Use in CI
@@ -90,6 +94,42 @@ Options:
 ```
 
 Exits with code 1 if any errors or warnings are found.
+
+## Auto-fix
+
+```bash
+npx @yawlabs/ctxlint --fix
+```
+
+When a broken path was renamed in git or has a close match in the project, `--fix` rewrites the context file automatically.
+
+## Pre-commit Hook
+
+```bash
+npx @yawlabs/ctxlint init
+```
+
+Sets up a git pre-commit hook that runs `ctxlint --strict` before each commit.
+
+## Config File
+
+Create a `.ctxlintrc` or `.ctxlintrc.json` in your project root:
+
+```json
+{
+  "checks": ["paths", "commands", "tokens"],
+  "ignore": ["redundancy"],
+  "strict": true,
+  "tokenThresholds": {
+    "info": 500,
+    "warning": 2000,
+    "error": 5000,
+    "aggregate": 4000
+  }
+}
+```
+
+CLI flags override config file settings.
 
 ## Use as MCP Server
 

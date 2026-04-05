@@ -73,16 +73,19 @@ export async function checkPaths(
     // Path doesn't exist — try to find what happened
     let suggestion: string | undefined;
     let detail: string | undefined;
+    let fixTarget: string | undefined;
 
     // Check for git renames
     const rename = await findRenames(projectRoot, ref.value);
     if (rename) {
+      fixTarget = rename.newPath;
       suggestion = `Did you mean ${rename.newPath}?`;
       detail = `Renamed ${rename.daysAgo} days ago in commit ${rename.commitHash}`;
     } else {
       // Fuzzy match against project files
       const match = findClosestMatch(normalizedRef, projectFiles);
       if (match) {
+        fixTarget = match;
         suggestion = `Did you mean ${match}?`;
       }
     }
@@ -94,6 +97,9 @@ export async function checkPaths(
       message: `${ref.value} does not exist`,
       suggestion,
       detail,
+      fix: fixTarget
+        ? { file: file.filePath, line: ref.line, oldText: ref.value, newText: fixTarget }
+        : undefined,
     });
   }
 
