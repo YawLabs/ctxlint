@@ -1,15 +1,10 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { loadPackageJson } from '../../utils/fs.js';
 import type { ParsedContextFile, LintIssue } from '../types.js';
 
-interface PackageJson {
-  scripts?: Record<string, string>;
-  devDependencies?: Record<string, string>;
-  dependencies?: Record<string, string>;
-}
-
-// Match npm/pnpm/yarn run/script commands
-const NPM_SCRIPT_PATTERN = /^(?:npm\s+run|pnpm(?:\s+run)?|yarn(?:\s+run)?)\s+(\S+)/;
+// Match npm/pnpm/yarn/bun run/script commands
+const NPM_SCRIPT_PATTERN = /^(?:npm\s+run|pnpm(?:\s+run)?|yarn(?:\s+run)?|bun(?:\s+run)?)\s+(\S+)/;
 const MAKE_PATTERN = /^make\s+(\S+)/;
 
 export async function checkCommands(
@@ -40,8 +35,8 @@ export async function checkCommands(
       continue;
     }
 
-    // Check shorthand npm/pnpm/yarn commands that map to scripts
-    const shorthandMatch = cmd.match(/^(npm|pnpm|yarn)\s+(test|start|build|dev|lint|format)\b/);
+    // Check shorthand npm/pnpm/yarn/bun commands that map to scripts
+    const shorthandMatch = cmd.match(/^(npm|pnpm|yarn|bun)\s+(test|start|build|dev|lint|format|check|typecheck|clean|serve|preview|e2e)\b/);
     if (shorthandMatch && pkgJson) {
       const scriptName = shorthandMatch[2];
       if (pkgJson.scripts && !(scriptName in pkgJson.scripts)) {
@@ -105,15 +100,6 @@ export async function checkCommands(
   // Check for conflicting commands across context files (caller handles multi-file)
 
   return issues;
-}
-
-function loadPackageJson(projectRoot: string): PackageJson | null {
-  try {
-    const content = fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf-8');
-    return JSON.parse(content);
-  } catch {
-    return null;
-  }
 }
 
 function loadMakefile(projectRoot: string): string | null {

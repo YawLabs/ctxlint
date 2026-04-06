@@ -1,6 +1,5 @@
-import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { isDirectory } from '../../utils/fs.js';
+import { isDirectory, loadPackageJson } from '../../utils/fs.js';
 import { countTokens } from '../../utils/tokens.js';
 import type { ParsedContextFile, LintIssue } from '../types.js';
 
@@ -56,11 +55,6 @@ const PACKAGE_TECH_MAP: Record<string, string[]> = {
   cypress: ['Cypress'],
   puppeteer: ['Puppeteer'],
 };
-
-interface PackageJson {
-  dependencies?: Record<string, string>;
-  devDependencies?: Record<string, string>;
-}
 
 export async function checkRedundancy(
   file: ParsedContextFile,
@@ -186,15 +180,6 @@ function calculateLineOverlap(contentA: string, contentB: string): number {
   }
 
   return overlap / Math.min(linesA.size, linesB.size);
-}
-
-function loadPackageJson(projectRoot: string): PackageJson | null {
-  try {
-    const content = fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf-8');
-    return JSON.parse(content);
-  } catch {
-    return null;
-  }
 }
 
 function escapeRegex(str: string): string {

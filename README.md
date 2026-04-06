@@ -32,18 +32,23 @@ npx @yawlabs/ctxlint
 |------|------|
 | `CLAUDE.md`, `CLAUDE.local.md` | Claude Code |
 | `AGENTS.md` | Multi-agent |
-| `.cursorrules`, `.cursor/rules/*.md` | Cursor |
-| `copilot-instructions.md` | GitHub Copilot |
+| `.cursorrules`, `.cursor/rules/*.md`, `.cursor/rules/*.mdc` | Cursor |
+| `copilot-instructions.md`, `.github/copilot-instructions.md`, `.github/instructions/*.md` | GitHub Copilot |
 | `.windsurfrules`, `.windsurf/rules/*.md` | Windsurf |
 | `GEMINI.md` | Gemini |
 | `JULES.md` | Jules |
 | `.clinerules` | Cline |
+| `CODEX.md` | OpenAI Codex CLI |
+| `.aiderules` | Aider |
+| `.aide/rules/*.md` | Aide / Codestory |
+| `.amazonq/rules/*.md` | Amazon Q Developer |
+| `.goose/instructions.md` | Goose by Block |
 | `CONVENTIONS.md` | General |
 
 ## Example Output
 
 ```
-ctxlint v0.1.0
+ctxlint v0.2.1
 
 Scanning /Users/you/my-app...
 
@@ -133,11 +138,11 @@ CLI flags override config file settings.
 
 ## Use as MCP Server
 
-ctxlint ships with an MCP server that exposes three tools (`ctxlint_audit`, `ctxlint_validate_path`, `ctxlint_token_report`):
+ctxlint ships with an MCP server that exposes four tools (`ctxlint_audit`, `ctxlint_validate_path`, `ctxlint_token_report`, `ctxlint_fix`):
 
 ```bash
 # Claude Code
-claude mcp add ctxlint -- node node_modules/ctxlint/dist/mcp/server.js
+claude mcp add ctxlint -- node node_modules/@yawlabs/ctxlint/dist/mcp/server.js
 
 # Or run from source
 claude mcp add ctxlint -- node /path/to/ctxlint/dist/mcp/server.js

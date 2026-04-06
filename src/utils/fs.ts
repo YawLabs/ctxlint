@@ -1,6 +1,21 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+export interface PackageJson {
+  scripts?: Record<string, string>;
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+}
+
+export function loadPackageJson(projectRoot: string): PackageJson | null {
+  try {
+    const content = fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf-8');
+    return JSON.parse(content);
+  } catch {
+    return null;
+  }
+}
+
 export function fileExists(filePath: string): boolean {
   try {
     fs.accessSync(filePath);

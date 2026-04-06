@@ -8,6 +8,7 @@ import { checkCommands } from '../core/checks/commands.js';
 import { checkStaleness } from '../core/checks/staleness.js';
 import { checkTokens, checkAggregateTokens } from '../core/checks/tokens.js';
 import { checkRedundancy, checkDuplicateContent } from '../core/checks/redundancy.js';
+import { applyFixes } from '../core/fixer.js';
 import { fileExists, isDirectory } from '../utils/fs.js';
 import { findRenames } from '../utils/git.js';
 import { freeEncoder } from '../utils/tokens.js';
@@ -133,6 +134,56 @@ server.tool(
       };
     } finally {
       freeEncoder();
+    }
+  },
+);
+
+server.tool(
+  'ctxlint_fix',
+  'Run the linter with --fix mode to auto-correct broken file paths in context files using git history and fuzzy matching. Returns a summary of what was fixed.',
+  {
+    projectPath: z
+      .string()
+      .optional()
+      .describe('Path to the project root. Defaults to current working directory.'),
+    checks: z
+      .array(z.enum(['paths', 'commands', 'staleness', 'tokens', 'redundancy']))
+      .optional()
+      .describe('Which checks to run before fixing. Defaults to all.'),
+  },
+  async ({ projectPath, checks }) => {
+    const root = path.resolve(projectPath || process.cwd());
+    const activeChecks = checks || ALL_CHECKS;
+
+    try {
+      const result = await runAudit(root, activeChecks);
+      const fixSummary = applyFixes(result);
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(
+              {
+                totalFixes: fixSummary.totalFixes,
+                filesModified: fixSummary.filesModified,
+                remainingIssues: result.summary,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ error: msg }) }],
+        isError: true,
+      };
+    } finally {
+      freeEncoder();
+      resetGit();
     }
   },
 );

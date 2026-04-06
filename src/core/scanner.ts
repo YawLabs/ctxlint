@@ -12,12 +12,18 @@ const CONTEXT_FILE_PATTERNS = [
   '.cursor/rules/*.mdc',
   'copilot-instructions.md',
   '.github/copilot-instructions.md',
+  '.github/instructions/*.md',
   '.windsurfrules',
   '.windsurf/rules/*.md',
   'GEMINI.md',
   'JULES.md',
   '.clinerules',
   'CONVENTIONS.md',
+  'CODEX.md',
+  '.aiderules',
+  '.aide/rules/*.md',
+  '.amazonq/rules/*.md',
+  '.goose/instructions.md',
 ];
 
 const IGNORED_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'vendor']);

@@ -1,6 +1,6 @@
 {
   "name": "@yawlabs/ctxlint",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Lint your AI agent context files (CLAUDE.md, AGENTS.md, etc.) against your actual codebase",
   "bin": {
     "ctxlint": "dist/index.js"
