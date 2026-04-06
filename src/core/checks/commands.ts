@@ -36,7 +36,9 @@ export async function checkCommands(
     }
 
     // Check shorthand npm/pnpm/yarn/bun commands that map to scripts
-    const shorthandMatch = cmd.match(/^(npm|pnpm|yarn|bun)\s+(test|start|build|dev|lint|format|check|typecheck|clean|serve|preview|e2e)\b/);
+    const shorthandMatch = cmd.match(
+      /^(npm|pnpm|yarn|bun)\s+(test|start|build|dev|lint|format|check|typecheck|clean|serve|preview|e2e)\b/,
+    );
     if (shorthandMatch && pkgJson) {
       const scriptName = shorthandMatch[2];
       if (pkgJson.scripts && !(scriptName in pkgJson.scripts)) {
