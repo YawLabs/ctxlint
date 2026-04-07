@@ -1,0 +1,7 @@
+---
+description: TypeScript conventions
+globs: ["src/**/*.ts"]
+alwaysApply: false
+---
+
+Follow TypeScript best practices.

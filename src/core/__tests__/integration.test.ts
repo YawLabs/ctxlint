@@ -46,6 +46,7 @@ describe('CLI integration', () => {
     const { stdout } = run('healthy-project', ['--tokens']);
     expect(stdout).toContain('Token Usage Report');
     expect(stdout).toContain('CLAUDE.md');
+    expect(stdout).toContain('cl100k_base');
   });
 
   it('finds errors in broken-paths fixture', () => {
@@ -96,5 +97,47 @@ describe('CLI integration', () => {
     const { stdout } = run('multiple-files', ['--format', 'json']);
     const parsed = JSON.parse(stdout);
     expect(parsed.files.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('outputs valid SARIF with --format sarif', () => {
+    const { stdout } = run('broken-paths', ['--format', 'sarif']);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.version).toBe('2.1.0');
+    expect(parsed.$schema).toContain('sarif');
+    expect(parsed.runs).toBeInstanceOf(Array);
+    expect(parsed.runs[0].tool.driver.name).toBe('ctxlint');
+    expect(parsed.runs[0].results.length).toBeGreaterThan(0);
+  });
+
+  it('--quiet suppresses output but still returns correct exit code', () => {
+    const { stdout, exitCode } = run('broken-paths', ['--strict', '--quiet']);
+    expect(exitCode).toBe(1);
+    expect(stdout).toBe('');
+  });
+
+  it('finds contradictions across files', () => {
+    const { stdout } = run('contradictions', ['--format', 'json', '--checks', 'contradictions']);
+    const parsed = JSON.parse(stdout);
+    const contradictionIssues = parsed.files.flatMap((f: any) =>
+      f.issues.filter((i: any) => i.check === 'contradictions'),
+    );
+    expect(contradictionIssues.length).toBeGreaterThan(0);
+  });
+
+  it('finds frontmatter issues', () => {
+    const { stdout } = run('frontmatter', ['--format', 'json', '--checks', 'frontmatter']);
+    const parsed = JSON.parse(stdout);
+    const fmIssues = parsed.files.flatMap((f: any) =>
+      f.issues.filter((i: any) => i.check === 'frontmatter'),
+    );
+    expect(fmIssues.length).toBeGreaterThan(0);
+  });
+
+  it('respects --depth flag', () => {
+    // With depth 0, only root directory is scanned (no subdirectories)
+    const { stdout } = run('multiple-files', ['--format', 'json', '--depth', '0']);
+    const parsed = JSON.parse(stdout);
+    // Should still find root-level files
+    expect(parsed.files.length).toBeGreaterThan(0);
   });
 });

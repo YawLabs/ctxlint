@@ -1,0 +1,6 @@
+{
+  "name": "contradictions-fixture",
+  "scripts": {
+    "test": "vitest run"
+  }
+}

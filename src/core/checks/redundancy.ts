@@ -56,6 +56,36 @@ const PACKAGE_TECH_MAP: Record<string, string[]> = {
   puppeteer: ['Puppeteer'],
 };
 
+interface CompiledMentionPattern {
+  pkg: string;
+  mention: string;
+  patterns: RegExp[];
+}
+
+function compilePatterns(allDeps: Set<string>): CompiledMentionPattern[] {
+  const compiled: CompiledMentionPattern[] = [];
+
+  for (const [pkg, mentions] of Object.entries(PACKAGE_TECH_MAP)) {
+    if (!allDeps.has(pkg)) continue;
+
+    for (const mention of mentions) {
+      const escaped = escapeRegex(mention);
+      compiled.push({
+        pkg,
+        mention,
+        patterns: [
+          new RegExp(`\\b(?:use|using|built with|powered by|written in)\\s+${escaped}\\b`, 'i'),
+          new RegExp(`\\bwe\\s+use\\s+${escaped}\\b`, 'i'),
+          new RegExp(`\\b${escaped}\\s+(?:project|app|application|codebase)\\b`, 'i'),
+          new RegExp(`\\bThis is a\\s+${escaped}\\b`, 'i'),
+        ],
+      });
+    }
+  }
+
+  return compiled;
+}
+
 export async function checkRedundancy(
   file: ParsedContextFile,
   projectRoot: string,
@@ -70,41 +100,30 @@ export async function checkRedundancy(
       ...Object.keys(pkgJson.devDependencies || {}),
     ]);
 
+    // Pre-compile all regex patterns once
+    const compiledPatterns = compilePatterns(allDeps);
     const lines = file.content.split('\n');
+
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
 
-      for (const [pkg, mentions] of Object.entries(PACKAGE_TECH_MAP)) {
-        if (!allDeps.has(pkg)) continue;
-
-        for (const mention of mentions) {
-          // Look for "We use X" or "This project uses X" or "Built with X" etc.
-          const patterns = [
-            new RegExp(
-              `\\b(?:use|using|built with|powered by|written in)\\s+${escapeRegex(mention)}\\b`,
-              'i',
-            ),
-            new RegExp(`\\bwe\\s+use\\s+${escapeRegex(mention)}\\b`, 'i'),
-            new RegExp(
-              `\\b${escapeRegex(mention)}\\s+(?:project|app|application|codebase)\\b`,
-              'i',
-            ),
-            new RegExp(`\\bThis is a\\s+${escapeRegex(mention)}\\b`, 'i'),
-          ];
-
-          for (const pattern of patterns) {
-            if (pattern.test(line)) {
-              const wastedTokens = countTokens(line.trim());
-              issues.push({
-                severity: 'info',
-                check: 'redundancy',
-                line: i + 1,
-                message: `"${mention}" is in package.json ${pkgJson.dependencies?.[pkg] ? 'dependencies' : 'devDependencies'} — agent can infer this`,
-                suggestion: `~${wastedTokens} tokens could be saved`,
-              });
-              break;
-            }
+      for (const { pkg, mention, patterns } of compiledPatterns) {
+        let matched = false;
+        for (const pattern of patterns) {
+          if (pattern.test(line)) {
+            matched = true;
+            break;
           }
+        }
+        if (matched) {
+          const wastedTokens = countTokens(line.trim());
+          issues.push({
+            severity: 'info',
+            check: 'redundancy',
+            line: i + 1,
+            message: `"${mention}" is in package.json ${pkgJson.dependencies?.[pkg] ? 'dependencies' : 'devDependencies'} — agent can infer this`,
+            suggestion: `~${wastedTokens} tokens could be saved`,
+          });
         }
       }
     }

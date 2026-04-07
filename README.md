@@ -21,34 +21,38 @@ npx @yawlabs/ctxlint
 | Check | What it finds |
 |-------|--------------|
 | **Broken paths** | File references in context that don't exist in your project |
-| **Wrong commands** | Build/test commands that don't match your package.json scripts |
+| **Wrong commands** | Build/test commands that don't match your package.json scripts or Makefile targets |
 | **Stale context** | Context files not updated after recent code changes |
 | **Token waste** | How much context window your files consume per session |
 | **Redundancy** | Content the agent can already infer (e.g. "We use React" when react is in package.json) |
+| **Contradictions** | Conflicting directives across context files (e.g. "use Jest" in one, "use Vitest" in another) |
+| **Frontmatter** | Invalid or missing YAML frontmatter in Cursor .mdc, Copilot instructions, and Windsurf rules |
 
 ## Supported Context Files
 
 | File | Tool |
 |------|------|
-| `CLAUDE.md`, `CLAUDE.local.md` | Claude Code |
-| `AGENTS.md` | Multi-agent |
-| `.cursorrules`, `.cursor/rules/*.md`, `.cursor/rules/*.mdc` | Cursor |
-| `copilot-instructions.md`, `.github/copilot-instructions.md`, `.github/instructions/*.md` | GitHub Copilot |
+| `CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/*.md` | Claude Code |
+| `AGENTS.md`, `AGENT.md`, `AGENTS.override.md` | AAIF / Multi-agent standard |
+| `.cursorrules`, `.cursor/rules/*.md`, `.cursor/rules/*.mdc`, `.cursor/rules/*/RULE.md` | Cursor |
+| `.github/copilot-instructions.md`, `.github/instructions/*.md`, `.github/git-commit-instructions.md` | GitHub Copilot |
 | `.windsurfrules`, `.windsurf/rules/*.md` | Windsurf |
-| `GEMINI.md` | Gemini |
-| `JULES.md` | Jules |
+| `GEMINI.md` | Gemini CLI |
 | `.clinerules` | Cline |
-| `CODEX.md` | OpenAI Codex CLI |
 | `.aiderules` | Aider |
 | `.aide/rules/*.md` | Aide / Codestory |
 | `.amazonq/rules/*.md` | Amazon Q Developer |
-| `.goose/instructions.md` | Goose by Block |
-| `CONVENTIONS.md` | General |
+| `.goose/instructions.md`, `.goosehints` | Goose by Block |
+| `.junie/guidelines.md`, `.junie/AGENTS.md` | JetBrains Junie |
+| `.aiassistant/rules/*.md` | JetBrains AI Assistant |
+| `.continuerules`, `.continue/rules/*.md` | Continue |
+| `.rules` | Zed |
+| `replit.md` | Replit |
 
 ## Example Output
 
 ```
-ctxlint v0.2.1
+ctxlint v0.3.0
 
 Scanning /Users/you/my-app...
 
@@ -61,9 +65,10 @@ CLAUDE.md
     → Did you mean src/middleware/auth.ts? (renamed 14 days ago)
   ✗ Line 8: "pnpm test" — script "test" not found in package.json
   ⚠ Last updated 47 days ago. src/routes/ has 8 commits since.
+  ⚠ testing framework conflict: "Vitest" in CLAUDE.md vs "Jest" in AGENTS.md
   ℹ Line 3: "Express" is in package.json dependencies — agent can infer this
 
-Summary: 2 errors, 1 warning, 1 info
+Summary: 2 errors, 2 warnings, 1 info
   Token usage: 1,203 tokens per agent session
   Estimated waste: ~55 tokens (redundant content)
 ```
@@ -78,12 +83,15 @@ Arguments:
 
 Options:
   --strict             Exit code 1 on any warning or error (for CI)
-  --checks <list>      Comma-separated: paths, commands, staleness, tokens, redundancy
+  --checks <list>      Comma-separated: paths, commands, staleness, tokens, redundancy, contradictions, frontmatter
   --ignore <list>      Comma-separated checks to skip
   --fix                Auto-fix broken paths using git history and fuzzy matching
-  --format json        Output as JSON (for programmatic use)
+  --format <fmt>       Output format: text, json, or sarif (default: text)
   --tokens             Show token breakdown per file
   --verbose            Show passing checks too
+  --quiet              Suppress all output (exit code only, for scripts)
+  --config <path>      Path to config file (default: .ctxlintrc in project root)
+  --depth <n>          Max subdirectory depth to scan (default: 2)
   -V, --version        Output the version number
   -h, --help           Display help
 
@@ -100,6 +108,18 @@ Commands:
 
 Exits with code 1 if any errors or warnings are found.
 
+### SARIF Output (GitHub Code Scanning)
+
+```yaml
+- name: Lint context files
+  run: npx @yawlabs/ctxlint --format sarif > ctxlint.sarif
+
+- name: Upload SARIF
+  uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: ctxlint.sarif
+```
+
 ## Auto-fix
 
 ```bash
@@ -110,11 +130,25 @@ When a broken path was renamed in git or has a close match in the project, `--fi
 
 ## Pre-commit Hook
 
+### Built-in
+
 ```bash
 npx @yawlabs/ctxlint init
 ```
 
 Sets up a git pre-commit hook that runs `ctxlint --strict` before each commit.
+
+### pre-commit framework
+
+Add to your `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: https://github.com/yawlabs/ctxlint
+    rev: v0.3.0
+    hooks:
+      - id: ctxlint
+```
 
 ## Config File
 
@@ -122,7 +156,7 @@ Create a `.ctxlintrc` or `.ctxlintrc.json` in your project root:
 
 ```json
 {
-  "checks": ["paths", "commands", "tokens"],
+  "checks": ["paths", "commands", "tokens", "contradictions", "frontmatter"],
   "ignore": ["redundancy"],
   "strict": true,
   "tokenThresholds": {
@@ -130,11 +164,14 @@ Create a `.ctxlintrc` or `.ctxlintrc.json` in your project root:
     "warning": 2000,
     "error": 5000,
     "aggregate": 4000
-  }
+  },
+  "contextFiles": ["CONVENTIONS.md", "docs/ai-rules.md"]
 }
 ```
 
-CLI flags override config file settings.
+The `contextFiles` array adds custom file patterns to scan alongside the built-in list. Useful for project-specific context files like `CONVENTIONS.md`.
+
+CLI flags override config file settings. Use `--config <path>` to load a config from a custom location.
 
 ## Use as MCP Server
 

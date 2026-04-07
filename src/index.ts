@@ -1,3 +1,4 @@
+import * as fs from 'node:fs';
 import { Command } from 'commander';
 import ora from 'ora';
 import { scanForContextFiles } from './core/scanner.js';
@@ -12,7 +13,9 @@ import {
   resetTokenThresholds,
 } from './core/checks/tokens.js';
 import { checkRedundancy, checkDuplicateContent } from './core/checks/redundancy.js';
-import { formatText, formatJson, formatTokenReport } from './core/reporter.js';
+import { checkContradictions } from './core/checks/contradictions.js';
+import { checkFrontmatter } from './core/checks/frontmatter.js';
+import { formatText, formatJson, formatTokenReport, formatSarif } from './core/reporter.js';
 import { applyFixes } from './core/fixer.js';
 import { freeEncoder } from './utils/tokens.js';
 import { resetGit } from './utils/git.js';
@@ -21,7 +24,15 @@ import type { LintResult, LintOptions, FileResult, CheckName, LintIssue } from '
 import * as path from 'node:path';
 import { VERSION } from './version.js';
 
-const ALL_CHECKS: CheckName[] = ['paths', 'commands', 'staleness', 'tokens', 'redundancy'];
+const ALL_CHECKS: CheckName[] = [
+  'paths',
+  'commands',
+  'staleness',
+  'tokens',
+  'redundancy',
+  'contradictions',
+  'frontmatter',
+];
 
 const program = new Command();
 
@@ -34,16 +45,20 @@ program
   .argument('[path]', 'Project directory to scan', '.')
   .option('--strict', 'Exit code 1 on any warning or error (for CI)', false)
   .option('--checks <checks>', 'Comma-separated list of checks to run', '')
-  .option('--format <format>', 'Output format: text or json', 'text')
+  .option('--format <format>', 'Output format: text, json, or sarif', 'text')
   .option('--tokens', 'Show token breakdown per file', false)
   .option('--verbose', 'Show passing checks too', false)
   .option('--fix', 'Auto-fix broken paths using git history and fuzzy matching', false)
   .option('--ignore <checks>', 'Comma-separated list of checks to ignore', '')
+  .option('--quiet', 'Suppress all output except errors (exit code only)', false)
+  .option('--config <path>', 'Path to config file (default: .ctxlintrc in project root)')
+  .option('--depth <n>', 'Max subdirectory depth to scan (default: 2)', '2')
   .action(async (projectPath: string, opts: Record<string, unknown>) => {
     const resolvedPath = path.resolve(projectPath as string);
 
     // Load project config (.ctxlintrc / .ctxlintrc.json)
-    const config = loadConfig(resolvedPath);
+    const configPath = opts.config ? path.resolve(opts.config as string) : undefined;
+    const config = configPath ? loadConfigFromPath(configPath) : loadConfig(resolvedPath);
 
     const options: LintOptions = {
       projectPath: resolvedPath,
@@ -51,13 +66,15 @@ program
         ? (opts.checks as string).split(',').map((c: string) => c.trim() as CheckName)
         : config?.checks || ALL_CHECKS,
       strict: (opts.strict as boolean) || config?.strict || false,
-      format: opts.format as 'text' | 'json',
+      format: opts.format as 'text' | 'json' | 'sarif',
       verbose: opts.verbose as boolean,
       fix: opts.fix as boolean,
       ignore: opts.ignore
         ? (opts.ignore as string).split(',').map((c: string) => c.trim() as CheckName)
         : config?.ignore || [],
       tokensOnly: opts.tokens as boolean,
+      quiet: opts.quiet as boolean,
+      depth: parseInt(opts.depth as string, 10) || 2,
     };
 
     // Apply token thresholds from config
@@ -69,26 +86,43 @@ program
     const activeChecks = options.checks.filter((c) => !options.ignore.includes(c));
 
     const spinner =
-      options.format === 'text' ? ora('Scanning for context files...').start() : undefined;
+      options.format === 'text' && !options.quiet
+        ? ora('Scanning for context files...').start()
+        : undefined;
 
     try {
       // Discover context files
-      const discovered = await scanForContextFiles(options.projectPath);
+      const discovered = await scanForContextFiles(options.projectPath, {
+        depth: options.depth,
+        extraPatterns: config?.contextFiles,
+      });
 
       if (discovered.length === 0) {
         spinner?.stop();
-        if (options.format === 'json') {
-          console.log(
-            JSON.stringify({
-              version: VERSION,
-              scannedAt: new Date().toISOString(),
-              projectRoot: options.projectPath,
-              files: [],
-              summary: { errors: 0, warnings: 0, info: 0, totalTokens: 0, estimatedWaste: 0 },
-            }),
-          );
-        } else {
-          console.log('\nNo context files found.\n');
+        if (!options.quiet) {
+          if (options.format === 'json') {
+            console.log(
+              JSON.stringify({
+                version: VERSION,
+                scannedAt: new Date().toISOString(),
+                projectRoot: options.projectPath,
+                files: [],
+                summary: { errors: 0, warnings: 0, info: 0, totalTokens: 0, estimatedWaste: 0 },
+              }),
+            );
+          } else if (options.format === 'sarif') {
+            console.log(
+              formatSarif({
+                version: VERSION,
+                scannedAt: new Date().toISOString(),
+                projectRoot: options.projectPath,
+                files: [],
+                summary: { errors: 0, warnings: 0, info: 0, totalTokens: 0, estimatedWaste: 0 },
+              }),
+            );
+          } else {
+            console.log('\nNo context files found.\n');
+          }
         }
         process.exit(0);
       }
@@ -122,6 +156,9 @@ program
         if (activeChecks.includes('redundancy')) {
           issues.push(...(await checkRedundancy(file, options.projectPath)));
         }
+        if (activeChecks.includes('frontmatter')) {
+          issues.push(...(await checkFrontmatter(file, options.projectPath)));
+        }
 
         fileResults.push({
           path: file.relativePath,
@@ -146,6 +183,12 @@ program
         const dupIssues = checkDuplicateContent(parsed);
         if (dupIssues.length > 0 && fileResults.length > 0) {
           fileResults[0].issues.push(...dupIssues);
+        }
+      }
+      if (activeChecks.includes('contradictions')) {
+        const contradictionIssues = checkContradictions(parsed);
+        if (contradictionIssues.length > 0 && fileResults.length > 0) {
+          fileResults[0].issues.push(...contradictionIssues);
         }
       }
 
@@ -191,7 +234,7 @@ program
       // Apply fixes if requested
       if (options.fix) {
         const fixSummary = applyFixes(result);
-        if (fixSummary.totalFixes > 0) {
+        if (fixSummary.totalFixes > 0 && !options.quiet) {
           console.log(
             `\nFixed ${fixSummary.totalFixes} issue${fixSummary.totalFixes !== 1 ? 's' : ''} in ${fixSummary.filesModified.length} file${fixSummary.filesModified.length !== 1 ? 's' : ''}.\n`,
           );
@@ -199,12 +242,16 @@ program
       }
 
       // Output
-      if (options.tokensOnly) {
-        console.log(formatTokenReport(result));
-      } else if (options.format === 'json') {
-        console.log(formatJson(result));
-      } else {
-        console.log(formatText(result, options.verbose));
+      if (!options.quiet) {
+        if (options.tokensOnly) {
+          console.log(formatTokenReport(result));
+        } else if (options.format === 'json') {
+          console.log(formatJson(result));
+        } else if (options.format === 'sarif') {
+          console.log(formatSarif(result));
+        } else {
+          console.log(formatText(result, options.verbose));
+        }
       }
 
       // Exit code
@@ -227,7 +274,6 @@ program
   .command('init')
   .description('Set up a git pre-commit hook that runs ctxlint --strict')
   .action(async () => {
-    const fs = await import('node:fs');
     const hooksDir = path.resolve('.git', 'hooks');
 
     if (!fs.existsSync(path.resolve('.git'))) {
@@ -263,3 +309,14 @@ npx @yawlabs/ctxlint --strict
   });
 
 program.parse();
+
+// Helper to load config from an explicit path
+function loadConfigFromPath(configPath: string) {
+  try {
+    const content = fs.readFileSync(configPath, 'utf-8');
+    return JSON.parse(content);
+  } catch {
+    console.error(`Error: could not load config from ${configPath}`);
+    process.exit(2);
+  }
+}

@@ -6,6 +6,7 @@ import type { ParsedContextFile, LintIssue } from '../types.js';
 // Match npm/pnpm/yarn/bun run/script commands
 const NPM_SCRIPT_PATTERN = /^(?:npm\s+run|pnpm(?:\s+run)?|yarn(?:\s+run)?|bun(?:\s+run)?)\s+(\S+)/;
 const MAKE_PATTERN = /^make\s+(\S+)/;
+const NPX_PATTERN = /^npx\s+(\S+)/;
 
 export async function checkCommands(
   file: ParsedContextFile,
@@ -48,6 +49,39 @@ export async function checkCommands(
           line: ref.line,
           message: `"${cmd}" — script "${scriptName}" not found in package.json`,
         });
+      }
+      continue;
+    }
+
+    // Check npx package references
+    const npxMatch = cmd.match(NPX_PATTERN);
+    if (npxMatch && pkgJson) {
+      const pkgName = npxMatch[1];
+      // Skip scoped packages (just check the base name) and flags
+      if (pkgName.startsWith('-')) continue;
+
+      const allDeps = {
+        ...pkgJson.dependencies,
+        ...pkgJson.devDependencies,
+      };
+
+      // Normalize: npx packages may be invoked by bin name which differs from package name
+      // Common mappings: tsc -> typescript, prettier -> prettier, etc.
+      // Only warn if the package isn't in deps AND isn't in node_modules/.bin
+      if (!(pkgName in allDeps)) {
+        const binPath = path.join(projectRoot, 'node_modules', '.bin', pkgName);
+        try {
+          fs.accessSync(binPath);
+        } catch {
+          issues.push({
+            severity: 'warning',
+            check: 'commands',
+            line: ref.line,
+            message: `"${cmd}" — "${pkgName}" not found in dependencies`,
+            suggestion:
+              'If this is a global tool, consider adding it to devDependencies for reproducibility',
+          });
+        }
       }
       continue;
     }
@@ -98,8 +132,6 @@ export async function checkCommands(
       }
     }
   }
-
-  // Check for conflicting commands across context files (caller handles multi-file)
 
   return issues;
 }

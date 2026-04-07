@@ -1,0 +1,8 @@
+- id: ctxlint
+  name: ctxlint
+  description: Lint AI agent context files against your actual codebase
+  entry: npx @yawlabs/ctxlint --strict
+  language: node
+  always_run: true
+  pass_filenames: false
+  types: [file]

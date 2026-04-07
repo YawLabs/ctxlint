@@ -1,6 +1,13 @@
 export type Severity = 'error' | 'warning' | 'info';
 
-export type CheckName = 'paths' | 'commands' | 'staleness' | 'tokens' | 'redundancy';
+export type CheckName =
+  | 'paths'
+  | 'commands'
+  | 'staleness'
+  | 'tokens'
+  | 'redundancy'
+  | 'contradictions'
+  | 'frontmatter';
 
 export interface Section {
   title: string;
@@ -82,9 +89,12 @@ export interface LintOptions {
   projectPath: string;
   checks: CheckName[];
   strict: boolean;
-  format: 'text' | 'json';
+  format: 'text' | 'json' | 'sarif';
   verbose: boolean;
   fix: boolean;
   ignore: CheckName[];
   tokensOnly: boolean;
+  quiet: boolean;
+  configPath?: string;
+  depth: number;
 }

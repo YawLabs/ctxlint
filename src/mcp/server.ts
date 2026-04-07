@@ -8,6 +8,8 @@ import { checkCommands } from '../core/checks/commands.js';
 import { checkStaleness } from '../core/checks/staleness.js';
 import { checkTokens, checkAggregateTokens } from '../core/checks/tokens.js';
 import { checkRedundancy, checkDuplicateContent } from '../core/checks/redundancy.js';
+import { checkContradictions } from '../core/checks/contradictions.js';
+import { checkFrontmatter } from '../core/checks/frontmatter.js';
 import { applyFixes } from '../core/fixer.js';
 import { fileExists, isDirectory } from '../utils/fs.js';
 import { findRenames } from '../utils/git.js';
@@ -16,7 +18,26 @@ import { resetGit } from '../utils/git.js';
 import type { LintResult, FileResult, LintIssue, CheckName } from '../core/types.js';
 import * as path from 'node:path';
 import { VERSION } from '../version.js';
-const ALL_CHECKS: CheckName[] = ['paths', 'commands', 'staleness', 'tokens', 'redundancy'];
+
+const ALL_CHECKS: CheckName[] = [
+  'paths',
+  'commands',
+  'staleness',
+  'tokens',
+  'redundancy',
+  'contradictions',
+  'frontmatter',
+];
+
+const checkEnum = z.enum([
+  'paths',
+  'commands',
+  'staleness',
+  'tokens',
+  'redundancy',
+  'contradictions',
+  'frontmatter',
+]);
 
 const server = new McpServer({
   name: 'ctxlint',
@@ -25,16 +46,13 @@ const server = new McpServer({
 
 server.tool(
   'ctxlint_audit',
-  'Audit all AI agent context files (CLAUDE.md, AGENTS.md, etc.) in the project for stale references, invalid commands, redundant content, and token waste.',
+  'Audit all AI agent context files (CLAUDE.md, AGENTS.md, etc.) in the project for stale references, invalid commands, redundant content, contradictions, frontmatter issues, and token waste.',
   {
     projectPath: z
       .string()
       .optional()
       .describe('Path to the project root. Defaults to current working directory.'),
-    checks: z
-      .array(z.enum(['paths', 'commands', 'staleness', 'tokens', 'redundancy']))
-      .optional()
-      .describe('Which checks to run. Defaults to all.'),
+    checks: z.array(checkEnum).optional().describe('Which checks to run. Defaults to all.'),
   },
   async ({ projectPath, checks }) => {
     const root = path.resolve(projectPath || process.cwd());
@@ -122,7 +140,11 @@ server.tool(
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify({ files, totalTokens }, null, 2),
+            text: JSON.stringify(
+              { files, totalTokens, note: 'Token counts use GPT-4 cl100k_base tokenizer' },
+              null,
+              2,
+            ),
           },
         ],
       };
@@ -147,7 +169,7 @@ server.tool(
       .optional()
       .describe('Path to the project root. Defaults to current working directory.'),
     checks: z
-      .array(z.enum(['paths', 'commands', 'staleness', 'tokens', 'redundancy']))
+      .array(checkEnum)
       .optional()
       .describe('Which checks to run before fixing. Defaults to all.'),
   },
@@ -203,6 +225,8 @@ async function runAudit(projectRoot: string, activeChecks: CheckName[]): Promise
     if (activeChecks.includes('tokens')) issues.push(...(await checkTokens(file, projectRoot)));
     if (activeChecks.includes('redundancy'))
       issues.push(...(await checkRedundancy(file, projectRoot)));
+    if (activeChecks.includes('frontmatter'))
+      issues.push(...(await checkFrontmatter(file, projectRoot)));
 
     fileResults.push({
       path: file.relativePath,
@@ -223,6 +247,11 @@ async function runAudit(projectRoot: string, activeChecks: CheckName[]): Promise
   if (activeChecks.includes('redundancy')) {
     const dupIssues = checkDuplicateContent(parsed);
     if (dupIssues.length > 0 && fileResults.length > 0) fileResults[0].issues.push(...dupIssues);
+  }
+  if (activeChecks.includes('contradictions')) {
+    const contradictionIssues = checkContradictions(parsed);
+    if (contradictionIssues.length > 0 && fileResults.length > 0)
+      fileResults[0].issues.push(...contradictionIssues);
   }
 
   let estimatedWaste = 0;
