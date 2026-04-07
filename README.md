@@ -1,8 +1,25 @@
 # ctxlint
 
-Lint your AI agent context files against your actual codebase.
+[![npm version](https://img.shields.io/npm/v/@yawlabs/ctxlint)](https://www.npmjs.com/package/@yawlabs/ctxlint)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![GitHub stars](https://img.shields.io/github/stars/YawLabs/ctxlint)](https://github.com/YawLabs/ctxlint/stargazers)
+[![CI](https://github.com/YawLabs/ctxlint/actions/workflows/ci.yml/badge.svg)](https://github.com/YawLabs/ctxlint/actions/workflows/ci.yml)
+
+**Lint your AI agent context files against your actual codebase.** 7 checks, 21+ formats, auto-fix. Works as a CLI, CI step, pre-commit hook, or MCP server.
 
 Your `CLAUDE.md` is lying to your agent. ctxlint catches it.
+
+## Why ctxlint?
+
+Context files rot fast. You rename a file, change a build script, or switch from Jest to Vitest — and your `CLAUDE.md` still says the old thing. Your agent follows those instructions faithfully, then fails.
+
+- **Catches real problems** — broken paths, wrong commands, stale references, contradictions across files
+- **Smart suggestions** — detects git renames and fuzzy-matches to suggest the right path
+- **Auto-fix** — `--fix` rewrites broken paths automatically using git history
+- **Token-aware** — shows how much context window your files consume and flags redundant content
+- **Every AI tool** — supports Claude Code, Cursor, Copilot, Windsurf, Gemini, Cline, Aider, and 14 more
+- **Multiple outputs** — text, JSON, and SARIF (GitHub Code Scanning)
+- **MCP server** — 4 tools for IDE/agent integration with tool annotations for auto-approval
 
 ## Install
 
@@ -92,6 +109,7 @@ Options:
   --quiet              Suppress all output (exit code only, for scripts)
   --config <path>      Path to config file (default: .ctxlintrc in project root)
   --depth <n>          Max subdirectory depth to scan (default: 2)
+  --mcp                Start the MCP server instead of running the linter
   -V, --version        Output the version number
   -h, --help           Display help
 
@@ -175,14 +193,44 @@ CLI flags override config file settings. Use `--config <path>` to load a config 
 
 ## Use as MCP Server
 
-ctxlint ships with an MCP server that exposes four tools (`ctxlint_audit`, `ctxlint_validate_path`, `ctxlint_token_report`, `ctxlint_fix`):
+ctxlint ships with an MCP server that exposes four tools (`ctxlint_audit`, `ctxlint_validate_path`, `ctxlint_token_report`, `ctxlint_fix`). All tools declare annotations so MCP clients can skip confirmation dialogs for read-only operations.
+
+### With `.mcp.json` (Cursor, Windsurf, and other MCP clients)
+
+Create `.mcp.json` in your project root:
+
+macOS / Linux / WSL:
+
+```json
+{
+  "mcpServers": {
+    "ctxlint": {
+      "command": "npx",
+      "args": ["-y", "@yawlabs/ctxlint", "--mcp"]
+    }
+  }
+}
+```
+
+Windows:
+
+```json
+{
+  "mcpServers": {
+    "ctxlint": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "@yawlabs/ctxlint", "--mcp"]
+    }
+  }
+}
+```
+
+> **Tip:** This file is safe to commit — it contains no secrets.
+
+### With Claude Code
 
 ```bash
-# Claude Code
-claude mcp add ctxlint -- node node_modules/@yawlabs/ctxlint/dist/mcp/server.js
-
-# Or run from source
-claude mcp add ctxlint -- node /path/to/ctxlint/dist/mcp/server.js
+claude mcp add ctxlint -- npx -y @yawlabs/ctxlint --mcp
 ```
 
 ## JSON Output

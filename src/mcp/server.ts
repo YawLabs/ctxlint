@@ -3,31 +3,15 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { scanForContextFiles } from '../core/scanner.js';
 import { parseContextFile } from '../core/parser.js';
-import { checkPaths } from '../core/checks/paths.js';
-import { checkCommands } from '../core/checks/commands.js';
-import { checkStaleness } from '../core/checks/staleness.js';
-import { checkTokens, checkAggregateTokens } from '../core/checks/tokens.js';
-import { checkRedundancy, checkDuplicateContent } from '../core/checks/redundancy.js';
-import { checkContradictions } from '../core/checks/contradictions.js';
-import { checkFrontmatter } from '../core/checks/frontmatter.js';
+import { runAudit, ALL_CHECKS } from '../core/audit.js';
 import { applyFixes } from '../core/fixer.js';
 import { fileExists, isDirectory } from '../utils/fs.js';
 import { findRenames } from '../utils/git.js';
 import { freeEncoder } from '../utils/tokens.js';
 import { resetGit } from '../utils/git.js';
-import type { LintResult, FileResult, LintIssue, CheckName } from '../core/types.js';
+import type { CheckName } from '../core/types.js';
 import * as path from 'node:path';
 import { VERSION } from '../version.js';
-
-const ALL_CHECKS: CheckName[] = [
-  'paths',
-  'commands',
-  'staleness',
-  'tokens',
-  'redundancy',
-  'contradictions',
-  'frontmatter',
-];
 
 const checkEnum = z.enum([
   'paths',
@@ -54,9 +38,15 @@ server.tool(
       .describe('Path to the project root. Defaults to current working directory.'),
     checks: z.array(checkEnum).optional().describe('Which checks to run. Defaults to all.'),
   },
+  {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  },
   async ({ projectPath, checks }) => {
     const root = path.resolve(projectPath || process.cwd());
-    const activeChecks = checks || ALL_CHECKS;
+    const activeChecks = (checks as CheckName[] | undefined) || ALL_CHECKS;
 
     try {
       const result = await runAudit(root, activeChecks);
@@ -80,6 +70,12 @@ server.tool(
   {
     path: z.string().describe('The file path to validate'),
     projectPath: z.string().optional().describe('Project root. Defaults to cwd.'),
+  },
+  {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
   },
   async ({ path: filePath, projectPath }) => {
     try {
@@ -119,6 +115,12 @@ server.tool(
   'Get a token count breakdown for all context files in the project. Shows per-file and aggregate token usage, plus estimated waste from redundant content.',
   {
     projectPath: z.string().optional().describe('Project root. Defaults to cwd.'),
+  },
+  {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
   },
   async ({ projectPath }) => {
     const root = path.resolve(projectPath || process.cwd());
@@ -173,9 +175,15 @@ server.tool(
       .optional()
       .describe('Which checks to run before fixing. Defaults to all.'),
   },
+  {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  },
   async ({ projectPath, checks }) => {
     const root = path.resolve(projectPath || process.cwd());
-    const activeChecks = checks || ALL_CHECKS;
+    const activeChecks = (checks as CheckName[] | undefined) || ALL_CHECKS;
 
     try {
       const result = await runAudit(root, activeChecks);
@@ -209,84 +217,6 @@ server.tool(
     }
   },
 );
-
-async function runAudit(projectRoot: string, activeChecks: CheckName[]): Promise<LintResult> {
-  const discovered = await scanForContextFiles(projectRoot);
-  const parsed = discovered.map((f) => parseContextFile(f));
-  const fileResults: FileResult[] = [];
-
-  for (const file of parsed) {
-    const issues: LintIssue[] = [];
-
-    if (activeChecks.includes('paths')) issues.push(...(await checkPaths(file, projectRoot)));
-    if (activeChecks.includes('commands')) issues.push(...(await checkCommands(file, projectRoot)));
-    if (activeChecks.includes('staleness'))
-      issues.push(...(await checkStaleness(file, projectRoot)));
-    if (activeChecks.includes('tokens')) issues.push(...(await checkTokens(file, projectRoot)));
-    if (activeChecks.includes('redundancy'))
-      issues.push(...(await checkRedundancy(file, projectRoot)));
-    if (activeChecks.includes('frontmatter'))
-      issues.push(...(await checkFrontmatter(file, projectRoot)));
-
-    fileResults.push({
-      path: file.relativePath,
-      isSymlink: file.isSymlink,
-      symlinkTarget: file.symlinkTarget,
-      tokens: file.totalTokens,
-      lines: file.totalLines,
-      issues,
-    });
-  }
-
-  if (activeChecks.includes('tokens')) {
-    const aggIssue = checkAggregateTokens(
-      fileResults.map((f) => ({ path: f.path, tokens: f.tokens })),
-    );
-    if (aggIssue && fileResults.length > 0) fileResults[0].issues.push(aggIssue);
-  }
-  if (activeChecks.includes('redundancy')) {
-    const dupIssues = checkDuplicateContent(parsed);
-    if (dupIssues.length > 0 && fileResults.length > 0) fileResults[0].issues.push(...dupIssues);
-  }
-  if (activeChecks.includes('contradictions')) {
-    const contradictionIssues = checkContradictions(parsed);
-    if (contradictionIssues.length > 0 && fileResults.length > 0)
-      fileResults[0].issues.push(...contradictionIssues);
-  }
-
-  let estimatedWaste = 0;
-  for (const fr of fileResults) {
-    for (const issue of fr.issues) {
-      if (issue.check === 'redundancy' && issue.suggestion) {
-        const tokenMatch = issue.suggestion.match(/~(\d+)\s+tokens/);
-        if (tokenMatch) estimatedWaste += parseInt(tokenMatch[1], 10);
-      }
-    }
-  }
-
-  return {
-    version: VERSION,
-    scannedAt: new Date().toISOString(),
-    projectRoot,
-    files: fileResults,
-    summary: {
-      errors: fileResults.reduce(
-        (sum, f) => sum + f.issues.filter((i) => i.severity === 'error').length,
-        0,
-      ),
-      warnings: fileResults.reduce(
-        (sum, f) => sum + f.issues.filter((i) => i.severity === 'warning').length,
-        0,
-      ),
-      info: fileResults.reduce(
-        (sum, f) => sum + f.issues.filter((i) => i.severity === 'info').length,
-        0,
-      ),
-      totalTokens: fileResults.reduce((sum, f) => sum + f.tokens, 0),
-      estimatedWaste,
-    },
-  };
-}
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
