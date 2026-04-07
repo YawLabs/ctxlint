@@ -1,0 +1,413 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "specVersion": "1.0.0-draft",
+  "specDate": "2026-04-07",
+  "mcpSpecCompatibility": "2025-11-25",
+  "repository": "https://github.com/YawLabs/ctxlint",
+  "categories": [
+    {
+      "id": "mcp-schema",
+      "name": "Schema Validation",
+      "description": "Validates that MCP config files are well-formed JSON with correct structure for their target client."
+    },
+    {
+      "id": "mcp-security",
+      "name": "Security",
+      "description": "Detects hardcoded secrets and insecure transport in MCP config files."
+    },
+    {
+      "id": "mcp-commands",
+      "name": "Command Validation",
+      "description": "Validates stdio server commands and file path arguments."
+    },
+    {
+      "id": "mcp-deprecated",
+      "name": "Deprecation",
+      "description": "Flags deprecated MCP transport protocols and patterns."
+    },
+    {
+      "id": "mcp-env",
+      "name": "Environment Variables",
+      "description": "Validates environment variable references for correctness and client compatibility."
+    },
+    {
+      "id": "mcp-urls",
+      "name": "URL Validation",
+      "description": "Validates remote MCP server URLs."
+    },
+    {
+      "id": "mcp-consistency",
+      "name": "Cross-File Consistency",
+      "description": "Compares MCP configs across multiple client config files in the same project."
+    },
+    {
+      "id": "mcp-redundancy",
+      "name": "Redundancy",
+      "description": "Flags unnecessary or stale MCP config entries."
+    }
+  ],
+  "rules": [
+    {
+      "id": "mcp-schema/invalid-json",
+      "category": "mcp-schema",
+      "severity": "error",
+      "description": "MCP config file is not valid JSON.",
+      "trigger": "JSON.parse fails on the file content.",
+      "message": "MCP config is not valid JSON: {parseError}",
+      "fixable": false,
+      "clients": ["all"]
+    },
+    {
+      "id": "mcp-schema/wrong-root-key",
+      "category": "mcp-schema",
+      "severity": "error",
+      "description": "Root key does not match the expected key for the target client. VS Code uses \"servers\"; all other clients use \"mcpServers\".",
+      "trigger": "Root key is \"mcpServers\" in .vscode/mcp.json, or \"servers\" in any other config file.",
+      "message": "{file} must use \"{expected}\" as root key, not \"{actual}\"",
+      "fixable": true,
+      "fixDescription": "Rename the root key to match the expected key for the client.",
+      "clients": ["all"]
+    },
+    {
+      "id": "mcp-schema/missing-root-key",
+      "category": "mcp-schema",
+      "severity": "error",
+      "description": "No recognized root key (\"mcpServers\" or \"servers\") found in the config.",
+      "trigger": "The parsed JSON object has neither \"mcpServers\" nor \"servers\" as a key.",
+      "message": "MCP config has no \"{expected}\" key",
+      "fixable": false,
+      "clients": ["all"]
+    },
+    {
+      "id": "mcp-schema/missing-command",
+      "category": "mcp-schema",
+      "severity": "error",
+      "description": "A stdio server entry has no \"command\" field.",
+      "trigger": "Server has type \"stdio\" (or no type with no url) and no \"command\" field.",
+      "message": "Server \"{name}\": missing \"command\" field",
+      "fixable": false,
+      "clients": ["all"]
+    },
+    {
+      "id": "mcp-schema/missing-url",
+      "category": "mcp-schema",
+      "severity": "error",
+      "description": "An HTTP or SSE server entry has no \"url\" field.",
+      "trigger": "Server has type \"http\" or \"sse\" and no \"url\" field.",
+      "message": "Server \"{name}\": missing \"url\" field",
+      "fixable": false,
+      "clients": ["all"]
+    },
+    {
+      "id": "mcp-schema/unknown-transport",
+      "category": "mcp-schema",
+      "severity": "warning",
+      "description": "Server type field is not a recognized transport.",
+      "trigger": "\"type\" field is present but is not \"stdio\", \"http\", or \"sse\".",
+      "message": "Server \"{name}\": unknown transport type \"{type}\"",
+      "fixable": false,
+      "clients": ["all"]
+    },
+    {
+      "id": "mcp-schema/ambiguous-transport",
+      "category": "mcp-schema",
+      "severity": "warning",
+      "description": "Server has both a command (stdio) and a URL (http), making the transport ambiguous.",
+      "trigger": "Server entry has both \"command\" and \"url\" fields.",
+      "message": "Server \"{name}\": has both \"command\" and \"url\" — transport is ambiguous",
+      "fixable": false,
+      "clients": ["all"]
+    },
+    {
+      "id": "mcp-schema/empty-servers",
+      "category": "mcp-schema",
+      "severity": "info",
+      "description": "The config file has a root key but no server entries.",
+      "trigger": "Root key exists but the object is empty.",
+      "message": "MCP config has no server entries",
+      "fixable": false,
+      "clients": ["all"]
+    },
+    {
+      "id": "mcp-security/hardcoded-bearer",
+      "category": "mcp-security",
+      "severity": "error",
+      "description": "A git-tracked config file contains a literal Bearer token in the Authorization header.",
+      "trigger": "Authorization header value matches \"Bearer <literal>\" where the token is not an env var reference, and the file is tracked by git.",
+      "message": "Server \"{name}\": hardcoded Bearer token in a git-tracked file",
+      "fixable": true,
+      "fixDescription": "Replace the literal token with an env var reference derived from the server name.",
+      "clients": ["all"]
+    },
+    {
+      "id": "mcp-security/hardcoded-api-key",
+      "category": "mcp-security",
+      "severity": "error",
+      "description": "A git-tracked config file contains a value matching known API key patterns.",
+      "trigger": "A header or env value matches known API key prefixes (sk-, ghp_, xoxb-, AKIA, etc.) or is a high-entropy string > 20 chars, and the file is tracked by git.",
+      "message": "Server \"{name}\": possible API key in a git-tracked file",
+      "fixable": true,
+      "fixDescription": "Replace the literal value with an env var reference.",
+      "clients": ["all"]
+    },
+    {
+      "id": "mcp-security/secret-in-url",
+      "category": "mcp-security",
+      "severity": "error",
+      "description": "A git-tracked config URL contains query parameters that look like secrets.",
+      "trigger": "URL contains query params like ?key=, ?token=, ?api_key= with literal values in a git-tracked file.",
+      "message": "Server \"{name}\": possible secret in URL query string",
+      "fixable": false,
+      "clients": ["all"]
+    },
+    {
+      "id": "mcp-security/http-no-tls",
+      "category": "mcp-security",
+      "severity": "warning",
+      "description": "Server URL uses HTTP without TLS for a non-localhost target.",
+      "trigger": "URL scheme is http:// and host is not localhost or 127.0.0.1.",
+      "message": "Server \"{name}\": URL uses HTTP without TLS",
+      "fixable": false,
+      "clients": ["all"]
+    },
+    {
+      "id": "mcp-commands/windows-npx-no-wrapper",
+      "category": "mcp-commands",
+      "severity": "error",
+      "description": "On Windows, npx commands in stdio configs require a cmd /c wrapper to spawn correctly.",
+      "trigger": "Platform is Windows, command is \"npx\" (not \"cmd\" with /c npx in args).",
+      "message": "Server \"{name}\": npx requires \"cmd /c\" wrapper on Windows",
+      "fixable": true,
+      "fixDescription": "Rewrite command from \"npx\" to \"cmd\" with [\"/c\", \"npx\", ...] args.",
+      "clients": ["all"]
+    },
+    {
+      "id": "mcp-commands/command-not-found",
+      "category": "mcp-commands",
+      "severity": "warning",
+      "description": "A stdio command references a local file path that does not exist.",
+      "trigger": "Command starts with ./ or ../ and the resolved path does not exist.",
+      "message": "Server \"{name}\": command \"{command}\" not found",
+      "fixable": false,
+      "clients": ["all"]
+    },
+    {
+      "id": "mcp-commands/args-path-missing",
+      "category": "mcp-commands",
+      "severity": "warning",
+      "description": "A stdio arg looks like a local file path but the file does not exist.",
+      "trigger": "An arg matches a file path pattern (contains / with extension, or starts with ./) and the file does not exist.",
+      "message": "Server \"{name}\": arg \"{arg}\" references a missing file",
+      "fixable": false,
+      "clients": ["all"]
+    },
+    {
+      "id": "mcp-deprecated/sse-transport",
+      "category": "mcp-deprecated",
+      "severity": "warning",
+      "description": "SSE transport was deprecated in the March 2025 MCP spec update. Use Streamable HTTP instead.",
+      "trigger": "Server has \"type\": \"sse\".",
+      "message": "Server \"{name}\": SSE transport is deprecated — use \"http\" (Streamable HTTP)",
+      "fixable": true,
+      "fixDescription": "Replace \"sse\" with \"http\" in the type field.",
+      "clients": ["all"]
+    },
+    {
+      "id": "mcp-env/wrong-syntax",
+      "category": "mcp-env",
+      "severity": "error",
+      "description": "Environment variable reference uses the wrong syntax for the target client.",
+      "trigger": "${VAR} used in Cursor config (should be ${env:VAR}), or ${env:VAR} used in Claude Code config (should be ${VAR}).",
+      "message": "Server \"{name}\": {client} uses {expected}, not {actual}",
+      "fixable": true,
+      "fixDescription": "Rewrite env var references to the correct syntax for the target client.",
+      "clients": ["claude-code", "cursor", "continue", "windsurf"]
+    },
+    {
+      "id": "mcp-env/unset-variable",
+      "category": "mcp-env",
+      "severity": "info",
+      "description": "A referenced environment variable is not set in the current shell environment.",
+      "trigger": "Env var reference found but the variable is not in process.env.",
+      "message": "Server \"{name}\": environment variable \"{var}\" is not set",
+      "fixable": false,
+      "clients": ["claude-code", "cursor", "continue", "windsurf"]
+    },
+    {
+      "id": "mcp-env/empty-env-block",
+      "category": "mcp-env",
+      "severity": "info",
+      "description": "Server has an empty env object that can be removed.",
+      "trigger": "\"env\" key is present but the object is empty ({}).",
+      "message": "Server \"{name}\": empty \"env\" block can be removed",
+      "fixable": false,
+      "clients": ["all"]
+    },
+    {
+      "id": "mcp-urls/malformed",
+      "category": "mcp-urls",
+      "severity": "error",
+      "description": "Server URL is not a valid URL.",
+      "trigger": "URL cannot be parsed by standard URL parser and does not contain env var placeholders.",
+      "message": "Server \"{name}\": invalid URL",
+      "fixable": false,
+      "clients": ["all"]
+    },
+    {
+      "id": "mcp-urls/localhost-in-project-config",
+      "category": "mcp-urls",
+      "severity": "warning",
+      "description": "A project-level config (committed to version control) references localhost, which won't work for other team members.",
+      "trigger": "URL host is localhost or 127.0.0.1 and the file is a project-level config.",
+      "message": "Server \"{name}\": localhost URL in project config won't work for teammates",
+      "fixable": false,
+      "clients": ["all"]
+    },
+    {
+      "id": "mcp-urls/missing-path",
+      "category": "mcp-urls",
+      "severity": "info",
+      "description": "Server URL has no path component. Most MCP servers expect a path like /mcp.",
+      "trigger": "URL path is empty or just \"/\".",
+      "message": "Server \"{name}\": URL has no path — most MCP servers expect /mcp",
+      "fixable": false,
+      "clients": ["all"]
+    },
+    {
+      "id": "mcp-consistency/same-server-different-config",
+      "category": "mcp-consistency",
+      "severity": "warning",
+      "description": "The same server name is configured differently across multiple client config files.",
+      "trigger": "Server name exists in 2+ config files with different url or command/args values.",
+      "message": "Server \"{name}\" is configured differently in {file1} and {file2}",
+      "fixable": false,
+      "clients": ["all"]
+    },
+    {
+      "id": "mcp-consistency/duplicate-server-name",
+      "category": "mcp-consistency",
+      "severity": "warning",
+      "description": "A server name appears more than once in the same config file. JSON last-write-wins behavior means only the last definition is used.",
+      "trigger": "Duplicate key in the mcpServers/servers object.",
+      "message": "Duplicate server name \"{name}\" in {file} — only the last definition is used",
+      "fixable": false,
+      "clients": ["all"]
+    },
+    {
+      "id": "mcp-consistency/missing-from-client",
+      "category": "mcp-consistency",
+      "severity": "info",
+      "description": "A server in .mcp.json is not present in another client's project config that also exists.",
+      "trigger": "Server exists in .mcp.json but is absent from .cursor/mcp.json or .vscode/mcp.json (when those files exist).",
+      "message": "Server \"{name}\" is in .mcp.json but missing from {file}",
+      "fixable": false,
+      "clients": ["all"]
+    },
+    {
+      "id": "mcp-redundancy/disabled-server",
+      "category": "mcp-redundancy",
+      "severity": "info",
+      "description": "A server entry is explicitly disabled.",
+      "trigger": "Server has \"disabled\": true.",
+      "message": "Server \"{name}\" is disabled — consider removing if no longer needed",
+      "fixable": false,
+      "clients": ["cline"]
+    },
+    {
+      "id": "mcp-redundancy/identical-across-scopes",
+      "category": "mcp-redundancy",
+      "severity": "info",
+      "description": "The same server is identically configured at both project and global scope, making the global entry redundant.",
+      "trigger": "Server with same name and identical config exists at both project and global scope.",
+      "message": "Server \"{name}\" is identically configured in {projectFile} and {globalFile}",
+      "fixable": false,
+      "clients": ["claude-code", "cursor", "amazonq"]
+    }
+  ],
+  "clients": [
+    {
+      "id": "claude-code",
+      "name": "Claude Code",
+      "projectConfig": ".mcp.json",
+      "globalConfig": ["~/.claude.json", "~/.claude/settings.json"],
+      "rootKey": "mcpServers",
+      "envVarSyntax": "${VAR}",
+      "envVarDefaultSyntax": "${VAR:-default}",
+      "transports": ["stdio", "http", "sse"],
+      "scopePrecedence": ["local", "project", "user"]
+    },
+    {
+      "id": "claude-desktop",
+      "name": "Claude Desktop",
+      "projectConfig": null,
+      "globalConfig": {
+        "macos": "~/Library/Application Support/Claude/claude_desktop_config.json",
+        "windows": "%APPDATA%\\Claude\\claude_desktop_config.json"
+      },
+      "rootKey": "mcpServers",
+      "envVarSyntax": null,
+      "transports": ["stdio", "http", "sse"],
+      "scopePrecedence": ["global"]
+    },
+    {
+      "id": "vscode",
+      "name": "VS Code / GitHub Copilot",
+      "projectConfig": ".vscode/mcp.json",
+      "globalConfig": null,
+      "rootKey": "servers",
+      "envVarSyntax": "${VAR}",
+      "transports": ["stdio", "http", "sse"],
+      "scopePrecedence": ["workspace", "user"]
+    },
+    {
+      "id": "cursor",
+      "name": "Cursor",
+      "projectConfig": ".cursor/mcp.json",
+      "globalConfig": "~/.cursor/mcp.json",
+      "rootKey": "mcpServers",
+      "envVarSyntax": "${env:VAR}",
+      "transports": ["stdio", "http", "sse"],
+      "scopePrecedence": ["project", "global"]
+    },
+    {
+      "id": "windsurf",
+      "name": "Windsurf",
+      "projectConfig": null,
+      "globalConfig": "~/.codeium/windsurf/mcp_config.json",
+      "rootKey": "mcpServers",
+      "envVarSyntax": "${env:VAR}",
+      "transports": ["stdio", "http", "sse"],
+      "scopePrecedence": ["global"]
+    },
+    {
+      "id": "cline",
+      "name": "Cline",
+      "projectConfig": null,
+      "globalConfig": "VS Code globalStorage: saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
+      "rootKey": "mcpServers",
+      "envVarSyntax": null,
+      "transports": ["stdio", "http", "sse"],
+      "scopePrecedence": ["global"]
+    },
+    {
+      "id": "amazonq",
+      "name": "Amazon Q Developer",
+      "projectConfig": ".amazonq/mcp.json",
+      "globalConfig": "~/.aws/amazonq/mcp.json",
+      "rootKey": "mcpServers",
+      "envVarSyntax": null,
+      "transports": ["stdio", "http"],
+      "scopePrecedence": ["workspace", "global"]
+    },
+    {
+      "id": "continue",
+      "name": "Continue.dev",
+      "projectConfig": ".continue/mcpServers/*.json",
+      "globalConfig": "~/.continue/config.yaml",
+      "rootKey": "mcpServers",
+      "envVarSyntax": "${{ secrets.VAR }}",
+      "transports": ["stdio", "http", "sse"],
+      "scopePrecedence": ["workspace", "global"]
+    }
+  ]
+}

@@ -5,9 +5,9 @@
 [![GitHub stars](https://img.shields.io/github/stars/YawLabs/ctxlint)](https://github.com/YawLabs/ctxlint/stargazers)
 [![CI](https://github.com/YawLabs/ctxlint/actions/workflows/ci.yml/badge.svg)](https://github.com/YawLabs/ctxlint/actions/workflows/ci.yml)
 
-**Lint your AI agent context files against your actual codebase.** 7 checks, 21+ formats, auto-fix. Works as a CLI, CI step, pre-commit hook, or MCP server.
+**Lint your AI agent context files and MCP server configs against your actual codebase.** Context linting + MCP config linting. 21+ context formats, 8 MCP clients, auto-fix. Works as a CLI, CI step, pre-commit hook, or MCP server.
 
-Your `CLAUDE.md` is lying to your agent. ctxlint catches it.
+Your `CLAUDE.md` is lying to your agent. Your `.mcp.json` has a hardcoded API key. ctxlint catches both.
 
 ## Why ctxlint?
 
@@ -65,6 +65,75 @@ npx @yawlabs/ctxlint
 | `.continuerules`, `.continue/rules/*.md` | Continue |
 | `.rules` | Zed |
 | `replit.md` | Replit |
+
+## MCP Server Config Linting
+
+ctxlint also lints MCP server configuration files — the JSON configs that tell AI clients which tools to connect to. These are context interfaces too: they shape what your agent can do.
+
+```bash
+# Lint context files + MCP configs
+npx @yawlabs/ctxlint --mcp
+
+# Lint only MCP configs
+npx @yawlabs/ctxlint --mcp-only
+
+# Include global/user-level configs (Claude Desktop, Cursor, Windsurf, etc.)
+npx @yawlabs/ctxlint --mcp-global
+```
+
+### What MCP config files are scanned
+
+| File | Client |
+|------|--------|
+| `.mcp.json` | Claude Code (universal project config) |
+| `.cursor/mcp.json` | Cursor |
+| `.vscode/mcp.json` | VS Code / GitHub Copilot |
+| `.amazonq/mcp.json` | Amazon Q Developer |
+| `.continue/mcpServers/*.json` | Continue |
+
+With `--mcp-global`, also scans Claude Desktop, Cursor, Windsurf, Cline, and Amazon Q global configs.
+
+### What MCP config checks catch
+
+| Check | What it finds |
+|-------|--------------|
+| **Schema** | Invalid JSON, wrong root key (`servers` vs `mcpServers`), missing required fields |
+| **Security** | Hardcoded API keys and Bearer tokens in git-tracked config files |
+| **Commands** | Missing `cmd /c` wrapper for npx on Windows, broken file paths in args |
+| **Deprecated** | SSE transport usage (deprecated March 2025, use Streamable HTTP) |
+| **Env vars** | Wrong env var syntax for the client (`${VAR}` vs `${env:VAR}` vs `${{ secrets.VAR }}`) |
+| **URLs** | Malformed URLs, localhost in project configs, missing path component |
+| **Consistency** | Same server configured differently across client configs |
+| **Redundancy** | Disabled servers, identical configs at multiple scopes |
+
+### Example MCP config output
+
+```
+MCP Configs
+  .mcp.json
+    ✗ mcp-security    Server "api": hardcoded Bearer token in a git-tracked file
+    ✗ mcp-deprecated  Server "old-svc": SSE transport is deprecated — use "http"
+    ✓ mcp-schema
+    ✓ mcp-commands
+  .cursor/mcp.json
+    ✗ mcp-env  Server "api": Cursor uses ${env:VAR}, not ${VAR}
+    ✓ mcp-schema
+  .vscode/mcp.json
+    ✗ mcp-schema  .vscode/mcp.json must use "servers" as root key, not "mcpServers"
+
+Cross-file
+    ⚠ Server "api" is configured differently in .mcp.json and .cursor/mcp.json
+    ℹ Server "db" is in .mcp.json but missing from .cursor/mcp.json
+
+Summary: 3 errors, 2 warnings, 1 info
+```
+
+### MCP Config Linting Specification
+
+The full specification for MCP config linting rules, the cross-client config landscape, and a machine-readable rule catalog are published as open specifications:
+
+- **[`MCP_CONFIG_LINT_SPEC.md`](./MCP_CONFIG_LINT_SPEC.md)** — 23 lint rules across 8 categories, the complete client/format reference, and implementation guidance. Tool-agnostic — any linter can implement it.
+- **[`mcp-config-lint-rules.json`](./mcp-config-lint-rules.json)** — Machine-readable rule catalog for programmatic consumption by AI agents, CI systems, and other tools.
 
 ## Example Output
 
@@ -240,6 +309,19 @@ npx @yawlabs/ctxlint --format json
 ```
 
 Returns structured JSON with all file results, issues, and summary — useful for building integrations or dashboards.
+
+## Specifications
+
+ctxlint is the reference implementation of two open specifications for linting AI agent interfaces. These specs are tool-agnostic — any linter, IDE extension, or CI system can implement them.
+
+| Spec | What it covers |
+|------|---------------|
+| **[AI Context File Linting Spec](./CONTEXT_LINT_SPEC.md)** | 19 rules for validating context files (CLAUDE.md, .cursorrules, AGENTS.md, etc.) across 17 clients. Covers file formats, frontmatter schemas, path/command validation, staleness, token budgets, redundancy, and contradictions. |
+| **[MCP Config Linting Spec](./MCP_CONFIG_LINT_SPEC.md)** | 23 rules for validating MCP server configs (.mcp.json, .cursor/mcp.json, .vscode/mcp.json, etc.) across 8 clients. Covers schema validation, hardcoded secrets, env var syntax, deprecated transports, and cross-file consistency. |
+
+Both specs include machine-readable rule catalogs for programmatic consumption:
+- [`context-lint-rules.json`](./context-lint-rules.json) — context file rules and 16 supported format definitions
+- [`mcp-config-lint-rules.json`](./mcp-config-lint-rules.json) — MCP config rules and 8 client definitions
 
 ## Also By Yaw Labs
 

@@ -1,0 +1,415 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "specVersion": "1.0.0-draft",
+  "specDate": "2026-04-07",
+  "repository": "https://github.com/YawLabs/ctxlint",
+  "categories": [
+    {
+      "id": "paths",
+      "name": "File Reference Validation",
+      "description": "Validates that file paths referenced in context files exist in the project.",
+      "scope": "per-file"
+    },
+    {
+      "id": "commands",
+      "name": "Build/Script Validation",
+      "description": "Validates that build and test commands referenced in context files match project scripts.",
+      "scope": "per-file"
+    },
+    {
+      "id": "staleness",
+      "name": "Freshness Detection",
+      "description": "Detects context files that haven't been updated while referenced code has changed.",
+      "scope": "per-file",
+      "requires": "git"
+    },
+    {
+      "id": "tokens",
+      "name": "Context Window Budget",
+      "description": "Monitors context file size to help teams manage context window consumption.",
+      "scope": "per-file and cross-file"
+    },
+    {
+      "id": "redundancy",
+      "name": "Inferable Content",
+      "description": "Detects content that agents can already infer from project metadata.",
+      "scope": "per-file and cross-file"
+    },
+    {
+      "id": "contradictions",
+      "name": "Cross-File Conflicts",
+      "description": "Detects conflicting directives across multiple context files.",
+      "scope": "cross-file"
+    },
+    {
+      "id": "frontmatter",
+      "name": "Client Metadata Validation",
+      "description": "Validates YAML frontmatter required by specific AI coding clients.",
+      "scope": "per-file"
+    }
+  ],
+  "rules": [
+    {
+      "id": "paths/not-found",
+      "category": "paths",
+      "severity": "error",
+      "description": "Referenced file or directory does not exist at the specified path.",
+      "trigger": "Path reference in context file resolves to a non-existent file or directory.",
+      "message": "{path} does not exist",
+      "fixable": true,
+      "fixDescription": "Replace broken path with suggestion from git rename detection or fuzzy matching."
+    },
+    {
+      "id": "paths/glob-no-match",
+      "category": "paths",
+      "severity": "error",
+      "description": "Glob pattern matches zero files in the project.",
+      "trigger": "Path contains wildcard characters (*, ?) but matches no files.",
+      "message": "{pattern} matches no files",
+      "fixable": false
+    },
+    {
+      "id": "paths/directory-not-found",
+      "category": "paths",
+      "severity": "error",
+      "description": "Referenced directory does not exist.",
+      "trigger": "Path ending with / does not resolve to an existing directory.",
+      "message": "{path} directory does not exist",
+      "fixable": false
+    },
+    {
+      "id": "commands/script-not-found",
+      "category": "commands",
+      "severity": "error",
+      "description": "Package manager script name is not found in package.json scripts.",
+      "trigger": "npm run, pnpm, yarn, or bun script reference does not match a key in package.json#scripts.",
+      "message": "\"{cmd}\" — script \"{name}\" not found in package.json",
+      "fixable": false
+    },
+    {
+      "id": "commands/make-target-not-found",
+      "category": "commands",
+      "severity": "error",
+      "description": "Make target is not found in Makefile.",
+      "trigger": "make command references a target not declared in the project's Makefile.",
+      "message": "\"{cmd}\" — target \"{name}\" not found in Makefile",
+      "fixable": false
+    },
+    {
+      "id": "commands/no-makefile",
+      "category": "commands",
+      "severity": "error",
+      "description": "Make command used but no Makefile exists in the project.",
+      "trigger": "Context file references a make command but no Makefile is found at the project root.",
+      "message": "\"{cmd}\" — no Makefile found in project",
+      "fixable": false
+    },
+    {
+      "id": "commands/npx-not-in-deps",
+      "category": "commands",
+      "severity": "warning",
+      "description": "npx package is not in project dependencies.",
+      "trigger": "npx package is not in package.json dependencies/devDependencies and not in node_modules/.bin.",
+      "message": "\"{cmd}\" — \"{pkg}\" not found in dependencies",
+      "fixable": false
+    },
+    {
+      "id": "commands/tool-not-found",
+      "category": "commands",
+      "severity": "warning",
+      "description": "Common development tool is not in project dependencies.",
+      "trigger": "Tool name (vitest, jest, eslint, prettier, tsc, etc.) not found in dependencies or node_modules/.bin.",
+      "message": "\"{cmd}\" — \"{tool}\" not found in dependencies or node_modules/.bin",
+      "fixable": false
+    },
+    {
+      "id": "staleness/stale",
+      "category": "staleness",
+      "severity": "warning",
+      "description": "Context file has not been updated in 30+ days while referenced code has changed.",
+      "trigger": "File last modified 30+ days ago AND paths it references have git commits since.",
+      "message": "Last updated {days} days ago. {path} has {N} commits since.",
+      "fixable": false
+    },
+    {
+      "id": "staleness/aging",
+      "category": "staleness",
+      "severity": "info",
+      "description": "Context file has not been updated in 14-30 days while referenced code has changed.",
+      "trigger": "File last modified 14-30 days ago AND paths it references have git commits since.",
+      "message": "Last updated {days} days ago. {path} has {N} commits since.",
+      "fixable": false
+    },
+    {
+      "id": "tokens/excessive",
+      "category": "tokens",
+      "severity": "error",
+      "description": "Single context file consumes excessive context window space.",
+      "trigger": "File uses 8000+ tokens (configurable).",
+      "message": "{N} tokens — consumes significant context window space",
+      "fixable": false,
+      "configurable": true,
+      "defaultThreshold": 8000
+    },
+    {
+      "id": "tokens/large",
+      "category": "tokens",
+      "severity": "warning",
+      "description": "Single context file is large.",
+      "trigger": "File uses 3000-7999 tokens (configurable).",
+      "message": "{N} tokens — large context file",
+      "fixable": false,
+      "configurable": true,
+      "defaultThreshold": 3000
+    },
+    {
+      "id": "tokens/info",
+      "category": "tokens",
+      "severity": "info",
+      "description": "Reports per-file token count.",
+      "trigger": "File uses 1000+ tokens (configurable).",
+      "message": "Uses ~{N} tokens per session",
+      "fixable": false,
+      "configurable": true,
+      "defaultThreshold": 1000
+    },
+    {
+      "id": "tokens/aggregate",
+      "category": "tokens",
+      "severity": "warning",
+      "description": "Combined context files exceed recommended total token budget.",
+      "trigger": "All context files combined use 5000+ tokens (configurable) AND there are multiple files.",
+      "message": "{count} context files consume {N} tokens combined",
+      "fixable": false,
+      "configurable": true,
+      "defaultThreshold": 5000
+    },
+    {
+      "id": "redundancy/tech-mention",
+      "category": "redundancy",
+      "severity": "info",
+      "description": "Context file mentions a technology that is already in package.json dependencies.",
+      "trigger": "File contains phrases like 'use React' or 'built with Express' and that package is in dependencies.",
+      "message": "\"{tech}\" is in package.json {depType} — agent can infer this",
+      "fixable": false
+    },
+    {
+      "id": "redundancy/discoverable-dir",
+      "category": "redundancy",
+      "severity": "info",
+      "description": "Context file describes the location of a directory that the agent can discover by listing files.",
+      "trigger": "File says files 'are in' or 'go in' a directory that exists in the project.",
+      "message": "Directory \"{dir}\" exists and is discoverable — agent can find this by listing files",
+      "fixable": false
+    },
+    {
+      "id": "redundancy/duplicate-content",
+      "category": "redundancy",
+      "severity": "warning",
+      "description": "Two context files have significant content overlap.",
+      "trigger": "Two files share 60%+ of their lines (by trimmed content, lines >10 chars).",
+      "message": "{file1} and {file2} have {N}% content overlap",
+      "fixable": false
+    },
+    {
+      "id": "contradictions/conflict",
+      "category": "contradictions",
+      "severity": "warning",
+      "description": "Two context files specify mutually exclusive options in the same category.",
+      "trigger": "File A says 'use Jest' while File B says 'use Vitest' (or similar conflicts across 8 categories).",
+      "message": "{category} conflict: \"{optionA}\" in {fileA} vs \"{optionB}\" in {fileB}",
+      "fixable": false,
+      "contradictionCategories": [
+        "testing framework",
+        "package manager",
+        "indentation style",
+        "semicolons",
+        "quote style",
+        "naming convention",
+        "CSS approach",
+        "state management"
+      ]
+    },
+    {
+      "id": "frontmatter/missing",
+      "category": "frontmatter",
+      "severity": "warning",
+      "description": "File format requires frontmatter but none is present.",
+      "trigger": "Cursor .mdc, Copilot instruction, or Windsurf rule file has no --- frontmatter block.",
+      "message": "{format} file is missing frontmatter",
+      "fixable": false,
+      "appliesTo": ["cursor-mdc", "copilot-instructions", "windsurf-rules"]
+    },
+    {
+      "id": "frontmatter/missing-field",
+      "category": "frontmatter",
+      "severity": "warning",
+      "description": "A required or recommended frontmatter field is absent.",
+      "trigger": "Frontmatter exists but is missing a key field (description for Cursor, applyTo for Copilot, trigger for Windsurf).",
+      "message": "Missing \"{field}\" field in {format} frontmatter",
+      "fixable": false,
+      "appliesTo": ["cursor-mdc", "copilot-instructions", "windsurf-rules"]
+    },
+    {
+      "id": "frontmatter/invalid-value",
+      "category": "frontmatter",
+      "severity": "error",
+      "description": "A frontmatter field has an invalid value.",
+      "trigger": "alwaysApply is not true/false, trigger is not a valid enum value, globs doesn't look like a pattern.",
+      "message": "Invalid {field} value: \"{value}\"",
+      "fixable": false,
+      "appliesTo": ["cursor-mdc", "windsurf-rules"]
+    },
+    {
+      "id": "frontmatter/no-activation",
+      "category": "frontmatter",
+      "severity": "info",
+      "description": "File has frontmatter but no activation mechanism.",
+      "trigger": "Cursor .mdc has frontmatter with neither globs nor alwaysApply set.",
+      "message": "No activation field — rule may not be applied automatically",
+      "fixable": false,
+      "appliesTo": ["cursor-mdc"]
+    }
+  ],
+  "formats": [
+    {
+      "id": "claude-code",
+      "client": "Claude Code",
+      "patterns": ["CLAUDE.md", "CLAUDE.local.md", ".claude/rules/*.md"],
+      "type": "markdown",
+      "frontmatter": "none",
+      "scope": "project-wide and rule-based"
+    },
+    {
+      "id": "aaif",
+      "client": "AAIF / Multi-agent standard",
+      "patterns": ["AGENTS.md", "AGENT.md", "AGENTS.override.md"],
+      "type": "markdown",
+      "frontmatter": "none",
+      "scope": "project-wide"
+    },
+    {
+      "id": "cursor",
+      "client": "Cursor",
+      "patterns": [".cursorrules", ".cursor/rules/*.md", ".cursor/rules/*.mdc", ".cursor/rules/*/RULE.md"],
+      "type": "markdown",
+      "frontmatter": "required for .mdc",
+      "frontmatterFields": {
+        "description": {"required": true, "type": "string"},
+        "globs": {"required": false, "type": "string or string[]"},
+        "alwaysApply": {"required": false, "type": "boolean"}
+      },
+      "scope": "project-wide and rule-based"
+    },
+    {
+      "id": "copilot",
+      "client": "GitHub Copilot",
+      "patterns": [".github/copilot-instructions.md", ".github/instructions/*.md", ".github/git-commit-instructions.md"],
+      "type": "markdown",
+      "frontmatter": "optional",
+      "frontmatterFields": {
+        "applyTo": {"required": false, "type": "string (glob)"}
+      },
+      "scope": "project-wide and scoped"
+    },
+    {
+      "id": "windsurf",
+      "client": "Windsurf",
+      "patterns": [".windsurfrules", ".windsurf/rules/*.md"],
+      "type": "markdown",
+      "frontmatter": "recommended for rules",
+      "frontmatterFields": {
+        "trigger": {"required": true, "type": "enum", "values": ["always_on", "glob", "manual", "model"]}
+      },
+      "scope": "project-wide and rule-based"
+    },
+    {
+      "id": "gemini",
+      "client": "Gemini CLI",
+      "patterns": ["GEMINI.md"],
+      "type": "markdown",
+      "frontmatter": "none",
+      "scope": "project-wide"
+    },
+    {
+      "id": "cline",
+      "client": "Cline",
+      "patterns": [".clinerules"],
+      "type": "plain text",
+      "frontmatter": "none",
+      "scope": "project-wide"
+    },
+    {
+      "id": "aider",
+      "client": "Aider",
+      "patterns": [".aiderules"],
+      "type": "plain text",
+      "frontmatter": "none",
+      "scope": "project-wide"
+    },
+    {
+      "id": "aide",
+      "client": "Aide / Codestory",
+      "patterns": [".aide/rules/*.md"],
+      "type": "markdown",
+      "frontmatter": "none",
+      "scope": "rule-based"
+    },
+    {
+      "id": "amazonq",
+      "client": "Amazon Q Developer",
+      "patterns": [".amazonq/rules/*.md"],
+      "type": "markdown",
+      "frontmatter": "none",
+      "scope": "rule-based"
+    },
+    {
+      "id": "goose",
+      "client": "Goose (Block)",
+      "patterns": [".goose/instructions.md", ".goosehints"],
+      "type": "markdown",
+      "frontmatter": "none",
+      "scope": "project-wide"
+    },
+    {
+      "id": "junie",
+      "client": "JetBrains Junie",
+      "patterns": [".junie/guidelines.md", ".junie/AGENTS.md"],
+      "type": "markdown",
+      "frontmatter": "none",
+      "scope": "project-wide"
+    },
+    {
+      "id": "jetbrains-ai",
+      "client": "JetBrains AI Assistant",
+      "patterns": [".aiassistant/rules/*.md"],
+      "type": "markdown",
+      "frontmatter": "none",
+      "scope": "rule-based"
+    },
+    {
+      "id": "continue",
+      "client": "Continue",
+      "patterns": [".continuerules", ".continue/rules/*.md"],
+      "type": "markdown",
+      "frontmatter": "none",
+      "scope": "project-wide and rule-based"
+    },
+    {
+      "id": "zed",
+      "client": "Zed",
+      "patterns": [".rules"],
+      "type": "plain text",
+      "frontmatter": "none",
+      "scope": "project-wide"
+    },
+    {
+      "id": "replit",
+      "client": "Replit",
+      "patterns": ["replit.md"],
+      "type": "markdown",
+      "frontmatter": "none",
+      "scope": "project-wide"
+    }
+  ]
+}
