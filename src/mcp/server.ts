@@ -3,7 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { scanForContextFiles } from '../core/scanner.js';
 import { parseContextFile } from '../core/parser.js';
-import { runAudit, ALL_CHECKS } from '../core/audit.js';
+import { runAudit, ALL_CHECKS, ALL_MCP_CHECKS } from '../core/audit.js';
 import { applyFixes } from '../core/fixer.js';
 import { fileExists, isDirectory } from '../utils/fs.js';
 import { findRenames } from '../utils/git.js';
@@ -21,6 +21,14 @@ const checkEnum = z.enum([
   'redundancy',
   'contradictions',
   'frontmatter',
+  'mcp-schema',
+  'mcp-security',
+  'mcp-commands',
+  'mcp-deprecated',
+  'mcp-env',
+  'mcp-urls',
+  'mcp-consistency',
+  'mcp-redundancy',
 ]);
 
 const server = new McpServer({
@@ -205,6 +213,50 @@ server.tool(
           },
         ],
       };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ error: msg }) }],
+        isError: true,
+      };
+    } finally {
+      freeEncoder();
+      resetGit();
+    }
+  },
+);
+
+server.tool(
+  'ctxlint_mcp_audit',
+  'Lint MCP server configuration files in a project. Checks for schema errors, hardcoded secrets, deprecated transports, wrong env var syntax, URL issues, and cross-client inconsistencies.',
+  {
+    projectPath: z
+      .string()
+      .optional()
+      .describe('Path to the project root. Defaults to current working directory.'),
+    checks: z
+      .array(checkEnum)
+      .optional()
+      .describe('Specific MCP checks to run (default: all mcp-* checks).'),
+    includeGlobal: z.boolean().optional().describe('Also scan global/user-level MCP configs.'),
+  },
+  {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  },
+  async ({ projectPath, checks, includeGlobal }) => {
+    const root = path.resolve(projectPath || process.cwd());
+    const activeChecks = (checks as CheckName[] | undefined) || ALL_MCP_CHECKS;
+
+    try {
+      const result = await runAudit(root, activeChecks, {
+        mcp: true,
+        mcpOnly: true,
+        mcpGlobal: includeGlobal || false,
+      });
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return {

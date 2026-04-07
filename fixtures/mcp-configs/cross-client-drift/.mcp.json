@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "api": {
+      "type": "http",
+      "url": "https://api-v1.example.com/mcp"
+    }
+  }
+}

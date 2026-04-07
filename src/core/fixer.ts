@@ -49,7 +49,19 @@ export function applyFixes(result: LintResult): FixSummary {
     }
 
     if (modified) {
-      fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
+      const newContent = lines.join('\n');
+
+      // For JSON files, validate the result is still valid JSON before writing
+      if (filePath.endsWith('.json')) {
+        try {
+          JSON.parse(newContent);
+        } catch {
+          console.log(chalk.yellow('  Skipped') + ` ${filePath}: fix would produce invalid JSON`);
+          continue;
+        }
+      }
+
+      fs.writeFileSync(filePath, newContent, 'utf-8');
       filesModified.push(filePath);
     }
   }

@@ -13,6 +13,8 @@ export interface CtxlintConfig {
     aggregate?: number;
   };
   contextFiles?: string[];
+  mcp?: boolean;
+  mcpGlobal?: boolean;
 }
 
 const CONFIG_FILENAMES = ['.ctxlintrc', '.ctxlintrc.json'];

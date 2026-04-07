@@ -78,6 +78,7 @@ export interface DiscoveredFile {
   relativePath: string;
   isSymlink: boolean;
   symlinkTarget?: string;
+  type: 'context' | 'mcp-config';
 }
 
 export async function scanForContextFiles(
@@ -133,9 +134,101 @@ export async function scanForContextFiles(
           relativePath: relativePath.replace(/\\/g, '/'),
           isSymlink: symlink,
           symlinkTarget: target,
+          type: 'context',
         });
       }
     }
+  }
+
+  return found.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+}
+
+const MCP_CONFIG_PATTERNS = [
+  '.mcp.json',
+  '.cursor/mcp.json',
+  '.vscode/mcp.json',
+  '.amazonq/mcp.json',
+  '.continue/mcpServers/*.json',
+];
+
+export async function scanForMcpConfigs(projectRoot: string): Promise<DiscoveredFile[]> {
+  const found: DiscoveredFile[] = [];
+  const seen = new Set<string>();
+
+  for (const pattern of MCP_CONFIG_PATTERNS) {
+    const matches = await glob(pattern, {
+      cwd: projectRoot,
+      absolute: true,
+      nodir: true,
+      dot: true,
+    });
+
+    for (const match of matches) {
+      const normalized = path.normalize(match);
+      if (seen.has(normalized)) continue;
+      seen.add(normalized);
+
+      const relativePath = path.relative(projectRoot, normalized);
+      const symlink = isSymlink(normalized);
+      const target = symlink ? readSymlinkTarget(normalized) : undefined;
+
+      found.push({
+        absolutePath: normalized,
+        relativePath: relativePath.replace(/\\/g, '/'),
+        isSymlink: symlink,
+        symlinkTarget: target,
+        type: 'mcp-config',
+      });
+    }
+  }
+
+  return found.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+}
+
+export async function scanGlobalMcpConfigs(): Promise<DiscoveredFile[]> {
+  const found: DiscoveredFile[] = [];
+  const seen = new Set<string>();
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+
+  const globalPaths: string[] = [
+    path.join(home, '.claude.json'),
+    path.join(home, '.claude', 'settings.json'),
+    path.join(home, '.cursor', 'mcp.json'),
+    path.join(home, '.codeium', 'windsurf', 'mcp_config.json'),
+    path.join(home, '.aws', 'amazonq', 'mcp.json'),
+  ];
+
+  // Platform-specific Claude Desktop config
+  if (process.platform === 'darwin') {
+    globalPaths.push(
+      path.join(home, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json'),
+    );
+  } else if (process.platform === 'win32') {
+    const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
+    globalPaths.push(path.join(appData, 'Claude', 'claude_desktop_config.json'));
+  }
+
+  for (const filePath of globalPaths) {
+    const normalized = path.normalize(filePath);
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+
+    try {
+      fs.accessSync(normalized);
+    } catch {
+      continue;
+    }
+
+    const symlink = isSymlink(normalized);
+    const target = symlink ? readSymlinkTarget(normalized) : undefined;
+
+    found.push({
+      absolutePath: normalized,
+      relativePath: '~/' + path.relative(home, normalized).replace(/\\/g, '/'),
+      isSymlink: symlink,
+      symlinkTarget: target,
+      type: 'mcp-config',
+    });
   }
 
   return found.sort((a, b) => a.relativePath.localeCompare(b.relativePath));

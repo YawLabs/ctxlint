@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "api-server": {
+      "type": "http",
+      "url": "https://api.example.com/mcp?api_key=sk-1234567890abcdef",
+      "headers": {
+        "Authorization": "Bearer sk-proj-abcdefghijklmnopqrstuvwxyz1234567890",
+        "X-Custom": "safe-value"
+      }
+    },
+    "github-server": {
+      "command": "npx",
+      "args": ["-y", "@some/mcp-server"],
+      "env": {
+        "GITHUB_TOKEN": "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij",
+        "DEBUG": "true"
+      }
+    },
+    "insecure-server": {
+      "type": "http",
+      "url": "http://api.production.example.com/mcp"
+    }
+  }
+}

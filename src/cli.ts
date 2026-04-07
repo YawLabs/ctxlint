@@ -8,7 +8,7 @@ import { applyFixes } from './core/fixer.js';
 import { freeEncoder } from './utils/tokens.js';
 import { resetGit } from './utils/git.js';
 import { loadConfig } from './core/config.js';
-import { runAudit, ALL_CHECKS } from './core/audit.js';
+import { runAudit, ALL_CHECKS, ALL_MCP_CHECKS } from './core/audit.js';
 import type { LintOptions, CheckName } from './core/types.js';
 import * as path from 'node:path';
 import { VERSION } from './version.js';
@@ -33,6 +33,9 @@ export async function runCli() {
     .option('--quiet', 'Suppress all output except errors (exit code only)', false)
     .option('--config <path>', 'Path to config file (default: .ctxlintrc in project root)')
     .option('--depth <n>', 'Max subdirectory depth to scan (default: 2)', '2')
+    .option('--mcp', 'Enable MCP config linting alongside context file checks', false)
+    .option('--mcp-only', 'Run only MCP config checks, skip context file checks', false)
+    .option('--mcp-global', 'Also scan user/global MCP config files (implies --mcp)', false)
     .action(async (projectPath: string, opts: Record<string, unknown>) => {
       const resolvedPath = path.resolve(projectPath as string);
 
@@ -40,11 +43,32 @@ export async function runCli() {
       const configPath = opts.config ? path.resolve(opts.config as string) : undefined;
       const config = configPath ? loadConfigFromPath(configPath) : loadConfig(resolvedPath);
 
+      const mcpGlobal = (opts.mcpGlobal as boolean) || false;
+      const mcpOnly = (opts.mcpOnly as boolean) || false;
+      const mcpFlag = (opts.mcp as boolean) || mcpGlobal || mcpOnly || config?.mcp || false;
+
+      // Build checks list: if explicit --checks includes mcp-*, imply --mcp
+      const explicitChecks = opts.checks
+        ? (opts.checks as string).split(',').map((c: string) => c.trim() as CheckName)
+        : null;
+
+      const hasMcpInChecks = explicitChecks?.some((c) => c.startsWith('mcp-')) || false;
+      const effectiveMcp = mcpFlag || hasMcpInChecks;
+
+      let checks: CheckName[];
+      if (explicitChecks) {
+        checks = explicitChecks;
+      } else if (mcpOnly) {
+        checks = ALL_MCP_CHECKS;
+      } else if (effectiveMcp) {
+        checks = [...(config?.checks || ALL_CHECKS), ...ALL_MCP_CHECKS];
+      } else {
+        checks = config?.checks || ALL_CHECKS;
+      }
+
       const options: LintOptions = {
         projectPath: resolvedPath,
-        checks: opts.checks
-          ? (opts.checks as string).split(',').map((c: string) => c.trim() as CheckName)
-          : config?.checks || ALL_CHECKS,
+        checks,
         strict: (opts.strict as boolean) || config?.strict || false,
         format: opts.format as 'text' | 'json' | 'sarif',
         verbose: opts.verbose as boolean,
@@ -55,6 +79,9 @@ export async function runCli() {
         tokensOnly: opts.tokens as boolean,
         quiet: opts.quiet as boolean,
         depth: parseInt(opts.depth as string, 10) || 2,
+        mcp: effectiveMcp,
+        mcpOnly,
+        mcpGlobal: mcpGlobal || config?.mcpGlobal || false,
       };
 
       // Apply token thresholds from config
@@ -76,6 +103,9 @@ export async function runCli() {
         const result = await runAudit(resolvedPath, activeChecks, {
           depth: options.depth,
           extraPatterns: config?.contextFiles,
+          mcp: options.mcp,
+          mcpGlobal: options.mcpGlobal,
+          mcpOnly: options.mcpOnly,
         });
 
         spinner?.stop();

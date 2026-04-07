@@ -1,5 +1,17 @@
 export type Severity = 'error' | 'warning' | 'info';
 
+// --- MCP config types ---
+
+export type McpCheckName =
+  | 'mcp-schema'
+  | 'mcp-security'
+  | 'mcp-commands'
+  | 'mcp-deprecated'
+  | 'mcp-env'
+  | 'mcp-urls'
+  | 'mcp-consistency'
+  | 'mcp-redundancy';
+
 export type CheckName =
   | 'paths'
   | 'commands'
@@ -7,7 +19,57 @@ export type CheckName =
   | 'tokens'
   | 'redundancy'
   | 'contradictions'
-  | 'frontmatter';
+  | 'frontmatter'
+  | McpCheckName;
+
+export type McpClient =
+  | 'claude-code'
+  | 'claude-desktop'
+  | 'vscode'
+  | 'cursor'
+  | 'windsurf'
+  | 'cline'
+  | 'amazonq'
+  | 'continue';
+
+export type McpTransport = 'stdio' | 'http' | 'sse' | 'unknown';
+
+export type McpConfigScope = 'project' | 'user' | 'global';
+
+export interface McpServerEntry {
+  name: string;
+  transport: McpTransport;
+  // stdio
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  // http/sse
+  url?: string;
+  headers?: Record<string, string>;
+  // client-specific
+  disabled?: boolean;
+  autoApprove?: string[];
+  timeout?: number;
+  oauth?: Record<string, unknown>;
+  headersHelper?: string;
+  // line number in the JSON file where this server entry starts
+  line: number;
+  // raw parsed object for access to unknown fields
+  raw: Record<string, unknown>;
+}
+
+export interface ParsedMcpConfig {
+  filePath: string;
+  relativePath: string;
+  client: McpClient;
+  scope: McpConfigScope;
+  expectedRootKey: 'mcpServers' | 'servers';
+  actualRootKey: string | null;
+  servers: McpServerEntry[];
+  parseErrors: string[];
+  content: string;
+  isGitTracked: boolean;
+}
 
 export interface Section {
   title: string;
@@ -55,6 +117,7 @@ export interface FixAction {
 export interface LintIssue {
   severity: Severity;
   check: CheckName;
+  ruleId?: string;
   line: number;
   message: string;
   suggestion?: string;
@@ -97,4 +160,7 @@ export interface LintOptions {
   quiet: boolean;
   configPath?: string;
   depth: number;
+  mcp: boolean;
+  mcpOnly: boolean;
+  mcpGlobal: boolean;
 }

@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "stdio-no-command": {
+      "type": "stdio",
+      "args": ["-y", "some-package"]
+    },
+    "http-no-url": {
+      "type": "http",
+      "headers": {
+        "Authorization": "Bearer ${API_KEY}"
+      }
+    }
+  }
+}

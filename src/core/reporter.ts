@@ -10,38 +10,74 @@ export function formatText(result: LintResult, verbose: boolean = false): string
   lines.push(`Scanning ${result.projectRoot}...`);
   lines.push('');
 
+  // Split files into context files vs MCP configs
+  const isMcpFile = (f: { issues: LintIssue[] }) =>
+    f.issues.some((i) => i.check.startsWith('mcp-'));
+  const contextFiles = result.files.filter((f) => !isMcpFile(f));
+  const mcpFiles = result.files.filter((f) => isMcpFile(f));
+
   // Summary of found files
   const totalTokens = result.summary.totalTokens;
-  lines.push(
-    `Found ${result.files.length} context file${result.files.length !== 1 ? 's' : ''} (${totalTokens.toLocaleString()} tokens total)`,
-  );
-
-  for (const file of result.files) {
-    let desc = `  ${file.path} (${file.tokens.toLocaleString()} tokens, ${file.lines} lines)`;
-    if (file.isSymlink && file.symlinkTarget) {
-      desc = `  ${file.path} ${chalk.dim(`\u2192 ${file.symlinkTarget} (symlink)`)}`;
+  if (contextFiles.length > 0) {
+    lines.push(
+      `Found ${contextFiles.length} context file${contextFiles.length !== 1 ? 's' : ''} (${totalTokens.toLocaleString()} tokens total)`,
+    );
+    for (const file of contextFiles) {
+      let desc = `  ${file.path} (${file.tokens.toLocaleString()} tokens, ${file.lines} lines)`;
+      if (file.isSymlink && file.symlinkTarget) {
+        desc = `  ${file.path} ${chalk.dim(`\u2192 ${file.symlinkTarget} (symlink)`)}`;
+      }
+      lines.push(desc);
     }
-    lines.push(desc);
+  }
+  if (mcpFiles.length > 0) {
+    if (contextFiles.length > 0) lines.push('');
+    lines.push(`Found ${mcpFiles.length} MCP config${mcpFiles.length !== 1 ? 's' : ''}`);
+    for (const file of mcpFiles) {
+      lines.push(`  ${file.path}`);
+    }
+  }
+  if (contextFiles.length === 0 && mcpFiles.length === 0) {
+    lines.push(`Found ${result.files.length} file${result.files.length !== 1 ? 's' : ''}`);
   }
 
   lines.push('');
 
-  // Per-file issues
-  for (const file of result.files) {
-    const fileIssues = file.issues;
-    if (fileIssues.length === 0 && !verbose) continue;
+  // Per-file issues — grouped by type
+  const renderFileGroup = (files: typeof result.files) => {
+    for (const file of files) {
+      const fileIssues = file.issues;
+      if (fileIssues.length === 0 && !verbose) continue;
 
-    lines.push(chalk.underline(file.path));
+      lines.push(chalk.underline(file.path));
 
-    if (fileIssues.length === 0) {
-      lines.push(chalk.green('  \u2713 All checks passed'));
-    } else {
-      for (const issue of fileIssues) {
-        lines.push(formatIssue(issue));
+      if (fileIssues.length === 0) {
+        lines.push(chalk.green('  \u2713 All checks passed'));
+      } else {
+        for (const issue of fileIssues) {
+          lines.push(formatIssue(issue));
+        }
       }
-    }
 
-    lines.push('');
+      lines.push('');
+    }
+  };
+
+  if (contextFiles.length > 0 && mcpFiles.length > 0) {
+    // Show grouped headers when both types present
+    const contextWithIssues = contextFiles.filter((f) => f.issues.length > 0 || verbose);
+    const mcpWithIssues = mcpFiles.filter((f) => f.issues.length > 0 || verbose);
+
+    if (contextWithIssues.length > 0) {
+      lines.push(chalk.bold('Context Files'));
+      renderFileGroup(contextFiles);
+    }
+    if (mcpWithIssues.length > 0) {
+      lines.push(chalk.bold('MCP Configs'));
+      renderFileGroup(mcpFiles);
+    }
+  } else {
+    renderFileGroup(result.files);
   }
 
   // Summary
@@ -130,7 +166,7 @@ export function formatSarif(result: LintResult): string {
   for (const file of result.files) {
     for (const issue of file.issues) {
       const sarifResult: SarifResult = {
-        ruleId: `ctxlint/${issue.check}`,
+        ruleId: issue.ruleId ? `ctxlint/${issue.check}/${issue.ruleId}` : `ctxlint/${issue.check}`,
         level: severityToLevel[issue.severity] || 'note',
         message: {
           text: issue.message + (issue.suggestion ? ` (${issue.suggestion})` : ''),
@@ -216,6 +252,46 @@ function buildRuleDescriptors(): SarifRule[] {
       id: 'ctxlint/frontmatter',
       shortDescription: { text: 'Invalid or missing frontmatter' },
       helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
+      id: 'ctxlint/mcp-schema',
+      shortDescription: { text: 'MCP config structural validation error' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#mcp-config-linting',
+    },
+    {
+      id: 'ctxlint/mcp-security',
+      shortDescription: { text: 'Hardcoded secret in MCP config' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#mcp-config-linting',
+    },
+    {
+      id: 'ctxlint/mcp-commands',
+      shortDescription: { text: 'MCP stdio command validation issue' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#mcp-config-linting',
+    },
+    {
+      id: 'ctxlint/mcp-deprecated',
+      shortDescription: { text: 'Deprecated MCP transport or pattern' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#mcp-config-linting',
+    },
+    {
+      id: 'ctxlint/mcp-env',
+      shortDescription: { text: 'MCP environment variable syntax issue' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#mcp-config-linting',
+    },
+    {
+      id: 'ctxlint/mcp-urls',
+      shortDescription: { text: 'MCP URL validation issue' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#mcp-config-linting',
+    },
+    {
+      id: 'ctxlint/mcp-consistency',
+      shortDescription: { text: 'MCP config inconsistency across clients' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#mcp-config-linting',
+    },
+    {
+      id: 'ctxlint/mcp-redundancy',
+      shortDescription: { text: 'Redundant MCP config entry' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#mcp-config-linting',
     },
   ];
 }
