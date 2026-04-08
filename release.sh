@@ -78,12 +78,13 @@ fi
 if [ "$IS_CI" != "true" ] && [ "$RESUMING" != "true" ]; then
   echo ""
   echo -e "${YELLOW}About to release v${VERSION}. This will:${NC}"
-  echo "  1. Run lint + tests"
+  echo "  1. Lint"
   echo "  2. Build"
-  echo "  3. Bump version in package.json"
-  echo "  4. Commit, tag, and push"
-  echo "  5. Publish to npm"
-  echo "  6. Verify"
+  echo "  3. Test"
+  echo "  4. Bump version in package.json"
+  echo "  5. Commit, tag, and push"
+  echo "  6. Publish to npm"
+  echo "  7. Verify"
   echo ""
   read -p "Continue? (y/N) " -n 1 -r
   echo
@@ -102,20 +103,20 @@ pnpm run lint
 info "Lint passed"
 
 # =============================================================================
-# Step 2: Test
+# Step 2: Build
 # =============================================================================
-step 2 "Test"
-
-pnpm run test:run
-info "All tests passed"
-
-# =============================================================================
-# Step 3: Build
-# =============================================================================
-step 3 "Build"
+step 2 "Build"
 
 pnpm run build
 info "Build complete"
+
+# =============================================================================
+# Step 3: Test
+# =============================================================================
+step 3 "Test"
+
+pnpm run test:run
+info "All tests passed"
 
 # =============================================================================
 # Step 4: Bump version
