@@ -16,12 +16,19 @@ import { checkMcpEnv } from './checks/mcp/env.js';
 import { checkMcpUrls } from './checks/mcp/urls.js';
 import { checkMcpConsistency } from './checks/mcp/consistency.js';
 import { checkMcpRedundancy } from './checks/mcp/redundancy.js';
+import { scanSessionData } from './session-scanner.js';
+import { checkMissingSecret } from './checks/session/missing-secret.js';
+import { checkDivergedFile } from './checks/session/diverged-file.js';
+import { checkMissingWorkflow } from './checks/session/missing-workflow.js';
+import { checkStaleMemory } from './checks/session/stale-memory.js';
+import { checkDuplicateMemory } from './checks/session/duplicate-memory.js';
 import type {
   LintResult,
   FileResult,
   LintIssue,
   CheckName,
   McpCheckName,
+  SessionCheckName,
   ParsedMcpConfig,
 } from './types.js';
 import { VERSION } from '../version.js';
@@ -47,16 +54,30 @@ export const ALL_MCP_CHECKS: McpCheckName[] = [
   'mcp-redundancy',
 ];
 
+export const ALL_SESSION_CHECKS: SessionCheckName[] = [
+  'session-missing-secret',
+  'session-diverged-file',
+  'session-missing-workflow',
+  'session-stale-memory',
+  'session-duplicate-memory',
+];
+
 export interface AuditOptions {
   depth?: number;
   extraPatterns?: string[];
   mcp?: boolean;
   mcpGlobal?: boolean;
   mcpOnly?: boolean;
+  session?: boolean;
+  sessionOnly?: boolean;
 }
 
 function hasMcpChecks(checks: CheckName[]): boolean {
   return checks.some((c) => c.startsWith('mcp-'));
+}
+
+function hasSessionChecks(checks: CheckName[]): boolean {
+  return checks.some((c) => c.startsWith('session-'));
 }
 
 export async function runAudit(
@@ -66,9 +87,11 @@ export async function runAudit(
 ): Promise<LintResult> {
   const fileResults: FileResult[] = [];
 
-  const shouldRunContextChecks = !options.mcpOnly;
+  const shouldRunContextChecks = !options.mcpOnly && !options.sessionOnly;
   const shouldRunMcpChecks =
     options.mcp || options.mcpGlobal || options.mcpOnly || hasMcpChecks(activeChecks);
+  const shouldRunSessionChecks =
+    options.session || options.sessionOnly || hasSessionChecks(activeChecks);
 
   // --- Context file checks ---
   if (shouldRunContextChecks) {
@@ -192,6 +215,48 @@ export async function runAudit(
         if (firstMcpResult) {
           firstMcpResult.issues.push(...redundancyIssues);
         }
+      }
+    }
+  }
+
+  // --- Session checks ---
+  if (shouldRunSessionChecks) {
+    const activeSessionChecks = activeChecks.filter((c) =>
+      c.startsWith('session-'),
+    ) as SessionCheckName[];
+    const sessionChecksToRun =
+      activeSessionChecks.length > 0
+        ? activeSessionChecks
+        : options.session || options.sessionOnly
+          ? ALL_SESSION_CHECKS
+          : [];
+
+    if (sessionChecksToRun.length > 0) {
+      const sessionCtx = await scanSessionData(projectRoot);
+
+      const sessionPromises: Promise<LintIssue[]>[] = [];
+      if (sessionChecksToRun.includes('session-missing-secret'))
+        sessionPromises.push(checkMissingSecret(sessionCtx));
+      if (sessionChecksToRun.includes('session-diverged-file'))
+        sessionPromises.push(checkDivergedFile(sessionCtx));
+      if (sessionChecksToRun.includes('session-missing-workflow'))
+        sessionPromises.push(checkMissingWorkflow(sessionCtx));
+      if (sessionChecksToRun.includes('session-stale-memory'))
+        sessionPromises.push(checkStaleMemory(sessionCtx));
+      if (sessionChecksToRun.includes('session-duplicate-memory'))
+        sessionPromises.push(checkDuplicateMemory(sessionCtx));
+
+      const sessionResults = await Promise.all(sessionPromises);
+      const sessionIssues = sessionResults.flat();
+
+      if (sessionIssues.length > 0) {
+        fileResults.push({
+          path: '~/.claude/ (session audit)',
+          isSymlink: false,
+          tokens: 0,
+          lines: 0,
+          issues: sessionIssues,
+        });
       }
     }
   }

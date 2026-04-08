@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AI Agent Session Lint Rules",
+  "description": "Machine-readable catalog of lint rules for AI agent session data cross-project consistency",
+  "specVersion": "1.0.0-draft",
+  "specDate": "2026-04-08",
+  "repository": "https://github.com/YawLabs/ctxlint",
+  "categories": [
+    {
+      "id": "session",
+      "name": "Session Audit",
+      "description": "Cross-project consistency checks using AI agent session data.",
+      "scope": "cross-project"
+    }
+  ],
+  "rules": [
+    {
+      "id": "session/missing-secret",
+      "category": "session",
+      "severity": "error",
+      "description": "GitHub secret set on sibling repos but not this project.",
+      "trigger": "gh secret set command found in agent history for 2+ siblings but not current project.",
+      "message": "Secret \"{name}\" is set on {count} sibling repos but not this project",
+      "fixable": false
+    },
+    {
+      "id": "session/diverged-file",
+      "category": "session",
+      "severity": "warning",
+      "description": "Canonical file has diverged from sibling repos.",
+      "trigger": "File exists in current project and siblings with 20-90% line overlap.",
+      "message": "\"{file}\" has {overlap}% overlap with {sibling} — may have diverged",
+      "fixable": false,
+      "canonicalFiles": [
+        "release.sh",
+        ".github/workflows/ci.yml",
+        ".github/workflows/release.yml",
+        "biome.json",
+        ".prettierrc",
+        ".eslintrc.json",
+        "tsconfig.json",
+        ".gitignore"
+      ]
+    },
+    {
+      "id": "session/missing-workflow",
+      "category": "session",
+      "severity": "warning",
+      "description": "GitHub Actions workflow missing from this project.",
+      "trigger": "Workflow file exists in 2+ siblings but not current project (which has .github).",
+      "message": "Workflow \"{workflow}\" exists in {count} sibling repos but not this project",
+      "fixable": false
+    },
+    {
+      "id": "session/stale-memory",
+      "category": "session",
+      "severity": "info",
+      "description": "Memory file references paths that no longer exist.",
+      "trigger": "Claude Code memory file contains path references to files that have been deleted or moved.",
+      "message": "Memory references \"{path}\" which no longer exists",
+      "fixable": false
+    },
+    {
+      "id": "session/duplicate-memory",
+      "category": "session",
+      "severity": "info",
+      "description": "Near-duplicate memory entries across projects.",
+      "trigger": "Two memory files from different projects have >60% line overlap.",
+      "message": "\"{file1}\" and \"{file2}\" have {overlap}% content overlap",
+      "fixable": false
+    }
+  ],
+  "dataSources": [
+    {
+      "id": "claude-code",
+      "name": "Claude Code",
+      "provider": "Anthropic",
+      "historyLocation": "~/.claude/history.jsonl",
+      "historyFormat": "JSONL",
+      "memoryLocation": "~/.claude/projects/*/memory/*.md",
+      "documented": true
+    },
+    {
+      "id": "codex-cli",
+      "name": "Codex CLI",
+      "provider": "OpenAI",
+      "historyLocation": "~/.codex/history.jsonl",
+      "historyFormat": "JSONL",
+      "sessionsLocation": "~/.codex/sessions/**/*.jsonl",
+      "documented": true
+    },
+    {
+      "id": "aider",
+      "name": "Aider",
+      "provider": "Paul Gauthier",
+      "historyLocation": ".aider.chat.history.md",
+      "historyFormat": "Markdown",
+      "documented": true,
+      "notes": "History file is per-project, stored in the project root."
+    },
+    {
+      "id": "vibe-cli",
+      "name": "Vibe CLI",
+      "provider": "Mistral",
+      "historyLocation": "~/.vibe/sessions/*/messages.jsonl",
+      "historyFormat": "JSONL",
+      "documented": false,
+      "notes": "Partially documented."
+    },
+    {
+      "id": "amazon-q",
+      "name": "Amazon Q Developer",
+      "provider": "AWS",
+      "historyLocation": "~/.aws/amazonq/history/chat-history-*.json",
+      "historyFormat": "JSON",
+      "documented": false,
+      "notes": "Semi-documented; file layout inferred from observation."
+    },
+    {
+      "id": "goose",
+      "name": "Goose",
+      "provider": "Block",
+      "historyLocation": "~/.local/share/goose/sessions/sessions.db",
+      "historyFormat": "SQLite",
+      "documented": true,
+      "notes": "Requires SQLite dependency to read session data."
+    },
+    {
+      "id": "continue",
+      "name": "Continue",
+      "provider": "Continue.dev",
+      "historyLocation": "~/.continue/sessions/*.json",
+      "historyFormat": "JSON",
+      "documented": false,
+      "notes": "Partially documented."
+    },
+    {
+      "id": "windsurf",
+      "name": "Windsurf",
+      "provider": "Codeium",
+      "historyLocation": "~/.windsurf/transcripts/*.jsonl",
+      "historyFormat": "JSONL",
+      "documented": false,
+      "notes": "Partially documented; format marked unstable by vendor."
+    }
+  ],
+  "agents": [
+    "claude-code",
+    "codex-cli",
+    "aider",
+    "vibe-cli",
+    "amazon-q",
+    "goose",
+    "continue",
+    "windsurf"
+  ]
+}

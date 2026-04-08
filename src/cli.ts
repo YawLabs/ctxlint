@@ -8,7 +8,7 @@ import { applyFixes } from './core/fixer.js';
 import { freeEncoder } from './utils/tokens.js';
 import { resetGit } from './utils/git.js';
 import { loadConfig } from './core/config.js';
-import { runAudit, ALL_CHECKS, ALL_MCP_CHECKS } from './core/audit.js';
+import { runAudit, ALL_CHECKS, ALL_MCP_CHECKS, ALL_SESSION_CHECKS } from './core/audit.js';
 import type { LintOptions, CheckName } from './core/types.js';
 import * as path from 'node:path';
 import { VERSION } from './version.js';
@@ -37,6 +37,8 @@ export async function runCli() {
     .option('--mcp-only', 'Run only MCP config checks, skip context file checks', false)
     .option('--mcp-global', 'Also scan user/global MCP config files (implies --mcp)', false)
     .option('--mcp-server', 'Start the MCP server (for IDE/agent integration)')
+    .option('--session', 'Run session audit checks (cross-project consistency)', false)
+    .option('--session-only', 'Run only session checks, skip context and MCP checks', false)
     .action(async (projectPath: string, opts: Record<string, unknown>) => {
       const resolvedPath = path.resolve(projectPath as string);
 
@@ -47,24 +49,33 @@ export async function runCli() {
       const mcpGlobal = (opts.mcpGlobal as boolean) || false;
       const mcpOnly = (opts.mcpOnly as boolean) || false;
       const mcpFlag = (opts.mcp as boolean) || mcpGlobal || mcpOnly || config?.mcp || false;
+      const sessionFlag = (opts.session as boolean) || false;
+      const sessionOnly = (opts.sessionOnly as boolean) || false;
 
-      // Build checks list: if explicit --checks includes mcp-*, imply --mcp
+      // Build checks list: if explicit --checks includes mcp-* or session-*, imply the flag
       const explicitChecks = opts.checks
         ? (opts.checks as string).split(',').map((c: string) => c.trim() as CheckName)
         : null;
 
       const hasMcpInChecks = explicitChecks?.some((c) => c.startsWith('mcp-')) || false;
+      const hasSessionInChecks = explicitChecks?.some((c) => c.startsWith('session-')) || false;
       const effectiveMcp = mcpFlag || hasMcpInChecks;
+      const effectiveSession = sessionFlag || sessionOnly || hasSessionInChecks;
 
       let checks: CheckName[];
       if (explicitChecks) {
         checks = explicitChecks;
+      } else if (sessionOnly) {
+        checks = ALL_SESSION_CHECKS;
       } else if (mcpOnly) {
         checks = ALL_MCP_CHECKS;
-      } else if (effectiveMcp) {
-        checks = [...(config?.checks || ALL_CHECKS), ...ALL_MCP_CHECKS];
       } else {
-        checks = config?.checks || ALL_CHECKS;
+        const base = config?.checks || ALL_CHECKS;
+        checks = [
+          ...base,
+          ...(effectiveMcp ? ALL_MCP_CHECKS : []),
+          ...(effectiveSession ? ALL_SESSION_CHECKS : []),
+        ];
       }
 
       const options: LintOptions = {
@@ -83,6 +94,8 @@ export async function runCli() {
         mcp: effectiveMcp,
         mcpOnly,
         mcpGlobal: mcpGlobal || config?.mcpGlobal || false,
+        session: effectiveSession,
+        sessionOnly,
       };
 
       // Apply token thresholds from config
@@ -107,6 +120,8 @@ export async function runCli() {
           mcp: options.mcp,
           mcpGlobal: options.mcpGlobal,
           mcpOnly: options.mcpOnly,
+          session: options.session,
+          sessionOnly: options.sessionOnly,
         });
 
         spinner?.stop();

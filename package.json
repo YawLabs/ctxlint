@@ -1,7 +1,7 @@
 {
   "name": "@yawlabs/ctxlint",
-  "version": "0.6.0",
-  "description": "Lint your AI agent context files and MCP server configs against your actual codebase",
+  "version": "0.7.0",
+  "description": "Lint your AI agent context files, MCP server configs, and session data against your actual codebase",
   "bin": {
     "ctxlint": "dist/index.js"
   },
@@ -38,15 +38,24 @@
     "context-lint",
     "gemini",
     "cline",
-    "windsurf"
+    "windsurf",
+    "session",
+    "cross-project",
+    "agent-session",
+    "aider",
+    "vibe-cli",
+    "amazon-q",
+    "goose"
   ],
   "files": [
     "dist",
     ".pre-commit-hooks.yaml",
     "CONTEXT_LINT_SPEC.md",
     "MCP_CONFIG_LINT_SPEC.md",
+    "AGENT_SESSION_LINT_SPEC.md",
     "context-lint-rules.json",
     "mcp-config-lint-rules.json",
+    "agent-session-lint-rules.json",
     "LICENSE",
     "README.md"
   ],

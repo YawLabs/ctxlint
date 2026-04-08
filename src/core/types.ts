@@ -1,5 +1,57 @@
 export type Severity = 'error' | 'warning' | 'info';
 
+// --- Session check types ---
+
+export type SessionCheckName =
+  | 'session-missing-secret'
+  | 'session-diverged-file'
+  | 'session-missing-workflow'
+  | 'session-stale-memory'
+  | 'session-duplicate-memory';
+
+export type AgentProvider =
+  | 'claude-code'
+  | 'codex-cli'
+  | 'aider'
+  | 'vibe-cli'
+  | 'amazon-q'
+  | 'goose'
+  | 'continue'
+  | 'windsurf';
+
+export interface HistoryEntry {
+  display: string;
+  timestamp: number;
+  project: string;
+  sessionId: string;
+  provider: AgentProvider;
+}
+
+export interface MemoryEntry {
+  filePath: string;
+  projectDir: string;
+  name?: string;
+  description?: string;
+  type?: string;
+  content: string;
+  referencedPaths: string[];
+}
+
+export interface SiblingRepo {
+  path: string;
+  name: string;
+  gitOrg?: string;
+  gitRemoteUrl?: string;
+}
+
+export interface SessionContext {
+  history: HistoryEntry[];
+  memories: MemoryEntry[];
+  siblings: SiblingRepo[];
+  currentProject: string;
+  providers: AgentProvider[];
+}
+
 // --- MCP config types ---
 
 export type McpCheckName =
@@ -20,7 +72,8 @@ export type CheckName =
   | 'redundancy'
   | 'contradictions'
   | 'frontmatter'
-  | McpCheckName;
+  | McpCheckName
+  | SessionCheckName;
 
 export type McpClient =
   | 'claude-code'
@@ -163,4 +216,6 @@ export interface LintOptions {
   mcp: boolean;
   mcpOnly: boolean;
   mcpGlobal: boolean;
+  session: boolean;
+  sessionOnly: boolean;
 }

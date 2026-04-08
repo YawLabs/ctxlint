@@ -3,7 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { scanForContextFiles } from '../core/scanner.js';
 import { parseContextFile } from '../core/parser.js';
-import { runAudit, ALL_CHECKS, ALL_MCP_CHECKS } from '../core/audit.js';
+import { runAudit, ALL_CHECKS, ALL_MCP_CHECKS, ALL_SESSION_CHECKS } from '../core/audit.js';
 import { applyFixes } from '../core/fixer.js';
 import { fileExists, isDirectory } from '../utils/fs.js';
 import { findRenames } from '../utils/git.js';
@@ -29,6 +29,11 @@ const checkEnum = z.enum([
   'mcp-urls',
   'mcp-consistency',
   'mcp-redundancy',
+  'session-missing-secret',
+  'session-diverged-file',
+  'session-missing-workflow',
+  'session-stale-memory',
+  'session-duplicate-memory',
 ]);
 
 const server = new McpServer({
@@ -255,6 +260,48 @@ server.tool(
         mcp: true,
         mcpOnly: true,
         mcpGlobal: includeGlobal || false,
+      });
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ error: msg }) }],
+        isError: true,
+      };
+    } finally {
+      freeEncoder();
+      resetGit();
+    }
+  },
+);
+
+server.tool(
+  'ctxlint_session_audit',
+  'Audit AI agent session data for cross-project consistency. Checks for missing GitHub secrets, diverged config files, missing workflows, stale memory entries, and duplicate memories across sibling repositories.',
+  {
+    projectPath: z
+      .string()
+      .optional()
+      .describe('Path to the project root. Defaults to current working directory.'),
+    checks: z
+      .array(checkEnum)
+      .optional()
+      .describe('Specific session checks to run (default: all session-* checks).'),
+  },
+  {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+  },
+  async ({ projectPath, checks }) => {
+    const root = path.resolve(projectPath || process.cwd());
+    const activeChecks = (checks as CheckName[] | undefined) || ALL_SESSION_CHECKS;
+
+    try {
+      const result = await runAudit(root, activeChecks, {
+        session: true,
+        sessionOnly: true,
       });
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     } catch (err) {
