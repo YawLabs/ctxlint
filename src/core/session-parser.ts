@@ -77,10 +77,7 @@ export function parseFrontmatter(content: string): {
 /**
  * Parse a Claude Code memory file into a MemoryEntry.
  */
-export async function parseMemoryFile(
-  filePath: string,
-  projectDir: string,
-): Promise<MemoryEntry> {
+export async function parseMemoryFile(filePath: string, projectDir: string): Promise<MemoryEntry> {
   const content = await readFile(filePath, 'utf-8');
   const { name, description, type, body } = parseFrontmatter(content);
   const referencedPaths = extractPaths(body);

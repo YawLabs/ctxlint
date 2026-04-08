@@ -58,11 +58,7 @@ export async function checkMissingSecret(ctx: SessionContext): Promise<LintIssue
 
     // Need at least 2 other projects to have it
     const siblingMatches = ctx.siblings.filter((sib) =>
-      [...projects].some(
-        (p) =>
-          p.replace(/\\/g, '/').includes(sib.name) ||
-          p.includes(sib.path),
-      ),
+      [...projects].some((p) => p.replace(/\\/g, '/').includes(sib.name) || p.includes(sib.path)),
     );
 
     if (siblingMatches.length >= 2) {
