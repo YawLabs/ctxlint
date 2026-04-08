@@ -4,6 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![GitHub stars](https://img.shields.io/github/stars/YawLabs/ctxlint)](https://github.com/YawLabs/ctxlint/stargazers)
 [![CI](https://github.com/YawLabs/ctxlint/actions/workflows/ci.yml/badge.svg)](https://github.com/YawLabs/ctxlint/actions/workflows/ci.yml)
+[![Release](https://github.com/YawLabs/ctxlint/actions/workflows/release.yml/badge.svg)](https://github.com/YawLabs/ctxlint/actions/workflows/release.yml)
 
 **Lint your AI agent context files and MCP server configs against your actual codebase.** Context linting + MCP config linting. 21+ context formats, 8 MCP clients, auto-fix. Works as a CLI, CI step, pre-commit hook, or MCP server.
 
