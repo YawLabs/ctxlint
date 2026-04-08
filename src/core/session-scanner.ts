@@ -1,5 +1,5 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { simpleGit } from 'simple-git';
 import type { AgentProvider, HistoryEntry, MemoryEntry, SessionContext, SiblingRepo } from './types.js';
