@@ -1,0 +1,27 @@
+name: 'ctxlint'
+description: 'Lint AI agent context files and MCP server configs against your actual codebase'
+branding:
+  icon: 'check-circle'
+  color: 'blue'
+
+inputs:
+  args:
+    description: 'CLI arguments to pass to ctxlint (default: --strict)'
+    required: false
+    default: '--strict'
+  version:
+    description: 'ctxlint version to use (default: latest)'
+    required: false
+    default: 'latest'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Run ctxlint
+      shell: bash
+      run: npx -y @yawlabs/ctxlint@${{ inputs.version }} ${{ inputs.args }}

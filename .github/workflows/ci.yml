@@ -30,6 +30,8 @@ jobs:
 
       - run: npx prettier --check src/
 
+      - run: npx tsc --noEmit
+
       - run: pnpm run build
 
       - run: pnpm run test:run

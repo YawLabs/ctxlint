@@ -11,6 +11,7 @@ function makeDiscovered(fixtureName: string, fileName: string): DiscoveredFile {
     absolutePath: path.join(FIXTURES, fixtureName, fileName),
     relativePath: fileName,
     isSymlink: false,
+    type: 'context',
   };
 }
 

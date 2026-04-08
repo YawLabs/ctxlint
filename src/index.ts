@@ -6,3 +6,5 @@ if (process.argv.includes('--mcp-server')) {
   const { runCli } = await import('./cli.js');
   await runCli();
 }
+
+export {};

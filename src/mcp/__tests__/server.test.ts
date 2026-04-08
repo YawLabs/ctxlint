@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import * as path from 'node:path';
 import { VERSION } from '../../version.js';
 
-const SERVER_JS = path.resolve(__dirname, '../../../dist/mcp/server.js');
+const SERVER_JS = path.resolve(__dirname, '../../../dist/index.js');
 const FIXTURES = path.resolve(__dirname, '../../../fixtures');
 
 /**
@@ -33,7 +33,7 @@ function callMcpTool(toolName: string, args: Record<string, unknown>): Record<st
   const input = initRequest + '\n' + callRequest + '\n';
 
   try {
-    const stdout = execFileSync('node', [SERVER_JS], {
+    const stdout = execFileSync('node', [SERVER_JS, '--mcp-server'], {
       input,
       encoding: 'utf-8',
       timeout: 15000,

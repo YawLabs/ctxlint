@@ -125,8 +125,8 @@ describe('package.json consistency', () => {
     expect(PKG.files).toContain('.pre-commit-hooks.yaml');
   });
 
-  it('tiktoken is an optional dependency', () => {
-    expect(PKG.optionalDependencies?.tiktoken).toBeDefined();
+  it('tiktoken is a dev dependency (bundled at build time)', () => {
+    expect(PKG.devDependencies?.tiktoken).toBeDefined();
     expect(PKG.dependencies?.tiktoken).toBeUndefined();
   });
 });

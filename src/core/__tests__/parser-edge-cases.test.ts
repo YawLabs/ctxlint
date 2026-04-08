@@ -14,6 +14,7 @@ function parseContent(content: string) {
     absolutePath: tmpFile,
     relativePath: 'CLAUDE.md',
     isSymlink: false,
+    type: 'context',
   };
 
   const result = parseContextFile(file);

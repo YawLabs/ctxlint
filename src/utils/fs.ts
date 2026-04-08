@@ -50,7 +50,18 @@ export function readSymlinkTarget(filePath: string): string | undefined {
 }
 
 export function readFileContent(filePath: string): string {
-  return fs.readFileSync(filePath, 'utf-8');
+  try {
+    return fs.readFileSync(filePath, 'utf-8');
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') {
+      throw new Error(`File not found: ${filePath}`, { cause: err });
+    }
+    if (code === 'EACCES') {
+      throw new Error(`Permission denied: ${filePath}`, { cause: err });
+    }
+    throw err;
+  }
 }
 
 const IGNORED_DIRS = new Set([

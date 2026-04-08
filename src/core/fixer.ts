@@ -38,7 +38,7 @@ export function applyFixes(result: LintResult): FixSummary {
 
       const line = lines[lineIdx];
       if (line.includes(fix.oldText)) {
-        lines[lineIdx] = line.replace(fix.oldText, fix.newText);
+        lines[lineIdx] = line.replaceAll(fix.oldText, fix.newText);
         modified = true;
         totalFixes++;
         console.log(

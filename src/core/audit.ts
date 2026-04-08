@@ -147,13 +147,16 @@ export async function runAudit(
   // --- MCP config checks ---
   if (shouldRunMcpChecks) {
     const mcpFiles = await scanForMcpConfigs(projectRoot);
-    const mcpConfigs: ParsedMcpConfig[] = mcpFiles.map((f) =>
-      parseMcpConfig(f, projectRoot, 'project'),
+    const mcpConfigs: ParsedMcpConfig[] = await Promise.all(
+      mcpFiles.map((f) => parseMcpConfig(f, projectRoot, 'project')),
     );
 
     if (options.mcpGlobal) {
       const globalFiles = await scanGlobalMcpConfigs();
-      mcpConfigs.push(...globalFiles.map((f) => parseMcpConfig(f, projectRoot, 'user')));
+      const globalConfigs = await Promise.all(
+        globalFiles.map((f) => parseMcpConfig(f, projectRoot, 'user')),
+      );
+      mcpConfigs.push(...globalConfigs);
     }
 
     // Determine active MCP checks

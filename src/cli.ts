@@ -39,6 +39,7 @@ export async function runCli() {
     .option('--mcp-server', 'Start the MCP server (for IDE/agent integration)')
     .option('--session', 'Run session audit checks (cross-project consistency)', false)
     .option('--session-only', 'Run only session checks, skip context and MCP checks', false)
+    .option('--watch', 'Re-lint on context file changes', false)
     .action(async (projectPath: string, opts: Record<string, unknown>) => {
       const resolvedPath = path.resolve(projectPath as string);
 
@@ -162,19 +163,119 @@ export async function runCli() {
           }
         }
 
-        // Exit code
-        if (options.strict && (result.summary.errors > 0 || result.summary.warnings > 0)) {
+        // Exit code (skip in watch mode — don't exit on errors)
+        if (
+          !opts.watch &&
+          options.strict &&
+          (result.summary.errors > 0 || result.summary.warnings > 0)
+        ) {
           process.exit(1);
         }
       } catch (err) {
         spinner?.stop();
         console.error('Error:', err instanceof Error ? err.message : err);
-        process.exit(2);
+        if (!opts.watch) process.exit(2);
       } finally {
         freeEncoder();
         resetGit();
         resetPathsCache();
         resetTokenThresholds();
+      }
+
+      // Watch mode: re-lint when context files, MCP configs, or package.json change
+      if (opts.watch) {
+        const chalk = (await import('chalk')).default;
+        console.log(chalk.dim('\nWatching for changes... (Ctrl+C to stop)\n'));
+
+        const watchPaths = [
+          path.join(resolvedPath, 'CLAUDE.md'),
+          path.join(resolvedPath, 'CLAUDE.local.md'),
+          path.join(resolvedPath, 'AGENTS.md'),
+          path.join(resolvedPath, 'AGENT.md'),
+          path.join(resolvedPath, '.cursorrules'),
+          path.join(resolvedPath, '.windsurfrules'),
+          path.join(resolvedPath, '.clinerules'),
+          path.join(resolvedPath, '.aiderules'),
+          path.join(resolvedPath, '.continuerules'),
+          path.join(resolvedPath, '.rules'),
+          path.join(resolvedPath, '.goosehints'),
+          path.join(resolvedPath, 'GEMINI.md'),
+          path.join(resolvedPath, 'replit.md'),
+          path.join(resolvedPath, 'package.json'),
+          path.join(resolvedPath, '.mcp.json'),
+        ];
+
+        const watchDirs = [
+          path.join(resolvedPath, '.claude'),
+          path.join(resolvedPath, '.cursor'),
+          path.join(resolvedPath, '.github'),
+          path.join(resolvedPath, '.windsurf'),
+          path.join(resolvedPath, '.aide'),
+          path.join(resolvedPath, '.amazonq'),
+          path.join(resolvedPath, '.goose'),
+          path.join(resolvedPath, '.junie'),
+          path.join(resolvedPath, '.aiassistant'),
+          path.join(resolvedPath, '.continue'),
+          path.join(resolvedPath, '.vscode'),
+        ];
+
+        let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+        const rerun = () => {
+          if (debounceTimer) clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(async () => {
+            console.clear();
+            try {
+              const result = await runAudit(resolvedPath, activeChecks, {
+                depth: options.depth,
+                extraPatterns: config?.contextFiles,
+                mcp: options.mcp,
+                mcpGlobal: options.mcpGlobal,
+                mcpOnly: options.mcpOnly,
+                session: options.session,
+                sessionOnly: options.sessionOnly,
+              });
+
+              if (result.files.length === 0) {
+                console.log('\nNo context files found.\n');
+              } else if (options.tokensOnly) {
+                console.log(formatTokenReport(result));
+              } else {
+                console.log(formatText(result, options.verbose));
+              }
+            } catch (err) {
+              console.error('Error:', err instanceof Error ? err.message : err);
+            } finally {
+              freeEncoder();
+              resetGit();
+              resetPathsCache();
+              resetTokenThresholds();
+              if (config?.tokenThresholds) setTokenThresholds(config.tokenThresholds);
+            }
+            console.log(chalk.dim('\nWatching for changes... (Ctrl+C to stop)\n'));
+          }, 300);
+        };
+
+        // Watch individual files
+        for (const filePath of watchPaths) {
+          try {
+            fs.watch(filePath, rerun);
+          } catch {
+            // File doesn't exist yet — skip
+          }
+        }
+
+        // Watch directories (recursive)
+        for (const dir of watchDirs) {
+          try {
+            fs.watch(dir, { recursive: true }, rerun);
+          } catch {
+            // Directory doesn't exist — skip
+          }
+        }
+
+        // Keep process alive
+        await new Promise(() => {});
       }
     });
 
@@ -182,9 +283,10 @@ export async function runCli() {
     .command('init')
     .description('Set up a git pre-commit hook that runs ctxlint --strict')
     .action(async () => {
-      const hooksDir = path.resolve('.git', 'hooks');
+      const gitDir = path.resolve(process.cwd(), '.git');
+      const hooksDir = path.join(gitDir, 'hooks');
 
-      if (!fs.existsSync(path.resolve('.git'))) {
+      if (!fs.existsSync(gitDir)) {
         console.error('Error: not a git repository. Run "git init" first.');
         process.exit(1);
       }

@@ -5,4 +5,3 @@
   language: node
   always_run: true
   pass_filenames: false
-  types: [file]

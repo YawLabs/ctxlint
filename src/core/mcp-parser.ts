@@ -1,5 +1,5 @@
-import { execSync } from 'node:child_process';
 import { readFileContent } from '../utils/fs.js';
+import { getGit } from '../utils/git.js';
 import type {
   ParsedMcpConfig,
   McpServerEntry,
@@ -9,16 +9,16 @@ import type {
 } from './types.js';
 import type { DiscoveredFile } from './scanner.js';
 
-export function parseMcpConfig(
+export async function parseMcpConfig(
   file: DiscoveredFile,
   projectRoot: string,
   scopeOverride?: McpConfigScope,
-): ParsedMcpConfig {
+): Promise<ParsedMcpConfig> {
   const content = readFileContent(file.absolutePath);
   const client = detectClient(file.relativePath);
   const scope = scopeOverride ?? detectScope(file.relativePath);
   const expectedRootKey = client === 'vscode' ? 'servers' : 'mcpServers';
-  const isGitTracked = checkGitTracked(file.absolutePath, projectRoot);
+  const isGitTracked = await checkGitTracked(file.absolutePath, projectRoot);
 
   const result: ParsedMcpConfig = {
     filePath: file.absolutePath,
@@ -158,13 +158,11 @@ function isStringRecord(value: unknown): value is Record<string, string> {
   return Object.values(value).every((v) => typeof v === 'string');
 }
 
-function checkGitTracked(filePath: string, projectRoot: string): boolean {
+async function checkGitTracked(filePath: string, projectRoot: string): Promise<boolean> {
   try {
-    execSync(`git ls-files --error-unmatch "${filePath}"`, {
-      cwd: projectRoot,
-      stdio: 'pipe',
-    });
-    return true;
+    const git = getGit(projectRoot);
+    const result = await git.raw(['ls-files', '--error-unmatch', filePath]);
+    return result.trim().length > 0;
   } catch {
     return false;
   }

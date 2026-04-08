@@ -7,7 +7,7 @@ import { runAudit, ALL_CHECKS, ALL_MCP_CHECKS, ALL_SESSION_CHECKS } from '../cor
 import { applyFixes } from '../core/fixer.js';
 import { fileExists, isDirectory } from '../utils/fs.js';
 import { findRenames } from '../utils/git.js';
-import { freeEncoder } from '../utils/tokens.js';
+import { freeEncoder, keepEncoderAlive } from '../utils/tokens.js';
 import { resetGit } from '../utils/git.js';
 import type { CheckName } from '../core/types.js';
 import * as path from 'node:path';
@@ -316,6 +316,10 @@ server.tool(
     }
   },
 );
+
+// Keep the tiktoken encoder alive for the server's lifetime to avoid
+// re-creating the ~4MB WASM instance on every request.
+keepEncoderAlive(true);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

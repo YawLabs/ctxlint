@@ -1,8 +1,8 @@
 # MCP Config Linting — ctxlint Implementation Plan
 
-**Status:** Draft
-**Date:** 2026-04-07
-**Target:** ctxlint v0.4.0
+**Status:** Implemented
+**Date:** 2026-04-08
+**Target:** ctxlint v0.7.0
 
 > This is the **ctxlint-specific implementation plan**. For the public, tool-agnostic specification of rules, client behaviors, and the MCP config landscape, see [`MCP_CONFIG_LINT_SPEC.md`](../../MCP_CONFIG_LINT_SPEC.md) at the repo root.
 

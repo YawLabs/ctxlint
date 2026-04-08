@@ -12,15 +12,23 @@ Your `CLAUDE.md` is lying to your agent. Your `.mcp.json` has a hardcoded API ke
 
 ## Why ctxlint?
 
-Context files rot fast. You rename a file, change a build script, or switch from Jest to Vitest — and your `CLAUDE.md` still says the old thing. Your agent follows those instructions faithfully, then fails.
+Every AI coding tool ships a context file: `CLAUDE.md`, `.cursorrules`, `AGENTS.md`, `.mcp.json`. These files are the single most important interface between you and your agent — they tell it what to build, how to test, where things live.
 
+But context files rot fast. You rename a file, change a build script, or switch from Jest to Vitest — and your `CLAUDE.md` still says the old thing. Your agent follows those stale instructions faithfully, then fails. You lose 10 minutes debugging what turns out to be a wrong path in line 12 of a markdown file.
+
+Multiply that across a team with 5 context files, 3 MCP configs, and 2 people who touched the build system last week — and you have a real problem with no existing solution.
+
+ctxlint is a linter purpose-built for this. It reads your context files, cross-references them against your actual codebase, and catches the drift before your agent does.
+
+- **Instant startup** — ships as a single self-contained bundle with zero runtime dependencies. `npx` downloads ~200 KB and starts immediately
 - **Catches real problems** — broken paths, wrong commands, stale references, contradictions across files
 - **Smart suggestions** — detects git renames and fuzzy-matches to suggest the right path
 - **Auto-fix** — `--fix` rewrites broken paths automatically using git history
 - **Token-aware** — shows how much context window your files consume and flags redundant content
 - **Every AI tool** — supports Claude Code, Cursor, Copilot, Windsurf, Gemini, Cline, Aider, and 14 more
 - **Multiple outputs** — text, JSON, and SARIF (GitHub Code Scanning)
-- **MCP server** — 5 tools for IDE/agent integration with tool annotations for auto-approval
+- **MCP server** — 6 tools for IDE/agent integration with tool annotations for auto-approval
+- **Watch mode** — `--watch` re-lints automatically when context files change
 
 ## Install
 
@@ -161,7 +169,7 @@ The full specification for MCP config linting rules, the cross-client config lan
 ## Example Output
 
 ```
-ctxlint v0.6.0
+ctxlint v0.7.0
 
 Scanning /Users/you/my-app...
 
@@ -205,6 +213,7 @@ Options:
   --mcp-only           Run only MCP config checks, skip context file checks
   --mcp-global         Also scan user/global MCP config files (implies --mcp)
   --mcp-server         Start the MCP server (for IDE/agent integration)
+  --watch              Re-lint on context file changes
   -V, --version        Output the version number
   -h, --help           Display help
 
@@ -216,6 +225,14 @@ Commands:
 
 Passing any `mcp-*` check name implies `--mcp`.
 
+## Watch Mode
+
+```bash
+npx @yawlabs/ctxlint --watch
+```
+
+Re-lints automatically when any context file, MCP config, or `package.json` changes. Useful during development when you're editing context files alongside code.
+
 ## Use in CI
 
 ```yaml
@@ -224,6 +241,22 @@ Passing any `mcp-*` check name implies `--mcp`.
 ```
 
 Exits with code 1 if any errors or warnings are found.
+
+### GitHub Action
+
+```yaml
+- name: Lint context files
+  uses: yawlabs/ctxlint-action@v1
+```
+
+Or with options:
+
+```yaml
+- name: Lint context files
+  uses: yawlabs/ctxlint-action@v1
+  with:
+    args: '--strict --mcp'
+```
 
 ### SARIF Output (GitHub Code Scanning)
 
@@ -262,7 +295,7 @@ Add to your `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/yawlabs/ctxlint
-    rev: v0.6.0
+    rev: v0.7.0
     hooks:
       - id: ctxlint
 ```
