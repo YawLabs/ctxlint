@@ -7,7 +7,7 @@ export default defineConfig([
   {
     entry: ['src/index.ts'],
     format: ['esm'],
-    target: 'node18',
+    target: 'node20',
     outDir: 'dist',
     clean: true,
     define: {
@@ -20,7 +20,7 @@ export default defineConfig([
   {
     entry: ['src/mcp/server.ts'],
     format: ['esm'],
-    target: 'node18',
+    target: 'node20',
     outDir: 'dist/mcp',
     define: {
       __VERSION__: JSON.stringify(pkg.version),

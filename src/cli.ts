@@ -19,7 +19,7 @@ export async function runCli() {
   program
     .name('ctxlint')
     .description(
-      'Lint your AI agent context files (CLAUDE.md, AGENTS.md, etc.) against your actual codebase',
+      'Lint your AI agent context files and MCP server configs against your actual codebase',
     )
     .version(VERSION)
     .argument('[path]', 'Project directory to scan', '.')
@@ -36,6 +36,7 @@ export async function runCli() {
     .option('--mcp', 'Enable MCP config linting alongside context file checks', false)
     .option('--mcp-only', 'Run only MCP config checks, skip context file checks', false)
     .option('--mcp-global', 'Also scan user/global MCP config files (implies --mcp)', false)
+    .option('--mcp-server', 'Start the MCP server (for IDE/agent integration)')
     .action(async (projectPath: string, opts: Record<string, unknown>) => {
       const resolvedPath = path.resolve(projectPath as string);
 

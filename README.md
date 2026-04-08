@@ -19,19 +19,41 @@ Context files rot fast. You rename a file, change a build script, or switch from
 - **Token-aware** — shows how much context window your files consume and flags redundant content
 - **Every AI tool** — supports Claude Code, Cursor, Copilot, Windsurf, Gemini, Cline, Aider, and 14 more
 - **Multiple outputs** — text, JSON, and SARIF (GitHub Code Scanning)
-- **MCP server** — 4 tools for IDE/agent integration with tool annotations for auto-approval
+- **MCP server** — 5 tools for IDE/agent integration with tool annotations for auto-approval
 
 ## Install
+
+Run directly (no install needed):
+
+```bash
+npx @yawlabs/ctxlint
+```
+
+### Project install (recommended for teams)
+
+```bash
+npm install -D @yawlabs/ctxlint
+# or
+pnpm add -D @yawlabs/ctxlint
+```
+
+Then add to your `package.json` scripts:
+
+```json
+{
+  "scripts": {
+    "lint:ctx": "ctxlint --strict"
+  }
+}
+```
+
+### Global install
 
 ```bash
 npm install -g @yawlabs/ctxlint
 ```
 
-Or run directly:
-
-```bash
-npx @yawlabs/ctxlint
-```
+Useful if you want `ctxlint` available in every project without per-project setup.
 
 ## What It Checks
 
@@ -91,7 +113,7 @@ npx @yawlabs/ctxlint --mcp-global
 | `.amazonq/mcp.json` | Amazon Q Developer |
 | `.continue/mcpServers/*.json` | Continue |
 
-With `--mcp-global`, also scans Claude Desktop, Cursor, Windsurf, Cline, and Amazon Q global configs.
+With `--mcp-global`, also scans Claude Desktop, Cursor, Windsurf, and Amazon Q global configs.
 
 ### What MCP config checks catch
 
@@ -138,7 +160,7 @@ The full specification for MCP config linting rules, the cross-client config lan
 ## Example Output
 
 ```
-ctxlint v0.3.0
+ctxlint v0.6.0
 
 Scanning /Users/you/my-app...
 
@@ -169,22 +191,29 @@ Arguments:
 
 Options:
   --strict             Exit code 1 on any warning or error (for CI)
-  --checks <list>      Comma-separated: paths, commands, staleness, tokens, redundancy, contradictions, frontmatter
+  --checks <list>      Comma-separated checks to run (see below)
   --ignore <list>      Comma-separated checks to skip
   --fix                Auto-fix broken paths using git history and fuzzy matching
   --format <fmt>       Output format: text, json, or sarif (default: text)
   --tokens             Show token breakdown per file
   --verbose            Show passing checks too
-  --quiet              Suppress all output (exit code only, for scripts)
+  --quiet              Suppress all output except errors (exit code only)
   --config <path>      Path to config file (default: .ctxlintrc in project root)
   --depth <n>          Max subdirectory depth to scan (default: 2)
-  --mcp                Start the MCP server instead of running the linter
+  --mcp                Enable MCP config linting alongside context file checks
+  --mcp-only           Run only MCP config checks, skip context file checks
+  --mcp-global         Also scan user/global MCP config files (implies --mcp)
+  --mcp-server         Start the MCP server (for IDE/agent integration)
   -V, --version        Output the version number
   -h, --help           Display help
 
 Commands:
   init                 Set up a git pre-commit hook
 ```
+
+**Available checks:** `paths`, `commands`, `staleness`, `tokens`, `redundancy`, `contradictions`, `frontmatter`, `mcp-schema`, `mcp-security`, `mcp-commands`, `mcp-deprecated`, `mcp-env`, `mcp-urls`, `mcp-consistency`, `mcp-redundancy`
+
+Passing any `mcp-*` check name implies `--mcp`.
 
 ## Use in CI
 
@@ -232,7 +261,7 @@ Add to your `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/yawlabs/ctxlint
-    rev: v0.3.0
+    rev: v0.6.0
     hooks:
       - id: ctxlint
 ```
@@ -262,9 +291,15 @@ CLI flags override config file settings. Use `--config <path>` to load a config 
 
 ## Use as MCP Server
 
-ctxlint ships with an MCP server that exposes four tools (`ctxlint_audit`, `ctxlint_validate_path`, `ctxlint_token_report`, `ctxlint_fix`). All tools declare annotations so MCP clients can skip confirmation dialogs for read-only operations.
+ctxlint ships with an MCP server that exposes five tools (`ctxlint_audit`, `ctxlint_mcp_audit`, `ctxlint_validate_path`, `ctxlint_token_report`, `ctxlint_fix`). All read-only tools declare annotations so MCP clients can skip confirmation dialogs.
 
-### With `.mcp.json` (Cursor, Windsurf, and other MCP clients)
+### With Claude Code
+
+```bash
+claude mcp add ctxlint -- npx -y @yawlabs/ctxlint --mcp-server
+```
+
+### With `.mcp.json` (Claude Code project config, Cursor, Windsurf)
 
 Create `.mcp.json` in your project root:
 
@@ -275,7 +310,7 @@ macOS / Linux / WSL:
   "mcpServers": {
     "ctxlint": {
       "command": "npx",
-      "args": ["-y", "@yawlabs/ctxlint", "--mcp"]
+      "args": ["-y", "@yawlabs/ctxlint", "--mcp-server"]
     }
   }
 }
@@ -288,7 +323,7 @@ Windows:
   "mcpServers": {
     "ctxlint": {
       "command": "cmd",
-      "args": ["/c", "npx", "-y", "@yawlabs/ctxlint", "--mcp"]
+      "args": ["/c", "npx", "-y", "@yawlabs/ctxlint", "--mcp-server"]
     }
   }
 }
@@ -296,10 +331,34 @@ Windows:
 
 > **Tip:** This file is safe to commit — it contains no secrets.
 
-### With Claude Code
+### With VS Code / GitHub Copilot
 
-```bash
-claude mcp add ctxlint -- npx -y @yawlabs/ctxlint --mcp
+Add to `.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "ctxlint": {
+      "command": "npx",
+      "args": ["-y", "@yawlabs/ctxlint", "--mcp-server"]
+    }
+  }
+}
+```
+
+### With Claude Desktop
+
+Add to your Claude Desktop config (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "ctxlint": {
+      "command": "npx",
+      "args": ["-y", "@yawlabs/ctxlint", "--mcp-server"]
+    }
+  }
+}
 ```
 
 ## JSON Output
