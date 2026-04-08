@@ -1,6 +1,8 @@
 // Dynamic import so tiktoken (~4MB WASM) is an optional dependency.
 // Falls back to a ~4 chars/token estimate when not installed.
-let encodingForModel: ((model: string) => { encode: (text: string) => number[]; free: () => void }) | null = null;
+let encodingForModel:
+  | ((model: string) => { encode: (text: string) => number[]; free: () => void })
+  | null = null;
 
 try {
   const tiktoken = await import('tiktoken');
