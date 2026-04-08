@@ -122,6 +122,26 @@ describe('MCP server tools', () => {
     });
   });
 
+  describe('ctxlint_mcp_audit', () => {
+    it('returns MCP config audit results with issues', () => {
+      const result = callMcpTool('ctxlint_mcp_audit', {
+        projectPath: path.join(FIXTURES, 'mcp-configs', 'wrong-root-key'),
+      }) as any;
+      expect(result.files).toBeDefined();
+      expect(result.files.length).toBeGreaterThan(0);
+      expect(result.summary.errors).toBeGreaterThan(0);
+    });
+
+    it('filters by specific MCP checks', () => {
+      const result = callMcpTool('ctxlint_mcp_audit', {
+        projectPath: path.join(FIXTURES, 'mcp-configs', 'wrong-root-key'),
+        checks: ['mcp-schema'],
+      }) as any;
+      expect(result.files).toBeDefined();
+      expect(result.summary.errors).toBeGreaterThan(0);
+    });
+  });
+
   describe('ctxlint_token_report', () => {
     it('returns token counts for context files', () => {
       const result = callMcpTool('ctxlint_token_report', {

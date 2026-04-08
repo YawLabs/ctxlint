@@ -53,12 +53,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yawlabs/ctxlint.git"
+    "url": "git+https://github.com/YawLabs/ctxlint.git"
   },
   "bugs": {
-    "url": "https://github.com/yawlabs/ctxlint/issues"
+    "url": "https://github.com/YawLabs/ctxlint/issues"
   },
-  "homepage": "https://github.com/yawlabs/ctxlint",
+  "homepage": "https://github.com/YawLabs/ctxlint",
   "author": "Yaw Labs <contact@yaw.sh>",
   "engines": {
     "node": ">=20"
