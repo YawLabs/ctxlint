@@ -46,6 +46,18 @@
       "name": "Client Metadata Validation",
       "description": "Validates YAML frontmatter required by specific AI coding clients.",
       "scope": "per-file"
+    },
+    {
+      "id": "ci-coverage",
+      "name": "CI Workflow Documentation",
+      "description": "Checks that release/deploy CI workflows are documented in context files.",
+      "scope": "cross-file"
+    },
+    {
+      "id": "ci-secrets",
+      "name": "CI Secrets Documentation",
+      "description": "Checks that CI secrets used in workflows are documented in context files.",
+      "scope": "cross-file"
     }
   ],
   "rules": [
@@ -269,6 +281,24 @@
       "message": "No activation field — rule may not be applied automatically",
       "fixable": false,
       "appliesTo": ["cursor-mdc"]
+    },
+    {
+      "id": "ci/no-release-docs",
+      "category": "ci-coverage",
+      "severity": "info",
+      "description": "Release/deploy CI workflow exists but no context file documents the process.",
+      "trigger": ".github/workflows/ contains release/deploy/publish workflow but no context file mentions the release process.",
+      "message": "Release workflow found but no context file documents the release process",
+      "fixable": false
+    },
+    {
+      "id": "ci/undocumented-secret",
+      "category": "ci-secrets",
+      "severity": "info",
+      "description": "CI workflow references a secret not mentioned in any context file.",
+      "trigger": "${{ secrets.NAME }} found in workflow YAML but NAME not mentioned in any context file. GitHub-provided secrets (GITHUB_TOKEN, etc.) are excluded.",
+      "message": "CI secret \"{name}\" is used in {workflow} but not mentioned in any context file",
+      "fixable": false
     }
   ],
   "formats": [

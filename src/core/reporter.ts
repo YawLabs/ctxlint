@@ -254,6 +254,16 @@ function buildRuleDescriptors(): SarifRule[] {
       helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
     },
     {
+      id: 'ctxlint/ci-coverage',
+      shortDescription: { text: 'CI release workflow not documented in context files' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
+      id: 'ctxlint/ci-secrets',
+      shortDescription: { text: 'CI secret not documented in context files' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
       id: 'ctxlint/mcp-schema',
       shortDescription: { text: 'MCP config structural validation error' },
       helpUri: 'https://github.com/yawlabs/ctxlint#mcp-config-linting',
@@ -292,6 +302,11 @@ function buildRuleDescriptors(): SarifRule[] {
       id: 'ctxlint/mcp-redundancy',
       shortDescription: { text: 'Redundant MCP config entry' },
       helpUri: 'https://github.com/yawlabs/ctxlint#mcp-config-linting',
+    },
+    {
+      id: 'ctxlint/session-loop-detection',
+      shortDescription: { text: 'Agent looping pattern detected in session history' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
     },
   ];
 }

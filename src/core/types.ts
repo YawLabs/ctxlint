@@ -7,7 +7,8 @@ export type SessionCheckName =
   | 'session-diverged-file'
   | 'session-missing-workflow'
   | 'session-stale-memory'
-  | 'session-duplicate-memory';
+  | 'session-duplicate-memory'
+  | 'session-loop-detection';
 
 export type AgentProvider =
   | 'claude-code'
@@ -72,6 +73,8 @@ export type CheckName =
   | 'redundancy'
   | 'contradictions'
   | 'frontmatter'
+  | 'ci-coverage'
+  | 'ci-secrets'
   | McpCheckName
   | SessionCheckName;
 

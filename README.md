@@ -75,6 +75,8 @@ Useful if you want `ctxlint` available in every project without per-project setu
 | **Redundancy** | Content the agent can already infer (e.g. "We use React" when react is in package.json) |
 | **Contradictions** | Conflicting directives across context files (e.g. "use Jest" in one, "use Vitest" in another) |
 | **Frontmatter** | Invalid or missing YAML frontmatter in Cursor .mdc, Copilot instructions, and Windsurf rules |
+| **CI coverage** | Release/deploy workflows in `.github/workflows/` not documented in any context file |
+| **CI secrets** | Secrets used in CI workflows (`${{ secrets.X }}`) not mentioned in context files |
 
 ## Supported Context Files
 
@@ -221,7 +223,7 @@ Commands:
   init                 Set up a git pre-commit hook
 ```
 
-**Available checks:** `paths`, `commands`, `staleness`, `tokens`, `redundancy`, `contradictions`, `frontmatter`, `mcp-schema`, `mcp-security`, `mcp-commands`, `mcp-deprecated`, `mcp-env`, `mcp-urls`, `mcp-consistency`, `mcp-redundancy`
+**Available checks:** `paths`, `commands`, `staleness`, `tokens`, `redundancy`, `contradictions`, `frontmatter`, `ci-coverage`, `ci-secrets`, `mcp-schema`, `mcp-security`, `mcp-commands`, `mcp-deprecated`, `mcp-env`, `mcp-urls`, `mcp-consistency`, `mcp-redundancy`
 
 Passing any `mcp-*` check name implies `--mcp`.
 

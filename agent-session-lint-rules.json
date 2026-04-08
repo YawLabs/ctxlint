@@ -68,6 +68,24 @@
       "trigger": "Two memory files from different projects have >60% line overlap.",
       "message": "\"{file1}\" and \"{file2}\" have {overlap}% content overlap",
       "fixable": false
+    },
+    {
+      "id": "session/consecutive-repeat",
+      "category": "session",
+      "severity": "warning",
+      "description": "Same command run 3+ times consecutively in agent history.",
+      "trigger": "Agent history for the current project shows the same display string 3+ times in a row.",
+      "message": "Command run {count} times consecutively: \"{command}\"",
+      "fixable": false
+    },
+    {
+      "id": "session/cyclic-pattern",
+      "category": "session",
+      "severity": "warning",
+      "description": "Cyclic command pattern detected in agent history.",
+      "trigger": "Agent history shows a repeating sequence of 2-3 commands (e.g. A,B,A,B) repeated 2+ times.",
+      "message": "Cyclic pattern repeated {count} times: {cycle}",
+      "fixable": false
     }
   ],
   "dataSources": [

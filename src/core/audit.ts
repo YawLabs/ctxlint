@@ -22,6 +22,9 @@ import { checkDivergedFile } from './checks/session/diverged-file.js';
 import { checkMissingWorkflow } from './checks/session/missing-workflow.js';
 import { checkStaleMemory } from './checks/session/stale-memory.js';
 import { checkDuplicateMemory } from './checks/session/duplicate-memory.js';
+import { checkLoopDetection } from './checks/session/loop-detection.js';
+import { checkCiCoverage } from './checks/ci-coverage.js';
+import { checkCiSecrets } from './checks/ci-secrets.js';
 import type {
   LintResult,
   FileResult,
@@ -41,6 +44,8 @@ export const ALL_CHECKS: CheckName[] = [
   'redundancy',
   'contradictions',
   'frontmatter',
+  'ci-coverage',
+  'ci-secrets',
 ];
 
 export const ALL_MCP_CHECKS: McpCheckName[] = [
@@ -60,6 +65,7 @@ export const ALL_SESSION_CHECKS: SessionCheckName[] = [
   'session-missing-workflow',
   'session-stale-memory',
   'session-duplicate-memory',
+  'session-loop-detection',
 ];
 
 export interface AuditOptions {
@@ -141,6 +147,16 @@ export async function runAudit(
       const contradictionIssues = checkContradictions(parsed);
       if (contradictionIssues.length > 0 && fileResults.length > 0)
         fileResults[0].issues.push(...contradictionIssues);
+    }
+    if (activeChecks.includes('ci-coverage')) {
+      const ciCoverageIssues = await checkCiCoverage(parsed, projectRoot);
+      if (ciCoverageIssues.length > 0 && fileResults.length > 0)
+        fileResults[0].issues.push(...ciCoverageIssues);
+    }
+    if (activeChecks.includes('ci-secrets')) {
+      const ciSecretsIssues = await checkCiSecrets(parsed, projectRoot);
+      if (ciSecretsIssues.length > 0 && fileResults.length > 0)
+        fileResults[0].issues.push(...ciSecretsIssues);
     }
   }
 
@@ -248,6 +264,8 @@ export async function runAudit(
         sessionPromises.push(checkStaleMemory(sessionCtx));
       if (sessionChecksToRun.includes('session-duplicate-memory'))
         sessionPromises.push(checkDuplicateMemory(sessionCtx));
+      if (sessionChecksToRun.includes('session-loop-detection'))
+        sessionPromises.push(checkLoopDetection(sessionCtx));
 
       const sessionResults = await Promise.all(sessionPromises);
       const sessionIssues = sessionResults.flat();

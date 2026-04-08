@@ -15,7 +15,7 @@ This specification defines a standard set of lint rules for validating AI agent 
 
 The specification includes:
 - A complete reference of context file formats across 17 AI coding clients (21+ file patterns)
-- 19 lint rules organized into 7 categories with defined severities
+- 21 lint rules organized into 9 categories with defined severities
 - A machine-readable rule and format catalog ([`context-lint-rules.json`](./context-lint-rules.json))
 - Auto-fix definitions for rules that support automated correction
 - Frontmatter schema requirements per client
@@ -45,6 +45,8 @@ The specification includes:
   - [3.5 redundancy — inferable content](#35-redundancy--inferable-content)
   - [3.6 contradictions — cross-file conflicts](#36-contradictions--cross-file-conflicts)
   - [3.7 frontmatter — client metadata validation](#37-frontmatter--client-metadata-validation)
+  - [3.8 ci-coverage — CI workflow documentation](#38-ci-coverage--ci-workflow-documentation)
+  - [3.9 ci-secrets — CI secrets documentation](#39-ci-secrets--ci-secrets-documentation)
 - [4. Rule Catalog (machine-readable)](#4-rule-catalog-machine-readable)
 - [5. Implementing This Specification](#5-implementing-this-specification)
 - [6. Contributing](#6-contributing)
@@ -298,7 +300,7 @@ Context files consume an agent's context window. Counting tokens helps teams und
 
 ## 3. Lint Rules
 
-19 rules organized into 7 categories.
+21 rules organized into 9 categories.
 
 Severity levels:
 - **error** — the context file has a verifiably incorrect reference or invalid metadata. Should fail CI.
@@ -537,6 +539,43 @@ Validates YAML frontmatter required by specific clients. Only applies to file fo
 
 ---
 
+### 3.8 ci-coverage — CI workflow documentation
+
+Checks that release/deploy CI workflows are documented in context files. When agents encounter a project with CI release workflows but no documentation about how releases work, they guess — often incorrectly.
+
+| Rule ID | Severity | Trigger | Message |
+|---|---|---|---|
+| `ci/no-release-docs` | info | `.github/workflows/` contains release/deploy/publish workflow(s) but no context file mentions the release process | `Release workflow(s) found but no context file documents the release process` |
+
+**Detection algorithm:**
+
+1. Check if `.github/workflows/` exists. If not, skip.
+2. Scan workflow filenames for release-related patterns: `release`, `deploy`, `publish`, `cd`.
+3. For workflows not matched by filename, read the YAML `name:` field and check for the same patterns.
+4. If no release-related workflows exist, skip (only CI/test workflows — no documentation gap).
+5. Search all context file content for release documentation phrases (e.g., "release process", "push a v* tag", "npm publish", "deploy to").
+6. If no context file mentions release processes, emit one info-level issue.
+
+---
+
+### 3.9 ci-secrets — CI secrets documentation
+
+Checks that secrets referenced in CI workflow files are mentioned in context files. Undocumented secrets are a common source of agent looping — agents try to create new tokens, pull from `.npmrc`, or guess at auth setup.
+
+| Rule ID | Severity | Trigger | Message |
+|---|---|---|---|
+| `ci/undocumented-secret` | info | `${{ secrets.NAME }}` found in workflow YAML but `NAME` not mentioned in any context file | `CI secret "{name}" is used in {workflow} but not mentioned in any context file` |
+
+**Detection algorithm:**
+
+1. Check if `.github/workflows/` exists. If not, skip.
+2. Read all `.yml`/`.yaml` files and extract `${{ secrets.NAME }}` references via regex.
+3. Exclude GitHub-provided secrets: `GITHUB_TOKEN`, `ACTIONS_RUNTIME_TOKEN`, `ACTIONS_RUNTIME_URL`, `ACTIONS_CACHE_URL`, `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, `ACTIONS_ID_TOKEN_REQUEST_URL`, `ACTIONS_RESULTS_URL`.
+4. For each remaining secret, search all context files for the secret name (case-insensitive, flexible underscore/space matching).
+5. Emit one info-level issue per undocumented secret.
+
+---
+
 ## 4. Rule Catalog (machine-readable)
 
 A machine-readable JSON catalog of all rules and supported context file formats is available at [`context-lint-rules.json`](./context-lint-rules.json).
@@ -572,7 +611,7 @@ For each discovered file:
 
 Run per-file checks (paths, commands, staleness, tokens, redundancy, frontmatter) independently per file. These can be parallelized.
 
-Run cross-file checks (aggregate tokens, duplicate content, contradictions) after all per-file parsing is complete. These need the full set of parsed files.
+Run cross-file checks (aggregate tokens, duplicate content, contradictions, ci-coverage, ci-secrets) after all per-file parsing is complete. These need the full set of parsed files.
 
 ### Reporting
 

@@ -44,6 +44,8 @@ This is the third pillar alongside context file linting (`CLAUDE.md`, `.cursorru
   - [2.3 session/missing-workflow](#23-sessionmissing-workflow)
   - [2.4 session/stale-memory](#24-sessionstale-memory)
   - [2.5 session/duplicate-memory](#25-sessionduplicate-memory)
+  - [2.6 session/consecutive-repeat](#26-sessionconsecutive-repeat)
+  - [2.7 session/cyclic-pattern](#27-sessioncyclic-pattern)
 - [3. Rule Catalog (machine-readable)](#3-rule-catalog-machine-readable)
 - [4. Implementing This Specification](#4-implementing-this-specification)
 - [5. Contributing](#5-contributing)
@@ -125,7 +127,7 @@ Skip hidden directories (starting with `.`) and `node_modules`.
 
 ## 2. Lint Rules
 
-5 rules in 1 category (`session`). All rules in this category perform cross-project checks using sibling detection.
+7 rules in 1 category (`session`). All rules in this category perform cross-project checks using sibling detection or per-project history analysis.
 
 Severity levels:
 - **error** -- the session data reveals a verifiably missing configuration. Should fail CI.
@@ -260,6 +262,53 @@ Detects memory entries from different projects that have significant content ove
 **Notes:**
 - This rule helps identify boilerplate that has been memorized per-project instead of being placed in a shared context file or user-level config.
 - A common pattern is the same coding conventions memorized independently in 5+ projects. Consolidating to a user-level `CLAUDE.md` or `.claude/settings.json` would be more efficient.
+
+---
+
+### 2.6 session/consecutive-repeat
+
+Detects when an agent runs the same command 3 or more times consecutively, indicating a loop.
+
+| Field | Value |
+|---|---|
+| **Rule ID** | `session/consecutive-repeat` |
+| **Severity** | warning |
+| **Trigger** | 3+ consecutive history entries with identical `display` values for the current project |
+| **Message** | `Command run <N> times consecutively: "<command>"` |
+
+**Detection algorithm:**
+
+1. Filter history entries to the current project path (normalized).
+2. Sort entries by timestamp.
+3. Slide a window over the sorted entries. For each run of 3+ entries with identical `display` values, emit a warning.
+
+**Notes:**
+- Truncates long command strings to 80 characters in the message for readability.
+- This rule helps surface cases where an agent is stuck retrying a failing command instead of changing approach.
+
+---
+
+### 2.7 session/cyclic-pattern
+
+Detects short repeating cycles of commands, indicating an agent stuck in a loop.
+
+| Field | Value |
+|---|---|
+| **Rule ID** | `session/cyclic-pattern` |
+| **Severity** | warning |
+| **Trigger** | A sequence of 2-3 distinct commands repeating 2+ times consecutively (e.g. A,B,A,B) |
+| **Message** | `Cyclic pattern repeated <N> times: <cycle>` |
+
+**Detection algorithm:**
+
+1. Filter history entries to the current project, sorted by timestamp.
+2. For cycle lengths 2 and 3, slide a window checking if the next `cycleLen` entries match the current cycle.
+3. Cycles where every element is the same are excluded (already caught by `session/consecutive-repeat`).
+4. Subsumption: if a shorter cycle is fully contained within an already-reported longer cycle at the same position, skip it.
+
+**Notes:**
+- A cycle like "edit file → run tests → edit file → run tests" is a common pattern when an agent is making iterative fixes. This rule flags when the cycle repeats enough times to suggest the agent isn't making progress.
+- The suggestion directs users to check if a context file is missing workflow instructions.
 
 ---
 

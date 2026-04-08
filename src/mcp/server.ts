@@ -34,6 +34,9 @@ const checkEnum = z.enum([
   'session-missing-workflow',
   'session-stale-memory',
   'session-duplicate-memory',
+  'session-loop-detection',
+  'ci-coverage',
+  'ci-secrets',
 ]);
 
 const server = new McpServer({
