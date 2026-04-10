@@ -33,7 +33,7 @@ export function loadConfig(projectRoot: string): CtxlintConfig | null {
       return JSON.parse(content) as CtxlintConfig;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`Invalid JSON in ${filePath}: ${msg}`);
+      throw new Error(`Invalid JSON in ${filePath}: ${msg}`, { cause: err });
     }
   }
   return null;

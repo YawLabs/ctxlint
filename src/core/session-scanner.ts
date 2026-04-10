@@ -1,4 +1,4 @@
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { dirname, join, resolve } from 'node:path';
@@ -11,7 +11,7 @@ import type {
   SessionContext,
   SiblingRepo,
 } from './types.js';
-import { projectDirMatchesPath, parseMemoryFile } from './session-parser.js';
+import { parseMemoryFile } from './session-parser.js';
 
 const home = process.env.HOME || process.env.USERPROFILE || '';
 

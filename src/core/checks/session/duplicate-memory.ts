@@ -1,5 +1,4 @@
 import type { LintIssue, SessionContext } from '../../types.js';
-import { encodeProjectDir } from '../../session-parser.js';
 
 /**
  * Calculate line-level overlap between two text contents.
