@@ -27,8 +27,8 @@ export async function checkMcpCommands(
         ruleId: 'windows-npx-no-wrapper',
         line: server.line,
         message: `Server "${server.name}": npx requires "cmd /c" wrapper on Windows`,
-        suggestion: 'Change command to "cmd" and prepend "/c", "npx" to args: ["/c", "npx", ...]',
-        fix: buildNpxFix(config, server.name, server.args),
+        suggestion:
+          'Change "command" to "cmd" and prepend "/c", "npx" to args — e.g. "args": ["/c", "npx", ...]',
       });
     }
 
@@ -77,40 +77,3 @@ function fileExistsSafe(filePath: string): boolean {
   }
 }
 
-function buildNpxFix(
-  config: ParsedMcpConfig,
-  serverName: string,
-  _args?: string[],
-): LintIssue['fix'] {
-  // The spec says to transform:
-  //   {"command": "npx", "args": ["-y", "pkg"]}
-  // into:
-  //   {"command": "cmd", "args": ["/c", "npx", "-y", "pkg"]}
-  //
-  // The fixer is line-based (one replacement per fix). We target the command line
-  // since that's the most critical change. The args update requires a manual edit
-  // and is noted in the issue's suggestion field.
-  const lines = config.content.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line.includes('"command"') && line.includes('"npx"')) {
-      let inRightServer = false;
-      for (let j = i - 1; j >= 0; j--) {
-        if (lines[j].includes(`"${serverName}"`)) {
-          inRightServer = true;
-          break;
-        }
-        if (lines[j].includes('"command"')) break;
-      }
-      if (!inRightServer) continue;
-
-      return {
-        file: config.filePath,
-        line: i + 1,
-        oldText: '"npx"',
-        newText: '"cmd"',
-      };
-    }
-  }
-  return undefined;
-}

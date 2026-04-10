@@ -7,7 +7,12 @@ export interface FixSummary {
   filesModified: string[];
 }
 
-export function applyFixes(result: LintResult): FixSummary {
+export interface FixOptions {
+  quiet?: boolean;
+}
+
+export function applyFixes(result: LintResult, options: FixOptions = {}): FixSummary {
+  const log = options.quiet ? () => {} : console.log.bind(console);
   // Collect all fixable issues grouped by file
   const fixesByFile = new Map<string, FixAction[]>();
 
@@ -32,19 +37,34 @@ export function applyFixes(result: LintResult): FixSummary {
     // Sort fixes by line number descending so replacements don't shift line numbers
     const sortedFixes = [...fixes].sort((a, b) => b.line - a.line);
 
+    // Group fixes by line so we can apply multiple fixes to the same line
+    // against the original content before any modifications
+    const fixesByLine = new Map<number, FixAction[]>();
     for (const fix of sortedFixes) {
-      const lineIdx = fix.line - 1; // 0-indexed
+      const existing = fixesByLine.get(fix.line) || [];
+      existing.push(fix);
+      fixesByLine.set(fix.line, existing);
+    }
+
+    for (const [lineNum, lineFixes] of fixesByLine) {
+      const lineIdx = lineNum - 1; // 0-indexed
       if (lineIdx < 0 || lineIdx >= lines.length) continue;
 
-      const line = lines[lineIdx];
-      if (line.includes(fix.oldText)) {
-        lines[lineIdx] = line.replaceAll(fix.oldText, fix.newText);
+      let line = lines[lineIdx];
+      for (const fix of lineFixes) {
+        if (line.includes(fix.oldText)) {
+          line = line.replace(fix.oldText, fix.newText);
+          totalFixes++;
+          log(
+            chalk.green('  Fixed') +
+              ` Line ${fix.line}: ${chalk.dim(fix.oldText)} ${chalk.dim('\u2192')} ${fix.newText}`,
+          );
+        }
+      }
+
+      if (line !== lines[lineIdx]) {
+        lines[lineIdx] = line;
         modified = true;
-        totalFixes++;
-        console.log(
-          chalk.green('  Fixed') +
-            ` Line ${fix.line}: ${chalk.dim(fix.oldText)} ${chalk.dim('\u2192')} ${fix.newText}`,
-        );
       }
     }
 
@@ -56,7 +76,7 @@ export function applyFixes(result: LintResult): FixSummary {
         try {
           JSON.parse(newContent);
         } catch {
-          console.log(chalk.yellow('  Skipped') + ` ${filePath}: fix would produce invalid JSON`);
+          log(chalk.yellow('  Skipped') + ` ${filePath}: fix would produce invalid JSON`);
           continue;
         }
       }

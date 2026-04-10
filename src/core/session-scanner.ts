@@ -1,4 +1,6 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { createInterface } from 'node:readline';
 import { dirname, join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { simpleGit } from 'simple-git';
@@ -9,7 +11,7 @@ import type {
   SessionContext,
   SiblingRepo,
 } from './types.js';
-import { decodeProjectDir, parseMemoryFile } from './session-parser.js';
+import { projectDirMatchesPath, parseMemoryFile } from './session-parser.js';
 
 const home = process.env.HOME || process.env.USERPROFILE || '';
 
@@ -44,17 +46,20 @@ export function detectProviders(): AgentProvider[] {
 }
 
 /**
- * Parse a JSONL file line by line, applying a filter to each parsed line.
- * Only keeps lines that match the filter to minimize memory usage.
+ * Parse a JSONL file line by line using streaming to avoid loading large files
+ * (e.g. history.jsonl can grow to 100MB+) entirely into memory.
  */
 async function parseJsonlFiltered<T>(
   filePath: string,
   filter: (line: unknown) => T | null,
 ): Promise<T[]> {
   if (!existsSync(filePath)) return [];
-  const content = await readFile(filePath, 'utf-8');
   const results: T[] = [];
-  for (const line of content.split('\n')) {
+  const rl = createInterface({
+    input: createReadStream(filePath, { encoding: 'utf-8' }),
+    crlfDelay: Infinity,
+  });
+  for await (const line of rl) {
     if (!line.trim()) continue;
     try {
       const parsed = JSON.parse(line);
@@ -115,13 +120,14 @@ async function readClaudeMemories(): Promise<MemoryEntry[]> {
     const memoryDir = join(projectsDir, projDir, 'memory');
     if (!existsSync(memoryDir)) continue;
 
-    const decodedPath = decodeProjectDir(projDir);
+    // Store the encoded directory name as projectDir — callers use
+    // projectDirMatchesPath() to compare against real filesystem paths.
     const files = await readdir(memoryDir).catch(() => []);
 
     for (const file of files) {
       if (!file.endsWith('.md') || file === 'MEMORY.md') continue;
       try {
-        const entry = await parseMemoryFile(join(memoryDir, file), decodedPath);
+        const entry = await parseMemoryFile(join(memoryDir, file), projDir);
         memories.push(entry);
       } catch {
         // skip unreadable files
@@ -151,7 +157,6 @@ function detectAiderInSiblings(siblings: SiblingRepo[]): AgentProvider | null {
  */
 export async function detectSiblings(projectRoot: string): Promise<SiblingRepo[]> {
   const parentDir = dirname(resolve(projectRoot));
-  const siblings: SiblingRepo[] = [];
 
   let entries: string[];
   try {
@@ -160,8 +165,12 @@ export async function detectSiblings(projectRoot: string): Promise<SiblingRepo[]
     return [];
   }
 
-  // Filter to directories that look like repos
+  // First pass: cheaply collect candidate project directories (no git calls)
+  const candidates: Array<{ fullPath: string; entryPath: string; name: string }> = [];
   for (const entry of entries) {
+    // Skip obvious non-project dirs (cheap string check before I/O)
+    if (entry.startsWith('.') || entry === 'node_modules') continue;
+
     const fullPath = join(parentDir, entry);
     const entryPath = resolve(fullPath);
 
@@ -175,9 +184,6 @@ export async function detectSiblings(projectRoot: string): Promise<SiblingRepo[]
       continue;
     }
 
-    // Skip obvious non-project dirs
-    if (entry.startsWith('.') || entry === 'node_modules') continue;
-
     // Check for git repo or package.json as project indicator
     const isProject =
       existsSync(join(fullPath, '.git')) ||
@@ -187,34 +193,14 @@ export async function detectSiblings(projectRoot: string): Promise<SiblingRepo[]
       existsSync(join(fullPath, 'pyproject.toml'));
 
     if (!isProject) continue;
-
-    const sibling: SiblingRepo = {
-      path: entryPath.replace(/\\/g, '/'),
-      name: entry,
-    };
-
-    // Try to get git org
-    try {
-      const git = simpleGit(fullPath);
-      const remotes = await git.getRemotes(true);
-      const origin = remotes.find((r) => r.name === 'origin');
-      if (origin?.refs?.fetch) {
-        sibling.gitRemoteUrl = origin.refs.fetch;
-        const orgMatch = origin.refs.fetch.match(/github\.com[:/]([^/]+)\//);
-        if (orgMatch) sibling.gitOrg = orgMatch[1];
-      }
-    } catch {
-      // not a git repo or no remote
-    }
-
-    siblings.push(sibling);
+    candidates.push({ fullPath, entryPath, name: entry });
   }
 
-  // If too many siblings (>50), filter to same git org only
-  if (siblings.length > 50) {
-    const currentGit = simpleGit(projectRoot);
+  // If too many candidates, get current org first and only resolve git for matches
+  if (candidates.length > 50) {
     let currentOrg: string | undefined;
     try {
+      const currentGit = simpleGit(projectRoot);
       const remotes = await currentGit.getRemotes(true);
       const origin = remotes.find((r) => r.name === 'origin');
       const orgMatch = origin?.refs?.fetch?.match(/github\.com[:/]([^/]+)\//);
@@ -223,10 +209,52 @@ export async function detectSiblings(projectRoot: string): Promise<SiblingRepo[]
       // no git
     }
 
+    // Only resolve git remotes for candidates with .git dirs
+    const gitCandidates = candidates.filter((c) => existsSync(join(c.fullPath, '.git')));
+    const results = await Promise.all(
+      gitCandidates.map(async (c) => {
+        const sibling: SiblingRepo = { path: c.entryPath.replace(/\\/g, '/'), name: c.name };
+        try {
+          const git = simpleGit(c.fullPath);
+          const remotes = await git.getRemotes(true);
+          const origin = remotes.find((r) => r.name === 'origin');
+          if (origin?.refs?.fetch) {
+            sibling.gitRemoteUrl = origin.refs.fetch;
+            const orgMatch = origin.refs.fetch.match(/github\.com[:/]([^/]+)\//);
+            if (orgMatch) sibling.gitOrg = orgMatch[1];
+          }
+        } catch {
+          // not a git repo or no remote
+        }
+        return sibling;
+      }),
+    );
+
     if (currentOrg) {
-      return siblings.filter((s) => s.gitOrg === currentOrg);
+      return results.filter((s) => s.gitOrg === currentOrg);
     }
+    return results;
   }
+
+  // Normal path: resolve git remotes in parallel
+  const siblings = await Promise.all(
+    candidates.map(async (c) => {
+      const sibling: SiblingRepo = { path: c.entryPath.replace(/\\/g, '/'), name: c.name };
+      try {
+        const git = simpleGit(c.fullPath);
+        const remotes = await git.getRemotes(true);
+        const origin = remotes.find((r) => r.name === 'origin');
+        if (origin?.refs?.fetch) {
+          sibling.gitRemoteUrl = origin.refs.fetch;
+          const orgMatch = origin.refs.fetch.match(/github\.com[:/]([^/]+)\//);
+          if (orgMatch) sibling.gitOrg = orgMatch[1];
+        }
+      } catch {
+        // not a git repo or no remote
+      }
+      return sibling;
+    }),
+  );
 
   return siblings;
 }

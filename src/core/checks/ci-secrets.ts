@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import type { ParsedContextFile, LintIssue } from '../types.js';
 
 // GitHub-provided secrets that don't need documentation
+// https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication
 const BUILTIN_SECRETS = new Set([
   'GITHUB_TOKEN',
   'ACTIONS_RUNTIME_TOKEN',
@@ -12,6 +13,8 @@ const BUILTIN_SECRETS = new Set([
   'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
   'ACTIONS_ID_TOKEN_REQUEST_URL',
   'ACTIONS_RESULTS_URL',
+  'ACTIONS_STEP_DEBUG',
+  'ACTIONS_RUNNER_DEBUG',
 ]);
 
 const SECRETS_REGEX = /\$\{\{\s*secrets\.(\w+)\s*\}\}/g;
@@ -58,7 +61,9 @@ async function findSecretUsages(projectRoot: string): Promise<SecretUsage[]> {
 }
 
 function contextMentionsSecret(files: ParsedContextFile[], secretName: string): boolean {
-  const pattern = new RegExp(secretName.replace(/_/g, '[_\\s-]?'), 'i');
+  // Escape regex-special chars, then make underscores flexible (match _, space, or hyphen)
+  const escaped = secretName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(escaped.replace(/_/g, '[_\\s-]?'), 'i');
   return files.some((f) => pattern.test(f.content));
 }
 

@@ -22,11 +22,18 @@ const CONFIG_FILENAMES = ['.ctxlintrc', '.ctxlintrc.json'];
 export function loadConfig(projectRoot: string): CtxlintConfig | null {
   for (const filename of CONFIG_FILENAMES) {
     const filePath = path.join(projectRoot, filename);
+    let content: string;
     try {
-      const content = fs.readFileSync(filePath, 'utf-8');
-      return JSON.parse(content) as CtxlintConfig;
+      content = fs.readFileSync(filePath, 'utf-8');
     } catch {
-      continue;
+      continue; // file doesn't exist, try next
+    }
+    // File exists — parse errors should be reported
+    try {
+      return JSON.parse(content) as CtxlintConfig;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Invalid JSON in ${filePath}: ${msg}`);
     }
   }
   return null;

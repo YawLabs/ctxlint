@@ -1,4 +1,5 @@
 import type { LintIssue, SessionContext } from '../../types.js';
+import { encodeProjectDir } from '../../session-parser.js';
 
 /**
  * Calculate line-level overlap between two text contents.
@@ -38,8 +39,8 @@ export async function checkDuplicateMemory(ctx: SessionContext): Promise<LintIss
       const a = ctx.memories[i];
       const b = ctx.memories[j];
 
-      // Only compare memories from different projects
-      if (a.projectDir.replace(/\\/g, '/') === b.projectDir.replace(/\\/g, '/')) continue;
+      // Only compare memories from different projects (projectDir is an encoded dir name)
+      if (a.projectDir === b.projectDir) continue;
 
       // Skip very short memories (not meaningful to compare)
       if (a.content.length < 50 || b.content.length < 50) continue;

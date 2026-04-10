@@ -96,15 +96,13 @@ describe('checkStaleness', () => {
   it('reports the most active path in the message', async () => {
     mockedIsGitRepo.mockResolvedValue(true);
     mockedGetFileLastModified.mockResolvedValue(new Date(Date.now() - 40 * 24 * 60 * 60 * 1000));
-    // Different commit counts per path call
+    // Different commit counts per referenced file path
     mockedGetCommitsSince
-      .mockResolvedValueOnce(2) // src
-      .mockResolvedValueOnce(1) // src/index.ts
-      .mockResolvedValueOnce(10) // src/utils
-      .mockResolvedValueOnce(7); // src/utils/helper.ts
+      .mockResolvedValueOnce(2) // src/index.ts
+      .mockResolvedValueOnce(10); // src/utils/helper.ts
     const issues = await checkStaleness(makeParsedFile(), '/project');
     expect(issues).toHaveLength(1);
-    expect(issues[0].message).toContain('src/utils');
+    expect(issues[0].message).toContain('src/utils/helper.ts');
     expect(issues[0].message).toContain('10 commits');
   });
 

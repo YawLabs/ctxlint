@@ -64,9 +64,8 @@ describe('loadConfig', () => {
     });
   });
 
-  it('returns null for invalid JSON', () => {
+  it('throws for invalid JSON', () => {
     fs.writeFileSync(path.join(tmpDir, '.ctxlintrc'), 'not valid json{{{');
-    const config = loadConfig(tmpDir);
-    expect(config).toBeNull();
+    expect(() => loadConfig(tmpDir)).toThrow('Invalid JSON');
   });
 });

@@ -1,17 +1,17 @@
 import { existsSync } from 'node:fs';
 import { resolve, isAbsolute } from 'node:path';
 import type { LintIssue, SessionContext } from '../../types.js';
+import { projectDirMatchesPath } from '../../session-parser.js';
 
 /**
  * Check Claude Code memory files for references to paths that no longer exist.
  */
 export async function checkStaleMemory(ctx: SessionContext): Promise<LintIssue[]> {
   const issues: LintIssue[] = [];
-  const currentNorm = ctx.currentProject.replace(/\\/g, '/');
 
   // Only check memories belonging to the current project
-  const projectMemories = ctx.memories.filter(
-    (m) => m.projectDir.replace(/\\/g, '/') === currentNorm,
+  const projectMemories = ctx.memories.filter((m) =>
+    projectDirMatchesPath(m.projectDir, ctx.currentProject),
   );
 
   for (const mem of projectMemories) {

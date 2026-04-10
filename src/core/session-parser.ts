@@ -4,21 +4,24 @@ import type { MemoryEntry } from './types.js';
 const PATH_PATTERN = /(?:^|\s|['"`(])([.~/][^\s'"`),;:!?]+)/g;
 
 /**
- * Decode a Claude Code project directory name to a filesystem path.
- * Example: "C--Users-jeff-yaw-ctxlint" -> "C:/Users/jeff/yaw/ctxlint"
+ * Encode a filesystem path the same way Claude Code encodes project directory names.
+ * Claude replaces `:`, `/`, `\`, and `.` with `-`.
+ * Example: "C:/Users/jeff/yaw/ctxlint" -> "C--Users-jeff-yaw-ctxlint"
+ *
+ * Note: this encoding is lossy — hyphens, dots, and path separators all map
+ * to `-`. We use this for matching (encoded == encoded) rather than decoding.
  */
-export function decodeProjectDir(dirName: string): string {
-  // Claude uses -- as path separator in directory names
-  // First char + colon pattern for Windows drives: "C--" -> "C:/"
-  const parts = dirName.split('--');
-  if (parts.length <= 1) return dirName;
+export function encodeProjectDir(fsPath: string): string {
+  return fsPath.replace(/[:\\/\.]/g, '-');
+}
 
-  // Check for Windows drive letter pattern (single letter first part)
-  if (parts[0].length === 1 && /^[A-Z]$/i.test(parts[0])) {
-    return parts[0] + ':/' + parts.slice(1).join('/');
-  }
-
-  return '/' + parts.join('/');
+/**
+ * Check whether an encoded Claude project directory name matches a filesystem path.
+ * Avoids the ambiguity of trying to decode `-` back to `/`, `-`, or `.`.
+ */
+export function projectDirMatchesPath(encodedDir: string, fsPath: string): boolean {
+  const normalized = fsPath.replace(/\\/g, '/');
+  return encodedDir === encodeProjectDir(normalized);
 }
 
 /**

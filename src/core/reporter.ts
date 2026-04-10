@@ -166,7 +166,7 @@ export function formatSarif(result: LintResult): string {
   for (const file of result.files) {
     for (const issue of file.issues) {
       const sarifResult: SarifResult = {
-        ruleId: issue.ruleId ? `ctxlint/${issue.check}/${issue.ruleId}` : `ctxlint/${issue.check}`,
+        ruleId: `ctxlint/${issue.check}`,
         level: severityToLevel[issue.severity] || 'note',
         message: {
           text: issue.message + (issue.suggestion ? ` (${issue.suggestion})` : ''),
@@ -302,6 +302,31 @@ function buildRuleDescriptors(): SarifRule[] {
       id: 'ctxlint/mcp-redundancy',
       shortDescription: { text: 'Redundant MCP config entry' },
       helpUri: 'https://github.com/yawlabs/ctxlint#mcp-config-linting',
+    },
+    {
+      id: 'ctxlint/session-missing-secret',
+      shortDescription: { text: 'GitHub secret set on sibling repos but missing here' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
+      id: 'ctxlint/session-diverged-file',
+      shortDescription: { text: 'Canonical file has diverged from sibling repos' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
+      id: 'ctxlint/session-missing-workflow',
+      shortDescription: { text: 'GitHub Actions workflow present in siblings but missing here' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
+      id: 'ctxlint/session-stale-memory',
+      shortDescription: { text: 'Memory file references paths that no longer exist' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
+      id: 'ctxlint/session-duplicate-memory',
+      shortDescription: { text: 'Near-duplicate memory entries across projects' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
     },
     {
       id: 'ctxlint/session-loop-detection',

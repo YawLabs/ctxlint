@@ -185,20 +185,25 @@ function extractCommandReferences(lines: string[], sections: Section[]): Command
       continue;
     }
 
-    // Check for $ or > prefixed commands
-    const prefixMatch = line.match(COMMAND_PREFIXES);
-    if (prefixMatch) {
-      commands.push({
-        value: prefixMatch[1].trim(),
-        line: i + 1,
-        column: prefixMatch.index! + prefixMatch[0].length - prefixMatch[1].length + 1,
-        section: getSectionForLine(i + 1, sections),
-      });
-      continue;
+    const isShellBlock = inCodeBlock && ['bash', 'sh', 'shell', 'zsh'].includes(codeBlockLang);
+
+    // Check for $ or > prefixed commands (only outside code blocks, or inside shell blocks)
+    // Skip markdown blockquotes (lines starting with "> " outside code blocks)
+    if (!inCodeBlock || isShellBlock) {
+      const prefixMatch = line.match(COMMAND_PREFIXES);
+      if (prefixMatch && (inCodeBlock || !line.trimStart().startsWith('>'))) {
+        commands.push({
+          value: prefixMatch[1].trim(),
+          line: i + 1,
+          column: prefixMatch.index! + prefixMatch[0].length - prefixMatch[1].length + 1,
+          section: getSectionForLine(i + 1, sections),
+        });
+        continue;
+      }
     }
 
     // In bash/shell code blocks, treat each non-empty line as a command
-    if (inCodeBlock && ['bash', 'sh', 'shell', 'zsh', ''].includes(codeBlockLang)) {
+    if (isShellBlock) {
       const trimmed = line.trim();
       if (trimmed && !trimmed.startsWith('#') && !trimmed.startsWith('//')) {
         // Check if it looks like a command

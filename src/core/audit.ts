@@ -1,6 +1,7 @@
 import { scanForContextFiles, scanForMcpConfigs, scanGlobalMcpConfigs } from './scanner.js';
 import { parseContextFile } from './parser.js';
 import { parseMcpConfig } from './mcp-parser.js';
+import { countTokens } from '../utils/tokens.js';
 import { checkPaths } from './checks/paths.js';
 import { checkCommands } from './checks/commands.js';
 import { checkStaleness } from './checks/staleness.js';
@@ -132,31 +133,34 @@ export async function runAudit(
       });
     }
 
-    // Cross-file context checks
+    // Cross-file context checks — collected into a synthetic project-level result
+    const crossFileIssues: LintIssue[] = [];
     if (activeChecks.includes('tokens')) {
       const aggIssue = checkAggregateTokens(
         fileResults.map((f) => ({ path: f.path, tokens: f.tokens })),
       );
-      if (aggIssue && fileResults.length > 0) fileResults[0].issues.push(aggIssue);
+      if (aggIssue) crossFileIssues.push(aggIssue);
     }
     if (activeChecks.includes('redundancy')) {
-      const dupIssues = checkDuplicateContent(parsed);
-      if (dupIssues.length > 0 && fileResults.length > 0) fileResults[0].issues.push(...dupIssues);
+      crossFileIssues.push(...checkDuplicateContent(parsed));
     }
     if (activeChecks.includes('contradictions')) {
-      const contradictionIssues = checkContradictions(parsed);
-      if (contradictionIssues.length > 0 && fileResults.length > 0)
-        fileResults[0].issues.push(...contradictionIssues);
+      crossFileIssues.push(...checkContradictions(parsed));
     }
     if (activeChecks.includes('ci-coverage')) {
-      const ciCoverageIssues = await checkCiCoverage(parsed, projectRoot);
-      if (ciCoverageIssues.length > 0 && fileResults.length > 0)
-        fileResults[0].issues.push(...ciCoverageIssues);
+      crossFileIssues.push(...(await checkCiCoverage(parsed, projectRoot)));
     }
     if (activeChecks.includes('ci-secrets')) {
-      const ciSecretsIssues = await checkCiSecrets(parsed, projectRoot);
-      if (ciSecretsIssues.length > 0 && fileResults.length > 0)
-        fileResults[0].issues.push(...ciSecretsIssues);
+      crossFileIssues.push(...(await checkCiSecrets(parsed, projectRoot)));
+    }
+    if (crossFileIssues.length > 0) {
+      fileResults.push({
+        path: '(project)',
+        isSymlink: false,
+        tokens: 0,
+        lines: 0,
+        issues: crossFileIssues,
+      });
     }
   }
 
@@ -206,35 +210,28 @@ export async function runAudit(
       fileResults.push({
         path: config.relativePath,
         isSymlink: false,
-        tokens: 0,
+        tokens: countTokens(config.content),
         lines,
         issues,
       });
     }
 
-    // Cross-file MCP checks
+    // Cross-file MCP checks — collected into a synthetic result
+    const crossMcpIssues: LintIssue[] = [];
     if (mcpChecksToRun.includes('mcp-consistency')) {
-      const consistencyIssues = await checkMcpConsistency(mcpConfigs);
-      if (consistencyIssues.length > 0) {
-        // Attach to the first MCP config file result, or create one
-        const firstMcpResult = fileResults.find((f) =>
-          mcpConfigs.some((c) => c.relativePath === f.path),
-        );
-        if (firstMcpResult) {
-          firstMcpResult.issues.push(...consistencyIssues);
-        }
-      }
+      crossMcpIssues.push(...(await checkMcpConsistency(mcpConfigs)));
     }
     if (mcpChecksToRun.includes('mcp-redundancy')) {
-      const redundancyIssues = await checkMcpRedundancy(mcpConfigs);
-      if (redundancyIssues.length > 0) {
-        const firstMcpResult = fileResults.find((f) =>
-          mcpConfigs.some((c) => c.relativePath === f.path),
-        );
-        if (firstMcpResult) {
-          firstMcpResult.issues.push(...redundancyIssues);
-        }
-      }
+      crossMcpIssues.push(...(await checkMcpRedundancy(mcpConfigs)));
+    }
+    if (crossMcpIssues.length > 0) {
+      fileResults.push({
+        path: '(mcp)',
+        isSymlink: false,
+        tokens: 0,
+        lines: 0,
+        issues: crossMcpIssues,
+      });
     }
   }
 

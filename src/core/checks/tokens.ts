@@ -17,7 +17,14 @@ const DEFAULT_THRESHOLDS: TokenThresholds = {
 let currentThresholds = DEFAULT_THRESHOLDS;
 
 export function setTokenThresholds(overrides: Partial<TokenThresholds>): void {
-  currentThresholds = { ...DEFAULT_THRESHOLDS, ...overrides };
+  const merged = { ...DEFAULT_THRESHOLDS, ...overrides };
+  if (merged.info >= merged.warning || merged.warning >= merged.error) {
+    console.error(
+      `Warning: token thresholds should satisfy info < warning < error (got ${merged.info}, ${merged.warning}, ${merged.error}) — using defaults`,
+    );
+    return;
+  }
+  currentThresholds = merged;
 }
 
 export function resetTokenThresholds(): void {

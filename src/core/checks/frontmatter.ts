@@ -21,6 +21,7 @@ function parseFrontmatter(content: string): FrontmatterResult {
 
   const fields: Record<string, string> = {};
   let endLine = 0;
+  let arrayKey = ''; // tracks a key whose value is a YAML array
 
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i].trim();
@@ -29,10 +30,23 @@ function parseFrontmatter(content: string): FrontmatterResult {
       break;
     }
 
+    // Collect YAML array items (- "value") into the preceding key
+    if (line.startsWith('- ') && arrayKey) {
+      const item = line.slice(2).trim().replace(/^["']|["']$/g, '');
+      const prev = fields[arrayKey];
+      fields[arrayKey] = prev ? `${prev}, ${item}` : item;
+      continue;
+    }
+    arrayKey = '';
+
     // Parse simple key: value pairs
     const match = line.match(/^(\w+)\s*:\s*(.*)$/);
     if (match) {
       fields[match[1]] = match[2].trim();
+      // If value is empty, the next lines may be YAML array items
+      if (!match[2].trim()) {
+        arrayKey = match[1];
+      }
     }
   }
 
@@ -56,7 +70,7 @@ function isWindsurfRule(file: ParsedContextFile): boolean {
   return file.relativePath.includes('.windsurf/rules/') && file.relativePath.endsWith('.md');
 }
 
-const VALID_WINDSURF_TRIGGERS = ['always_on', 'glob', 'manual', 'model'];
+const VALID_WINDSURF_TRIGGERS = ['always_on', 'glob', 'manual', 'model', 'model_decision'];
 
 export async function checkFrontmatter(
   file: ParsedContextFile,

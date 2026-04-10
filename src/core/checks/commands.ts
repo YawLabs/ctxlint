@@ -63,6 +63,8 @@ export async function checkCommands(
       const allDeps = {
         ...pkgJson.dependencies,
         ...pkgJson.devDependencies,
+        ...pkgJson.peerDependencies,
+        ...pkgJson.optionalDependencies,
       };
 
       // Normalize: npx packages may be invoked by bin name which differs from package name
@@ -115,6 +117,8 @@ export async function checkCommands(
       const allDeps = {
         ...pkgJson.dependencies,
         ...pkgJson.devDependencies,
+        ...pkgJson.peerDependencies,
+        ...pkgJson.optionalDependencies,
       };
       if (!(tool in allDeps)) {
         // Check node_modules/.bin

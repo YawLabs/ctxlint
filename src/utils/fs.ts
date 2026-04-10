@@ -5,15 +5,27 @@ export interface PackageJson {
   scripts?: Record<string, string>;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
 }
 
+let pkgJsonCache: { root: string; data: PackageJson | null } | null = null;
+
 export function loadPackageJson(projectRoot: string): PackageJson | null {
+  if (pkgJsonCache?.root === projectRoot) return pkgJsonCache.data;
   try {
     const content = fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf-8');
-    return JSON.parse(content);
+    const data = JSON.parse(content) as PackageJson;
+    pkgJsonCache = { root: projectRoot, data };
+    return data;
   } catch {
+    pkgJsonCache = { root: projectRoot, data: null };
     return null;
   }
+}
+
+export function resetPackageJsonCache(): void {
+  pkgJsonCache = null;
 }
 
 export function fileExists(filePath: string): boolean {

@@ -34,6 +34,7 @@ const CONTEXT_FILE_PATTERNS = [
 
   // Cline
   '.clinerules',
+  '.clinerules/*.md',
 
   // Aider — note: .aiderules has no file extension; this is the intended format
   '.aiderules',

@@ -28,14 +28,11 @@ export async function checkStaleness(
     return issues; // Recently updated, skip
   }
 
-  // Check referenced paths for activity since context file was last updated
+  // Check referenced paths for activity since context file was last updated.
+  // Only use the specific file paths — adding parent directories would double-count
+  // commits since git log on a directory includes all files within it.
   const referencedPaths = new Set<string>();
   for (const ref of file.references.paths) {
-    // Extract the directory portion for broader checking
-    const parts = ref.value.split('/');
-    if (parts.length > 1) {
-      referencedPaths.add(parts.slice(0, -1).join('/'));
-    }
     referencedPaths.add(ref.value);
   }
 

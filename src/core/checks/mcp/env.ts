@@ -5,8 +5,8 @@ const HAS_CURSOR_SYNTAX = /\$\{env:[^}]+\}/;
 const HAS_CLAUDE_SYNTAX = /\$\{[A-Za-z_][A-Za-z0-9_]*(?::-.*)?\}/;
 const HAS_CONTINUE_SYNTAX = /\$\{\{\s*secrets\.[^}]+\}\}/;
 
-// Any env var reference
-const ANY_ENV_REF = /\$\{[^}]+\}/g;
+// Any env var reference — matches ${VAR}, ${env:VAR}, and ${{ secrets.VAR }}
+const ANY_ENV_REF = /\$\{\{[^}]*\}\}|\$\{[^}]+\}/g;
 
 interface EnvVarRef {
   varName: string;

@@ -7,11 +7,24 @@ import { formatText, formatJson, formatTokenReport, formatSarif } from './core/r
 import { applyFixes } from './core/fixer.js';
 import { freeEncoder } from './utils/tokens.js';
 import { resetGit } from './utils/git.js';
+import { resetPackageJsonCache } from './utils/fs.js';
 import { loadConfig } from './core/config.js';
 import { runAudit, ALL_CHECKS, ALL_MCP_CHECKS, ALL_SESSION_CHECKS } from './core/audit.js';
 import type { LintOptions, CheckName } from './core/types.js';
 import * as path from 'node:path';
 import { VERSION } from './version.js';
+
+const VALID_CHECKS = new Set<string>([...ALL_CHECKS, ...ALL_MCP_CHECKS, ...ALL_SESSION_CHECKS]);
+
+function validateCheckNames(names: string[], source: string): CheckName[] {
+  const invalid = names.filter((n) => n && !VALID_CHECKS.has(n));
+  if (invalid.length > 0) {
+    console.error(`Error: unknown check name${invalid.length > 1 ? 's' : ''} in ${source}: ${invalid.join(', ')}`);
+    console.error(`Valid checks: ${[...VALID_CHECKS].join(', ')}`);
+    process.exit(2);
+  }
+  return names.filter((n) => n) as CheckName[];
+}
 
 export async function runCli() {
   const program = new Command();
@@ -54,9 +67,14 @@ export async function runCli() {
       const sessionOnly = (opts.sessionOnly as boolean) || false;
 
       // Build checks list: if explicit --checks includes mcp-* or session-*, imply the flag
-      const explicitChecks = opts.checks
-        ? (opts.checks as string).split(',').map((c: string) => c.trim() as CheckName)
+      let explicitChecks = opts.checks
+        ? validateCheckNames(
+            (opts.checks as string).split(',').map((c: string) => c.trim()),
+            '--checks',
+          )
         : null;
+      // Treat empty list the same as "not specified" — use defaults
+      if (explicitChecks?.length === 0) explicitChecks = null;
 
       const hasMcpInChecks = explicitChecks?.some((c) => c.startsWith('mcp-')) || false;
       const hasSessionInChecks = explicitChecks?.some((c) => c.startsWith('session-')) || false;
@@ -87,7 +105,10 @@ export async function runCli() {
         verbose: opts.verbose as boolean,
         fix: opts.fix as boolean,
         ignore: opts.ignore
-          ? (opts.ignore as string).split(',').map((c: string) => c.trim() as CheckName)
+          ? validateCheckNames(
+              (opts.ignore as string).split(',').map((c: string) => c.trim()),
+              '--ignore',
+            )
           : config?.ignore || [],
         tokensOnly: opts.tokens as boolean,
         quiet: opts.quiet as boolean,
@@ -137,12 +158,12 @@ export async function runCli() {
               console.log('\nNo context files found.\n');
             }
           }
-          process.exit(0);
+          if (!opts.watch) return;
         }
 
         // Apply fixes if requested
         if (options.fix) {
-          const fixSummary = applyFixes(result);
+          const fixSummary = applyFixes(result, { quiet: options.quiet });
           if (fixSummary.totalFixes > 0 && !options.quiet) {
             console.log(
               `\nFixed ${fixSummary.totalFixes} issue${fixSummary.totalFixes !== 1 ? 's' : ''} in ${fixSummary.filesModified.length} file${fixSummary.filesModified.length !== 1 ? 's' : ''}.\n`,
@@ -169,16 +190,17 @@ export async function runCli() {
           options.strict &&
           (result.summary.errors > 0 || result.summary.warnings > 0)
         ) {
-          process.exit(1);
+          process.exitCode = 1;
         }
       } catch (err) {
         spinner?.stop();
         console.error('Error:', err instanceof Error ? err.message : err);
-        if (!opts.watch) process.exit(2);
+        if (!opts.watch) process.exitCode = 2;
       } finally {
         freeEncoder();
         resetGit();
         resetPathsCache();
+        resetPackageJsonCache();
         resetTokenThresholds();
       }
 
@@ -224,7 +246,7 @@ export async function runCli() {
         const rerun = () => {
           if (debounceTimer) clearTimeout(debounceTimer);
           debounceTimer = setTimeout(async () => {
-            console.clear();
+            if (process.stdout.isTTY) console.clear();
             try {
               const result = await runAudit(resolvedPath, activeChecks, {
                 depth: options.depth,
@@ -240,6 +262,10 @@ export async function runCli() {
                 console.log('\nNo context files found.\n');
               } else if (options.tokensOnly) {
                 console.log(formatTokenReport(result));
+              } else if (options.format === 'json') {
+                console.log(formatJson(result));
+              } else if (options.format === 'sarif') {
+                console.log(formatSarif(result));
               } else {
                 console.log(formatText(result, options.verbose));
               }
@@ -249,6 +275,7 @@ export async function runCli() {
               freeEncoder();
               resetGit();
               resetPathsCache();
+        resetPackageJsonCache();
               resetTokenThresholds();
               if (config?.tokenThresholds) setTokenThresholds(config.tokenThresholds);
             }
@@ -282,8 +309,10 @@ export async function runCli() {
   program
     .command('init')
     .description('Set up a git pre-commit hook that runs ctxlint --strict')
-    .action(async () => {
-      const gitDir = path.resolve(process.cwd(), '.git');
+    .argument('[path]', 'Project directory', '.')
+    .action(async (projectPath: string) => {
+      const resolvedRoot = path.resolve(projectPath);
+      const gitDir = path.join(resolvedRoot, '.git');
       const hooksDir = path.join(gitDir, 'hooks');
 
       if (!fs.existsSync(gitDir)) {
@@ -296,7 +325,11 @@ export async function runCli() {
       }
 
       const hookPath = path.join(hooksDir, 'pre-commit');
-      const hookContent = `#!/bin/sh
+      const fullHookContent = `#!/bin/sh
+# ctxlint pre-commit hook
+npx @yawlabs/ctxlint --strict
+`;
+      const appendHookContent = `
 # ctxlint pre-commit hook
 npx @yawlabs/ctxlint --strict
 `;
@@ -307,11 +340,11 @@ npx @yawlabs/ctxlint --strict
           console.log('Pre-commit hook already includes ctxlint.');
           return;
         }
-        // Append to existing hook
-        fs.appendFileSync(hookPath, '\n' + hookContent);
+        // Append to existing hook (without shebang — the existing hook already has one)
+        fs.appendFileSync(hookPath, appendHookContent);
         console.log('Added ctxlint to existing pre-commit hook.');
       } else {
-        fs.writeFileSync(hookPath, hookContent, { mode: 0o755 });
+        fs.writeFileSync(hookPath, fullHookContent, { mode: 0o755 });
         console.log('Created pre-commit hook at .git/hooks/pre-commit');
       }
 

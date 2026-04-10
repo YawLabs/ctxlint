@@ -33,14 +33,14 @@ describe('custom token thresholds', () => {
   });
 
   it('uses custom warning threshold', async () => {
-    setTokenThresholds({ warning: 200 });
+    setTokenThresholds({ info: 100, warning: 200 });
     const issues = await checkTokens(makeParsedFile(250), '/test');
     expect(issues).toHaveLength(1);
     expect(issues[0].severity).toBe('warning');
   });
 
   it('uses custom error threshold', async () => {
-    setTokenThresholds({ error: 500 });
+    setTokenThresholds({ info: 100, warning: 300, error: 500 });
     const issues = await checkTokens(makeParsedFile(600), '/test');
     expect(issues).toHaveLength(1);
     expect(issues[0].severity).toBe('error');

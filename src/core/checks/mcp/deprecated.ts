@@ -33,24 +33,34 @@ export async function checkMcpDeprecated(
 
 function findTypeLine(content: string, serverName: string): number | null {
   const lines = content.split('\n');
-  let inServer = false;
+  const escaped = serverName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const namePattern = new RegExp(`"${escaped}"\\s*:`);
 
+  // Find the line where this server's object starts
+  let serverStart = -1;
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i].includes(`"${serverName}"`)) {
-      inServer = true;
+    if (namePattern.test(lines[i])) {
+      serverStart = i;
+      break;
     }
-    if (inServer && lines[i].includes('"type"') && lines[i].includes('"sse"')) {
-      return i + 1;
-    }
-    // If we hit another server name at the same nesting level, stop
-    if (inServer && i > 0 && lines[i].match(/^\s{4}"\w/) && !lines[i].includes(`"${serverName}"`)) {
-      // Rough heuristic: if we see another top-level key inside mcpServers, stop
-      const indent = lines[i].search(/\S/);
-      const serverIndent = lines.findIndex((l) => l.includes(`"${serverName}"`));
-      if (serverIndent >= 0) {
-        const origIndent = lines[serverIndent].search(/\S/);
-        if (indent <= origIndent) break;
+  }
+  if (serverStart === -1) return null;
+
+  // Track brace depth to stay within this server's object
+  let depth = 0;
+  let enteredObject = false;
+  for (let i = serverStart; i < lines.length; i++) {
+    for (const ch of lines[i]) {
+      if (ch === '{') {
+        depth++;
+        enteredObject = true;
+      } else if (ch === '}') {
+        depth--;
+        if (enteredObject && depth === 0) return null; // left the server object
       }
+    }
+    if (enteredObject && lines[i].includes('"type"') && lines[i].includes('"sse"')) {
+      return i + 1;
     }
   }
   return null;

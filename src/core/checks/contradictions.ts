@@ -133,17 +133,15 @@ const DIRECTIVE_CATEGORIES: DirectiveCategory[] = [
       {
         label: 'single quotes',
         patterns: [
-          /\bsingle\s+quotes?\b/i,
-          /\buse\s+(?:single\s+)?['']single['']?\s+quotes?\b/i,
-          /\bprefer\s+single\s+quotes?\b/i,
+          /\b(?:use|prefer|enforce|always)\s+single\s+quotes?\b/i,
+          /\bsingle\s+quotes?\s+(?:for|only|everywhere|throughout)\b/i,
         ],
       },
       {
         label: 'double quotes',
         patterns: [
-          /\bdouble\s+quotes?\b/i,
-          /\buse\s+(?:double\s+)?[""]double[""]?\s+quotes?\b/i,
-          /\bprefer\s+double\s+quotes?\b/i,
+          /\b(?:use|prefer|enforce|always)\s+double\s+quotes?\b/i,
+          /\bdouble\s+quotes?\s+(?:for|only|everywhere|throughout)\b/i,
         ],
       },
     ],
@@ -153,19 +151,31 @@ const DIRECTIVE_CATEGORIES: DirectiveCategory[] = [
     options: [
       {
         label: 'camelCase',
-        patterns: [/\bcamelCase\b/, /\bcamel[\s-]?case\s+(?:for|naming|convention)/i],
+        patterns: [
+          /\b(?:use|prefer|enforce|default to)\s+camelCase\b/i,
+          /\bcamel[\s-]?case\s+(?:for|naming|convention)/i,
+        ],
       },
       {
         label: 'snake_case',
-        patterns: [/\bsnake_case\b/, /\bsnake[\s-]?case\s+(?:for|naming|convention)/i],
+        patterns: [
+          /\b(?:use|prefer|enforce|default to)\s+snake_case\b/i,
+          /\bsnake[\s-]?case\s+(?:for|naming|convention)/i,
+        ],
       },
       {
         label: 'PascalCase',
-        patterns: [/\bPascalCase\b/, /\bpascal[\s-]?case\s+(?:for|naming|convention)/i],
+        patterns: [
+          /\b(?:use|prefer|enforce|default to)\s+PascalCase\b/i,
+          /\bpascal[\s-]?case\s+(?:for|naming|convention)/i,
+        ],
       },
       {
         label: 'kebab-case',
-        patterns: [/\bkebab-case\b/, /\bkebab[\s-]?case\s+(?:for|naming|convention)/i],
+        patterns: [
+          /\b(?:use|prefer|enforce|default to)\s+kebab-case\b/i,
+          /\bkebab[\s-]?case\s+(?:for|naming|convention)/i,
+        ],
       },
     ],
   },

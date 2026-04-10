@@ -98,6 +98,8 @@ export async function checkRedundancy(
     const allDeps = new Set([
       ...Object.keys(pkgJson.dependencies || {}),
       ...Object.keys(pkgJson.devDependencies || {}),
+      ...Object.keys(pkgJson.peerDependencies || {}),
+      ...Object.keys(pkgJson.optionalDependencies || {}),
     ]);
 
     // Pre-compile all regex patterns once
@@ -121,7 +123,7 @@ export async function checkRedundancy(
             severity: 'info',
             check: 'redundancy',
             line: i + 1,
-            message: `"${mention}" is in package.json ${pkgJson.dependencies?.[pkg] ? 'dependencies' : 'devDependencies'} — agent can infer this`,
+            message: `"${mention}" is in package.json ${pkgJson.dependencies?.[pkg] ? 'dependencies' : pkgJson.devDependencies?.[pkg] ? 'devDependencies' : pkgJson.peerDependencies?.[pkg] ? 'peerDependencies' : 'optionalDependencies'} — agent can infer this`,
             suggestion: `~${wastedTokens} tokens could be saved`,
           });
         }
@@ -198,7 +200,7 @@ function calculateLineOverlap(contentA: string, contentB: string): number {
     if (linesB.has(line)) overlap++;
   }
 
-  return overlap / Math.min(linesA.size, linesB.size);
+  return overlap / Math.max(linesA.size, linesB.size);
 }
 
 function escapeRegex(str: string): string {

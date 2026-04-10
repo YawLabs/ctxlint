@@ -5,10 +5,11 @@ import { scanForContextFiles } from '../core/scanner.js';
 import { parseContextFile } from '../core/parser.js';
 import { runAudit, ALL_CHECKS, ALL_MCP_CHECKS, ALL_SESSION_CHECKS } from '../core/audit.js';
 import { applyFixes } from '../core/fixer.js';
-import { fileExists, isDirectory } from '../utils/fs.js';
+import { fileExists, isDirectory, resetPackageJsonCache } from '../utils/fs.js';
 import { findRenames } from '../utils/git.js';
 import { freeEncoder, keepEncoderAlive } from '../utils/tokens.js';
 import { resetGit } from '../utils/git.js';
+import { resetPathsCache } from '../core/checks/paths.js';
 import type { CheckName } from '../core/types.js';
 import * as path from 'node:path';
 import { VERSION } from '../version.js';
@@ -46,7 +47,7 @@ const server = new McpServer({
 
 server.tool(
   'ctxlint_audit',
-  'Audit all AI agent context files (CLAUDE.md, AGENTS.md, etc.) and optionally MCP server configs in the project. Checks for stale references, invalid commands, redundant content, contradictions, frontmatter issues, token waste, and MCP config errors.',
+  'Audit AI agent context files (CLAUDE.md, AGENTS.md, etc.) in the project. Checks for stale references, invalid commands, redundant content, contradictions, frontmatter issues, and token waste. Use ctxlint_mcp_audit for MCP configs or ctxlint_session_audit for session checks.',
   {
     projectPath: z
       .string()
@@ -62,7 +63,7 @@ server.tool(
   },
   async ({ projectPath, checks }) => {
     const root = path.resolve(projectPath || process.cwd());
-    const activeChecks = (checks as CheckName[] | undefined) || ALL_CHECKS;
+    const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_CHECKS;
 
     try {
       const result = await runAudit(root, activeChecks);
@@ -76,6 +77,8 @@ server.tool(
     } finally {
       freeEncoder();
       resetGit();
+      resetPathsCache();
+      resetPackageJsonCache();
     }
   },
 );
@@ -122,6 +125,8 @@ server.tool(
       };
     } finally {
       resetGit();
+      resetPathsCache();
+      resetPackageJsonCache();
     }
   },
 );
@@ -199,11 +204,11 @@ server.tool(
   },
   async ({ projectPath, checks }) => {
     const root = path.resolve(projectPath || process.cwd());
-    const activeChecks = (checks as CheckName[] | undefined) || ALL_CHECKS;
+    const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_CHECKS;
 
     try {
       const result = await runAudit(root, activeChecks);
-      const fixSummary = applyFixes(result);
+      const fixSummary = applyFixes(result, { quiet: true });
 
       return {
         content: [
@@ -230,6 +235,8 @@ server.tool(
     } finally {
       freeEncoder();
       resetGit();
+      resetPathsCache();
+      resetPackageJsonCache();
     }
   },
 );
@@ -256,7 +263,7 @@ server.tool(
   },
   async ({ projectPath, checks, includeGlobal }) => {
     const root = path.resolve(projectPath || process.cwd());
-    const activeChecks = (checks as CheckName[] | undefined) || ALL_MCP_CHECKS;
+    const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_MCP_CHECKS;
 
     try {
       const result = await runAudit(root, activeChecks, {
@@ -274,6 +281,8 @@ server.tool(
     } finally {
       freeEncoder();
       resetGit();
+      resetPathsCache();
+      resetPackageJsonCache();
     }
   },
 );
@@ -299,7 +308,7 @@ server.tool(
   },
   async ({ projectPath, checks }) => {
     const root = path.resolve(projectPath || process.cwd());
-    const activeChecks = (checks as CheckName[] | undefined) || ALL_SESSION_CHECKS;
+    const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_SESSION_CHECKS;
 
     try {
       const result = await runAudit(root, activeChecks, {
@@ -316,6 +325,8 @@ server.tool(
     } finally {
       freeEncoder();
       resetGit();
+      resetPathsCache();
+      resetPackageJsonCache();
     }
   },
 );
