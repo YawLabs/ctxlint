@@ -32,7 +32,10 @@ function parseFrontmatter(content: string): FrontmatterResult {
 
     // Collect YAML array items (- "value") into the preceding key
     if (line.startsWith('- ') && arrayKey) {
-      const item = line.slice(2).trim().replace(/^["']|["']$/g, '');
+      const item = line
+        .slice(2)
+        .trim()
+        .replace(/^["']|["']$/g, '');
       const prev = fields[arrayKey];
       fields[arrayKey] = prev ? `${prev}, ${item}` : item;
       continue;

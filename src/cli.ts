@@ -19,7 +19,9 @@ const VALID_CHECKS = new Set<string>([...ALL_CHECKS, ...ALL_MCP_CHECKS, ...ALL_S
 function validateCheckNames(names: string[], source: string): CheckName[] {
   const invalid = names.filter((n) => n && !VALID_CHECKS.has(n));
   if (invalid.length > 0) {
-    console.error(`Error: unknown check name${invalid.length > 1 ? 's' : ''} in ${source}: ${invalid.join(', ')}`);
+    console.error(
+      `Error: unknown check name${invalid.length > 1 ? 's' : ''} in ${source}: ${invalid.join(', ')}`,
+    );
     console.error(`Valid checks: ${[...VALID_CHECKS].join(', ')}`);
     process.exit(2);
   }
@@ -275,7 +277,7 @@ export async function runCli() {
               freeEncoder();
               resetGit();
               resetPathsCache();
-        resetPackageJsonCache();
+              resetPackageJsonCache();
               resetTokenThresholds();
               if (config?.tokenThresholds) setTokenThresholds(config.tokenThresholds);
             }

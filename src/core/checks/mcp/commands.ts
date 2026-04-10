@@ -76,4 +76,3 @@ function fileExistsSafe(filePath: string): boolean {
     return false;
   }
 }
-
