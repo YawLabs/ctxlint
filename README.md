@@ -6,7 +6,7 @@
 [![CI](https://github.com/YawLabs/ctxlint/actions/workflows/ci.yml/badge.svg)](https://github.com/YawLabs/ctxlint/actions/workflows/ci.yml)
 [![Release](https://github.com/YawLabs/ctxlint/actions/workflows/release.yml/badge.svg)](https://github.com/YawLabs/ctxlint/actions/workflows/release.yml)
 
-**Lint your AI agent context files and MCP server configs against your actual codebase.** Context linting + MCP config linting. 21+ context formats, 8 MCP clients, auto-fix. Works as a CLI, CI step, pre-commit hook, or MCP server.
+**Lint your AI agent context files, MCP server configs, and session data against your actual codebase.** Context linting + MCP config linting + session auditing. 21+ context formats, 8 MCP clients, cross-project consistency, auto-fix. Works as a CLI, CI step, pre-commit hook, or MCP server.
 
 Your `CLAUDE.md` is lying to your agent. Your `.mcp.json` has a hardcoded API key. ctxlint catches both.
 
@@ -66,38 +66,44 @@ Useful if you want `ctxlint` available in every project without per-project setu
 
 ## What It Checks
 
-| Check | What it finds |
-|-------|--------------|
-| **Broken paths** | File references in context that don't exist in your project |
-| **Wrong commands** | Build/test commands that don't match your package.json scripts or Makefile targets |
-| **Stale context** | Context files not updated after recent code changes |
-| **Token waste** | How much context window your files consume per session |
-| **Redundancy** | Content the agent can already infer (e.g. "We use React" when react is in package.json) |
-| **Contradictions** | Conflicting directives across context files (e.g. "use Jest" in one, "use Vitest" in another) |
-| **Frontmatter** | Invalid or missing YAML frontmatter in Cursor .mdc, Copilot instructions, and Windsurf rules |
-| **CI coverage** | Release/deploy workflows in `.github/workflows/` not documented in any context file |
-| **CI secrets** | Secrets used in CI workflows (`${{ secrets.X }}`) not mentioned in context files |
+| Check                 | What it finds                                                                                 |
+| --------------------- | --------------------------------------------------------------------------------------------- |
+| **Broken paths**      | File references in context that don't exist in your project                                   |
+| **Wrong commands**    | Build/test commands that don't match your package.json scripts or Makefile targets            |
+| **Stale context**     | Context files not updated after recent code changes                                           |
+| **Token waste**       | How much context window your files consume per session                                        |
+| **Redundancy**        | Content the agent can already infer (e.g. "We use React" when react is in package.json)       |
+| **Contradictions**    | Conflicting directives across context files (e.g. "use Jest" in one, "use Vitest" in another) |
+| **Frontmatter**       | Invalid or missing YAML frontmatter in Cursor .mdc, Copilot instructions, and Windsurf rules  |
+| **CI coverage**       | Release/deploy workflows in `.github/workflows/` not documented in any context file           |
+| **CI secrets**        | Secrets used in CI workflows (`${{ secrets.X }}`) not mentioned in context files              |
+| **Missing secrets**   | GitHub secrets set on sibling repos but missing from current project                          |
+| **Diverged configs**  | Canonical config files (CI, tsconfig, etc.) drifting across sibling projects                  |
+| **Missing workflows** | GitHub Actions workflows present in 2+ siblings but absent here                               |
+| **Stale memory**      | Claude Code memory entries referencing paths that no longer exist                             |
+| **Duplicate memory**  | Near-duplicate memories across projects (>60% content overlap)                                |
+| **Loop detection**    | Agent stuck in loops — repeated commands or cyclic patterns in session history                |
 
 ## Supported Context Files
 
-| File | Tool |
-|------|------|
-| `CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/*.md` | Claude Code |
-| `AGENTS.md`, `AGENT.md`, `AGENTS.override.md` | AAIF / Multi-agent standard |
-| `.cursorrules`, `.cursor/rules/*.md`, `.cursor/rules/*.mdc`, `.cursor/rules/*/RULE.md` | Cursor |
-| `.github/copilot-instructions.md`, `.github/instructions/*.md`, `.github/git-commit-instructions.md` | GitHub Copilot |
-| `.windsurfrules`, `.windsurf/rules/*.md` | Windsurf |
-| `GEMINI.md` | Gemini CLI |
-| `.clinerules` | Cline |
-| `.aiderules` | Aider |
-| `.aide/rules/*.md` | Aide / Codestory |
-| `.amazonq/rules/*.md` | Amazon Q Developer |
-| `.goose/instructions.md`, `.goosehints` | Goose by Block |
-| `.junie/guidelines.md`, `.junie/AGENTS.md` | JetBrains Junie |
-| `.aiassistant/rules/*.md` | JetBrains AI Assistant |
-| `.continuerules`, `.continue/rules/*.md` | Continue |
-| `.rules` | Zed |
-| `replit.md` | Replit |
+| File                                                                                                 | Tool                        |
+| ---------------------------------------------------------------------------------------------------- | --------------------------- |
+| `CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/*.md`                                                 | Claude Code                 |
+| `AGENTS.md`, `AGENT.md`, `AGENTS.override.md`                                                        | AAIF / Multi-agent standard |
+| `.cursorrules`, `.cursor/rules/*.md`, `.cursor/rules/*.mdc`, `.cursor/rules/*/RULE.md`               | Cursor                      |
+| `.github/copilot-instructions.md`, `.github/instructions/*.md`, `.github/git-commit-instructions.md` | GitHub Copilot              |
+| `.windsurfrules`, `.windsurf/rules/*.md`                                                             | Windsurf                    |
+| `GEMINI.md`                                                                                          | Gemini CLI                  |
+| `.clinerules`                                                                                        | Cline                       |
+| `.aiderules`                                                                                         | Aider                       |
+| `.aide/rules/*.md`                                                                                   | Aide / Codestory            |
+| `.amazonq/rules/*.md`                                                                                | Amazon Q Developer          |
+| `.goose/instructions.md`, `.goosehints`                                                              | Goose by Block              |
+| `.junie/guidelines.md`, `.junie/AGENTS.md`                                                           | JetBrains Junie             |
+| `.aiassistant/rules/*.md`                                                                            | JetBrains AI Assistant      |
+| `.continuerules`, `.continue/rules/*.md`                                                             | Continue                    |
+| `.rules`                                                                                             | Zed                         |
+| `replit.md`                                                                                          | Replit                      |
 
 ## MCP Server Config Linting
 
@@ -116,28 +122,28 @@ npx @yawlabs/ctxlint --mcp-global
 
 ### What MCP config files are scanned
 
-| File | Client |
-|------|--------|
-| `.mcp.json` | Claude Code (universal project config) |
-| `.cursor/mcp.json` | Cursor |
-| `.vscode/mcp.json` | VS Code / GitHub Copilot |
-| `.amazonq/mcp.json` | Amazon Q Developer |
-| `.continue/mcpServers/*.json` | Continue |
+| File                          | Client                                 |
+| ----------------------------- | -------------------------------------- |
+| `.mcp.json`                   | Claude Code (universal project config) |
+| `.cursor/mcp.json`            | Cursor                                 |
+| `.vscode/mcp.json`            | VS Code / GitHub Copilot               |
+| `.amazonq/mcp.json`           | Amazon Q Developer                     |
+| `.continue/mcpServers/*.json` | Continue                               |
 
 With `--mcp-global`, also scans Claude Desktop, Cursor, Windsurf, and Amazon Q global configs.
 
 ### What MCP config checks catch
 
-| Check | What it finds |
-|-------|--------------|
-| **Schema** | Invalid JSON, wrong root key (`servers` vs `mcpServers`), missing required fields |
-| **Security** | Hardcoded API keys and Bearer tokens in git-tracked config files |
-| **Commands** | Missing `cmd /c` wrapper for npx on Windows, broken file paths in args |
-| **Deprecated** | SSE transport usage (deprecated March 2025, use Streamable HTTP) |
-| **Env vars** | Wrong env var syntax for the client (`${VAR}` vs `${env:VAR}` vs `${{ secrets.VAR }}`) |
-| **URLs** | Malformed URLs, localhost in project configs, missing path component |
-| **Consistency** | Same server configured differently across client configs |
-| **Redundancy** | Disabled servers, identical configs at multiple scopes |
+| Check           | What it finds                                                                          |
+| --------------- | -------------------------------------------------------------------------------------- |
+| **Schema**      | Invalid JSON, wrong root key (`servers` vs `mcpServers`), missing required fields      |
+| **Security**    | Hardcoded API keys and Bearer tokens in git-tracked config files                       |
+| **Commands**    | Missing `cmd /c` wrapper for npx on Windows, broken file paths in args                 |
+| **Deprecated**  | SSE transport usage (deprecated March 2025, use Streamable HTTP)                       |
+| **Env vars**    | Wrong env var syntax for the client (`${VAR}` vs `${env:VAR}` vs `${{ secrets.VAR }}`) |
+| **URLs**        | Malformed URLs, localhost in project configs, missing path component                   |
+| **Consistency** | Same server configured differently across client configs                               |
+| **Redundancy**  | Disabled servers, identical configs at multiple scopes                                 |
 
 ### Example MCP config output
 
@@ -167,6 +173,43 @@ The full specification for MCP config linting rules, the cross-client config lan
 
 - **[`MCP_CONFIG_LINT_SPEC.md`](./MCP_CONFIG_LINT_SPEC.md)** — 23 lint rules across 8 categories, the complete client/format reference, and implementation guidance. Tool-agnostic — any linter can implement it.
 - **[`mcp-config-lint-rules.json`](./mcp-config-lint-rules.json)** — Machine-readable rule catalog for programmatic consumption by AI agents, CI systems, and other tools.
+
+## Session Linting
+
+ctxlint can audit AI agent session data — history files and memory entries — for cross-project consistency. Session checks compare your current project against sibling repos to catch drift and missing setup.
+
+```bash
+# Lint context files + session data
+npx @yawlabs/ctxlint --session
+
+# Lint only session data
+npx @yawlabs/ctxlint --session-only
+```
+
+Session checks are **opt-in** because they access files outside the project directory (agent history in your home directory, sibling repos in the parent directory).
+
+### What session files are scanned
+
+| Agent       | History                   | Memory                             |
+| ----------- | ------------------------- | ---------------------------------- |
+| Claude Code | `~/.claude/history.jsonl` | `~/.claude/projects/*/memory/*.md` |
+| Codex CLI   | `~/.codex/history.jsonl`  | —                                  |
+
+### What session checks catch
+
+| Check                 | What it finds                                                                                                                                    |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Missing secrets**   | `gh secret set` ran on 2+ sibling repos but not this one                                                                                         |
+| **Diverged configs**  | Shared config files (CI workflows, tsconfig, .prettierrc, etc.) with 20-90% line overlap — enough to be related, different enough to be drifting |
+| **Missing workflows** | GitHub Actions workflows in 2+ siblings but absent from this project                                                                             |
+| **Stale memory**      | Memory entries referencing file paths that no longer exist                                                                                       |
+| **Duplicate memory**  | Near-duplicate memory entries across projects (>60% overlap)                                                                                     |
+| **Loop detection**    | Agent stuck in a loop — 3+ consecutive identical commands, or cyclic A,B,A,B patterns                                                            |
+
+### Session Linting Specification
+
+- **[`AGENT_SESSION_LINT_SPEC.md`](./AGENT_SESSION_LINT_SPEC.md)** — 7 lint rules, the agent session data landscape across 8 agents, sibling detection strategy, and implementation guidance.
+- **[`agent-session-lint-rules.json`](./agent-session-lint-rules.json)** — Machine-readable rule catalog.
 
 ## Example Output
 
@@ -214,6 +257,8 @@ Options:
   --mcp                Enable MCP config linting alongside context file checks
   --mcp-only           Run only MCP config checks, skip context file checks
   --mcp-global         Also scan user/global MCP config files (implies --mcp)
+  --session            Enable session audit checks (cross-project consistency)
+  --session-only       Run only session checks, skip context and MCP checks
   --mcp-server         Start the MCP server (for IDE/agent integration)
   --watch              Re-lint on context file changes
   -V, --version        Output the version number
@@ -223,9 +268,9 @@ Commands:
   init                 Set up a git pre-commit hook
 ```
 
-**Available checks:** `paths`, `commands`, `staleness`, `tokens`, `redundancy`, `contradictions`, `frontmatter`, `ci-coverage`, `ci-secrets`, `mcp-schema`, `mcp-security`, `mcp-commands`, `mcp-deprecated`, `mcp-env`, `mcp-urls`, `mcp-consistency`, `mcp-redundancy`
+**Available checks:** `paths`, `commands`, `staleness`, `tokens`, `redundancy`, `contradictions`, `frontmatter`, `ci-coverage`, `ci-secrets`, `mcp-schema`, `mcp-security`, `mcp-commands`, `mcp-deprecated`, `mcp-env`, `mcp-urls`, `mcp-consistency`, `mcp-redundancy`, `session-missing-secret`, `session-diverged-file`, `session-missing-workflow`, `session-stale-memory`, `session-duplicate-memory`, `session-loop-detection`
 
-Passing any `mcp-*` check name implies `--mcp`.
+Passing any `mcp-*` check name implies `--mcp`. Passing any `session-*` check name implies `--session`.
 
 ## Watch Mode
 
@@ -407,16 +452,19 @@ Returns structured JSON with all file results, issues, and summary — useful fo
 
 ## Specifications
 
-ctxlint is the reference implementation of two open specifications for linting AI agent interfaces. These specs are tool-agnostic — any linter, IDE extension, or CI system can implement them.
+ctxlint is the reference implementation of three open specifications for linting AI agent interfaces. These specs are tool-agnostic — any linter, IDE extension, or CI system can implement them.
 
-| Spec | What it covers |
-|------|---------------|
-| **[AI Context File Linting Spec](./CONTEXT_LINT_SPEC.md)** | 19 rules for validating context files (CLAUDE.md, .cursorrules, AGENTS.md, etc.) across 17 clients. Covers file formats, frontmatter schemas, path/command validation, staleness, token budgets, redundancy, and contradictions. |
-| **[MCP Config Linting Spec](./MCP_CONFIG_LINT_SPEC.md)** | 23 rules for validating MCP server configs (.mcp.json, .cursor/mcp.json, .vscode/mcp.json, etc.) across 8 clients. Covers schema validation, hardcoded secrets, env var syntax, deprecated transports, and cross-file consistency. |
+| Spec                                                           | What it covers                                                                                                                                                                                                                     |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **[AI Context File Linting Spec](./CONTEXT_LINT_SPEC.md)**     | 19 rules for validating context files (CLAUDE.md, .cursorrules, AGENTS.md, etc.) across 17 clients. Covers file formats, frontmatter schemas, path/command validation, staleness, token budgets, redundancy, and contradictions.   |
+| **[MCP Config Linting Spec](./MCP_CONFIG_LINT_SPEC.md)**       | 23 rules for validating MCP server configs (.mcp.json, .cursor/mcp.json, .vscode/mcp.json, etc.) across 8 clients. Covers schema validation, hardcoded secrets, env var syntax, deprecated transports, and cross-file consistency. |
+| **[Agent Session Linting Spec](./AGENT_SESSION_LINT_SPEC.md)** | 7 rules for auditing agent session data (history, memory) across 8 agents. Covers cross-project secret consistency, config drift, stale memory, and loop detection.                                                                |
 
-Both specs include machine-readable rule catalogs for programmatic consumption:
+All specs include machine-readable rule catalogs for programmatic consumption:
+
 - [`context-lint-rules.json`](./context-lint-rules.json) — context file rules and 16 supported format definitions
 - [`mcp-config-lint-rules.json`](./mcp-config-lint-rules.json) — MCP config rules and 8 client definitions
+- [`agent-session-lint-rules.json`](./agent-session-lint-rules.json) — session lint rules and 8 agent data source definitions
 
 ## Also By Yaw Labs
 
