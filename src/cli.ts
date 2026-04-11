@@ -1,5 +1,5 @@
 import * as fs from 'node:fs';
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import ora from 'ora';
 import { resetPathsCache } from './core/checks/paths.js';
 import { setTokenThresholds, resetTokenThresholds } from './core/checks/tokens.js';
@@ -40,7 +40,11 @@ export async function runCli() {
     .argument('[path]', 'Project directory to scan', '.')
     .option('--strict', 'Exit code 1 on any warning or error (for CI)', false)
     .option('--checks <checks>', 'Comma-separated list of checks to run', '')
-    .option('--format <format>', 'Output format: text, json, or sarif', 'text')
+    .addOption(
+      new Option('--format <format>', 'Output format: text, json, or sarif')
+        .choices(['text', 'json', 'sarif'])
+        .default('text'),
+    )
     .option('--tokens', 'Show token breakdown per file', false)
     .option('--verbose', 'Show passing checks too', false)
     .option('--fix', 'Auto-fix broken paths using git history and fuzzy matching', false)
@@ -114,7 +118,7 @@ export async function runCli() {
           : config?.ignore || [],
         tokensOnly: opts.tokens as boolean,
         quiet: opts.quiet as boolean,
-        depth: parseInt(opts.depth as string, 10) || 2,
+        depth: Math.max(0, Math.min(parseInt(opts.depth as string, 10) || 2, 10)),
         mcp: effectiveMcp,
         mcpOnly,
         mcpGlobal: mcpGlobal || config?.mcpGlobal || false,
@@ -303,7 +307,7 @@ export async function runCli() {
           }
         }
 
-        // Keep process alive
+        // Keep process alive indefinitely (watch mode exits via Ctrl+C)
         await new Promise(() => {});
       }
     });
@@ -360,8 +364,9 @@ function loadConfigFromPath(configPath: string) {
   try {
     const content = fs.readFileSync(configPath, 'utf-8');
     return JSON.parse(content);
-  } catch {
-    console.error(`Error: could not load config from ${configPath}`);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error(`Error: could not load config from ${configPath}: ${detail}`);
     process.exit(2);
   }
 }

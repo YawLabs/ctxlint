@@ -14,31 +14,11 @@ import type { CheckName } from '../core/types.js';
 import * as path from 'node:path';
 import { VERSION } from '../version.js';
 
-const checkEnum = z.enum([
-  'paths',
-  'commands',
-  'staleness',
-  'tokens',
-  'redundancy',
-  'contradictions',
-  'frontmatter',
-  'mcp-schema',
-  'mcp-security',
-  'mcp-commands',
-  'mcp-deprecated',
-  'mcp-env',
-  'mcp-urls',
-  'mcp-consistency',
-  'mcp-redundancy',
-  'session-missing-secret',
-  'session-diverged-file',
-  'session-missing-workflow',
-  'session-stale-memory',
-  'session-duplicate-memory',
-  'session-loop-detection',
-  'ci-coverage',
-  'ci-secrets',
-]);
+const allCheckNames = [...ALL_CHECKS, ...ALL_MCP_CHECKS, ...ALL_SESSION_CHECKS] as [
+  CheckName,
+  ...CheckName[],
+];
+const checkEnum = z.enum(allCheckNames);
 
 const server = new McpServer({
   name: 'ctxlint',
