@@ -171,7 +171,7 @@ The full specification for MCP config linting rules, the cross-client config lan
 ## Example Output
 
 ```
-ctxlint v0.7.0
+ctxlint v0.9.0
 
 Scanning /Users/you/my-app...
 
@@ -297,7 +297,7 @@ Add to your `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/yawlabs/ctxlint
-    rev: v0.7.0
+    rev: v0.9.0
     hooks:
       - id: ctxlint
 ```
@@ -327,7 +327,7 @@ CLI flags override config file settings. Use `--config <path>` to load a config 
 
 ## Use as MCP Server
 
-ctxlint ships with an MCP server that exposes five tools (`ctxlint_audit`, `ctxlint_mcp_audit`, `ctxlint_validate_path`, `ctxlint_token_report`, `ctxlint_fix`). All read-only tools declare annotations so MCP clients can skip confirmation dialogs.
+ctxlint ships with an MCP server that exposes six tools (`ctxlint_audit`, `ctxlint_mcp_audit`, `ctxlint_session_audit`, `ctxlint_validate_path`, `ctxlint_token_report`, `ctxlint_fix`). All read-only tools declare annotations so MCP clients can skip confirmation dialogs.
 
 ### With Claude Code
 
