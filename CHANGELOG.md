@@ -8,6 +8,23 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.9.7] — 2026-04-12
+
+Six performance and correctness fixes carrying forward the pre-1.0 audit queue. No breaking changes.
+
+### Performance
+- **Staleness check now batches git calls.** Previously `checkStaleness` spawned one `git log` subprocess per referenced path per file (30 refs × 50ms fork+exec on Windows = 1.5s per stale file). New `getCommitsSinceBatch` runs a single `git log --since=<date> --name-only` call and parses commit blocks to compute per-path counts. Cuts staleness time to ~constant per file regardless of ref count.
+- **Scanner discovery now does one glob call per directory instead of 32.** The nested `for (dir) for (pattern)` loop became 32N filesystem scans. Passing all patterns as an array to a single `glob()` call per directory lets the library share the directory read. ~32× fewer filesystem operations on the discovery path.
+- **Contradictions check now pre-indexes directives** by `(category, file, label)` instead of running `.find()` linear scans inside nested loops. Effectively O(F²·M²·D) → O(F²·M²) with much smaller constants.
+
+### Fixed
+- **Contradictions output now collapses N-way clusters.** Three files declaring npm / pnpm / yarn previously produced 3 separate "X vs Y" pair issues for what reads as one cluster disagreement. Now emits a single issue listing all conflicting (file, label) tuples when 3+ files disagree. 2-file pair conflicts unchanged.
+- **`mcp-commands/args-path-missing` no longer false-positives on URL args.** Values like `https://api.example.com/openapi.json`, `s3://bucket/spec.json`, and `git://...` matched the file-path heuristic (`segment/segment.ext`), got resolved against the project root, and were warned as missing. Added a URL-prefix skip for `http(s)`, `file`, `s3`, `gs`, `ssh`, `git`.
+- **Fixer now deduplicates identical fix actions.** When two checks proposed the same `(line, oldText, newText)` — e.g. git-rename detection and fuzzy-match both surfacing the same target — the second `line.replace()` was a silent no-op but `totalFixes` still incremented, over-counting. Dedupe on the triple before applying.
+
+### Improved
+- **Config errors point at the line and column** where JSON parsing failed (when Node's error format allows extraction). Unknown top-level keys in `.ctxlintrc` now produce a warning on stderr with a Levenshtein-based "did you mean" suggestion when the typo is close (e.g. `chekcs` → `checks`). Config-root-not-object (JSON array or scalar at root) now errors clearly instead of type-lying to downstream callers.
+
 ## [0.9.6] — 2026-04-12
 
 Eight fixes from a pre-1.0 bug / perf / UX audit. All backward-compatible for CI / non-interactive use. Interactive TTY behavior of `--fix` changes (see below) — safer, but new.

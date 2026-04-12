@@ -1,5 +1,5 @@
 import * as path from 'node:path';
-import { isGitRepo, getFileLastModified, getCommitsSince } from '../../utils/git.js';
+import { isGitRepo, getFileLastModified, getCommitsSinceBatch } from '../../utils/git.js';
 import type { ParsedContextFile, LintIssue } from '../types.js';
 
 const WARNING_DAYS = 30;
@@ -36,12 +36,20 @@ export async function checkStaleness(
     referencedPaths.add(ref.value);
   }
 
+  if (referencedPaths.size === 0) {
+    return issues; // Nothing to correlate against
+  }
+
+  // Batch all referenced paths into one git log call. Previously each ref
+  // spawned its own subprocess — expensive on Windows where fork+exec is
+  // 20-80ms. 30 refs × 50ms = 1.5s of pure process overhead per stale file.
+  const counts = await getCommitsSinceBatch(projectRoot, [...referencedPaths], lastModified);
+
   let totalCommits = 0;
   let mostActiveRef = '';
   let mostActiveCommits = 0;
 
-  for (const refPath of referencedPaths) {
-    const commits = await getCommitsSince(projectRoot, refPath, lastModified);
+  for (const [refPath, commits] of counts) {
     totalCommits += commits;
     if (commits > mostActiveCommits) {
       mostActiveCommits = commits;

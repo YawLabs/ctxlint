@@ -247,68 +247,110 @@ export function checkContradictions(files: ParsedContextFile[]): LintIssue[] {
 
   const issues: LintIssue[] = [];
 
-  // Collect all directives across all files
-  const allDirectives: DetectedDirective[] = [];
-  for (const file of files) {
-    allDirectives.push(...detectDirectives(file));
-  }
-
-  // Group by category
+  // Collect all directives across all files, indexed by (category, file, label)
+  // so look-ups during conflict emission are O(1) instead of O(D) via .find().
   const byCategory = new Map<string, DetectedDirective[]>();
-  for (const d of allDirectives) {
-    const existing = byCategory.get(d.category) || [];
-    existing.push(d);
-    byCategory.set(d.category, existing);
+  // directiveIndex: category → `${file}::${label}` → DetectedDirective
+  const directiveIndex = new Map<string, Map<string, DetectedDirective>>();
+  for (const file of files) {
+    for (const d of detectDirectives(file)) {
+      let list = byCategory.get(d.category);
+      if (!list) {
+        list = [];
+        byCategory.set(d.category, list);
+      }
+      list.push(d);
+
+      let idx = directiveIndex.get(d.category);
+      if (!idx) {
+        idx = new Map();
+        directiveIndex.set(d.category, idx);
+      }
+      // Preserve the first-seen directive per (file, label) so line numbers
+      // point at the introductory mention rather than a later restatement.
+      const key = `${d.file}::${d.label}`;
+      if (!idx.has(key)) idx.set(key, d);
+    }
   }
 
-  // Find contradictions: same category, different labels, different files
+  // Find contradictions: same category, different labels across files. Emit
+  // one issue per conflict CLUSTER (not all C(N,2) pairs) when a category has
+  // 3+ distinct labels across 3+ files — the old behavior spammed quadratic
+  // pair issues for what a reader sees as a single cluster.
   for (const [category, directives] of byCategory) {
-    const byFile = new Map<string, DetectedDirective[]>();
-    for (const d of directives) {
-      const existing = byFile.get(d.file) || [];
-      existing.push(d);
-      byFile.set(d.file, existing);
-    }
-
-    // Get unique labels across all files
     const labels = new Set(directives.map((d) => d.label));
     if (labels.size <= 1) continue;
 
-    // Check if different files specify different options
     const fileLabels = new Map<string, Set<string>>();
     for (const d of directives) {
-      const existing = fileLabels.get(d.file) || new Set();
+      let existing = fileLabels.get(d.file);
+      if (!existing) {
+        existing = new Set();
+        fileLabels.set(d.file, existing);
+      }
       existing.add(d.label);
-      fileLabels.set(d.file, existing);
     }
 
-    // Build conflict pairs
-    const fileEntries = [...fileLabels.entries()];
-    for (let i = 0; i < fileEntries.length; i++) {
-      for (let j = i + 1; j < fileEntries.length; j++) {
-        const [fileA, labelsA] = fileEntries[i];
-        const [fileB, labelsB] = fileEntries[j];
-
-        // Check for conflicting labels between the two files
-        for (const labelA of labelsA) {
-          for (const labelB of labelsB) {
-            if (labelA !== labelB) {
-              const directiveA = directives.find((d) => d.file === fileA && d.label === labelA)!;
-              const directiveB = directives.find((d) => d.file === fileB && d.label === labelB)!;
-
-              issues.push({
-                severity: 'warning',
-                check: 'contradictions',
-                ruleId: 'contradictions/conflict',
-                line: directiveA.line,
-                message: `${category} conflict: "${directiveA.label}" in ${fileA} vs "${directiveB.label}" in ${fileB}`,
-                suggestion: `Align on one ${category} across all context files`,
-                detail: `${fileA}:${directiveA.line} says "${directiveA.text}" but ${fileB}:${directiveB.line} says "${directiveB.text}"`,
-              });
-            }
-          }
+    // Only files that pick a distinct label from at least one other file are
+    // part of the conflict cluster.
+    const conflictingFiles = [...fileLabels.keys()].filter((f) => {
+      const myLabels = fileLabels.get(f)!;
+      for (const [otherFile, otherLabels] of fileLabels) {
+        if (otherFile === f) continue;
+        for (const l of myLabels) {
+          if (!otherLabels.has(l)) return true;
         }
       }
+      return false;
+    });
+
+    if (conflictingFiles.length < 2) continue;
+
+    const idx = directiveIndex.get(category)!;
+
+    if (conflictingFiles.length === 2) {
+      // Pair conflict — keep the original (file, label) × (file, label) shape
+      // so existing suggestion text still applies naturally.
+      const [fileA, fileB] = conflictingFiles;
+      const labelsA = fileLabels.get(fileA)!;
+      const labelsB = fileLabels.get(fileB)!;
+      for (const labelA of labelsA) {
+        for (const labelB of labelsB) {
+          if (labelA === labelB) continue;
+          const directiveA = idx.get(`${fileA}::${labelA}`)!;
+          const directiveB = idx.get(`${fileB}::${labelB}`)!;
+          issues.push({
+            severity: 'warning',
+            check: 'contradictions',
+            ruleId: 'contradictions/conflict',
+            line: directiveA.line,
+            message: `${category} conflict: "${directiveA.label}" in ${fileA} vs "${directiveB.label}" in ${fileB}`,
+            suggestion: `Align on one ${category} across all context files`,
+            detail: `${fileA}:${directiveA.line} says "${directiveA.text}" but ${fileB}:${directiveB.line} says "${directiveB.text}"`,
+          });
+        }
+      }
+    } else {
+      // 3+ file cluster — emit ONE issue listing all (file, label) entries so
+      // the user sees a coherent disagreement rather than N choose 2 pairs.
+      const entries: DetectedDirective[] = [];
+      for (const f of conflictingFiles) {
+        for (const l of fileLabels.get(f)!) {
+          entries.push(idx.get(`${f}::${l}`)!);
+        }
+      }
+      const firstEntry = entries[0];
+      const summary = entries.map((e) => `"${e.label}" in ${e.file}`).join(', ');
+      const detail = entries.map((e) => `${e.file}:${e.line} says "${e.text}"`).join('\n');
+      issues.push({
+        severity: 'warning',
+        check: 'contradictions',
+        ruleId: 'contradictions/conflict',
+        line: firstEntry.line,
+        message: `${category} conflict across ${conflictingFiles.length} files: ${summary}`,
+        suggestion: `Align on one ${category} across all context files`,
+        detail,
+      });
     }
   }
 

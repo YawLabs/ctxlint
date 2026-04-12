@@ -5,6 +5,10 @@ import type { ParsedMcpConfig, LintIssue } from '../../types.js';
 // Pattern to detect local file paths in args
 const LOCAL_PATH_PATTERN = /^\.\.?\//;
 const FILE_PATH_PATTERN = /^[^-].*\/.*\.\w+$/;
+// URL-ish prefixes that match FILE_PATH_PATTERN (segment/segment.ext) but are
+// network references, not local files. Skip these to avoid warning on
+// legitimate args like `https://api.example.com/openapi.json`.
+const URL_PREFIX = /^(https?|file|s3|gs|ssh|git):\/\//i;
 
 export async function checkMcpCommands(
   config: ParsedMcpConfig,
@@ -49,6 +53,8 @@ export async function checkMcpCommands(
     // args-path-missing: check args that look like file paths
     if (server.args) {
       for (const arg of server.args) {
+        // Skip URLs — they match FILE_PATH_PATTERN but aren't local refs.
+        if (URL_PREFIX.test(arg)) continue;
         if (LOCAL_PATH_PATTERN.test(arg) || FILE_PATH_PATTERN.test(arg)) {
           const resolved = path.resolve(projectRoot, arg);
           if (!fileExistsSafe(resolved)) {

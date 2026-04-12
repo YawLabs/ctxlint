@@ -37,8 +37,12 @@ export function applyFixes(result: LintResult, options: FixOptions = {}): FixSum
     }
   }
 
-  // Collect all fixable issues grouped by file, skipping symlinks.
+  // Collect all fixable issues grouped by file, skipping symlinks. Dedupe on
+  // (line, oldText, newText) because an earlier version silently dropped the
+  // second of two fixes targeting the same (line, oldText) — line.replace()
+  // only touches the first occurrence, so the second iteration became a no-op.
   const fixesByFile = new Map<string, FixAction[]>();
+  const dedupeKeys = new Map<string, Set<string>>();
   const skippedSymlinks = new Set<string>();
 
   for (const file of result.files) {
@@ -48,6 +52,15 @@ export function applyFixes(result: LintResult, options: FixOptions = {}): FixSum
           skippedSymlinks.add(file.path);
           continue;
         }
+        const key = `${issue.fix.line}:${issue.fix.oldText}:${issue.fix.newText}`;
+        let seenInFile = dedupeKeys.get(issue.fix.file);
+        if (!seenInFile) {
+          seenInFile = new Set();
+          dedupeKeys.set(issue.fix.file, seenInFile);
+        }
+        if (seenInFile.has(key)) continue;
+        seenInFile.add(key);
+
         const existing = fixesByFile.get(issue.fix.file) || [];
         existing.push(issue.fix);
         fixesByFile.set(issue.fix.file, existing);

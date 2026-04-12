@@ -112,32 +112,31 @@ export async function scanForContextFiles(
 
   collectDirs(projectRoot, 0);
 
-  for (const dir of dirsToScan) {
-    for (const pattern of patterns) {
-      const matches = await glob(pattern, {
-        cwd: dir,
-        absolute: true,
-        nodir: true,
-        dot: true,
+  // One glob call per directory (passing all patterns as an array). Previously
+  // this was a nested loop (32 patterns × N subdirs = 32N calls), each doing
+  // its own readdirSync. Passing patterns as a single array lets glob share
+  // the directory read across all patterns — ~32x fewer filesystem scans.
+  const perDirMatches = await Promise.all(
+    dirsToScan.map((dir) => glob(patterns, { cwd: dir, absolute: true, nodir: true, dot: true })),
+  );
+
+  for (const matches of perDirMatches) {
+    for (const match of matches) {
+      const normalized = path.normalize(match);
+      if (seen.has(normalized)) continue;
+      seen.add(normalized);
+
+      const relativePath = path.relative(projectRoot, normalized);
+      const symlink = isSymlink(normalized);
+      const target = symlink ? readSymlinkTarget(normalized) : undefined;
+
+      found.push({
+        absolutePath: normalized,
+        relativePath: relativePath.replace(/\\/g, '/'),
+        isSymlink: symlink,
+        symlinkTarget: target,
+        type: 'context',
       });
-
-      for (const match of matches) {
-        const normalized = path.normalize(match);
-        if (seen.has(normalized)) continue;
-        seen.add(normalized);
-
-        const relativePath = path.relative(projectRoot, normalized);
-        const symlink = isSymlink(normalized);
-        const target = symlink ? readSymlinkTarget(normalized) : undefined;
-
-        found.push({
-          absolutePath: normalized,
-          relativePath: relativePath.replace(/\\/g, '/'),
-          isSymlink: symlink,
-          symlinkTarget: target,
-          type: 'context',
-        });
-      }
     }
   }
 

@@ -88,4 +88,32 @@ describe('checkMcpCommands', () => {
     const issues = await checkMcpCommands(config, '/project');
     expect(issues).toHaveLength(0);
   });
+
+  it('does not flag URL args as missing file paths', async () => {
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'wrapper',
+          transport: 'stdio',
+          command: 'node',
+          args: [
+            './wrap.js',
+            'https://api.example.com/openapi.json',
+            's3://bucket/spec.json',
+            'git://git.example.com/repo.git',
+          ],
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpCommands(config, '/project');
+    const urlFalsePositives = issues.filter(
+      (i) =>
+        i.message.includes('api.example.com') ||
+        i.message.includes('s3://') ||
+        i.message.includes('git://'),
+    );
+    expect(urlFalsePositives).toHaveLength(0);
+  });
 });

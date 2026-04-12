@@ -168,6 +168,42 @@ describe('applyFixes', () => {
     expect(summary.totalFixes).toBe(0);
   });
 
+  it('dedupes identical fix actions targeting the same (line, oldText, newText)', () => {
+    const filePath = writeFixture('CLAUDE.md', 'See `src/old.ts` for logic.\n');
+    // Two issues with the SAME fix (line, oldText, newText) — e.g. both the
+    // git-rename detector and the fuzzy-match fallback proposed the same
+    // target. Without dedupe, the second fix becomes a no-op and totalFixes
+    // over-counts.
+    const result = makeResult([
+      {
+        path: 'CLAUDE.md',
+        isSymlink: false,
+        tokens: 10,
+        lines: 1,
+        issues: [
+          {
+            severity: 'error',
+            check: 'paths',
+            line: 1,
+            message: 'duplicate 1',
+            fix: { file: filePath, line: 1, oldText: 'src/old.ts', newText: 'src/new.ts' },
+          },
+          {
+            severity: 'error',
+            check: 'paths',
+            line: 1,
+            message: 'duplicate 2',
+            fix: { file: filePath, line: 1, oldText: 'src/old.ts', newText: 'src/new.ts' },
+          },
+        ],
+      },
+    ]);
+
+    const summary = applyFixes(result);
+    expect(summary.totalFixes).toBe(1);
+    expect(summary.filesModified).toHaveLength(1);
+  });
+
   it('fixes across multiple files', () => {
     const file1 = writeFixture('CLAUDE.md', 'See `src/old.ts`\n');
     const file2 = writeFixture('AGENTS.md', 'Check `lib/old.ts`\n');

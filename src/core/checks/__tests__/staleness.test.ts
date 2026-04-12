@@ -6,14 +6,20 @@ import type { ParsedContextFile } from '../../types.js';
 vi.mock('../../../utils/git.js', () => ({
   isGitRepo: vi.fn(),
   getFileLastModified: vi.fn(),
-  getCommitsSince: vi.fn(),
+  getCommitsSinceBatch: vi.fn(),
 }));
 
-import { isGitRepo, getFileLastModified, getCommitsSince } from '../../../utils/git.js';
+import { isGitRepo, getFileLastModified, getCommitsSinceBatch } from '../../../utils/git.js';
 
 const mockedIsGitRepo = vi.mocked(isGitRepo);
 const mockedGetFileLastModified = vi.mocked(getFileLastModified);
-const mockedGetCommitsSince = vi.mocked(getCommitsSince);
+const mockedGetCommitsSinceBatch = vi.mocked(getCommitsSinceBatch);
+
+function batchMap(requested: string[], counts: Record<string, number> = {}): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const p of requested) m.set(p, counts[p] ?? 0);
+  return m;
+}
 
 function makeParsedFile(overrides?: Partial<ParsedContextFile>): ParsedContextFile {
   return {
@@ -67,7 +73,7 @@ describe('checkStaleness', () => {
   it('returns no issues when referenced paths have no commits since', async () => {
     mockedIsGitRepo.mockResolvedValue(true);
     mockedGetFileLastModified.mockResolvedValue(new Date(Date.now() - 20 * 24 * 60 * 60 * 1000));
-    mockedGetCommitsSince.mockResolvedValue(0);
+    mockedGetCommitsSinceBatch.mockImplementation(async (_root, paths) => batchMap(paths));
     const issues = await checkStaleness(makeParsedFile(), '/project');
     expect(issues).toHaveLength(0);
   });
@@ -75,7 +81,9 @@ describe('checkStaleness', () => {
   it('returns info severity for 14-30 day old file with changed paths', async () => {
     mockedIsGitRepo.mockResolvedValue(true);
     mockedGetFileLastModified.mockResolvedValue(new Date(Date.now() - 20 * 24 * 60 * 60 * 1000));
-    mockedGetCommitsSince.mockResolvedValue(3);
+    mockedGetCommitsSinceBatch.mockImplementation(async (_root, paths) =>
+      batchMap(paths, { 'src/index.ts': 3 }),
+    );
     const issues = await checkStaleness(makeParsedFile(), '/project');
     expect(issues).toHaveLength(1);
     expect(issues[0].severity).toBe('info');
@@ -86,7 +94,9 @@ describe('checkStaleness', () => {
   it('returns warning severity for 30+ day old file with changed paths', async () => {
     mockedIsGitRepo.mockResolvedValue(true);
     mockedGetFileLastModified.mockResolvedValue(new Date(Date.now() - 45 * 24 * 60 * 60 * 1000));
-    mockedGetCommitsSince.mockResolvedValue(8);
+    mockedGetCommitsSinceBatch.mockImplementation(async (_root, paths) =>
+      batchMap(paths, { 'src/index.ts': 8 }),
+    );
     const issues = await checkStaleness(makeParsedFile(), '/project');
     expect(issues).toHaveLength(1);
     expect(issues[0].severity).toBe('warning');
@@ -96,10 +106,9 @@ describe('checkStaleness', () => {
   it('reports the most active path in the message', async () => {
     mockedIsGitRepo.mockResolvedValue(true);
     mockedGetFileLastModified.mockResolvedValue(new Date(Date.now() - 40 * 24 * 60 * 60 * 1000));
-    // Different commit counts per referenced file path
-    mockedGetCommitsSince
-      .mockResolvedValueOnce(2) // src/index.ts
-      .mockResolvedValueOnce(10); // src/utils/helper.ts
+    mockedGetCommitsSinceBatch.mockImplementation(async (_root, paths) =>
+      batchMap(paths, { 'src/index.ts': 2, 'src/utils/helper.ts': 10 }),
+    );
     const issues = await checkStaleness(makeParsedFile(), '/project');
     expect(issues).toHaveLength(1);
     expect(issues[0].message).toContain('src/utils/helper.ts');
