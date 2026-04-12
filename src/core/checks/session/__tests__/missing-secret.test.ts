@@ -83,4 +83,21 @@ describe('checkMissingSecret', () => {
     expect(issues).toHaveLength(1);
     expect(issues[0].message).toContain('NPM_TOKEN');
   });
+
+  // Regression for the substring-match false-positive: `ctxlint-old` should
+  // not count as "current has the secret" when current is `ctxlint`.
+  it('does not treat basename-substring sibling as current project', async () => {
+    const ctx = makeCtx(
+      [
+        makeEntry('gh secret set NPM_TOKEN -b xxx', '/repos/ctxlint-old'),
+        makeEntry('gh secret set NPM_TOKEN -b yyy', '/repos/foo'),
+        makeEntry('gh secret set NPM_TOKEN -b zzz', '/repos/bar'),
+      ],
+      [makeSibling('ctxlint-old'), makeSibling('foo'), makeSibling('bar')],
+      '/repos/ctxlint',
+    );
+    const issues = await checkMissingSecret(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('NPM_TOKEN');
+  });
 });

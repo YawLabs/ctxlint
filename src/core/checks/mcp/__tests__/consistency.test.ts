@@ -128,4 +128,52 @@ describe('checkMcpConsistency', () => {
     const issues = await checkMcpConsistency([config]);
     expect(issues).toHaveLength(0);
   });
+
+  // Regression: a server literally named `env` (or any other key-like name)
+  // should not false-positive as "duplicate" just because `"env":` appears
+  // inside other servers' nested env blocks.
+  it('does not flag server named env as duplicate when nested env blocks exist', async () => {
+    const config = makeConfig({
+      content: [
+        '{',
+        '  "mcpServers": {',
+        '    "env": {',
+        '      "command": "foo",',
+        '      "env": { "K": "v" }',
+        '    },',
+        '    "other": {',
+        '      "command": "bar",',
+        '      "env": { "K2": "v2" }',
+        '    }',
+        '  }',
+        '}',
+      ].join('\n'),
+      servers: [
+        { name: 'env', transport: 'stdio', command: 'foo', line: 3, raw: {} },
+        { name: 'other', transport: 'stdio', command: 'bar', line: 7, raw: {} },
+      ],
+    });
+    const issues = await checkMcpConsistency([config]);
+    const dup = issues.find((i) => i.message.includes('Duplicate server name'));
+    expect(dup).toBeUndefined();
+  });
+
+  it('does not flag server named args or command as duplicate', async () => {
+    const config = makeConfig({
+      content: [
+        '{',
+        '  "mcpServers": {',
+        '    "args": { "command": "foo", "args": ["--flag"] },',
+        '    "command": { "command": "bar", "args": [] }',
+        '  }',
+        '}',
+      ].join('\n'),
+      servers: [
+        { name: 'args', transport: 'stdio', command: 'foo', line: 3, raw: {} },
+        { name: 'command', transport: 'stdio', command: 'bar', line: 4, raw: {} },
+      ],
+    });
+    const issues = await checkMcpConsistency([config]);
+    expect(issues.filter((i) => i.message.includes('Duplicate server name'))).toHaveLength(0);
+  });
 });

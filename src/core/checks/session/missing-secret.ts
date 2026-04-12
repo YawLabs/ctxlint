@@ -1,5 +1,10 @@
-import { resolve } from 'node:path';
+import { resolve, basename } from 'node:path';
 import type { LintIssue, SessionContext } from '../../types.js';
+
+/** Normalize a path for equality comparison across Windows/POSIX. */
+function normalizePath(p: string): string {
+  return resolve(p).replace(/\\/g, '/').toLowerCase();
+}
 
 const SECRET_SET_PATTERN = /gh\s+secret\s+set\s+(\S+)\s+(?:--repo\s+(\S+)|.*-b\s+)/;
 const SECRET_SET_SIMPLE = /gh\s+secret\s+set\s+(\S+)/;
@@ -42,24 +47,39 @@ export async function checkMissingSecret(ctx: SessionContext): Promise<LintIssue
     if (s.repo) byName.get(s.name)!.add(s.repo);
   }
 
-  // Check if current project is missing any secret that 2+ siblings have
-  const currentNorm = resolve(ctx.currentProject).replace(/\\/g, '/');
+  // Check if current project is missing any secret that 2+ siblings have.
+  // Use path equality (normalized) — earlier substring matching false-positived
+  // when a sibling directory name contained the current project's basename
+  // (e.g. `ctxlint-fork` matching a `ctxlint` current via basename contains).
+  const currentNorm = normalizePath(ctx.currentProject);
+  const currentBase = basename(currentNorm);
 
   for (const [secretName, projects] of byName) {
-    // Check if current project already has this secret
-    const currentHas = [...projects].some(
-      (p) =>
-        p.includes(currentNorm) ||
-        currentNorm.includes(p.replace(/\\/g, '/')) ||
-        p.includes(resolve(ctx.currentProject).split(/[/\\]/).pop() || ''),
-    );
+    const normalizedProjects = [...projects].map(normalizePath);
+
+    // Current project "has" the secret if a history entry's project path
+    // equals the current project path, OR if a --repo flag value equals
+    // the current project's basename (gh secret set --repo owner/REPO_BASE).
+    const currentHas = normalizedProjects.some((p) => {
+      if (p === currentNorm) return true;
+      // --repo values look like "owner/repo"; compare last segment to basename.
+      const lastSegment = p.split('/').pop() || '';
+      return lastSegment === currentBase;
+    });
 
     if (currentHas) continue;
 
-    // Need at least 2 other projects to have it
-    const siblingMatches = ctx.siblings.filter((sib) =>
-      [...projects].some((p) => p.replace(/\\/g, '/').includes(sib.name) || p.includes(sib.path)),
-    );
+    // Need at least 2 other projects to have it. Match by sibling path or
+    // by sibling basename (for --repo flag values).
+    const siblingMatches = ctx.siblings.filter((sib) => {
+      const sibNorm = normalizePath(sib.path);
+      const sibBase = basename(sibNorm);
+      return normalizedProjects.some((p) => {
+        if (p === sibNorm) return true;
+        const lastSegment = p.split('/').pop() || '';
+        return lastSegment === sibBase;
+      });
+    });
 
     if (siblingMatches.length >= 2) {
       const sibNames = siblingMatches.map((s) => s.name).join(', ');

@@ -116,6 +116,26 @@ See e.g. the docs.
     expect(paths).toHaveLength(0);
   });
 
+  it('does not extract "Word/Word" prose (tool names, numeric fractions)', () => {
+    const result = parseContent(`
+Biome/Prettier both format TS.
+Jest/Vitest can both run tests.
+Fixed 10/12 tasks this sprint.
+Score was 3/5 on the review.
+    `);
+    const paths = result.references.paths.map((p) => p.value);
+    expect(paths).not.toContain('Biome/Prettier');
+    expect(paths).not.toContain('Jest/Vitest');
+    expect(paths).not.toContain('10/12');
+    expect(paths).not.toContain('3/5');
+  });
+
+  it('still extracts Word/Word when the second segment has a file extension', () => {
+    const result = parseContent('See `Config/settings.ts` for details.');
+    const paths = result.references.paths.map((p) => p.value);
+    expect(paths).toContain('Config/settings.ts');
+  });
+
   it('handles relative paths with ./ and ../', () => {
     const result = parseContent(`
 Edit \`./src/index.ts\` for the entry point.

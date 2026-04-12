@@ -105,28 +105,86 @@ function checkMissingFromClient(configs: ParsedMcpConfig[]): LintIssue[] {
   return issues;
 }
 
+/**
+ * Depth-aware duplicate-key scan: finds all keys defined at the server-object
+ * depth (directly inside `"mcpServers": {...}` or `"servers": {...}`) and
+ * reports any name that appears more than once. Necessary because JSON.parse
+ * silently keeps only the last duplicate; also necessary to avoid counting
+ * `"env":` keys inside nested server configs when a server is named `env`.
+ */
+function collectServerNameKeys(content: string, rootKey: string): string[] {
+  const names: string[] = [];
+  let i = 0;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  let rootKeyDepth = -1; // depth at which we saw the root key; server names are at rootKeyDepth+1
+  let pendingKey = ''; // key being collected
+  let collectingKey = false;
+
+  while (i < content.length) {
+    const c = content[i];
+    if (escape) {
+      escape = false;
+      if (collectingKey) pendingKey += c;
+      i++;
+      continue;
+    }
+    if (c === '\\' && inString) {
+      escape = true;
+      if (collectingKey) pendingKey += c;
+      i++;
+      continue;
+    }
+    if (c === '"') {
+      if (!inString) {
+        inString = true;
+        collectingKey = true;
+        pendingKey = '';
+      } else {
+        inString = false;
+        // Was this a key? A key is a string followed by optional whitespace then `:`.
+        let j = i + 1;
+        while (j < content.length && /\s/.test(content[j])) j++;
+        if (content[j] === ':') {
+          // This string was a key at current depth.
+          if (pendingKey === rootKey && rootKeyDepth === -1) {
+            rootKeyDepth = depth;
+          } else if (rootKeyDepth !== -1 && depth === rootKeyDepth + 1) {
+            names.push(pendingKey);
+          }
+        }
+        collectingKey = false;
+        pendingKey = '';
+      }
+      i++;
+      continue;
+    }
+    if (inString) {
+      if (collectingKey) pendingKey += c;
+      i++;
+      continue;
+    }
+    if (c === '{' || c === '[') depth++;
+    else if (c === '}' || c === ']') depth--;
+    i++;
+  }
+
+  return names;
+}
+
 function checkSingleFileIssues(configs: ParsedMcpConfig[]): LintIssue[] {
   const issues: LintIssue[] = [];
 
   for (const config of configs) {
-    // duplicate-server-name: check raw content for duplicate keys
-    // JSON.parse silently uses last-write-wins, so we need to check the raw content
-    const nameCount = new Map<string, number>();
-    const lines = config.content.split('\n');
+    if (!config.actualRootKey) continue;
+    const serverKeys = collectServerNameKeys(config.content, config.actualRootKey);
 
-    // Simple heuristic: count occurrences of "serverName": in the content
-    for (const server of config.servers) {
-      const escaped = server.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const pattern = new RegExp(`"${escaped}"\\s*:`, 'g');
-      let count = 0;
-      for (const line of lines) {
-        if (pattern.test(line)) count++;
-        pattern.lastIndex = 0;
-      }
-      nameCount.set(server.name, count);
-    }
+    // Count occurrences; a duplicate is any name appearing 2+ times.
+    const counts = new Map<string, number>();
+    for (const k of serverKeys) counts.set(k, (counts.get(k) ?? 0) + 1);
 
-    for (const [name, count] of nameCount) {
+    for (const [name, count] of counts) {
       if (count > 1) {
         issues.push({
           severity: 'warning',

@@ -239,6 +239,13 @@ function buildRuleDescriptors(): SarifRule[] {
       helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
     },
     {
+      id: 'ctxlint/tier-tokens',
+      shortDescription: {
+        text: 'Tier-aware token accounting for always-loaded context files',
+      },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
       id: 'ctxlint/redundancy',
       shortDescription: { text: 'Content is redundant or inferable' },
       helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
@@ -331,6 +338,13 @@ function buildRuleDescriptors(): SarifRule[] {
     {
       id: 'ctxlint/session-loop-detection',
       shortDescription: { text: 'Agent looping pattern detected in session history' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
+      id: 'ctxlint/session-memory-index-overflow',
+      shortDescription: {
+        text: "MEMORY.md exceeds Claude Code's 200-line / 25KB session-load cap",
+      },
       helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
     },
   ];

@@ -98,14 +98,20 @@ function computeSectionCosts(file: ParsedContextFile): SectionCost[] {
 
 /**
  * Detect lines in always-loaded files that use inviolable framing
- * (NEVER / ALWAYS / DO NOT / MUST NOT) paired with a concrete backticked
- * command. These are candidates for hook-based enforcement; without a hook
- * the agent may still run the command anyway (rules are advisory — see
- * code.claude.com/docs/en/memory: "there's no guarantee of strict
- * compliance, especially for vague or conflicting instructions").
+ * (NEVER / ALWAYS / DO NOT / MUST NOT) paired — in the same sentence — with
+ * a concrete backticked command. These are candidates for hook-based
+ * enforcement; without a hook the agent may still run the command anyway
+ * (rules are advisory — see code.claude.com/docs/en/memory: "there's no
+ * guarantee of strict compliance, especially for vague or conflicting
+ * instructions").
+ *
+ * Same-sentence scoping is critical. An earlier version of this rule fired
+ * on "Run `npm test`. Do not commit with failing tests" because both tokens
+ * appeared on the same line — but `npm test` was not the object of `Do not`.
+ * The sentence boundary (period/exclamation/question mark) eliminates that
+ * class of false positive.
  */
-const INVIOLABLE_FRAMING = /\b(NEVER|ALWAYS|DON'?T|DO NOT|MUST NOT)\b/i;
-const COMMAND_IN_BACKTICKS = /`([^`]+)`/g;
+const INVIOLABLE_WITH_COMMAND = /\b(NEVER|ALWAYS|DON'?T|DO NOT|MUST NOT)\b[^.!?`]{0,80}`([^`]+)`/i;
 
 interface Settings {
   permissions?: { deny?: string[]; ask?: string[] };
@@ -132,16 +138,30 @@ function loadSettingsSources(projectRoot: string): Settings[] {
   return sources;
 }
 
+/**
+ * Strip flags after a `--` delimiter and normalize whitespace so we compare
+ * "the command" regardless of trailing flag variations. E.g. `npm publish
+ * --access public` reduces to `npm publish`.
+ */
+function canonicalizeCommand(backticked: string): string {
+  const beforeFlags = backticked.trim().split(/\s+--?/, 1)[0];
+  return beforeFlags.replace(/\s+/g, ' ');
+}
+
 function commandIsEnforced(cmd: string, settings: Settings[]): boolean {
-  const lower = cmd.toLowerCase();
+  // Match on word boundaries to avoid `rm` matching `npm run rm-old-logs`
+  // or `npm` matching `block-npm-login.sh` (different command entirely —
+  // the hook should match on `npm login`, not just `npm`).
+  const escaped = cmd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`\\b${escaped}\\b`, 'i');
   for (const s of settings) {
     for (const entry of s.permissions?.deny ?? []) {
-      if (entry.toLowerCase().includes(lower)) return true;
+      if (pattern.test(entry)) return true;
     }
     for (const h of s.hooks?.PreToolUse ?? []) {
-      if ((h.matcher || '').toLowerCase().includes(lower)) return true;
+      if (pattern.test(h.matcher || '')) return true;
       for (const sub of h.hooks ?? []) {
-        if ((sub.command || '').toLowerCase().includes(lower)) return true;
+        if (pattern.test(sub.command || '')) return true;
       }
     }
   }
@@ -153,11 +173,12 @@ function checkHardEnforcement(file: ParsedContextFile, settings: Settings[]): Li
   const lines = file.content.split('\n');
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (!INVIOLABLE_FRAMING.test(line)) continue;
-    COMMAND_IN_BACKTICKS.lastIndex = 0;
-    const matches = [...line.matchAll(COMMAND_IN_BACKTICKS)].map((m) => m[1]);
-    // Heuristic: first backticked token on the line that looks like a shell command
-    const cmd = matches.find((m) => /^[\w.-][\w\s.-]*/.test(m) && !m.includes('/'));
+    // Match inviolable framing + backticked command within the same sentence
+    // (no .!? between them). Limits false positives and scans the full
+    // command content — no `/`-exclusion that previously dropped `./release.sh`.
+    const match = line.match(INVIOLABLE_WITH_COMMAND);
+    if (!match) continue;
+    const cmd = canonicalizeCommand(match[2]);
     if (!cmd) continue;
     if (commandIsEnforced(cmd, settings)) continue;
     issues.push({
@@ -166,7 +187,7 @@ function checkHardEnforcement(file: ParsedContextFile, settings: Settings[]): Li
       ruleId: 'tier-tokens/hard-enforcement-missing',
       line: i + 1,
       message: `Inviolable framing ("${line.trim().slice(0, 80)}") without a hook to back it up`,
-      suggestion: `Rules in always-loaded files are advisory. For "${cmd}", add a PreToolUse hook (or permissions.deny entry) in .claude/settings.json so the command is physically blocked.`,
+      suggestion: `Rules in always-loaded files are advisory. For \`${cmd}\`, add a PreToolUse hook (or permissions.deny entry) in .claude/settings.json so the command is physically blocked.`,
     });
   }
   return issues;

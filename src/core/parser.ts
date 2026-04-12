@@ -125,6 +125,17 @@ function extractPathReferences(lines: string[], sections: Section[]): PathRefere
       // Skip version-like patterns (v1.0/2.0)
       if (/^v?\d+\.\d+\//.test(value)) continue;
 
+      // Skip numeric fractions like "10/12" (date, score, ratio)
+      if (/^\d+\/\d+$/.test(value)) continue;
+
+      // Skip "Word/Word" prose where both segments look like capitalized tool
+      // names and there's no file extension or path hint. E.g. `Biome/Prettier`,
+      // `Jest/Vitest` — two Capitalized words joined by a single slash with no
+      // extension, no leading ./, ../, or additional path segments.
+      if (/^[A-Z][\w.-]*\/[A-Z][\w.-]*$/.test(value) && !value.includes('.')) {
+        continue;
+      }
+
       // match[0] includes the leading delimiter, match[1] is the captured path
       const column = match.index! + match[0].length - match[1].length + 1;
       paths.push({

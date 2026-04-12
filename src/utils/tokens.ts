@@ -1,30 +1,47 @@
-// Dynamic import so tiktoken (~4MB WASM) is an optional dependency.
-// Falls back to a ~4 chars/token estimate when not installed.
+// Lazy tiktoken: don't pay the ~5MB WASM cost until countTokens is actually
+// called. Earlier versions imported at module top-level, which hoisted the
+// import into the CLI's init path and charged every `--version` / `--help`
+// invocation. The first countTokens() call pays the one-time load; until
+// then the char-based fallback is used (Math.ceil(len/4)).
+
+import { createRequire } from 'node:module';
 
 interface Encoder {
   encode: (text: string) => ArrayLike<number>;
   free: () => void;
 }
 
-let encodingForModel: ((model: string) => Encoder) | null = null;
+type EncodingForModel = (model: string) => Encoder;
 
-try {
-  const tiktoken = await import('tiktoken');
-  encodingForModel = tiktoken.encoding_for_model as unknown as (model: string) => Encoder;
-} catch {
-  // tiktoken not installed — will use character-based fallback
+let encodingForModel: EncodingForModel | null = null;
+let loadAttempted = false;
+let encoder: Encoder | null = null;
+let _keepAlive = false;
+
+function loadEncodingForModel(): EncodingForModel | null {
+  if (loadAttempted) return encodingForModel;
+  loadAttempted = true;
+  try {
+    // Synchronous require so countTokens stays sync. tiktoken ships CJS.
+    const req = createRequire(import.meta.url);
+    const tiktoken = req('tiktoken') as { encoding_for_model: EncodingForModel };
+    encodingForModel = tiktoken.encoding_for_model;
+  } catch {
+    // tiktoken not installed / not resolvable — stick with char-based fallback
+  }
+  return encodingForModel;
 }
 
-let encoder: Encoder | null = null;
-
 function getEncoder(): Encoder | null {
-  if (!encoder && encodingForModel) {
-    encoder = encodingForModel('gpt-4');
-  }
+  if (encoder) return encoder;
+  const loader = loadEncodingForModel();
+  if (!loader) return null;
+  encoder = loader('gpt-4');
   return encoder;
 }
 
 export function countTokens(text: string): number {
+  if (!text) return 0;
   const enc = getEncoder();
   if (!enc) {
     return Math.ceil(text.length / 4);
@@ -45,8 +62,6 @@ export function freeEncoder(): void {
 
 // For long-running processes (MCP server): keep the encoder alive to avoid
 // re-creating the ~4MB WASM instance on every request.
-let _keepAlive = false;
-
 export function keepEncoderAlive(keep: boolean): void {
   _keepAlive = keep;
 }

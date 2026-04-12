@@ -48,6 +48,9 @@ export async function runCli() {
     .option('--tokens', 'Show token breakdown per file', false)
     .option('--verbose', 'Show passing checks too', false)
     .option('--fix', 'Auto-fix broken paths using git history and fuzzy matching', false)
+    .option('--fix-dry-run', 'Preview --fix changes without writing', false)
+    .option('--yes', 'Skip interactive confirmation prompts (required for --fix in TTY)', false)
+    .option('--follow-symlinks', 'Allow --fix to write through symlinks (default: skip)', false)
     .option('--ignore <checks>', 'Comma-separated list of checks to ignore', '')
     .option('--quiet', 'Suppress all output except errors (exit code only)', false)
     .option('--config <path>', 'Path to config file (default: .ctxlintrc in project root)')
@@ -167,13 +170,59 @@ export async function runCli() {
           if (!opts.watch) return;
         }
 
-        // Apply fixes if requested
-        if (options.fix) {
-          const fixSummary = applyFixes(result, { quiet: options.quiet });
-          if (fixSummary.totalFixes > 0 && !options.quiet) {
-            console.log(
-              `\nFixed ${fixSummary.totalFixes} issue${fixSummary.totalFixes !== 1 ? 's' : ''} in ${fixSummary.filesModified.length} file${fixSummary.filesModified.length !== 1 ? 's' : ''}.\n`,
-            );
+        // Apply fixes if requested. --fix-dry-run previews only. --fix writes,
+        // but in an interactive TTY we first preview, then prompt unless --yes
+        // is passed. CI (non-TTY) behavior is unchanged: --fix writes directly.
+        const dryRunFlag = (opts.fixDryRun as boolean) || false;
+        const yes = (opts.yes as boolean) || false;
+        const followSymlinks = (opts.followSymlinks as boolean) || false;
+        const isInteractive = !!process.stdout.isTTY && !options.quiet;
+
+        if (dryRunFlag || options.fix) {
+          const commonOpts = { quiet: options.quiet, skipSymlinks: !followSymlinks };
+
+          if (dryRunFlag) {
+            const preview = applyFixes(result, { ...commonOpts, dryRun: true });
+            if (!options.quiet) {
+              if (preview.totalFixes === 0) {
+                console.log('\nNo auto-fixable issues.\n');
+              } else {
+                console.log(
+                  `\nWould fix ${preview.totalFixes} issue${preview.totalFixes !== 1 ? 's' : ''} in ${preview.filesModified.length} file${preview.filesModified.length !== 1 ? 's' : ''}. (dry-run — no files modified)\n`,
+                );
+              }
+            }
+          } else if (options.fix) {
+            if (isInteractive && !yes) {
+              // Show a preview, then ask for confirmation before writing.
+              const preview = applyFixes(result, { ...commonOpts, dryRun: true });
+              if (preview.totalFixes === 0) {
+                console.log('\nNo auto-fixable issues.\n');
+              } else {
+                console.log(
+                  `\n${preview.totalFixes} fix${preview.totalFixes !== 1 ? 'es' : ''} proposed across ${preview.filesModified.length} file${preview.filesModified.length !== 1 ? 's' : ''}.`,
+                );
+                const confirmed = await promptYesNo(
+                  'Apply these fixes? Re-run with --yes to skip this prompt. [y/N] ',
+                );
+                if (!confirmed) {
+                  console.log('Aborted. No files modified.\n');
+                } else {
+                  const applied = applyFixes(result, commonOpts);
+                  console.log(
+                    `\nFixed ${applied.totalFixes} issue${applied.totalFixes !== 1 ? 's' : ''} in ${applied.filesModified.length} file${applied.filesModified.length !== 1 ? 's' : ''}.\n`,
+                  );
+                }
+              }
+            } else {
+              // Non-interactive (CI) or --yes: apply directly.
+              const applied = applyFixes(result, commonOpts);
+              if (applied.totalFixes > 0 && !options.quiet) {
+                console.log(
+                  `\nFixed ${applied.totalFixes} issue${applied.totalFixes !== 1 ? 's' : ''} in ${applied.filesModified.length} file${applied.filesModified.length !== 1 ? 's' : ''}.\n`,
+                );
+              }
+            }
           }
         }
 
@@ -358,6 +407,22 @@ npx @yawlabs/ctxlint --strict
     });
 
   program.parse();
+}
+
+/**
+ * Prompt the user for a yes/no answer on a TTY. Defaults to no if the response
+ * is anything other than an affirmative ('y' / 'yes', case-insensitive). Only
+ * called when process.stdout.isTTY is true.
+ */
+async function promptYesNo(question: string): Promise<boolean> {
+  const { createInterface } = await import('node:readline/promises');
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await rl.question(question);
+    return /^\s*y(es)?\s*$/i.test(answer);
+  } finally {
+    rl.close();
+  }
 }
 
 function loadConfigFromPath(configPath: string) {

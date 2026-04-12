@@ -9,21 +9,54 @@ export interface FixSummary {
 
 export interface FixOptions {
   quiet?: boolean;
+  /**
+   * Preview the diff without writing. Still returns accurate `totalFixes` and
+   * `filesModified` counts (treated as "would-modify") so the caller can size
+   * the summary. Use this for `--fix-dry-run` or when the user hasn't
+   * confirmed a write.
+   */
+  dryRun?: boolean;
+  /**
+   * If true, skip fixes on files the scanner marked as symlinks. Defaults to
+   * true: writing through a symlink silently modifies the target, which is
+   * almost never what the user wants when `--fix` is auto-applied.
+   */
+  skipSymlinks?: boolean;
 }
 
 export function applyFixes(result: LintResult, options: FixOptions = {}): FixSummary {
   const log = options.quiet ? () => {} : console.log.bind(console);
-  // Collect all fixable issues grouped by file
+  const dryRun = options.dryRun ?? false;
+  const skipSymlinks = options.skipSymlinks ?? true;
+
+  // Build a quick lookup: which files in the result are symlinks?
+  const symlinkFiles = new Set<string>();
+  if (skipSymlinks) {
+    for (const f of result.files) {
+      if (f.isSymlink) symlinkFiles.add(f.path);
+    }
+  }
+
+  // Collect all fixable issues grouped by file, skipping symlinks.
   const fixesByFile = new Map<string, FixAction[]>();
+  const skippedSymlinks = new Set<string>();
 
   for (const file of result.files) {
     for (const issue of file.issues) {
       if (issue.fix) {
+        if (skipSymlinks && file.isSymlink) {
+          skippedSymlinks.add(file.path);
+          continue;
+        }
         const existing = fixesByFile.get(issue.fix.file) || [];
         existing.push(issue.fix);
         fixesByFile.set(issue.fix.file, existing);
       }
     }
+  }
+
+  for (const p of skippedSymlinks) {
+    log(chalk.yellow('  Skipped') + ` ${p}: symlink (use --follow-symlinks to override)`);
   }
 
   let totalFixes = 0;
@@ -55,8 +88,9 @@ export function applyFixes(result: LintResult, options: FixOptions = {}): FixSum
         if (line.includes(fix.oldText)) {
           line = line.replace(fix.oldText, fix.newText);
           totalFixes++;
+          const prefix = dryRun ? chalk.cyan('  Would fix') : chalk.green('  Fixed');
           log(
-            chalk.green('  Fixed') +
+            prefix +
               ` Line ${fix.line}: ${chalk.dim(fix.oldText)} ${chalk.dim('\u2192')} ${fix.newText}`,
           );
         }
@@ -81,7 +115,9 @@ export function applyFixes(result: LintResult, options: FixOptions = {}): FixSum
         }
       }
 
-      fs.writeFileSync(filePath, newContent, 'utf-8');
+      if (!dryRun) {
+        fs.writeFileSync(filePath, newContent, 'utf-8');
+      }
       filesModified.push(filePath);
     }
   }

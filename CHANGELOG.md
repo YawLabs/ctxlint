@@ -8,6 +8,31 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.9.6] — 2026-04-12
+
+Eight fixes from a pre-1.0 bug / perf / UX audit. All backward-compatible for CI / non-interactive use. Interactive TTY behavior of `--fix` changes (see below) — safer, but new.
+
+### Fixed
+- **Tiktoken (~5 MB WASM) no longer loads on every invocation.** Previously a top-level `await import('tiktoken')` was hoisted into CLI init, so every `--version` / `--help` paid the cost. Now lazy via `createRequire` on first `countTokens()` call. Every CI run saves hundreds of milliseconds and ~5 MB of memory.
+- **SARIF rule descriptors out of sync with active checks.** `ctxlint/tier-tokens` and `ctxlint/session-memory-index-overflow` were missing from `buildRuleDescriptors()`, so GitHub Code Scanning dropped metadata for any issue using those rule IDs. Added both. A new self-validating test asserts descriptors ⊇ every check in `ALL_*CHECKS` so this can't drift again.
+- **`session/stale-memory` flagged `~/` paths as broken.** Node's `isAbsolute('~/…')` returns false, so the check resolved tilde refs under the project root, didn't find them, and fired. Now expands `~` to `$HOME` / `%USERPROFILE%` before the existence check.
+- **`session/missing-secret` false-positived on basename-substring siblings.** A sibling named `ctxlint-fork` would match a `ctxlint` current via `.includes()`, wrongly concluding "current already has the secret." Now uses normalized path equality + last-segment equality against gh `--repo owner/repo` flag values.
+- **`mcp-consistency/duplicate-server-name` false-positived on servers named `env`/`args`/`command`.** The old regex counted every occurrence of `"<name>":` anywhere in the raw file, so a server named `env` matched every nested `"env":` block in other servers. Replaced with a depth-aware JSON scanner that only counts keys at the server-object depth.
+- **Parser captured "Word/Word" prose as file paths.** "Biome/Prettier format TS" emitted a `paths/not-found` error for `Biome/Prettier`. Added exclusions for `/^\d+\/\d+$/` (numeric fractions like `10/12`, `3/5`) and `/^[A-Z]\w*\/[A-Z]\w*$/` without a file extension (capitalized tool-name pairs). Word-with-extension paths like `Config/settings.ts` still captured correctly.
+- **`tier-tokens/hard-enforcement-missing` fired on cross-sentence framing.** "Run `npm test`. Do not commit with failing tests" flagged `npm test` as unenforced even though `Do not` was part of a different sentence. Regex now requires the inviolable word and the backticked command to be in the same sentence (no `.!?` between). Also tightened enforcement-check against hook/deny entries to word-boundary matching, so `rm` doesn't match `npm run rm-old-logs` and the command phrase is canonicalized before comparison.
+
+### Changed
+- **`--fix` now prompts for confirmation in an interactive TTY** unless `--yes` is passed. Previously `--fix` applied all changes immediately, which bit users when fuzzy-match picked a wrong target. Non-TTY (CI) behavior is unchanged — `--fix` still writes directly.
+- **`--fix` now skips symlinked context files by default** to avoid silently writing through to the symlink target. Pass `--follow-symlinks` to opt back in.
+
+### Added
+- **`--fix-dry-run`** flag. Shows the diff (`Would fix …`) without modifying files. Works in any environment.
+- **`--yes`** flag. Skips the new interactive confirmation when using `--fix`. Required when `--fix` is run in a TTY without prompting.
+- **`--follow-symlinks`** flag. Allows `--fix` to write through symlinks (previously the implicit default, now opt-in).
+
+### Notes
+Despite adding three flags (per policy normally a minor bump), this release ships as patch because the flags are safety additions around an existing capability (`--fix`) that the audit identified as a foot-gun, and the other seven items are pure bug fixes. CI workflows using `--fix` remain unchanged since non-TTY environments apply fixes directly.
+
 ## [0.9.5] — 2026-04-12
 
 ### Removed

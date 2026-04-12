@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { resolve } from 'node:path';
 import { checkStaleMemory } from '../stale-memory.js';
 import type { SessionContext, MemoryEntry } from '../../../types.js';
 
@@ -87,5 +88,60 @@ describe('checkStaleMemory', () => {
     const ctx = makeCtx([]);
     const issues = await checkStaleMemory(ctx);
     expect(issues).toHaveLength(0);
+  });
+
+  it('expands ~/ refs against $HOME before existence check', async () => {
+    const originalHome = process.env.HOME;
+    const originalUser = process.env.USERPROFILE;
+    const fakeHome = resolve('/home/jeff');
+    process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
+    const expandedTarget = resolve(fakeHome, '.claude/CLAUDE.md');
+    // existsSync returns true only for the expanded path; false otherwise.
+    mockExistsSync.mockImplementation((p) => p === expandedTarget);
+    try {
+      const ctx = makeCtx([makeMemory(['~/.claude/CLAUDE.md'])]);
+      const issues = await checkStaleMemory(ctx);
+      expect(issues).toHaveLength(0);
+    } finally {
+      process.env.HOME = originalHome;
+      process.env.USERPROFILE = originalUser;
+    }
+  });
+
+  it('flags ~/ refs that do not exist after expansion', async () => {
+    const originalHome = process.env.HOME;
+    process.env.HOME = resolve('/home/jeff');
+    mockExistsSync.mockReturnValue(false);
+    try {
+      const ctx = makeCtx([makeMemory(['~/.claude/nonexistent.md'])]);
+      const issues = await checkStaleMemory(ctx);
+      expect(issues).toHaveLength(1);
+      expect(issues[0].message).toContain('~/.claude/nonexistent.md');
+    } finally {
+      process.env.HOME = originalHome;
+    }
+  });
+
+  it('resolves mixed absolute + ~/ + relative refs correctly', async () => {
+    const originalHome = process.env.HOME;
+    const fakeHome = resolve('/home/jeff');
+    process.env.HOME = fakeHome;
+    const expandedHome = resolve(fakeHome, '.claude/CLAUDE.md');
+    const absolutePath = resolve('/abs/real.ts');
+    mockExistsSync.mockImplementation((p) => p === expandedHome || p === absolutePath);
+    try {
+      const ctx = makeCtx([
+        makeMemory(['~/.claude/CLAUDE.md', absolutePath, 'relative/missing.ts']),
+      ]);
+      const issues = await checkStaleMemory(ctx);
+      expect(issues).toHaveLength(1);
+      // Only the relative missing path should be flagged
+      expect(issues[0].message).toContain('relative/missing.ts');
+      expect(issues[0].message).not.toContain('~/.claude');
+      expect(issues[0].message).not.toContain('/abs/real.ts');
+    } finally {
+      process.env.HOME = originalHome;
+    }
   });
 });

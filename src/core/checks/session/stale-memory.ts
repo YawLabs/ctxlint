@@ -4,6 +4,23 @@ import type { LintIssue, SessionContext } from '../../types.js';
 import { projectDirMatchesPath } from '../../session-parser.js';
 
 /**
+ * Resolve a reference to an absolute filesystem path for existence checking.
+ * Handles the cases:
+ *   `~/path`           → expand to $HOME (POSIX node doesn't expand `~`)
+ *   `/abs/path`        → absolute
+ *   `./rel` / `rel.md` → project-root-relative
+ */
+function resolveRef(ref: string, projectRoot: string): string | null {
+  if (ref.startsWith('~/') || ref === '~') {
+    const home = process.env.HOME || process.env.USERPROFILE;
+    if (!home) return null;
+    return ref === '~' ? home : resolve(home, ref.slice(2));
+  }
+  if (isAbsolute(ref)) return ref;
+  return resolve(projectRoot, ref);
+}
+
+/**
  * Check Claude Code memory files for references to paths that no longer exist.
  */
 export async function checkStaleMemory(ctx: SessionContext): Promise<LintIssue[]> {
@@ -18,8 +35,8 @@ export async function checkStaleMemory(ctx: SessionContext): Promise<LintIssue[]
     const brokenPaths: string[] = [];
 
     for (const ref of mem.referencedPaths) {
-      // Resolve path relative to project root
-      const fullPath = isAbsolute(ref) ? ref : resolve(ctx.currentProject, ref);
+      const fullPath = resolveRef(ref, ctx.currentProject);
+      if (!fullPath) continue; // unresolvable (no HOME) — skip silently
 
       if (!existsSync(fullPath)) {
         brokenPaths.push(ref);

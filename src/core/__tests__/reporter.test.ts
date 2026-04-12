@@ -212,4 +212,19 @@ describe('formatSarif', () => {
     expect(ruleIds).toContain('ctxlint/tokens');
     expect(ruleIds).toContain('ctxlint/contradictions');
   });
+
+  // Self-validating guard: SARIF descriptors must cover every active check
+  // name. This catches the case where a new check is wired into ALL_*CHECKS
+  // but buildRuleDescriptors is forgotten — which happened for `tier-tokens`
+  // and `session-memory-index-overflow` between v0.9.2 and v0.9.5.
+  it('SARIF descriptors cover every check in ALL_CHECKS / ALL_MCP_CHECKS / ALL_SESSION_CHECKS', async () => {
+    const { ALL_CHECKS, ALL_MCP_CHECKS, ALL_SESSION_CHECKS } = await import('../audit.js');
+    const parsed = JSON.parse(formatSarif(makeResult()));
+    const ruleIds: string[] = parsed.runs[0].tool.driver.rules.map((r: { id: string }) => r.id);
+    const expected = [...ALL_CHECKS, ...ALL_MCP_CHECKS, ...ALL_SESSION_CHECKS].map(
+      (c: string) => `ctxlint/${c}`,
+    );
+    const missing = expected.filter((id) => !ruleIds.includes(id));
+    expect(missing).toEqual([]);
+  });
 });
