@@ -70,6 +70,7 @@ export type CheckName =
   | 'commands'
   | 'staleness'
   | 'tokens'
+  | 'tier-tokens'
   | 'redundancy'
   | 'contradictions'
   | 'frontmatter'

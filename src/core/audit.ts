@@ -6,6 +6,7 @@ import { checkPaths } from './checks/paths.js';
 import { checkCommands } from './checks/commands.js';
 import { checkStaleness } from './checks/staleness.js';
 import { checkTokens, checkAggregateTokens } from './checks/tokens.js';
+import { checkTierTokens } from './checks/tier-tokens.js';
 import { checkRedundancy, checkDuplicateContent } from './checks/redundancy.js';
 import { checkContradictions } from './checks/contradictions.js';
 import { checkFrontmatter } from './checks/frontmatter.js';
@@ -42,6 +43,7 @@ export const ALL_CHECKS: CheckName[] = [
   'commands',
   'staleness',
   'tokens',
+  'tier-tokens',
   'redundancy',
   'contradictions',
   'frontmatter',
@@ -115,6 +117,7 @@ export async function runAudit(
       if (activeChecks.includes('commands')) checkPromises.push(checkCommands(file, projectRoot));
       if (activeChecks.includes('staleness')) checkPromises.push(checkStaleness(file, projectRoot));
       if (activeChecks.includes('tokens')) checkPromises.push(checkTokens(file, projectRoot));
+      if (activeChecks.includes('tier-tokens')) checkPromises.push(checkTierTokens(file));
       if (activeChecks.includes('redundancy'))
         checkPromises.push(checkRedundancy(file, projectRoot));
       if (activeChecks.includes('frontmatter'))

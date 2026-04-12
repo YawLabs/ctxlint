@@ -30,6 +30,12 @@
       "scope": "per-file and cross-file"
     },
     {
+      "id": "tier-tokens",
+      "name": "Tier-Aware Token Accounting",
+      "description": "Reports per-section token cost for always-loaded context files and flags demotion candidates for on-demand tiers (skills, subagents, memory).",
+      "scope": "per-file"
+    },
+    {
       "id": "redundancy",
       "name": "Inferable Content",
       "description": "Detects content that agents can already infer from project metadata.",
@@ -195,6 +201,17 @@
       "fixable": false,
       "configurable": true,
       "defaultThreshold": 5000
+    },
+    {
+      "id": "tier-tokens/section-breakdown",
+      "category": "tier-tokens",
+      "severity": "info",
+      "description": "Reports the heaviest top-level sections in an always-loaded context file and suggests demoting the largest to an on-demand tier (skill, subagent, or memory).",
+      "trigger": "An always-loaded context file (CLAUDE.md, AGENTS.md, .cursorrules, etc. — excluding path-scoped rules files) exceeds 1000 tokens and contains H1 or H2 sections.",
+      "message": "{N} tokens loaded every session — heaviest top-level section(s): ...",
+      "fixable": false,
+      "configurable": true,
+      "defaultThreshold": 1000
     },
     {
       "id": "redundancy/tech-mention",

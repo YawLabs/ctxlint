@@ -1,0 +1,7 @@
+{
+  "name": "bloated-claude-md",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  }
+}

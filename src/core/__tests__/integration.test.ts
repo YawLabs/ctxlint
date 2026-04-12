@@ -133,6 +133,17 @@ describe('CLI integration', () => {
     expect(fmIssues.length).toBeGreaterThan(0);
   });
 
+  it('reports tier-tokens section breakdown on bloated CLAUDE.md', () => {
+    const { stdout } = run('bloated-claude-md', ['--format', 'json', '--checks', 'tier-tokens']);
+    const parsed = JSON.parse(stdout);
+    const tierIssues = parsed.files.flatMap((f: any) =>
+      f.issues.filter((i: any) => i.check === 'tier-tokens'),
+    );
+    expect(tierIssues.length).toBe(1);
+    expect(tierIssues[0].ruleId).toBe('tier-tokens/section-breakdown');
+    expect(tierIssues[0].suggestion).toContain('Pre-commit checklist');
+  });
+
   it('respects --depth flag', () => {
     // With depth 0, only root directory is scanned (no subdirectories)
     const { stdout } = run('multiple-files', ['--format', 'json', '--depth', '0']);
