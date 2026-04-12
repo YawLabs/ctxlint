@@ -149,17 +149,6 @@
       "stability": "stable"
     },
     {
-      "id": "commands/npm-auth-trap",
-      "category": "commands",
-      "severity": "info",
-      "description": "Context file documents an npm write operation (deprecate, unpublish, dist-tag, access, owner) as a local CLI command. Under WebAuthn-only 2FA (no TOTP authenticator), these commands return 422 because npm treats CLI web-auth tokens as not-2FA-authenticated for writes. The npm website settings UI is the only path that works; CI-driven workflows are the scalable alternative.",
-      "trigger": "Context file references `npm deprecate`, `npm unpublish`, `npm dist-tag add/rm/set`, `npm access grant/revoke/2fa`, or `npm owner add/rm` as a command.",
-      "message": "\"{cmd}\" — npm {op} requires a 2FA-authenticated session; CLI returns 422 under WebAuthn-only auth",
-      "fixable": false,
-      "stability": "experimental",
-      "source": "https://docs.npmjs.com/requiring-2fa-for-package-publishing-and-settings-modification"
-    },
-    {
       "id": "staleness/stale",
       "category": "staleness",
       "severity": "warning",

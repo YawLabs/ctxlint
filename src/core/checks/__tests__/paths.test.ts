@@ -86,6 +86,27 @@ describe('checkPaths', () => {
     expect(glob!.message).toContain('fakext');
   });
 
+  it('emits paths/directory-not-found for a missing directory reference', async () => {
+    seed({
+      'CLAUDE.md': 'Components live in ./src/components/ but that directory is gone.\n',
+    });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    const dirIssue = issues.find((i) => i.ruleId === 'paths/directory-not-found');
+    expect(dirIssue).toBeDefined();
+    expect(dirIssue!.message).toContain('src/components/');
+  });
+
+  it('does NOT emit directory-not-found when the directory exists', async () => {
+    seed({
+      'CLAUDE.md': 'Components live in ./src/components/ today.\n',
+      'src/components/index.ts': 'x',
+    });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'paths/directory-not-found')).toBeUndefined();
+  });
+
   it('does NOT emit glob-no-match when a glob matches at least one file', async () => {
     seed({
       'CLAUDE.md': 'See src/*.ts for code.\n',

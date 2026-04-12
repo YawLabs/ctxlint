@@ -4,9 +4,12 @@ import type { ParsedContextFile, Section, PathReference, CommandReference } from
 import type { DiscoveredFile } from './scanner.js';
 
 // Match paths with at least one / that look like project file references
-// Ignore URLs, common false positives
+// (trailing-slash directory refs like `src/components/` also match via the
+// `*` on the final segment; directory refs are routed to the
+// `paths/directory-not-found` rule by the consuming check).
+// Ignore URLs, common false positives.
 const PATH_PATTERN =
-  /(?:^|[\s`"'(])((\.{0,2}\/)?(?:[\w@.-]+\/)+[\w.*-]+(?:\.\w+)?)(?=[\s`"'),;:]|$)/gm;
+  /(?:^|[\s`"'(])((\.{0,2}\/)?(?:[\w@.-]+\/)+[\w.*-]*(?:\.\w+)?)(?=[\s`"'),;:]|$)/gm;
 
 // False positive patterns to skip
 const PATH_EXCLUDE =

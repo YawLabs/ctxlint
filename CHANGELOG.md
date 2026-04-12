@@ -8,6 +8,21 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.9.5] — 2026-04-12
+
+### Removed
+- **`commands/npm-auth-trap`** (shipped in v0.9.4) — retracted. The rule was based on a false premise: that npm write operations (`deprecate`, `unpublish`, `dist-tag`, `access`, `owner`) return 422 from the CLI under WebAuthn-only 2FA, forcing users to the npmjs.com settings UI. In reality, `npm login --auth-type=web` establishes a session that **does** satisfy 2FA-for-writes, and the subsequent write commands succeed. The rule was pushing users away from a working CLI path based on a theory not verified against observable evidence. Removing the rule is allowed without a major bump because it was flagged `stability: "experimental"` — its matching logic and existence are both subject to revision.
+
+### Fixed
+- **`paths/directory-not-found` now fires.** The parser's `PATH_PATTERN` required a non-empty final segment, which meant trailing-slash directory references like `src/components/` were never captured. The rule was shipping in the catalog but could not fire from real context files. Widened the final segment to allow zero characters, so directory references are now passed to the check.
+
+### Added
+- `CONTRIBUTING.md` — new "Writing a new check" section covering check-file structure, `audit.ts` wiring, catalog entries, tests, and the stability convention. Plus corrected the Development Workflow table (the repo uses `npm run format` + `npm run lint`, not `npm run lint:fix` which never existed).
+- Test coverage raised to **92.97% lines** (was 91.38% in v0.9.3). Added targeted tests for SARIF reporter edges (severity mapping, detail append, empty case, line clamping, rule descriptors) and tiktoken encoder lifecycle paths (`keepEncoderAlive`, `forceFreeEncoder`).
+
+### Notes on the retraction
+This release is the result of a policy-over-evidence failure on the tooling side. A plausible-sounding but unverified theory about npm + WebAuthn was codified into a ctxlint rule without cross-checking against the user's actual shell history. When the user pointed out that the CLI path had succeeded twice the same day, the rule was retracted and the incident prompted explicit "check evidence before asserting" guidance in the project's own ops documentation. Rule `commands/npm-auth-trap` was live in v0.9.4 for ~2 hours; if you pinned to v0.9.4, upgrade to v0.9.5 or add the rule to your `ignore` list.
+
 ## [0.9.4] — 2026-04-12
 
 ### Added

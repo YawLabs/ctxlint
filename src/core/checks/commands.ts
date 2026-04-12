@@ -8,19 +8,6 @@ const NPM_SCRIPT_PATTERN = /^(?:npm\s+run|pnpm(?:\s+run)?|yarn(?:\s+run)?|bun(?:
 const MAKE_PATTERN = /^make\s+(\S+)/;
 const NPX_PATTERN = /^npx\s+(\S+)/;
 
-// npm write operations that require 2FA-authenticated sessions. When a user's
-// 2FA is WebAuthn-only (no TOTP authenticator), CLI-authenticated sessions
-// cannot satisfy the 2FA-for-writes check and the registry returns 422.
-// Documented behavior:
-//   https://docs.npmjs.com/requiring-2fa-for-package-publishing-and-settings-modification
-// Observed failure mode: `npm deprecate`, `npm unpublish`, etc. return
-// "[email protected] cannot be republished until 24 hours have passed" or a
-// generic 422 even with a valid granular token. The website UI at
-// npmjs.com/package/<pkg>/settings uses the user's already-WebAuthn-verified
-// browser session and completes the write without the 2FA gap.
-const NPM_WRITE_OP_PATTERN =
-  /^npm\s+(publish|deprecate|unpublish|access\s+(grant|revoke|2fa)|dist-tag\s+(add|rm|set)|owner\s+(add|rm))\b/;
-
 export async function checkCommands(
   file: ParsedContextFile,
   projectRoot: string,
@@ -31,29 +18,6 @@ export async function checkCommands(
 
   for (const ref of file.references.commands) {
     const cmd = ref.value;
-
-    // Check npm write ops that may 422 under WebAuthn-only auth. Info-level
-    // because the rule is opinionated (only bites users whose 2FA is WebAuthn
-    // without a TOTP fallback) — we inform, not error. Skip `publish` since
-    // most projects already route that through CI (tokens/aggregate-style
-    // advice lives elsewhere).
-    const writeMatch = cmd.match(NPM_WRITE_OP_PATTERN);
-    if (writeMatch) {
-      const op = writeMatch[1].split(/\s+/)[0];
-      if (op !== 'publish') {
-        issues.push({
-          severity: 'info',
-          check: 'commands',
-          ruleId: 'commands/npm-auth-trap',
-          line: ref.line,
-          message: `"${cmd}" — npm ${op} requires a 2FA-authenticated session; CLI returns 422 under WebAuthn-only auth`,
-          suggestion:
-            'Under WebAuthn 2FA without a TOTP fallback, the npm website UI (npmjs.com/package/<pkg>/settings) is the only path that works. For recurring writes, prefer a CI-driven workflow using a granular NPM_TOKEN secret.',
-          detail:
-            'npm treats CLI web-auth tokens as not-2FA-authenticated for writes; WebAuthn yields no TOTP code to satisfy the check.',
-        });
-      }
-    }
 
     // Check npm/pnpm/yarn script references
     const scriptMatch = cmd.match(NPM_SCRIPT_PATTERN);

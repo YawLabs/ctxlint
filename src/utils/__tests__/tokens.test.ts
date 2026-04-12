@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { countTokens, freeEncoder } from '../tokens.js';
+import { countTokens, freeEncoder, keepEncoderAlive, forceFreeEncoder } from '../tokens.js';
 
 describe('countTokens', () => {
   it('returns a positive count for non-empty text', () => {
@@ -50,5 +50,35 @@ describe('freeEncoder', () => {
     freeEncoder();
     const count = countTokens('should still work');
     expect(count).toBeGreaterThan(0);
+  });
+});
+
+describe('keepEncoderAlive / forceFreeEncoder', () => {
+  afterEach(() => {
+    keepEncoderAlive(false);
+    forceFreeEncoder();
+  });
+
+  it('keepEncoderAlive(true) prevents freeEncoder from releasing the encoder', () => {
+    countTokens('load');
+    keepEncoderAlive(true);
+    freeEncoder();
+    // Should still count without re-creating
+    const c = countTokens('still counts');
+    expect(c).toBeGreaterThan(0);
+  });
+
+  it('forceFreeEncoder releases even when keepEncoderAlive is true', () => {
+    countTokens('load');
+    keepEncoderAlive(true);
+    forceFreeEncoder();
+    // countTokens re-creates transparently
+    const c = countTokens('re-created');
+    expect(c).toBeGreaterThan(0);
+  });
+
+  it('does not throw when forceFreeEncoder is called with no encoder loaded', () => {
+    forceFreeEncoder();
+    expect(() => forceFreeEncoder()).not.toThrow();
   });
 });

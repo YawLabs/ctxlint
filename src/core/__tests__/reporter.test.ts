@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatText, formatJson, formatTokenReport } from '../reporter.js';
+import { formatText, formatJson, formatTokenReport, formatSarif } from '../reporter.js';
 import { VERSION as PKG_VERSION } from '../../version.js';
 import type { LintResult } from '../types.js';
 
@@ -110,5 +110,106 @@ describe('formatTokenReport', () => {
   it('includes waste estimate', () => {
     const output = formatTokenReport(makeResult());
     expect(output).toContain('10 tokens');
+  });
+
+  it('handles empty files array without crashing', () => {
+    const result = makeResult({
+      files: [],
+      summary: { errors: 0, warnings: 0, info: 0, totalTokens: 0, estimatedWaste: 0 },
+    });
+    const output = formatTokenReport(result);
+    expect(output).toContain('Token Usage Report');
+  });
+});
+
+describe('formatSarif', () => {
+  it('produces valid SARIF 2.1.0 structure', () => {
+    const parsed = JSON.parse(formatSarif(makeResult()));
+    expect(parsed.version).toBe('2.1.0');
+    expect(parsed.$schema).toContain('sarif');
+    expect(parsed.runs).toHaveLength(1);
+    expect(parsed.runs[0].tool.driver.name).toBe('ctxlint');
+    expect(parsed.runs[0].results).toHaveLength(2);
+  });
+
+  it('maps error/warning/info severities to SARIF error/warning/note', () => {
+    const result = makeResult({
+      files: [
+        {
+          path: 'CLAUDE.md',
+          isSymlink: false,
+          tokens: 100,
+          lines: 5,
+          issues: [
+            { severity: 'error', check: 'paths', line: 1, message: 'e' },
+            { severity: 'warning', check: 'tokens', line: 2, message: 'w' },
+            { severity: 'info', check: 'redundancy', line: 3, message: 'i' },
+          ],
+        },
+      ],
+    });
+    const parsed = JSON.parse(formatSarif(result));
+    const levels = parsed.runs[0].results.map((r: { level: string }) => r.level);
+    expect(levels).toEqual(['error', 'warning', 'note']);
+  });
+
+  it('appends issue detail to the SARIF message text', () => {
+    const result = makeResult({
+      files: [
+        {
+          path: 'CLAUDE.md',
+          isSymlink: false,
+          tokens: 100,
+          lines: 5,
+          issues: [
+            {
+              severity: 'warning',
+              check: 'staleness',
+              line: 1,
+              message: 'stale',
+              detail: '5 commits since last update',
+            },
+          ],
+        },
+      ],
+    });
+    const parsed = JSON.parse(formatSarif(result));
+    expect(parsed.runs[0].results[0].message.text).toContain('5 commits since last update');
+  });
+
+  it('emits valid SARIF when there are no files or issues', () => {
+    const parsed = JSON.parse(
+      formatSarif(
+        makeResult({
+          files: [],
+          summary: { errors: 0, warnings: 0, info: 0, totalTokens: 0, estimatedWaste: 0 },
+        }),
+      ),
+    );
+    expect(parsed.runs[0].results).toEqual([]);
+  });
+
+  it('clamps line numbers below 1 to at least 1', () => {
+    const result = makeResult({
+      files: [
+        {
+          path: 'CLAUDE.md',
+          isSymlink: false,
+          tokens: 100,
+          lines: 5,
+          issues: [{ severity: 'warning', check: 'tokens', line: 0, message: 'x' }],
+        },
+      ],
+    });
+    const parsed = JSON.parse(formatSarif(result));
+    expect(parsed.runs[0].results[0].locations[0].physicalLocation.region.startLine).toBe(1);
+  });
+
+  it('exposes rule descriptors in the tool driver for all ctxlint check categories', () => {
+    const parsed = JSON.parse(formatSarif(makeResult()));
+    const ruleIds = parsed.runs[0].tool.driver.rules.map((r: { id: string }) => r.id);
+    expect(ruleIds).toContain('ctxlint/paths');
+    expect(ruleIds).toContain('ctxlint/tokens');
+    expect(ruleIds).toContain('ctxlint/contradictions');
   });
 });
