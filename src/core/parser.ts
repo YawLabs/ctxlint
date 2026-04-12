@@ -15,7 +15,7 @@ const PATH_EXCLUDE =
 // Command patterns
 const COMMAND_PREFIXES = /^\s*[\$>]\s+(.+)$/;
 const COMMON_COMMANDS =
-  /^(npm\s+run|npx|pnpm|yarn|make|cargo|go\s+(run|build|test)|python|pytest|vitest|jest|bun|deno)\b/;
+  /^(npm|npx|pnpm|yarn|make|cargo|go\s+(run|build|test)|python|pytest|vitest|jest|bun|deno)\b/;
 
 export function parseContextFile(file: DiscoveredFile): ParsedContextFile {
   const content = readFileContent(file.absolutePath);

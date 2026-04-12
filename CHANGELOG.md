@@ -8,6 +8,15 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.9.4] — 2026-04-12
+
+### Added
+- `commands/npm-auth-trap` rule (**experimental**) — flags context-file references to `npm deprecate`, `unpublish`, `dist-tag add/rm/set`, `access grant/revoke/2fa`, or `owner add/rm` as local CLI commands. Under WebAuthn-only 2FA (no TOTP authenticator), these return 422 because npm treats CLI web-auth tokens as not-2FA-authenticated for writes. The suggestion routes users to `npmjs.com/package/<pkg>/settings` or a CI-driven workflow. Severity `info`; opinionated because it only bites users whose 2FA config lacks a TOTP fallback.
+
+### Changed
+- Parser's bash-block command extraction now captures all `npm <subcommand>` forms, not just `npm run <script>`. Previously `npm deprecate`, `npm unpublish`, etc. were silently dropped from the reference set — a real undercapture bug that masked several check paths from being exercised at all.
+- Versioning policy: experimental rules (`stability: "experimental"` in the rule catalog) bump **patch**, not minor. Their matching logic is expected to evolve; treating them as stable-surface additions forces premature minor bumps. Stable rules still bump minor on addition, per the original policy.
+
 ## [0.9.3] — 2026-04-12
 
 Pre-1.0 hardening pass. No breaking changes; everything is additive or internal.
@@ -137,7 +146,7 @@ ctxlint follows Semantic Versioning. For this project, the semantics map as:
   - JSON / SARIF output shape change that breaks downstream consumers.
   - Minimum Node.js version bumped.
 - **MINOR** — additive or backward-compatible change:
-  - New check or new rule ID.
+  - New **stable** check or new **stable** rule ID.
   - New CLI flag or new config field.
   - New severity demotion (warning → info).
   - New output field in JSON / SARIF.
@@ -146,5 +155,6 @@ ctxlint follows Semantic Versioning. For this project, the semantics map as:
   - Default threshold adjustment (unless it breaks existing CI).
   - Bug fix, performance improvement, documentation-only change.
   - Dependency upgrade that doesn't change behavior.
+  - New **experimental** rule (`stability: "experimental"` in the catalog). Experimental rules may evolve their matching logic without a major bump, so adding one is closer to a fix than a stable-surface commitment.
 
 The rule catalogs (`context-lint-rules.json`, `mcp-config-lint-rules.json`, `agent-session-lint-rules.json`) are the canonical public surface for rule IDs. A rule with `"stability": "experimental"` in the catalog may change without a major bump; rules default to `"stability": "stable"`.

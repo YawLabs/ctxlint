@@ -189,4 +189,49 @@ describe('checkCommands', () => {
     expect(byRule).toBeDefined();
     expect(byRule!.message).toContain('test');
   });
+
+  it('flags npm deprecate as npm-auth-trap (WebAuthn 422 trap)', async () => {
+    seed({ 'CLAUDE.md': '# Ops\n\n```bash\nnpm deprecate @scope/pkg "reason"\n```\n' }, {});
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    const trap = issues.find((i) => i.ruleId === 'commands/npm-auth-trap');
+    expect(trap).toBeDefined();
+    expect(trap!.severity).toBe('info');
+    expect(trap!.suggestion).toContain('npmjs.com');
+  });
+
+  it('flags npm unpublish as npm-auth-trap', async () => {
+    seed({ 'CLAUDE.md': '# Ops\n\n```bash\nnpm unpublish @scope/pkg@1.0.0\n```\n' }, {});
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/npm-auth-trap')).toBeDefined();
+  });
+
+  it('flags npm dist-tag set as npm-auth-trap', async () => {
+    seed({ 'CLAUDE.md': '# Ops\n\n```bash\nnpm dist-tag set pkg@1.0.0 latest\n```\n' }, {});
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/npm-auth-trap')).toBeDefined();
+  });
+
+  it('flags npm owner add as npm-auth-trap', async () => {
+    seed({ 'CLAUDE.md': '# Ops\n\n```bash\nnpm owner add user pkg\n```\n' }, {});
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/npm-auth-trap')).toBeDefined();
+  });
+
+  it('does NOT flag npm publish as npm-auth-trap (covered by CI publish rule)', async () => {
+    seed({ 'CLAUDE.md': '# Ops\n\n```bash\nnpm publish --access public\n```\n' }, {});
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/npm-auth-trap')).toBeUndefined();
+  });
+
+  it('does NOT flag npm install or read-only ops', async () => {
+    seed({ 'CLAUDE.md': '# Ops\n\n```bash\nnpm install\nnpm view pkg\n```\n' }, {});
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/npm-auth-trap')).toBeUndefined();
+  });
 });
