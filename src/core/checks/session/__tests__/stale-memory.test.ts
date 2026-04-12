@@ -123,6 +123,17 @@ describe('checkStaleMemory', () => {
     }
   });
 
+  it('flags only the missing paths when memory has a mix of existing and missing', async () => {
+    // existsSync returns true for `src/real.ts`, false for `src/ghost.ts`.
+    mockExistsSync.mockImplementation((p) => String(p).endsWith('real.ts'));
+    const ctx = makeCtx([makeMemory(['src/real.ts', 'src/ghost.ts', 'src/also-missing.ts'])]);
+    const issues = await checkStaleMemory(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('ghost.ts');
+    expect(issues[0].message).toContain('also-missing.ts');
+    expect(issues[0].message).not.toContain('real.ts');
+  });
+
   it('resolves mixed absolute + ~/ + relative refs correctly', async () => {
     const originalHome = process.env.HOME;
     const fakeHome = resolve('/home/jeff');

@@ -126,6 +126,33 @@ describe('scanner', () => {
   });
 });
 
+describe('nested-dotdir pattern discovery (regression guard)', () => {
+  // Each entry: relative path inside the project. Walking the full
+  // CONTEXT_FILE_PATTERNS list via one parameterized test so an accidental
+  // pattern removal from scanner.ts breaks visibly.
+  it.each([
+    { pattern: '.claude/rules/r.md' },
+    { pattern: '.clinerules/r.md' },
+    { pattern: '.continue/rules/r.md' },
+    { pattern: '.aiassistant/rules/r.md' },
+    { pattern: '.junie/guidelines.md' },
+    { pattern: '.junie/AGENTS.md' },
+    { pattern: '.aide/rules/r.md' },
+    { pattern: '.amazonq/rules/r.md' },
+    { pattern: '.goose/instructions.md' },
+    { pattern: '.github/copilot-instructions.md' },
+    { pattern: '.github/git-commit-instructions.md' },
+    { pattern: '.cursor/rules/r.md' },
+  ])('discovers $pattern', async ({ pattern }) => {
+    const full = path.join(tmpDir, pattern);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, '# rule');
+    const files = await scanForContextFiles(tmpDir);
+    const paths = files.map((f) => f.relativePath.replace(/\\/g, '/'));
+    expect(paths).toContain(pattern);
+  });
+});
+
 describe('scanForMcpConfigs', () => {
   it('returns empty array when no MCP configs exist', async () => {
     const files = await scanForMcpConfigs(tmpDir);

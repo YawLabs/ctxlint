@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -202,6 +202,67 @@ describe('applyFixes', () => {
     const summary = applyFixes(result);
     expect(summary.totalFixes).toBe(1);
     expect(summary.filesModified).toHaveLength(1);
+  });
+
+  it('does not log when quiet: true is passed', () => {
+    const filePath = writeFixture('CLAUDE.md', 'See `src/old.ts` here.\n');
+    const result = makeResult([
+      {
+        path: 'CLAUDE.md',
+        isSymlink: false,
+        tokens: 10,
+        lines: 1,
+        issues: [
+          {
+            severity: 'error',
+            check: 'paths',
+            line: 1,
+            message: '',
+            fix: { file: filePath, line: 1, oldText: 'src/old.ts', newText: 'src/new.ts' },
+          },
+        ],
+      },
+    ]);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const summary = applyFixes(result, { quiet: true });
+      expect(summary.totalFixes).toBe(1);
+      expect(logSpy).not.toHaveBeenCalled();
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('skips a JSON fix that would produce invalid JSON and leaves file unchanged', () => {
+    const filePath = writeFixture('bad.json', '{"servers": {"foo": {"command": "old"}}}\n');
+    const original = fs.readFileSync(filePath, 'utf-8');
+    const result = makeResult([
+      {
+        path: 'bad.json',
+        isSymlink: false,
+        tokens: 10,
+        lines: 1,
+        issues: [
+          {
+            severity: 'error',
+            check: 'paths',
+            line: 1,
+            message: '',
+            fix: { file: filePath, line: 1, oldText: '"old"}}}', newText: '"new"}BREAK' },
+          },
+        ],
+      },
+    ]);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const summary = applyFixes(result);
+      expect(summary.filesModified).toHaveLength(0);
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe(original);
+      const messages = logSpy.mock.calls.map((args) => args.join(' ')).join('\n');
+      expect(messages).toContain('invalid JSON');
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 
   it('fixes across multiple files', () => {

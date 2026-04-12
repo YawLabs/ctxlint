@@ -189,4 +189,28 @@ describe('checkCommands', () => {
     expect(byRule).toBeDefined();
     expect(byRule!.message).toContain('test');
   });
+
+  // Cover the full set of shorthand package managers (the regex matches
+  // npm|pnpm|yarn|bun followed by test|start|build|dev|lint|…) so a future
+  // edit to the pattern can't silently drop one.
+  it.each([
+    { cmd: 'yarn test', script: 'test' },
+    { cmd: 'bun test', script: 'test' },
+    { cmd: 'yarn build', script: 'build' },
+    { cmd: 'bun start', script: 'start' },
+    { cmd: 'bun run dev', script: 'dev' },
+    { cmd: 'yarn run lint', script: 'lint' },
+  ])('flags $cmd when $script is missing from package.json', async ({ cmd, script }) => {
+    seed(
+      {
+        'CLAUDE.md': `# Commands\n\n\`\`\`bash\n${cmd}\n\`\`\`\n`,
+      },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    const byRule = issues.find((i) => i.ruleId === 'commands/script-not-found');
+    expect(byRule).toBeDefined();
+    expect(byRule!.message).toContain(script);
+  });
 });

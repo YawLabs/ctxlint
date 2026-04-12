@@ -136,6 +136,58 @@ Score was 3/5 on the review.
     expect(paths).toContain('Config/settings.ts');
   });
 
+  it('handles CRLF line endings without leaking \\r into captures', () => {
+    const content = 'See `src/config.ts` for details.\r\nAlso src/utils/fmt.ts.\r\n';
+    const result = parseContent(content);
+    for (const p of result.references.paths) {
+      expect(p.value).not.toContain('\r');
+    }
+    const paths = result.references.paths.map((p) => p.value);
+    expect(paths).toContain('src/config.ts');
+    expect(paths).toContain('src/utils/fmt.ts');
+  });
+
+  // Unicode segments in paths are currently NOT captured by PATH_PATTERN
+  // (ASCII-only regex). Documented here as a known limitation; if someone
+  // wants to support unicode paths, the PATH_PATTERN needs a /u flag and
+  // `\p{L}\p{N}` in the char class. Low priority — most AI agent context
+  // files reference ASCII paths.
+  it('does not currently capture unicode path segments (documented limitation)', () => {
+    const result = parseContent('Docs live in `docs/日本語/notes.md`.');
+    const paths = result.references.paths.map((p) => p.value);
+    expect(paths).not.toContain('docs/日本語/notes.md');
+    // ASCII-prefix like `docs/` would still NOT be captured as a valid path
+    // because the middle segment is non-ASCII — the regex sees `docs/` as
+    // incomplete.
+  });
+
+  it('extracts paths inside a fenced block with no language specifier', () => {
+    // ``` with no lang → isExampleCodeBlock('') is false → paths inside ARE
+    // captured. Tests the zero-length-lang branch.
+    const result = parseContent(
+      [
+        'Before the block.',
+        '```',
+        'src/unlabeled/file.ts is referenced here',
+        '```',
+        'After.',
+      ].join('\n'),
+    );
+    const paths = result.references.paths.map((p) => p.value);
+    expect(paths).toContain('src/unlabeled/file.ts');
+  });
+
+  it('does not match ~/ as a project-relative path (leaves it alone)', () => {
+    // PATH_PATTERN doesn't begin with ~, so ~/foo.md shouldn't be captured.
+    // (Session-parser's extractPaths is the one that handles ~/; the
+    // context-file parser intentionally stays project-scoped.)
+    const result = parseContent('See ~/.claude/CLAUDE.md for global rules.');
+    const paths = result.references.paths.map((p) => p.value);
+    for (const p of paths) {
+      expect(p).not.toMatch(/^~/);
+    }
+  });
+
   it('handles relative paths with ./ and ../', () => {
     const result = parseContent(`
 Edit \`./src/index.ts\` for the entry point.

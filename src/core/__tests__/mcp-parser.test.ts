@@ -1,9 +1,27 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { parseMcpConfig } from '../mcp-parser.js';
 import type { DiscoveredFile } from '../scanner.js';
 
 const FIXTURES = path.resolve(__dirname, '../../../fixtures/mcp-configs');
+
+let tmpDir: string;
+
+beforeEach(() => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-mcp-'));
+});
+
+afterEach(() => {
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+function writeTmp(content: string, name = '.mcp.json'): DiscoveredFile {
+  const abs = path.join(tmpDir, name);
+  fs.writeFileSync(abs, content);
+  return { absolutePath: abs, relativePath: name, isSymlink: false, type: 'mcp-config' };
+}
 
 function makeFile(fixturePath: string, relativePath: string): DiscoveredFile {
   return {
@@ -106,5 +124,32 @@ describe('parseMcpConfig', () => {
     const config = await parseMcpConfig(file, path.join(FIXTURES, 'valid'));
     const remote = config.servers.find((s) => s.name === 'remote-api');
     expect(remote?.transport).toBe('http');
+  });
+
+  it('parseErrors includes "must be a JSON object" when root is an array', async () => {
+    const file = writeTmp('[1, 2, 3]');
+    const config = await parseMcpConfig(file, tmpDir);
+    expect(config.parseErrors.some((e) => e.includes('must be a JSON object'))).toBe(true);
+    expect(config.servers).toHaveLength(0);
+  });
+
+  it('parseErrors includes "must be a JSON object" when root is a scalar', async () => {
+    const file = writeTmp('"hello"');
+    const config = await parseMcpConfig(file, tmpDir);
+    expect(config.parseErrors.some((e) => e.includes('must be a JSON object'))).toBe(true);
+    expect(config.servers).toHaveLength(0);
+  });
+
+  it('parseErrors includes "must be an object" when mcpServers is a string', async () => {
+    const file = writeTmp(JSON.stringify({ mcpServers: 'nope' }));
+    const config = await parseMcpConfig(file, tmpDir);
+    expect(config.parseErrors.some((e) => e.includes('must be an object'))).toBe(true);
+    expect(config.servers).toHaveLength(0);
+  });
+
+  it('parseErrors includes "must be an object" when mcpServers is an array', async () => {
+    const file = writeTmp(JSON.stringify({ mcpServers: [1, 2, 3] }));
+    const config = await parseMcpConfig(file, tmpDir);
+    expect(config.parseErrors.some((e) => e.includes('must be an object'))).toBe(true);
   });
 });

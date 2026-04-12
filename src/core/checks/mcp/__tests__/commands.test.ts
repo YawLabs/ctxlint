@@ -89,6 +89,94 @@ describe('checkMcpCommands', () => {
     expect(issues).toHaveLength(0);
   });
 
+  describe('windows-npx-no-wrapper (platform-gated)', () => {
+    // Swap process.platform for the duration of the test. Node prevents
+    // direct reassignment; Object.defineProperty is the recommended workaround.
+    function stubPlatform(value: string) {
+      const original = process.platform;
+      Object.defineProperty(process, 'platform', { value, configurable: true });
+      return () => {
+        Object.defineProperty(process, 'platform', { value: original, configurable: true });
+      };
+    }
+
+    it('fires windows-npx-no-wrapper for npx command on win32 project scope', async () => {
+      const restore = stubPlatform('win32');
+      try {
+        const config = makeConfig({
+          scope: 'project',
+          servers: [
+            {
+              name: 'srv',
+              transport: 'stdio',
+              command: 'npx',
+              args: ['-y', '@some/pkg'],
+              line: 3,
+              raw: {},
+            },
+          ],
+        });
+        const issues = await checkMcpCommands(config, '/project');
+        const w = issues.find((i) => i.ruleId === 'windows-npx-no-wrapper');
+        expect(w).toBeDefined();
+        expect(w!.message).toContain('cmd /c');
+      } finally {
+        restore();
+      }
+    });
+
+    it('does NOT fire on non-win32 platforms', async () => {
+      const restore = stubPlatform('linux');
+      try {
+        const config = makeConfig({
+          scope: 'project',
+          servers: [{ name: 'srv', transport: 'stdio', command: 'npx', line: 3, raw: {} }],
+        });
+        const issues = await checkMcpCommands(config, '/project');
+        expect(issues.find((i) => i.ruleId === 'windows-npx-no-wrapper')).toBeUndefined();
+      } finally {
+        restore();
+      }
+    });
+
+    it('does NOT fire on win32 for user-scope configs', async () => {
+      const restore = stubPlatform('win32');
+      try {
+        const config = makeConfig({
+          scope: 'user',
+          servers: [{ name: 'srv', transport: 'stdio', command: 'npx', line: 3, raw: {} }],
+        });
+        const issues = await checkMcpCommands(config, '/project');
+        expect(issues.find((i) => i.ruleId === 'windows-npx-no-wrapper')).toBeUndefined();
+      } finally {
+        restore();
+      }
+    });
+
+    it('does NOT fire on win32 when command is already "cmd"', async () => {
+      const restore = stubPlatform('win32');
+      try {
+        const config = makeConfig({
+          scope: 'project',
+          servers: [
+            {
+              name: 'srv',
+              transport: 'stdio',
+              command: 'cmd',
+              args: ['/c', 'npx', '-y', '@some/pkg'],
+              line: 3,
+              raw: {},
+            },
+          ],
+        });
+        const issues = await checkMcpCommands(config, '/project');
+        expect(issues.find((i) => i.ruleId === 'windows-npx-no-wrapper')).toBeUndefined();
+      } finally {
+        restore();
+      }
+    });
+  });
+
   it('does not flag URL args as missing file paths', async () => {
     const config = makeConfig({
       servers: [

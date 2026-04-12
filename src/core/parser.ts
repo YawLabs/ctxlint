@@ -136,10 +136,20 @@ function extractPathReferences(lines: string[], sections: Section[]): PathRefere
         continue;
       }
 
+      // Strip trailing sentence punctuation that the greedy `[\w.*-]*`
+      // accidentally absorbed. "src/foo.ts." at end of a sentence should
+      // capture as "src/foo.ts". We only strip if what's left still looks
+      // like a path (has a `/`).
+      let cleanValue = value;
+      while (/[.,;:]$/.test(cleanValue) && cleanValue.includes('/')) {
+        cleanValue = cleanValue.slice(0, -1);
+      }
+      if (!cleanValue.includes('/')) continue;
+
       // match[0] includes the leading delimiter, match[1] is the captured path
       const column = match.index! + match[0].length - match[1].length + 1;
       paths.push({
-        value,
+        value: cleanValue,
         line: i + 1, // 1-indexed
         column,
         section: getSectionForLine(i + 1, sections),

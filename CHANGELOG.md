@@ -8,6 +8,24 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.9.8] — 2026-04-12
+
+Test hygiene pass closing the low-priority items from the pre-1.0 audit. 41 new tests (377 → 418); one incidental parser fix surfaced while writing them.
+
+### Fixed
+- **Parser strips trailing sentence punctuation from path captures.** A path at the end of a sentence like `"See src/utils/fmt.ts."` was captured as `src/utils/fmt.ts.` (trailing period), because the greedy `[\w.*-]*` in `PATH_PATTERN` absorbed it. Now trimmed post-capture, while still requiring the result to contain a `/` so we don't mangle legitimate file paths.
+
+### Tests
+- **Fixer:** quiet-mode logging suppression, JSON-fix-rollback when the candidate change would produce invalid JSON.
+- **Token thresholds:** invalid-order validation (info ≥ warning, warning ≥ error) falls back to defaults with a stderr warning.
+- **Commands:** parameterized shorthand package-manager coverage — `yarn`, `bun`, `bun run`, `yarn run` forms all exercise `commands/script-not-found`.
+- **Contradictions:** positive-case tests for the 5 previously-uncovered categories (semicolons, quote style, naming convention, CSS approach, state management). Also: 3+ file cluster dedup verified.
+- **Scanner:** 12 parameterized tests covering every nested-dotdir pattern (`.claude/rules/`, `.clinerules/`, `.continue/rules/`, `.aiassistant/rules/`, `.junie/guidelines.md`, `.github/copilot-instructions.md`, etc.) so a future pattern list edit can't silently drop one.
+- **mcp-parser:** error-branch coverage for root-JSON-array, root-scalar, and `mcpServers` as string / array.
+- **Parser edge cases:** CRLF line endings (no `\r` leakage into captures), unicode path documentation-of-limitation, fenced code blocks without a language specifier, `~/` refs not captured by the context-file parser.
+- **mcp-commands:** Windows-npx-no-wrapper rule now exercised on all platforms via `Object.defineProperty(process, 'platform', ...)` — positive case on win32+project-scope, negatives on linux, user-scope, and when command is already `cmd`.
+- **session/stale-memory:** mixed existence — only the missing refs are flagged when a memory has some existing and some missing paths.
+
 ## [0.9.7] — 2026-04-12
 
 Six performance and correctness fixes carrying forward the pre-1.0 audit queue. No breaking changes.
