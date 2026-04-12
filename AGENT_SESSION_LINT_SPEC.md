@@ -46,6 +46,7 @@ This is the third pillar alongside context file linting (`CLAUDE.md`, `.cursorru
   - [2.5 session/duplicate-memory](#25-sessionduplicate-memory)
   - [2.6 session/consecutive-repeat](#26-sessionconsecutive-repeat)
   - [2.7 session/cyclic-pattern](#27-sessioncyclic-pattern)
+  - [2.8 session/memory-index-overflow](#28-sessionmemory-index-overflow)
 - [3. Rule Catalog (machine-readable)](#3-rule-catalog-machine-readable)
 - [4. Implementing This Specification](#4-implementing-this-specification)
 - [5. Contributing](#5-contributing)
@@ -309,6 +310,32 @@ Detects short repeating cycles of commands, indicating an agent stuck in a loop.
 **Notes:**
 - A cycle like "edit file → run tests → edit file → run tests" is a common pattern when an agent is making iterative fixes. This rule flags when the cycle repeats enough times to suggest the agent isn't making progress.
 - The suggestion directs users to check if a context file is missing workflow instructions.
+
+---
+
+### 2.8 session/memory-index-overflow
+
+Detects when `MEMORY.md` exceeds Claude Code's session-load cap. Claude Code loads the first 200 lines OR 25KB of `MEMORY.md` at session start — whichever comes first. Entries past the cap are silently dropped, so auto-memory pointers beyond that point are effectively invisible to the agent.
+
+| Field | Value |
+|---|---|
+| **Rule ID** | `session/memory-index-overflow` |
+| **Severity** | warning |
+| **Trigger** | `~/.claude/projects/<encoded-project>/memory/MEMORY.md` exceeds 200 lines OR 25,600 bytes |
+| **Message (lines)** | `MEMORY.md has <N> lines — only the first 200 are loaded. <excess> line(s) are effectively invisible.` |
+| **Message (bytes)** | `MEMORY.md is <N> bytes — only the first 25,600 bytes are loaded. ~<excess> bytes are effectively invisible.` |
+| **Source** | [code.claude.com/docs/en/memory](https://code.claude.com/docs/en/memory) |
+
+**Detection algorithm:**
+
+1. Resolve `MEMORY.md` via the Claude-encoded project directory: `~/.claude/projects/<encode(currentProject)>/memory/MEMORY.md`.
+2. If the file doesn't exist, no-op.
+3. Count lines and bytes. Emit a warning for each dimension that exceeds its cap.
+
+**Notes:**
+- Each MEMORY.md entry should stay under ~150 characters (one-line pointer, not content).
+- The remediation is to trim older entries, consolidate duplicates, or move detail into the corresponding topic file — topic files stay on-demand and don't count toward the cap.
+- Both line and byte caps can fire independently (a short file with very long lines trips the byte cap first; a long file with short lines trips the line cap first).
 
 ---
 

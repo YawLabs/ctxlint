@@ -380,13 +380,31 @@ Monitors context file size to help teams manage context window consumption.
 | `warning` | 3000 | Per-file warning |
 | `error` | 8000 | Per-file error |
 | `aggregate` | 5000 | Cross-file combined warning |
+| `tierBreakdown` | 1000 | Triggers `tier-tokens/section-breakdown` on an always-loaded file |
+| `tierAggregate` | 4000 | Triggers `tier-tokens/aggregate` across always-loaded files |
+
+### 3.5 tier-tokens — tier-aware token accounting
+
+Reports token cost attributable to the **always-loaded** tier: files Claude Code (and similar agents) load into every session regardless of request. Complements `tokens` by surfacing which sections / files are costing budget every turn — and which inviolable rules need hook-based enforcement to actually bind.
+
+"Always-loaded" basenames: `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `AGENTS.override.md`, `AGENT.md`, `GEMINI.md`, `.cursorrules`, `.windsurfrules`, `.clinerules`, `.aiderules`, `.continuerules`, `.rules`, `.goosehints`, `replit.md`, `.github/copilot-instructions.md`, `.junie/guidelines.md`, `.goose/instructions.md`. Rules files in `/rules/` directories are classified by frontmatter: if `paths:` is set they're path-scoped on-demand; otherwise they're always-loaded.
+
+| Rule ID | Severity | Trigger | Message |
+|---|---|---|---|
+| `tier-tokens/section-breakdown` | info | Always-loaded file exceeds `tierBreakdown` tokens AND has H1/H2 sections | `{N} tokens loaded every session — heaviest top-level section(s): ...` |
+| `tier-tokens/aggregate` | warning | Two or more always-loaded files combined exceed `tierAggregate` tokens | `{count} always-loaded files total {N} tokens — loaded every session` |
+| `tier-tokens/hard-enforcement-missing` | info | Line in an always-loaded file uses inviolable framing (NEVER/ALWAYS/DO NOT/MUST NOT) with a backticked command, and no matching PreToolUse hook or `permissions.deny` entry exists in `.claude/settings.json` or `~/.claude/settings.json` | `Inviolable framing ("{line}") without a hook to back it up` |
+
+**Note on overlap with `tokens`:** `tokens/info` and `tier-tokens/section-breakdown` both fire on a large CLAUDE.md. They're complementary — `tokens` is tier-agnostic ("this file is large"), `tier-tokens` adds the always-loaded attribution and demotion guidance. Use `--ignore tokens` or `--ignore tier-tokens` to pick one.
+
+**Source:** [Claude Code memory docs](https://code.claude.com/docs/en/memory). Rule behavior is grounded in the documented loading model ("there's no guarantee of strict compliance" → hard-enforcement-missing; section-demotion-to-skills → structurally reduces per-session cost).
 
 **Suggestions:**
 - For `excessive`: `Consider splitting into focused sections or removing redundant content.`
 - For `large`: `Consider trimming — research shows diminishing returns past ~300 lines.`
 - For `aggregate`: `Consider consolidating or trimming to reduce per-session context cost.`
 
-### 3.5 redundancy — inferable content
+### 3.6 redundancy — inferable content
 
 Detects content that the agent can already infer from project metadata, reducing unnecessary context window consumption.
 
@@ -442,7 +460,7 @@ Implementations should maintain and extend this mapping as the ecosystem evolves
 
 **Suggestion for `duplicate-content`:** `Consider consolidating into a single context file.`
 
-### 3.6 contradictions — cross-file conflicts
+### 3.7 contradictions — cross-file conflicts
 
 Detects conflicting directives across multiple context files. This is a cross-file check.
 
@@ -518,7 +536,7 @@ Detects conflicting directives across multiple context files. This is a cross-fi
 - Only flag contradictions *across* files. A single file contradicting itself is unusual and likely intentional (e.g., "use camelCase for variables, PascalCase for components").
 - Include the exact line numbers and text from both files in the detail.
 
-### 3.7 frontmatter — client metadata validation
+### 3.8 frontmatter — client metadata validation
 
 Validates YAML frontmatter required by specific clients. Only applies to file formats that use frontmatter.
 
@@ -539,7 +557,7 @@ Validates YAML frontmatter required by specific clients. Only applies to file fo
 
 ---
 
-### 3.8 ci-coverage — CI workflow documentation
+### 3.9 ci-coverage — CI workflow documentation
 
 Checks that release/deploy CI workflows are documented in context files. When agents encounter a project with CI release workflows but no documentation about how releases work, they guess — often incorrectly.
 
@@ -558,7 +576,7 @@ Checks that release/deploy CI workflows are documented in context files. When ag
 
 ---
 
-### 3.9 ci-secrets — CI secrets documentation
+### 3.10 ci-secrets — CI secrets documentation
 
 Checks that secrets referenced in CI workflow files are mentioned in context files. Undocumented secrets are a common source of agent looping — agents try to create new tokens, pull from `.npmrc`, or guess at auth setup.
 

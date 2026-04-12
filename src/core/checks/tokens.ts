@@ -5,6 +5,8 @@ export interface TokenThresholds {
   warning: number;
   error: number;
   aggregate: number;
+  tierBreakdown: number;
+  tierAggregate: number;
 }
 
 const DEFAULT_THRESHOLDS: TokenThresholds = {
@@ -12,9 +14,11 @@ const DEFAULT_THRESHOLDS: TokenThresholds = {
   warning: 3000,
   error: 8000,
   aggregate: 5000,
+  tierBreakdown: 1000,
+  tierAggregate: 4000,
 };
 
-let currentThresholds = DEFAULT_THRESHOLDS;
+let currentThresholds: TokenThresholds = DEFAULT_THRESHOLDS;
 
 export function setTokenThresholds(overrides: Partial<TokenThresholds>): void {
   const merged = { ...DEFAULT_THRESHOLDS, ...overrides };
@@ -29,6 +33,10 @@ export function setTokenThresholds(overrides: Partial<TokenThresholds>): void {
 
 export function resetTokenThresholds(): void {
   currentThresholds = DEFAULT_THRESHOLDS;
+}
+
+export function getTokenThresholds(): TokenThresholds {
+  return currentThresholds;
 }
 
 export async function checkTokens(

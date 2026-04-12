@@ -139,9 +139,9 @@ describe('CLI integration', () => {
     const tierIssues = parsed.files.flatMap((f: any) =>
       f.issues.filter((i: any) => i.check === 'tier-tokens'),
     );
-    expect(tierIssues.length).toBe(1);
-    expect(tierIssues[0].ruleId).toBe('tier-tokens/section-breakdown');
-    expect(tierIssues[0].suggestion).toContain('Pre-commit checklist');
+    const breakdown = tierIssues.find((i: any) => i.ruleId === 'tier-tokens/section-breakdown');
+    expect(breakdown).toBeDefined();
+    expect(breakdown.suggestion).toContain('Pre-commit checklist');
   });
 
   it('respects --depth flag', () => {

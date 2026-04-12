@@ -86,6 +86,16 @@
       "trigger": "Agent history shows a repeating sequence of 2-3 commands (e.g. A,B,A,B) repeated 2+ times.",
       "message": "Cyclic pattern repeated {count} times: {cycle}",
       "fixable": false
+    },
+    {
+      "id": "session/memory-index-overflow",
+      "category": "session",
+      "severity": "warning",
+      "description": "MEMORY.md exceeds Claude Code's session-load cap. The first 200 lines / 25KB are loaded every session; anything beyond is effectively invisible to the agent.",
+      "trigger": "~/.claude/projects/<encoded-project>/memory/MEMORY.md exceeds 200 lines OR 25,600 bytes.",
+      "message": "MEMORY.md has {N} lines — only the first 200 are loaded. {excess} lines are effectively invisible.",
+      "fixable": false,
+      "source": "code.claude.com/docs/en/memory"
     }
   ],
   "dataSources": [

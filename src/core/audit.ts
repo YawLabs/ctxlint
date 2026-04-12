@@ -6,7 +6,7 @@ import { checkPaths } from './checks/paths.js';
 import { checkCommands } from './checks/commands.js';
 import { checkStaleness } from './checks/staleness.js';
 import { checkTokens, checkAggregateTokens } from './checks/tokens.js';
-import { checkTierTokens } from './checks/tier-tokens.js';
+import { checkTierTokens, checkAggregateTierTokens } from './checks/tier-tokens.js';
 import { checkRedundancy, checkDuplicateContent } from './checks/redundancy.js';
 import { checkContradictions } from './checks/contradictions.js';
 import { checkFrontmatter } from './checks/frontmatter.js';
@@ -25,6 +25,7 @@ import { checkMissingWorkflow } from './checks/session/missing-workflow.js';
 import { checkStaleMemory } from './checks/session/stale-memory.js';
 import { checkDuplicateMemory } from './checks/session/duplicate-memory.js';
 import { checkLoopDetection } from './checks/session/loop-detection.js';
+import { checkMemoryIndexOverflow } from './checks/session/memory-index-overflow.js';
 import { checkCiCoverage } from './checks/ci-coverage.js';
 import { checkCiSecrets } from './checks/ci-secrets.js';
 import type {
@@ -69,6 +70,7 @@ export const ALL_SESSION_CHECKS: SessionCheckName[] = [
   'session-stale-memory',
   'session-duplicate-memory',
   'session-loop-detection',
+  'session-memory-index-overflow',
 ];
 
 export interface AuditOptions {
@@ -117,7 +119,8 @@ export async function runAudit(
       if (activeChecks.includes('commands')) checkPromises.push(checkCommands(file, projectRoot));
       if (activeChecks.includes('staleness')) checkPromises.push(checkStaleness(file, projectRoot));
       if (activeChecks.includes('tokens')) checkPromises.push(checkTokens(file, projectRoot));
-      if (activeChecks.includes('tier-tokens')) checkPromises.push(checkTierTokens(file));
+      if (activeChecks.includes('tier-tokens'))
+        checkPromises.push(checkTierTokens(file, projectRoot));
       if (activeChecks.includes('redundancy'))
         checkPromises.push(checkRedundancy(file, projectRoot));
       if (activeChecks.includes('frontmatter'))
@@ -143,6 +146,10 @@ export async function runAudit(
         fileResults.map((f) => ({ path: f.path, tokens: f.tokens })),
       );
       if (aggIssue) crossFileIssues.push(aggIssue);
+    }
+    if (activeChecks.includes('tier-tokens')) {
+      const tierAgg = checkAggregateTierTokens(parsed);
+      if (tierAgg) crossFileIssues.push(tierAgg);
     }
     if (activeChecks.includes('redundancy')) {
       crossFileIssues.push(...checkDuplicateContent(parsed));
@@ -266,6 +273,8 @@ export async function runAudit(
         sessionPromises.push(checkDuplicateMemory(sessionCtx));
       if (sessionChecksToRun.includes('session-loop-detection'))
         sessionPromises.push(checkLoopDetection(sessionCtx));
+      if (sessionChecksToRun.includes('session-memory-index-overflow'))
+        sessionPromises.push(checkMemoryIndexOverflow(sessionCtx));
 
       const sessionResults = await Promise.all(sessionPromises);
       const sessionIssues = sessionResults.flat();

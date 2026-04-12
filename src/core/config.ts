@@ -11,6 +11,8 @@ export interface CtxlintConfig {
     warning?: number;
     error?: number;
     aggregate?: number;
+    tierBreakdown?: number;
+    tierAggregate?: number;
   };
   contextFiles?: string[];
   mcp?: boolean;

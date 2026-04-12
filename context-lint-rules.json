@@ -207,11 +207,34 @@
       "category": "tier-tokens",
       "severity": "info",
       "description": "Reports the heaviest top-level sections in an always-loaded context file and suggests demoting the largest to an on-demand tier (skill, subagent, or memory).",
-      "trigger": "An always-loaded context file (CLAUDE.md, AGENTS.md, .cursorrules, etc. — excluding path-scoped rules files) exceeds 1000 tokens and contains H1 or H2 sections.",
+      "trigger": "An always-loaded context file (CLAUDE.md, AGENTS.md, .cursorrules, etc. — excluding path-scoped rules files) exceeds the tierBreakdown threshold (default 1000 tokens) and contains H1 or H2 sections.",
       "message": "{N} tokens loaded every session — heaviest top-level section(s): ...",
       "fixable": false,
       "configurable": true,
+      "configKey": "tokenThresholds.tierBreakdown",
       "defaultThreshold": 1000
+    },
+    {
+      "id": "tier-tokens/aggregate",
+      "category": "tier-tokens",
+      "severity": "warning",
+      "description": "Combined token cost of always-loaded context files exceeds the recommended budget.",
+      "trigger": "Two or more always-loaded files total more than the tierAggregate threshold (default 4000 tokens).",
+      "message": "{count} always-loaded files total {N} tokens — loaded every session",
+      "fixable": false,
+      "configurable": true,
+      "configKey": "tokenThresholds.tierAggregate",
+      "defaultThreshold": 4000
+    },
+    {
+      "id": "tier-tokens/hard-enforcement-missing",
+      "category": "tier-tokens",
+      "severity": "info",
+      "description": "An always-loaded file uses inviolable framing (NEVER / ALWAYS / DO NOT / MUST NOT) paired with a concrete command, but no corresponding PreToolUse hook or permissions.deny entry exists in settings.json. Rules in always-loaded files are advisory — without a hook the agent may still run the command.",
+      "trigger": "Line in an always-loaded file matches NEVER|ALWAYS|DO NOT|MUST NOT with a backticked command, and .claude/settings.json / ~/.claude/settings.json does not contain a matching PreToolUse hook or permissions.deny entry.",
+      "message": "Inviolable framing without a hook to back it up",
+      "fixable": false,
+      "source": "code.claude.com/docs/en/hooks-guide"
     },
     {
       "id": "redundancy/tech-mention",

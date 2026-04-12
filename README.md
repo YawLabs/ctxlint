@@ -268,7 +268,7 @@ Commands:
   init                 Set up a git pre-commit hook
 ```
 
-**Available checks:** `paths`, `commands`, `staleness`, `tokens`, `redundancy`, `contradictions`, `frontmatter`, `ci-coverage`, `ci-secrets`, `mcp-schema`, `mcp-security`, `mcp-commands`, `mcp-deprecated`, `mcp-env`, `mcp-urls`, `mcp-consistency`, `mcp-redundancy`, `session-missing-secret`, `session-diverged-file`, `session-missing-workflow`, `session-stale-memory`, `session-duplicate-memory`, `session-loop-detection`
+**Available checks:** `paths`, `commands`, `staleness`, `tokens`, `tier-tokens`, `redundancy`, `contradictions`, `frontmatter`, `ci-coverage`, `ci-secrets`, `mcp-schema`, `mcp-security`, `mcp-commands`, `mcp-deprecated`, `mcp-env`, `mcp-urls`, `mcp-consistency`, `mcp-redundancy`, `session-missing-secret`, `session-diverged-file`, `session-missing-workflow`, `session-stale-memory`, `session-duplicate-memory`, `session-loop-detection`, `session-memory-index-overflow`
 
 Passing any `mcp-*` check name implies `--mcp`. Passing any `session-*` check name implies `--session`.
 
@@ -360,7 +360,9 @@ Create a `.ctxlintrc` or `.ctxlintrc.json` in your project root:
     "info": 500,
     "warning": 2000,
     "error": 5000,
-    "aggregate": 4000
+    "aggregate": 4000,
+    "tierBreakdown": 1000,
+    "tierAggregate": 4000
   },
   "contextFiles": ["CONVENTIONS.md", "docs/ai-rules.md"]
 }

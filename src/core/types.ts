@@ -8,7 +8,8 @@ export type SessionCheckName =
   | 'session-missing-workflow'
   | 'session-stale-memory'
   | 'session-duplicate-memory'
-  | 'session-loop-detection';
+  | 'session-loop-detection'
+  | 'session-memory-index-overflow';
 
 export type AgentProvider =
   | 'claude-code'
