@@ -7,3 +7,4 @@ coverage/
 .env
 .env.*
 docs/research/
+.claude/scheduled_tasks.lock

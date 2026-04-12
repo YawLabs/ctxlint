@@ -205,10 +205,11 @@ Session checks are **opt-in** because they access files outside the project dire
 | **Stale memory**      | Memory entries referencing file paths that no longer exist                                                                                       |
 | **Duplicate memory**  | Near-duplicate memory entries across projects (>60% overlap)                                                                                     |
 | **Loop detection**    | Agent stuck in a loop — 3+ consecutive identical commands, or cyclic A,B,A,B patterns                                                            |
+| **Memory index overflow** | `MEMORY.md` exceeds Claude Code's documented 200-line / 25KB session-load cap, so entries past the cap are invisible to the agent            |
 
 ### Session Linting Specification
 
-- **[`AGENT_SESSION_LINT_SPEC.md`](./AGENT_SESSION_LINT_SPEC.md)** — 7 lint rules, the agent session data landscape across 8 agents, sibling detection strategy, and implementation guidance.
+- **[`AGENT_SESSION_LINT_SPEC.md`](./AGENT_SESSION_LINT_SPEC.md)** — 8 lint rules, the agent session data landscape across 8 agents, sibling detection strategy, and implementation guidance.
 - **[`agent-session-lint-rules.json`](./agent-session-lint-rules.json)** — Machine-readable rule catalog.
 
 ## Example Output
@@ -287,7 +288,15 @@ Re-lints automatically when any context file, MCP config, or `package.json` chan
   run: npx @yawlabs/ctxlint --strict
 ```
 
-Exits with code 1 if any errors or warnings are found.
+### Exit Codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Success — no issues, or issues below the strict threshold |
+| `1` | Strict mode caught at least one error or warning (`--strict` is set) |
+| `2` | Config error, invalid CLI option, or internal failure |
+
+In non-strict mode ctxlint always exits `0` — it's a reporting tool by default. Pass `--strict` to enforce in CI.
 
 ### GitHub Action
 
@@ -369,6 +378,26 @@ Create a `.ctxlintrc` or `.ctxlintrc.json` in your project root:
 ```
 
 The `contextFiles` array adds custom file patterns to scan alongside the built-in list. Useful for project-specific context files like `CONVENTIONS.md`.
+
+### Config Reference
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `checks` | `string[]` | all checks | Checks to run. Check names include `paths`, `commands`, `tokens`, `tier-tokens`, `redundancy`, `contradictions`, `frontmatter`, `staleness`, `ci-coverage`, `ci-secrets`, plus any `mcp-*` / `session-*`. |
+| `ignore` | `string[]` | `[]` | Checks to skip, evaluated after `checks`. |
+| `strict` | `boolean` | `false` | Exit non-zero on any warning or error. |
+| `tokenThresholds` | `object` | see below | Per-file and cross-file token thresholds. |
+| `tokenThresholds.info` | `number` | `1000` | Per-file info threshold for `tokens/info`. |
+| `tokenThresholds.warning` | `number` | `3000` | Per-file warning threshold for `tokens/large`. |
+| `tokenThresholds.error` | `number` | `8000` | Per-file error threshold for `tokens/excessive`. |
+| `tokenThresholds.aggregate` | `number` | `5000` | Cross-file total threshold for `tokens/aggregate`. |
+| `tokenThresholds.tierBreakdown` | `number` | `1000` | Always-loaded file threshold for `tier-tokens/section-breakdown`. |
+| `tokenThresholds.tierAggregate` | `number` | `4000` | Combined always-loaded threshold for `tier-tokens/aggregate`. |
+| `contextFiles` | `string[]` | `[]` | Extra glob patterns to scan alongside the built-in list. |
+| `mcp` | `boolean` | `false` | Enable MCP config checks by default (same as `--mcp`). |
+| `mcpGlobal` | `boolean` | `false` | Also scan user/global MCP configs (same as `--mcp-global`). |
+
+Config file resolution order: `.ctxlintrc` → `.ctxlintrc.json` in the project root. Use `--config <path>` to point elsewhere. CLI flags override config fields.
 
 CLI flags override config file settings. Use `--config <path>` to load a config from a custom location.
 

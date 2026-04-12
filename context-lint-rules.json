@@ -75,7 +75,8 @@
       "trigger": "Path reference in context file resolves to a non-existent file or directory.",
       "message": "{path} does not exist",
       "fixable": true,
-      "fixDescription": "Replace broken path with suggestion from git rename detection or fuzzy matching."
+      "fixDescription": "Replace broken path with suggestion from git rename detection or fuzzy matching.",
+      "stability": "stable"
     },
     {
       "id": "paths/glob-no-match",
@@ -84,7 +85,8 @@
       "description": "Glob pattern matches zero files in the project.",
       "trigger": "Path contains wildcard characters (*, ?) but matches no files.",
       "message": "{pattern} matches no files",
-      "fixable": false
+      "fixable": false,
+      "stability": "stable"
     },
     {
       "id": "paths/directory-not-found",
@@ -93,7 +95,8 @@
       "description": "Referenced directory does not exist.",
       "trigger": "Path ending with / does not resolve to an existing directory.",
       "message": "{path} directory does not exist",
-      "fixable": false
+      "fixable": false,
+      "stability": "stable"
     },
     {
       "id": "commands/script-not-found",
@@ -102,7 +105,8 @@
       "description": "Package manager script name is not found in package.json scripts.",
       "trigger": "npm run, pnpm, yarn, or bun script reference does not match a key in package.json#scripts.",
       "message": "\"{cmd}\" — script \"{name}\" not found in package.json",
-      "fixable": false
+      "fixable": false,
+      "stability": "stable"
     },
     {
       "id": "commands/make-target-not-found",
@@ -111,7 +115,8 @@
       "description": "Make target is not found in Makefile.",
       "trigger": "make command references a target not declared in the project's Makefile.",
       "message": "\"{cmd}\" — target \"{name}\" not found in Makefile",
-      "fixable": false
+      "fixable": false,
+      "stability": "stable"
     },
     {
       "id": "commands/no-makefile",
@@ -120,7 +125,8 @@
       "description": "Make command used but no Makefile exists in the project.",
       "trigger": "Context file references a make command but no Makefile is found at the project root.",
       "message": "\"{cmd}\" — no Makefile found in project",
-      "fixable": false
+      "fixable": false,
+      "stability": "stable"
     },
     {
       "id": "commands/npx-not-in-deps",
@@ -129,7 +135,8 @@
       "description": "npx package is not in project dependencies.",
       "trigger": "npx package is not in package.json dependencies/devDependencies and not in node_modules/.bin.",
       "message": "\"{cmd}\" — \"{pkg}\" not found in dependencies",
-      "fixable": false
+      "fixable": false,
+      "stability": "stable"
     },
     {
       "id": "commands/tool-not-found",
@@ -138,7 +145,8 @@
       "description": "Common development tool is not in project dependencies.",
       "trigger": "Tool name (vitest, jest, eslint, prettier, tsc, etc.) not found in dependencies or node_modules/.bin.",
       "message": "\"{cmd}\" — \"{tool}\" not found in dependencies or node_modules/.bin",
-      "fixable": false
+      "fixable": false,
+      "stability": "stable"
     },
     {
       "id": "staleness/stale",
@@ -147,7 +155,8 @@
       "description": "Context file has not been updated in 30+ days while referenced code has changed.",
       "trigger": "File last modified 30+ days ago AND paths it references have git commits since.",
       "message": "Last updated {days} days ago. {path} has {N} commits since.",
-      "fixable": false
+      "fixable": false,
+      "stability": "stable"
     },
     {
       "id": "staleness/aging",
@@ -156,7 +165,8 @@
       "description": "Context file has not been updated in 14-30 days while referenced code has changed.",
       "trigger": "File last modified 14-30 days ago AND paths it references have git commits since.",
       "message": "Last updated {days} days ago. {path} has {N} commits since.",
-      "fixable": false
+      "fixable": false,
+      "stability": "stable"
     },
     {
       "id": "tokens/excessive",
@@ -167,7 +177,8 @@
       "message": "{N} tokens — consumes significant context window space",
       "fixable": false,
       "configurable": true,
-      "defaultThreshold": 8000
+      "defaultThreshold": 8000,
+      "stability": "stable"
     },
     {
       "id": "tokens/large",
@@ -178,7 +189,8 @@
       "message": "{N} tokens — large context file",
       "fixable": false,
       "configurable": true,
-      "defaultThreshold": 3000
+      "defaultThreshold": 3000,
+      "stability": "stable"
     },
     {
       "id": "tokens/info",
@@ -189,7 +201,8 @@
       "message": "Uses ~{N} tokens per session",
       "fixable": false,
       "configurable": true,
-      "defaultThreshold": 1000
+      "defaultThreshold": 1000,
+      "stability": "stable"
     },
     {
       "id": "tokens/aggregate",
@@ -200,7 +213,8 @@
       "message": "{count} context files consume {N} tokens combined",
       "fixable": false,
       "configurable": true,
-      "defaultThreshold": 5000
+      "defaultThreshold": 5000,
+      "stability": "stable"
     },
     {
       "id": "tier-tokens/section-breakdown",
@@ -212,7 +226,8 @@
       "fixable": false,
       "configurable": true,
       "configKey": "tokenThresholds.tierBreakdown",
-      "defaultThreshold": 1000
+      "defaultThreshold": 1000,
+      "stability": "stable"
     },
     {
       "id": "tier-tokens/aggregate",
@@ -224,7 +239,8 @@
       "fixable": false,
       "configurable": true,
       "configKey": "tokenThresholds.tierAggregate",
-      "defaultThreshold": 4000
+      "defaultThreshold": 4000,
+      "stability": "stable"
     },
     {
       "id": "tier-tokens/hard-enforcement-missing",
@@ -234,7 +250,8 @@
       "trigger": "Line in an always-loaded file matches NEVER|ALWAYS|DO NOT|MUST NOT with a backticked command, and .claude/settings.json / ~/.claude/settings.json does not contain a matching PreToolUse hook or permissions.deny entry.",
       "message": "Inviolable framing without a hook to back it up",
       "fixable": false,
-      "source": "code.claude.com/docs/en/hooks-guide"
+      "source": "code.claude.com/docs/en/hooks-guide",
+      "stability": "experimental"
     },
     {
       "id": "redundancy/tech-mention",
@@ -243,7 +260,8 @@
       "description": "Context file mentions a technology that is already in package.json dependencies.",
       "trigger": "File contains phrases like 'use React' or 'built with Express' and that package is in dependencies.",
       "message": "\"{tech}\" is in package.json {depType} — agent can infer this",
-      "fixable": false
+      "fixable": false,
+      "stability": "stable"
     },
     {
       "id": "redundancy/discoverable-dir",
@@ -252,7 +270,8 @@
       "description": "Context file describes the location of a directory that the agent can discover by listing files.",
       "trigger": "File says files 'are in' or 'go in' a directory that exists in the project.",
       "message": "Directory \"{dir}\" exists and is discoverable — agent can find this by listing files",
-      "fixable": false
+      "fixable": false,
+      "stability": "stable"
     },
     {
       "id": "redundancy/duplicate-content",
@@ -261,7 +280,8 @@
       "description": "Two context files have significant content overlap.",
       "trigger": "Two files share 60%+ of their lines (by trimmed content, lines >10 chars).",
       "message": "{file1} and {file2} have {N}% content overlap",
-      "fixable": false
+      "fixable": false,
+      "stability": "stable"
     },
     {
       "id": "contradictions/conflict",
@@ -280,7 +300,8 @@
         "naming convention",
         "CSS approach",
         "state management"
-      ]
+      ],
+      "stability": "stable"
     },
     {
       "id": "frontmatter/missing",
@@ -290,7 +311,12 @@
       "trigger": "Cursor .mdc, Copilot instruction, or Windsurf rule file has no --- frontmatter block.",
       "message": "{format} file is missing frontmatter",
       "fixable": false,
-      "appliesTo": ["cursor-mdc", "copilot-instructions", "windsurf-rules"]
+      "appliesTo": [
+        "cursor-mdc",
+        "copilot-instructions",
+        "windsurf-rules"
+      ],
+      "stability": "stable"
     },
     {
       "id": "frontmatter/missing-field",
@@ -300,7 +326,12 @@
       "trigger": "Frontmatter exists but is missing a key field (description for Cursor, applyTo for Copilot, trigger for Windsurf).",
       "message": "Missing \"{field}\" field in {format} frontmatter",
       "fixable": false,
-      "appliesTo": ["cursor-mdc", "copilot-instructions", "windsurf-rules"]
+      "appliesTo": [
+        "cursor-mdc",
+        "copilot-instructions",
+        "windsurf-rules"
+      ],
+      "stability": "stable"
     },
     {
       "id": "frontmatter/invalid-value",
@@ -310,7 +341,11 @@
       "trigger": "alwaysApply is not true/false, trigger is not a valid enum value, globs doesn't look like a pattern.",
       "message": "Invalid {field} value: \"{value}\"",
       "fixable": false,
-      "appliesTo": ["cursor-mdc", "windsurf-rules"]
+      "appliesTo": [
+        "cursor-mdc",
+        "windsurf-rules"
+      ],
+      "stability": "stable"
     },
     {
       "id": "frontmatter/no-activation",
@@ -320,7 +355,10 @@
       "trigger": "Cursor .mdc has frontmatter with neither globs nor alwaysApply set.",
       "message": "No activation field — rule may not be applied automatically",
       "fixable": false,
-      "appliesTo": ["cursor-mdc"]
+      "appliesTo": [
+        "cursor-mdc"
+      ],
+      "stability": "stable"
     },
     {
       "id": "ci/no-release-docs",
@@ -329,7 +367,8 @@
       "description": "Release/deploy CI workflow exists but no context file documents the process.",
       "trigger": ".github/workflows/ contains release/deploy/publish workflow but no context file mentions the release process.",
       "message": "Release workflow found but no context file documents the release process",
-      "fixable": false
+      "fixable": false,
+      "stability": "stable"
     },
     {
       "id": "ci/undocumented-secret",
@@ -338,14 +377,19 @@
       "description": "CI workflow references a secret not mentioned in any context file.",
       "trigger": "${{ secrets.NAME }} found in workflow YAML but NAME not mentioned in any context file. GitHub-provided secrets (GITHUB_TOKEN, etc.) are excluded.",
       "message": "CI secret \"{name}\" is used in {workflow} but not mentioned in any context file",
-      "fixable": false
+      "fixable": false,
+      "stability": "stable"
     }
   ],
   "formats": [
     {
       "id": "claude-code",
       "client": "Claude Code",
-      "patterns": ["CLAUDE.md", "CLAUDE.local.md", ".claude/rules/*.md"],
+      "patterns": [
+        "CLAUDE.md",
+        "CLAUDE.local.md",
+        ".claude/rules/*.md"
+      ],
       "type": "markdown",
       "frontmatter": "none",
       "scope": "project-wide and rule-based"
@@ -353,7 +397,11 @@
     {
       "id": "aaif",
       "client": "AAIF / Multi-agent standard",
-      "patterns": ["AGENTS.md", "AGENT.md", "AGENTS.override.md"],
+      "patterns": [
+        "AGENTS.md",
+        "AGENT.md",
+        "AGENTS.override.md"
+      ],
       "type": "markdown",
       "frontmatter": "none",
       "scope": "project-wide"
@@ -361,42 +409,77 @@
     {
       "id": "cursor",
       "client": "Cursor",
-      "patterns": [".cursorrules", ".cursor/rules/*.md", ".cursor/rules/*.mdc", ".cursor/rules/*/RULE.md"],
+      "patterns": [
+        ".cursorrules",
+        ".cursor/rules/*.md",
+        ".cursor/rules/*.mdc",
+        ".cursor/rules/*/RULE.md"
+      ],
       "type": "markdown",
       "frontmatter": "required for .mdc",
       "frontmatterFields": {
-        "description": {"required": true, "type": "string"},
-        "globs": {"required": false, "type": "string or string[]"},
-        "alwaysApply": {"required": false, "type": "boolean"}
+        "description": {
+          "required": true,
+          "type": "string"
+        },
+        "globs": {
+          "required": false,
+          "type": "string or string[]"
+        },
+        "alwaysApply": {
+          "required": false,
+          "type": "boolean"
+        }
       },
       "scope": "project-wide and rule-based"
     },
     {
       "id": "copilot",
       "client": "GitHub Copilot",
-      "patterns": [".github/copilot-instructions.md", ".github/instructions/*.md", ".github/git-commit-instructions.md"],
+      "patterns": [
+        ".github/copilot-instructions.md",
+        ".github/instructions/*.md",
+        ".github/git-commit-instructions.md"
+      ],
       "type": "markdown",
       "frontmatter": "optional",
       "frontmatterFields": {
-        "applyTo": {"required": false, "type": "string (glob)"}
+        "applyTo": {
+          "required": false,
+          "type": "string (glob)"
+        }
       },
       "scope": "project-wide and scoped"
     },
     {
       "id": "windsurf",
       "client": "Windsurf",
-      "patterns": [".windsurfrules", ".windsurf/rules/*.md"],
+      "patterns": [
+        ".windsurfrules",
+        ".windsurf/rules/*.md"
+      ],
       "type": "markdown",
       "frontmatter": "recommended for rules",
       "frontmatterFields": {
-        "trigger": {"required": true, "type": "enum", "values": ["always_on", "glob", "manual", "model"]}
+        "trigger": {
+          "required": true,
+          "type": "enum",
+          "values": [
+            "always_on",
+            "glob",
+            "manual",
+            "model"
+          ]
+        }
       },
       "scope": "project-wide and rule-based"
     },
     {
       "id": "gemini",
       "client": "Gemini CLI",
-      "patterns": ["GEMINI.md"],
+      "patterns": [
+        "GEMINI.md"
+      ],
       "type": "markdown",
       "frontmatter": "none",
       "scope": "project-wide"
@@ -404,7 +487,9 @@
     {
       "id": "cline",
       "client": "Cline",
-      "patterns": [".clinerules"],
+      "patterns": [
+        ".clinerules"
+      ],
       "type": "plain text",
       "frontmatter": "none",
       "scope": "project-wide"
@@ -412,7 +497,9 @@
     {
       "id": "aider",
       "client": "Aider",
-      "patterns": [".aiderules"],
+      "patterns": [
+        ".aiderules"
+      ],
       "type": "plain text",
       "frontmatter": "none",
       "scope": "project-wide"
@@ -420,7 +507,9 @@
     {
       "id": "aide",
       "client": "Aide / Codestory",
-      "patterns": [".aide/rules/*.md"],
+      "patterns": [
+        ".aide/rules/*.md"
+      ],
       "type": "markdown",
       "frontmatter": "none",
       "scope": "rule-based"
@@ -428,7 +517,9 @@
     {
       "id": "amazonq",
       "client": "Amazon Q Developer",
-      "patterns": [".amazonq/rules/*.md"],
+      "patterns": [
+        ".amazonq/rules/*.md"
+      ],
       "type": "markdown",
       "frontmatter": "none",
       "scope": "rule-based"
@@ -436,7 +527,10 @@
     {
       "id": "goose",
       "client": "Goose (Block)",
-      "patterns": [".goose/instructions.md", ".goosehints"],
+      "patterns": [
+        ".goose/instructions.md",
+        ".goosehints"
+      ],
       "type": "markdown",
       "frontmatter": "none",
       "scope": "project-wide"
@@ -444,7 +538,10 @@
     {
       "id": "junie",
       "client": "JetBrains Junie",
-      "patterns": [".junie/guidelines.md", ".junie/AGENTS.md"],
+      "patterns": [
+        ".junie/guidelines.md",
+        ".junie/AGENTS.md"
+      ],
       "type": "markdown",
       "frontmatter": "none",
       "scope": "project-wide"
@@ -452,7 +549,9 @@
     {
       "id": "jetbrains-ai",
       "client": "JetBrains AI Assistant",
-      "patterns": [".aiassistant/rules/*.md"],
+      "patterns": [
+        ".aiassistant/rules/*.md"
+      ],
       "type": "markdown",
       "frontmatter": "none",
       "scope": "rule-based"
@@ -460,7 +559,10 @@
     {
       "id": "continue",
       "client": "Continue",
-      "patterns": [".continuerules", ".continue/rules/*.md"],
+      "patterns": [
+        ".continuerules",
+        ".continue/rules/*.md"
+      ],
       "type": "markdown",
       "frontmatter": "none",
       "scope": "project-wide and rule-based"
@@ -468,7 +570,9 @@
     {
       "id": "zed",
       "client": "Zed",
-      "patterns": [".rules"],
+      "patterns": [
+        ".rules"
+      ],
       "type": "plain text",
       "frontmatter": "none",
       "scope": "project-wide"
@@ -476,7 +580,9 @@
     {
       "id": "replit",
       "client": "Replit",
-      "patterns": ["replit.md"],
+      "patterns": [
+        "replit.md"
+      ],
       "type": "markdown",
       "frontmatter": "none",
       "scope": "project-wide"

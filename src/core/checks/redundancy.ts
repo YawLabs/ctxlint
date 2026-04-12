@@ -122,6 +122,7 @@ export async function checkRedundancy(
           issues.push({
             severity: 'info',
             check: 'redundancy',
+            ruleId: 'redundancy/tech-mention',
             line: i + 1,
             message: `"${mention}" is in package.json ${pkgJson.dependencies?.[pkg] ? 'dependencies' : pkgJson.devDependencies?.[pkg] ? 'devDependencies' : pkgJson.peerDependencies?.[pkg] ? 'peerDependencies' : 'optionalDependencies'} — agent can infer this`,
             suggestion: `~${wastedTokens} tokens could be saved`,
@@ -147,6 +148,7 @@ export async function checkRedundancy(
         issues.push({
           severity: 'info',
           check: 'redundancy',
+          ruleId: 'redundancy/discoverable-dir',
           line: i + 1,
           message: `Directory "${dir}" exists and is discoverable — agent can find this by listing files`,
           suggestion: 'Only keep if there is non-obvious context about this directory',
@@ -168,6 +170,7 @@ export function checkDuplicateContent(files: ParsedContextFile[]): LintIssue[] {
         issues.push({
           severity: 'warning',
           check: 'redundancy',
+          ruleId: 'redundancy/duplicate-content',
           line: 1,
           message: `${files[i].relativePath} and ${files[j].relativePath} have ${Math.round(overlap * 100)}% content overlap`,
           suggestion: 'Consider consolidating into a single context file',

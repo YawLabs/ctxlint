@@ -144,6 +144,36 @@ describe('CLI integration', () => {
     expect(breakdown.suggestion).toContain('Pre-commit checklist');
   });
 
+  it('handles an empty project (no context files, no package.json) without crashing', () => {
+    const { stdout, exitCode } = run('empty-project');
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain('No context files found');
+  });
+
+  it('returns well-formed JSON with empty files array for empty project', () => {
+    const { stdout, exitCode } = run('empty-project', ['--format', 'json']);
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.files).toEqual([]);
+    expect(parsed.summary.errors).toBe(0);
+    expect(parsed.summary.warnings).toBe(0);
+  });
+
+  it('exits 0 for empty project even with --strict (nothing to fail on)', () => {
+    const { exitCode } = run('empty-project', ['--strict']);
+    expect(exitCode).toBe(0);
+  });
+
+  it('handles empty project with --mcp flag without crashing', () => {
+    const { exitCode } = run('empty-project', ['--mcp']);
+    expect(exitCode).toBe(0);
+  });
+
+  it('handles empty project with --session-only without crashing', () => {
+    const { exitCode } = run('empty-project', ['--session-only']);
+    expect(exitCode).toBe(0);
+  });
+
   it('respects --depth flag', () => {
     // With depth 0, only root directory is scanned (no subdirectories)
     const { stdout } = run('multiple-files', ['--format', 'json', '--depth', '0']);

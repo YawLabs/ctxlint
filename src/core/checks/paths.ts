@@ -43,6 +43,7 @@ export async function checkPaths(
         issues.push({
           severity: 'error',
           check: 'paths',
+          ruleId: 'paths/glob-no-match',
           line: ref.line,
           message: `${ref.value} matches no files`,
           suggestion: 'Verify the glob pattern is correct',
@@ -59,6 +60,7 @@ export async function checkPaths(
         issues.push({
           severity: 'error',
           check: 'paths',
+          ruleId: 'paths/directory-not-found',
           line: ref.line,
           message: `${ref.value} directory does not exist`,
         });
@@ -93,6 +95,7 @@ export async function checkPaths(
     issues.push({
       severity: 'error',
       check: 'paths',
+      ruleId: 'paths/not-found',
       line: ref.line,
       message: `${ref.value} does not exist`,
       suggestion,

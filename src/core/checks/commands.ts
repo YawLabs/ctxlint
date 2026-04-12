@@ -28,6 +28,7 @@ export async function checkCommands(
         issues.push({
           severity: 'error',
           check: 'commands',
+          ruleId: 'commands/script-not-found',
           line: ref.line,
           message: `"${cmd}" — script "${scriptName}" not found in package.json`,
           suggestion: available ? `Available scripts: ${available}` : undefined,
@@ -46,6 +47,7 @@ export async function checkCommands(
         issues.push({
           severity: 'error',
           check: 'commands',
+          ruleId: 'commands/script-not-found',
           line: ref.line,
           message: `"${cmd}" — script "${scriptName}" not found in package.json`,
         });
@@ -78,6 +80,7 @@ export async function checkCommands(
           issues.push({
             severity: 'warning',
             check: 'commands',
+            ruleId: 'commands/npx-not-in-deps',
             line: ref.line,
             message: `"${cmd}" — "${pkgName}" not found in dependencies`,
             suggestion:
@@ -96,6 +99,7 @@ export async function checkCommands(
         issues.push({
           severity: 'error',
           check: 'commands',
+          ruleId: 'commands/make-target-not-found',
           line: ref.line,
           message: `"${cmd}" — target "${target}" not found in Makefile`,
         });
@@ -103,6 +107,7 @@ export async function checkCommands(
         issues.push({
           severity: 'error',
           check: 'commands',
+          ruleId: 'commands/no-makefile',
           line: ref.line,
           message: `"${cmd}" — no Makefile found in project`,
         });
@@ -129,6 +134,7 @@ export async function checkCommands(
           issues.push({
             severity: 'warning',
             check: 'commands',
+            ruleId: 'commands/tool-not-found',
             line: ref.line,
             message: `"${cmd}" — "${tool}" not found in dependencies or node_modules/.bin`,
           });

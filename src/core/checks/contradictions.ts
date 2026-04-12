@@ -299,6 +299,7 @@ export function checkContradictions(files: ParsedContextFile[]): LintIssue[] {
               issues.push({
                 severity: 'warning',
                 check: 'contradictions',
+                ruleId: 'contradictions/conflict',
                 line: directiveA.line,
                 message: `${category} conflict: "${directiveA.label}" in ${fileA} vs "${directiveB.label}" in ${fileB}`,
                 suggestion: `Align on one ${category} across all context files`,

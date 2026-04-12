@@ -21,7 +21,8 @@
       "description": "GitHub secret set on sibling repos but not this project.",
       "trigger": "gh secret set command found in agent history for 2+ siblings but not current project.",
       "message": "Secret \"{name}\" is set on {count} sibling repos but not this project",
-      "fixable": false
+      "fixable": false,
+      "stability": "stable"
     },
     {
       "id": "session/diverged-file",
@@ -40,7 +41,8 @@
         ".eslintrc.json",
         "tsconfig.json",
         ".gitignore"
-      ]
+      ],
+      "stability": "stable"
     },
     {
       "id": "session/missing-workflow",
@@ -49,7 +51,8 @@
       "description": "GitHub Actions workflow missing from this project.",
       "trigger": "Workflow file exists in 2+ siblings but not current project (which has .github).",
       "message": "Workflow \"{workflow}\" exists in {count} sibling repos but not this project",
-      "fixable": false
+      "fixable": false,
+      "stability": "stable"
     },
     {
       "id": "session/stale-memory",
@@ -58,7 +61,8 @@
       "description": "Memory file references paths that no longer exist.",
       "trigger": "Claude Code memory file contains path references to files that have been deleted or moved.",
       "message": "Memory references \"{path}\" which no longer exists",
-      "fixable": false
+      "fixable": false,
+      "stability": "stable"
     },
     {
       "id": "session/duplicate-memory",
@@ -67,7 +71,8 @@
       "description": "Near-duplicate memory entries across projects.",
       "trigger": "Two memory files from different projects have >60% line overlap.",
       "message": "\"{file1}\" and \"{file2}\" have {overlap}% content overlap",
-      "fixable": false
+      "fixable": false,
+      "stability": "stable"
     },
     {
       "id": "session/consecutive-repeat",
@@ -76,7 +81,8 @@
       "description": "Same command run 3+ times consecutively in agent history.",
       "trigger": "Agent history for the current project shows the same display string 3+ times in a row.",
       "message": "Command run {count} times consecutively: \"{command}\"",
-      "fixable": false
+      "fixable": false,
+      "stability": "experimental"
     },
     {
       "id": "session/cyclic-pattern",
@@ -85,7 +91,8 @@
       "description": "Cyclic command pattern detected in agent history.",
       "trigger": "Agent history shows a repeating sequence of 2-3 commands (e.g. A,B,A,B) repeated 2+ times.",
       "message": "Cyclic pattern repeated {count} times: {cycle}",
-      "fixable": false
+      "fixable": false,
+      "stability": "experimental"
     },
     {
       "id": "session/memory-index-overflow",
@@ -95,7 +102,8 @@
       "trigger": "~/.claude/projects/<encoded-project>/memory/MEMORY.md exceeds 200 lines OR 25,600 bytes.",
       "message": "MEMORY.md has {N} lines — only the first 200 are loaded. {excess} lines are effectively invisible.",
       "fixable": false,
-      "source": "code.claude.com/docs/en/memory"
+      "source": "code.claude.com/docs/en/memory",
+      "stability": "stable"
     }
   ],
   "dataSources": [

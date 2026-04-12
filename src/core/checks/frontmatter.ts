@@ -100,6 +100,7 @@ function validateCursorMdc(file: ParsedContextFile): LintIssue[] {
     issues.push({
       severity: 'warning',
       check: 'frontmatter',
+      ruleId: 'frontmatter/missing',
       line: 1,
       message: 'Cursor .mdc file is missing frontmatter',
       suggestion: 'Add YAML frontmatter with description, globs, and alwaysApply fields',
@@ -112,6 +113,7 @@ function validateCursorMdc(file: ParsedContextFile): LintIssue[] {
     issues.push({
       severity: 'warning',
       check: 'frontmatter',
+      ruleId: 'frontmatter/missing-field',
       line: 1,
       message: 'Missing "description" field in Cursor .mdc frontmatter',
       suggestion: 'Add a description so Cursor knows when to apply this rule',
@@ -123,6 +125,7 @@ function validateCursorMdc(file: ParsedContextFile): LintIssue[] {
     issues.push({
       severity: 'info',
       check: 'frontmatter',
+      ruleId: 'frontmatter/no-activation',
       line: 1,
       message: 'No "alwaysApply" or "globs" field — rule may not be applied automatically',
       suggestion: 'Set alwaysApply: true or specify globs for targeted activation',
@@ -136,6 +139,7 @@ function validateCursorMdc(file: ParsedContextFile): LintIssue[] {
       issues.push({
         severity: 'error',
         check: 'frontmatter',
+        ruleId: 'frontmatter/invalid-value',
         line: 1,
         message: `Invalid alwaysApply value: "${fm.fields['alwaysApply']}"`,
         suggestion: 'alwaysApply must be true or false',
@@ -156,6 +160,7 @@ function validateCursorMdc(file: ParsedContextFile): LintIssue[] {
       issues.push({
         severity: 'warning',
         check: 'frontmatter',
+        ruleId: 'frontmatter/invalid-value',
         line: 1,
         message: `Possibly invalid globs value: "${val}"`,
         suggestion:
@@ -175,6 +180,7 @@ function validateCopilotInstructions(file: ParsedContextFile): LintIssue[] {
     issues.push({
       severity: 'info',
       check: 'frontmatter',
+      ruleId: 'frontmatter/missing',
       line: 1,
       message: 'Copilot instructions file has no frontmatter',
       suggestion: 'Add applyTo frontmatter to target specific file patterns',
@@ -186,6 +192,7 @@ function validateCopilotInstructions(file: ParsedContextFile): LintIssue[] {
     issues.push({
       severity: 'warning',
       check: 'frontmatter',
+      ruleId: 'frontmatter/missing-field',
       line: 1,
       message: 'Missing "applyTo" field in Copilot instructions frontmatter',
       suggestion:
@@ -204,6 +211,7 @@ function validateWindsurfRule(file: ParsedContextFile): LintIssue[] {
     issues.push({
       severity: 'info',
       check: 'frontmatter',
+      ruleId: 'frontmatter/missing',
       line: 1,
       message: 'Windsurf rule file has no frontmatter',
       suggestion: 'Add YAML frontmatter with a trigger field (always_on, glob, manual, model)',
@@ -215,6 +223,7 @@ function validateWindsurfRule(file: ParsedContextFile): LintIssue[] {
     issues.push({
       severity: 'warning',
       check: 'frontmatter',
+      ruleId: 'frontmatter/missing-field',
       line: 1,
       message: 'Missing "trigger" field in Windsurf rule frontmatter',
       suggestion: `Set trigger to one of: ${VALID_WINDSURF_TRIGGERS.join(', ')}`,
@@ -225,6 +234,7 @@ function validateWindsurfRule(file: ParsedContextFile): LintIssue[] {
       issues.push({
         severity: 'error',
         check: 'frontmatter',
+        ruleId: 'frontmatter/invalid-value',
         line: 1,
         message: `Invalid trigger value: "${trigger}"`,
         suggestion: `Valid triggers: ${VALID_WINDSURF_TRIGGERS.join(', ')}`,

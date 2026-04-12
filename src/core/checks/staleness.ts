@@ -53,11 +53,13 @@ export async function checkStaleness(
     return issues; // No changes to referenced paths
   }
 
-  const severity = daysSinceUpdate >= WARNING_DAYS ? 'warning' : 'info';
+  const isStale = daysSinceUpdate >= WARNING_DAYS;
+  const severity = isStale ? 'warning' : 'info';
 
   issues.push({
     severity,
     check: 'staleness',
+    ruleId: isStale ? 'staleness/stale' : 'staleness/aging',
     line: 1,
     message: `Last updated ${daysSinceUpdate} days ago. ${mostActiveRef} has ${mostActiveCommits} commits since.`,
     suggestion: 'Review and update this context file to reflect recent changes.',

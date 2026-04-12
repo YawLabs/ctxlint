@@ -50,6 +50,7 @@ export async function checkTokens(
     issues.push({
       severity: 'error',
       check: 'tokens',
+      ruleId: 'tokens/excessive',
       line: 1,
       message: `${tokens.toLocaleString()} tokens — consumes significant context window space`,
       suggestion: 'Consider splitting into focused sections or removing redundant content.',
@@ -58,6 +59,7 @@ export async function checkTokens(
     issues.push({
       severity: 'warning',
       check: 'tokens',
+      ruleId: 'tokens/large',
       line: 1,
       message: `${tokens.toLocaleString()} tokens — large context file`,
       suggestion: 'Consider trimming — research shows diminishing returns past ~300 lines.',
@@ -66,6 +68,7 @@ export async function checkTokens(
     issues.push({
       severity: 'info',
       check: 'tokens',
+      ruleId: 'tokens/info',
       line: 1,
       message: `Uses ~${tokens.toLocaleString()} tokens per session`,
     });
@@ -80,6 +83,7 @@ export function checkAggregateTokens(files: { path: string; tokens: number }[]):
     return {
       severity: 'warning',
       check: 'tokens',
+      ruleId: 'tokens/aggregate',
       line: 0,
       message: `${files.length} context files consume ${total.toLocaleString()} tokens combined`,
       suggestion: 'Consider consolidating or trimming to reduce per-session context cost.',
