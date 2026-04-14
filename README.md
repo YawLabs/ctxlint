@@ -171,7 +171,7 @@ Summary: 3 errors, 2 warnings, 1 info
 
 The full specification for MCP config linting rules, the cross-client config landscape, and a machine-readable rule catalog are published as open specifications:
 
-- **[`MCP_CONFIG_LINT_SPEC.md`](./MCP_CONFIG_LINT_SPEC.md)** — 23 lint rules across 8 categories, the complete client/format reference, and implementation guidance. Tool-agnostic — any linter can implement it.
+- **[`MCP_CONFIG_LINT_SPEC.md`](./MCP_CONFIG_LINT_SPEC.md)** — 43 lint rules across 8 categories, the complete client/format reference, and implementation guidance. Tool-agnostic — any linter can implement it.
 - **[`mcp-config-lint-rules.json`](./mcp-config-lint-rules.json)** — Machine-readable rule catalog for programmatic consumption by AI agents, CI systems, and other tools.
 
 ## Session Linting
@@ -488,7 +488,7 @@ ctxlint is the reference implementation of three open specifications for linting
 | Spec                                                           | What it covers                                                                                                                                                                                                                     |
 | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **[AI Context File Linting Spec](./CONTEXT_LINT_SPEC.md)**     | 19 rules for validating context files (CLAUDE.md, .cursorrules, AGENTS.md, etc.) across 17 clients. Covers file formats, frontmatter schemas, path/command validation, staleness, token budgets, redundancy, and contradictions.   |
-| **[MCP Config Linting Spec](./MCP_CONFIG_LINT_SPEC.md)**       | 23 rules for validating MCP server configs (.mcp.json, .cursor/mcp.json, .vscode/mcp.json, etc.) across 8 clients. Covers schema validation, hardcoded secrets, env var syntax, deprecated transports, and cross-file consistency. |
+| **[MCP Config Linting Spec](./MCP_CONFIG_LINT_SPEC.md)**       | 43 rules for validating MCP server configs (.mcp.json, .cursor/mcp.json, .vscode/mcp.json, etc.) across 8 clients. Covers schema validation, hardcoded secrets, env var syntax, deprecated transports, and cross-file consistency. |
 | **[Agent Session Linting Spec](./AGENT_SESSION_LINT_SPEC.md)** | 7 rules for auditing agent session data (history, memory) across 8 agents. Covers cross-project secret consistency, config drift, stale memory, and loop detection.                                                                |
 
 All specs include machine-readable rule catalogs for programmatic consumption:
