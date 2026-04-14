@@ -31,6 +31,8 @@ jobs:
           path: ctxlint-bench
 
       - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: ctxlint/package.json
 
       - uses: actions/setup-node@v4
         with:
