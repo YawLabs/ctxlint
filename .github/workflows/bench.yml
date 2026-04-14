@@ -10,6 +10,11 @@ on:
 # read access to YawLabs/ctxlint-bench (private). Without it, the bench
 # checkout step will fail with a 404.
 
+env:
+  # Opt into Node.js 24 for JavaScript actions ahead of the Sep 2026 Node 20
+  # removal. Silences the runner's deprecation annotation on every run.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   bench:
     runs-on: ubuntu-latest
