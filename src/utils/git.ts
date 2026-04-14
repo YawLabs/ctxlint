@@ -81,7 +81,10 @@ export async function getCommitsSinceBatch(
       'log',
       `--since=${since.toISOString()}`,
       '--name-only',
-      `--format=${SENTINEL}`,
+      // %n emits a newline; prefixing with a valid format placeholder is
+      // what keeps git from rejecting the sentinel as an invalid --pretty
+      // format ("fatal: invalid --pretty format: ___CTXLINT_COMMIT___").
+      `--format=%n${SENTINEL}`,
     ]);
 
     // Normalize path separators for cross-platform comparison.
