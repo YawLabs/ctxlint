@@ -16,7 +16,7 @@ This specification defines a standard set of lint rules for validating MCP serve
 
 The specification includes:
 - A complete reference of MCP config file locations, formats, and client-specific behaviors
-- 43 lint rules organized into 8 categories with defined severities
+- 27 lint rules organized into 8 categories with defined severities
 - A machine-readable rule catalog ([`mcp-config-lint-rules.json`](./mcp-config-lint-rules.json))
 - Auto-fix definitions for rules that support automated correction
 
@@ -31,7 +31,7 @@ This spec is part of a family of open specifications maintained by Yaw Labs for 
 | Spec | Scope | Input |
 |---|---|---|
 | **mcp-config-lint** (this spec) | Static analysis of MCP client config files | `.cursor/mcp.json`, `.vscode/mcp.json`, `.mcp.json`, etc. |
-| [**mcp-compliance**](https://github.com/YawLabs/mcp-compliance/blob/main/MCP_COMPLIANCE_SPEC.md) | Runtime testing of live MCP servers | A live server URL + transport |
+| [**mcp-compliance**](https://github.com/YawLabs/mcp-compliance/blob/master/MCP_COMPLIANCE_SPEC.md) | Runtime testing of live MCP servers | A live server URL + transport |
 
 The two are **complementary, not overlapping**. `mcp-config-lint` catches problems before deploy by reading JSON on disk; `mcp-compliance` catches problems after deploy by speaking the protocol to a running server. A production setup typically runs both.
 
@@ -199,7 +199,7 @@ Without this wrapper, the subprocess fails to spawn. This is the most common Win
 
 ## 2. Lint Rules
 
-43 rules organized into 8 categories. Each rule has a unique ID, severity level, trigger condition, and message template.
+27 rules organized into 8 categories. Each rule has a unique ID, severity level, trigger condition, and message template.
 
 Severity levels:
 - **error** — the config is broken or has a security issue. Should fail CI.
