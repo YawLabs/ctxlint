@@ -8,6 +8,16 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.9.10] — 2026-04-14
+
+Staleness detector fix + pre-merge bench integration.
+
+### Fixed
+- **`staleness/stale` and `staleness/aging` silently never fired.** `getCommitsSinceBatch` in `src/utils/git.ts` ran `git log --format=___CTXLINT_COMMIT___`, which git rejects as an invalid pretty format ("fatal: invalid --pretty format: ___CTXLINT_COMMIT___"). The surrounding try/catch swallowed the error, every referenced path got a zero commit count, and the `totalCommits === 0` short-circuit in `checkStaleness` returned no issues. Fix: prefix the sentinel with `%n` so git accepts the format. Detected by [ctxlint-bench](https://github.com/YawLabs/ctxlint-bench) — the case was XFAIL'd against 0.9.9 and XPASSed against this build. (#2, #3)
+
+### CI
+- **Pre-merge effectiveness gate.** New `.github/workflows/bench.yml` runs the private ctxlint-bench corpus against every PR's freshly-built binary (not just post-release via cron). Fails the check on any F1 regression vs baseline. Requires a `BENCH_REPO_TOKEN` repo secret with read access to `YawLabs/ctxlint-bench`. (#4)
+
 ## [0.9.9] — 2026-04-13
 
 Spec-hygiene pass + CI unblock. Docs-only and test-only changes; no runtime or API changes.
