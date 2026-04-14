@@ -1,0 +1,98 @@
+name: bench
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Requires a repo secret named BENCH_REPO_TOKEN — a fine-grained PAT with
+# read access to YawLabs/ctxlint-bench (private). Without it, the bench
+# checkout step will fail with a 404.
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    # Skip from forks that can't access BENCH_REPO_TOKEN — external
+    # contributors won't be able to gate on bench results, but the
+    # maintainer can kick off a manual run post-merge if needed.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Check out ctxlint
+        uses: actions/checkout@v4
+        with:
+          path: ctxlint
+
+      - name: Check out ctxlint-bench
+        uses: actions/checkout@v4
+        with:
+          repository: YawLabs/ctxlint-bench
+          token: ${{ secrets.BENCH_REPO_TOKEN }}
+          path: ctxlint-bench
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: |
+            ctxlint/pnpm-lock.yaml
+            ctxlint-bench/pnpm-lock.yaml
+
+      - name: Build ctxlint
+        working-directory: ctxlint
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build
+
+      - name: Install bench
+        working-directory: ctxlint-bench
+        run: pnpm install --frozen-lockfile
+
+      - name: Configure git (fixture bootstrap)
+        run: |
+          git config --global user.email "bench@ctxlint.local"
+          git config --global user.name "ctxlint-bench"
+
+      - name: Run bench against this PR's ctxlint build
+        working-directory: ctxlint-bench
+        env:
+          CTXLINT_BENCH_STRICT: "1"
+        run: |
+          pnpm bench -- --ctxlint "node $GITHUB_WORKSPACE/ctxlint/dist/index.js" | tee /tmp/bench.log
+
+      - name: Diff vs bench baseline
+        if: always()
+        working-directory: ctxlint-bench
+        run: |
+          LATEST=$(ls -t results/*.json 2>/dev/null | grep -v baseline.json | head -1)
+          if [ -n "$LATEST" ] && [ -f results/baseline.json ]; then
+            pnpm diff results/baseline.json "$LATEST" | tee /tmp/diff.log || true
+          fi
+
+      - name: Write step summary
+        if: always()
+        run: |
+          {
+            echo "## ctxlint-bench — this PR's build vs corpus baseline"
+            echo ""
+            echo '```'
+            cat /tmp/bench.log 2>/dev/null || echo "(no bench output)"
+            echo '```'
+            if [ -s /tmp/diff.log ]; then
+              echo ""
+              echo "### Diff vs baseline"
+              echo '```'
+              cat /tmp/diff.log
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-snapshot-${{ github.run_id }}
+          path: ctxlint-bench/results/*.json
+          retention-days: 30
