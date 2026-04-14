@@ -8,6 +8,17 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.9.9] — 2026-04-13
+
+Spec-hygiene pass + CI unblock. Docs-only and test-only changes; no runtime or API changes.
+
+### Fixed
+- **CI typecheck.** `src/utils/__tests__/tokens.test.ts` used `afterEach` without importing it. Vitest's auto-loaded globals hid the miss locally, but `tsc --noEmit` in CI caught it and v0.9.8's CI went red. Imported explicitly.
+
+### Docs
+- **Cross-reference mcp-compliance.** Added "Related specifications" section to `MCP_CONFIG_LINT_SPEC.md` positioning `mcp-config-lint` (static config linting) and `mcp-compliance` (runtime server testing) as complementary open specs in the Yaw Labs family. Both target MCP spec `2025-11-25`.
+- **Rule count reconciled.** `MCP_CONFIG_LINT_SPEC.md` and `README.md` said "23 lint rules" but the catalog has had 43 for several versions. Prose updated in 4 places. Category count (8) unchanged.
+
 ## [0.9.8] — 2026-04-12
 
 Test hygiene pass closing the low-priority items from the pre-1.0 audit. 41 new tests (377 → 418); one incidental parser fix surfaced while writing them.
