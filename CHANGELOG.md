@@ -8,6 +8,13 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.9.14] — 2026-04-16
+
+Housekeeping release — keeps the published package in step with `main` after a post-0.9.13 formatting fix.
+
+### Changed
+- **Internal:** prettier-formatted a comment block in `src/mcp/server.ts`. No functional change; the bundled artifact is identical to 0.9.13 modulo the version string.
+
 ## [0.9.13] — 2026-04-16
 
 Third pre-1.0 review pass — MCP server schema tightening and a session-scanner edge-case guard.
