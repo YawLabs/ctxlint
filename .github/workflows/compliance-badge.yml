@@ -49,8 +49,13 @@ jobs:
       # Don't fail the job on a non-zero score — the badge should reflect
       # reality. A compliance regression becomes a PR with a visibly worse
       # badge, which is itself the signal.
+      # Pass node + its args as separate tokens rather than one quoted
+      # string. mcp-compliance's stdio transport spawns with shell: false
+      # on Linux, so a single-string "node dist/index.js serve" would be
+      # looked up as a literal executable name (ENOENT). Works on Windows
+      # via cmd.exe word-splitting, not Linux.
       - name: Generate badge
-        run: mcp-compliance test "node dist/index.js serve" --output compliance-badge.svg || true
+        run: mcp-compliance test node dist/index.js serve --output compliance-badge.svg || true
 
       - name: Open PR if badge changed
         env:
