@@ -8,6 +8,18 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.9.16] — 2026-04-16
+
+### Security
+- MCP tools now validate `projectPath` (and `ctxlint_validate_path`'s `path` parameter) at the tool boundary. Inputs containing shell metacharacters (`;`, `|`, backticks, `$(`, `${`, newlines) are rejected with a generic error that does not echo the input. `projectPath` must resolve to an existing directory.
+- Defense-in-depth: ctxlint uses Node `fs` APIs (no shell), so there is no actual injection surface. This change eliminates false-positive signals from security scanners that grep tool output for reflected payloads and hardens a user-provided entry point against malformed input.
+
+### Changed
+- `ctxlint_audit` description no longer names sibling tools (`ctxlint_mcp_audit`, `ctxlint_session_audit`). Reworded to describe scope without choreographing workflows across tools — sibling tool names rot on rename and encourage LLMs to pattern-match from descriptions instead of reading each tool's own definition.
+
+### Why
+Dogfood run against mcp-compliance scored 97 → 98 → 100 across these changes. The injection false-positive was a real defense-in-depth gap once we looked at it (no shell, but also no validation); the cross-tool description was a guideline violation we were only one reword away from fixing.
+
 ## [0.9.15] — 2026-04-16
 
 ### Added

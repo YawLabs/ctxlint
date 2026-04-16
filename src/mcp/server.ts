@@ -23,6 +23,33 @@ const contextCheckEnum = z.enum(ALL_CHECKS as [CheckName, ...CheckName[]]);
 const mcpCheckEnum = z.enum(ALL_MCP_CHECKS as [McpCheckName, ...McpCheckName[]]);
 const sessionCheckEnum = z.enum(ALL_SESSION_CHECKS as [SessionCheckName, ...SessionCheckName[]]);
 
+// Shell metacharacters + control chars that have no legitimate place in a
+// filesystem path. Rejecting these at the tool boundary does two things:
+// (1) defense-in-depth — ctxlint uses Node fs APIs (no shell), so there's
+// no actual injection surface, but blocking obviously hostile input is
+// cheap; (2) stops false-positive signals from scanners (mcp-compliance's
+// injection tests look for reflected payloads in output) by erroring
+// before the input gets resolved and echoed back.
+const PATH_DISALLOWED = /[\n\r\t;`|]|\$\(|\$\{/;
+
+function validateProjectPath(rawPath: string | undefined): string {
+  if (!rawPath) return process.cwd();
+  if (PATH_DISALLOWED.test(rawPath)) {
+    throw new Error('projectPath contains disallowed characters');
+  }
+  const resolved = path.resolve(rawPath);
+  if (!isDirectory(resolved)) {
+    throw new Error('projectPath is not an existing directory');
+  }
+  return resolved;
+}
+
+function validateFilePathInput(rawPath: string): void {
+  if (PATH_DISALLOWED.test(rawPath)) {
+    throw new Error('path contains disallowed characters');
+  }
+}
+
 const server = new McpServer({
   name: 'ctxlint',
   version: VERSION,
@@ -48,10 +75,9 @@ server.tool(
     openWorldHint: false,
   },
   async ({ projectPath, checks }) => {
-    const root = path.resolve(projectPath || process.cwd());
-    const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_CHECKS;
-
     try {
+      const root = validateProjectPath(projectPath);
+      const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_CHECKS;
       const result = await runAudit(root, activeChecks);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     } catch (err) {
@@ -84,7 +110,8 @@ server.tool(
   },
   async ({ path: filePath, projectPath }) => {
     try {
-      const root = path.resolve(projectPath || process.cwd());
+      validateFilePathInput(filePath);
+      const root = validateProjectPath(projectPath);
       const resolved = path.resolve(root, filePath);
 
       const result: Record<string, unknown> = {
@@ -130,9 +157,8 @@ server.tool(
     openWorldHint: false,
   },
   async ({ projectPath }) => {
-    const root = path.resolve(projectPath || process.cwd());
-
     try {
+      const root = validateProjectPath(projectPath);
       const discovered = await scanForContextFiles(root);
       const parsed = discovered.map((f) => parseContextFile(f));
 
@@ -192,10 +218,9 @@ server.tool(
     openWorldHint: false,
   },
   async ({ projectPath, checks }) => {
-    const root = path.resolve(projectPath || process.cwd());
-    const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_CHECKS;
-
     try {
+      const root = validateProjectPath(projectPath);
+      const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_CHECKS;
       const result = await runAudit(root, activeChecks);
       const fixSummary = applyFixes(result, { quiet: true });
 
@@ -251,10 +276,9 @@ server.tool(
     openWorldHint: false,
   },
   async ({ projectPath, checks, includeGlobal }) => {
-    const root = path.resolve(projectPath || process.cwd());
-    const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_MCP_CHECKS;
-
     try {
+      const root = validateProjectPath(projectPath);
+      const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_MCP_CHECKS;
       const result = await runAudit(root, activeChecks, {
         mcp: true,
         mcpOnly: true,
@@ -296,10 +320,9 @@ server.tool(
     openWorldHint: true,
   },
   async ({ projectPath, checks }) => {
-    const root = path.resolve(projectPath || process.cwd());
-    const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_SESSION_CHECKS;
-
     try {
+      const root = validateProjectPath(projectPath);
+      const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_SESSION_CHECKS;
       const result = await runAudit(root, activeChecks, {
         session: true,
         sessionOnly: true,
