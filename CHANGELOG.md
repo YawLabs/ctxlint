@@ -8,6 +8,17 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.9.15] — 2026-04-16
+
+### Added
+- `ctxlint serve` subcommand as a discoverable alias for `--mcp-server`. `mcp` is already overloaded in the lint flags (`--mcp`, `--mcp-only`, `--mcp-global`), so `serve` is the clearer name for launching the stdio MCP server. The `--mcp-server` flag continues to work for back-compat.
+
+### Changed
+- README integration examples (Claude Code, `.mcp.json`, VS Code, Claude Desktop) updated to use `serve` instead of `--mcp-server`.
+
+### Why
+Running `npx @yawlabs/ctxlint` without the flag drops into the CLI linter and exits — confusing for users expecting a stdio MCP server. `serve` gives a clean, discoverable entry point that matches the README's integration examples.
+
 ## [0.9.14] — 2026-04-16
 
 Housekeeping release — keeps the published package in step with `main` after a post-0.9.13 formatting fix.
