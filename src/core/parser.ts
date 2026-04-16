@@ -49,11 +49,16 @@ function parseSections(lines: string[]): Section[] {
   for (let i = 0; i < lines.length; i++) {
     const match = lines[i].match(/^(#{1,6})\s+(.+)/);
     if (match) {
-      // Close previous section at same or higher level
+      // Close previous section at same or higher level. `endLine` is the
+      // 1-indexed last content line of that section — i.e. the line right
+      // before this heading. `i` is 0-indexed here, so the line before the
+      // current heading (1-indexed) is `i`, not `i - 1`. (Callers use
+      // `lines.slice(startLine - 1, endLine)` — an exclusive-end slice into
+      // 0-indexed `lines` — which lines up with this convention.)
       if (sections.length > 0) {
         const prev = sections[sections.length - 1];
         if (prev.endLine === -1) {
-          prev.endLine = i - 1;
+          prev.endLine = i;
         }
       }
       sections.push({

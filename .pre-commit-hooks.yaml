@@ -1,7 +1,10 @@
 - id: ctxlint
   name: ctxlint
   description: Lint AI agent context files against your actual codebase
-  entry: npx @yawlabs/ctxlint --strict
+  # Version-pinned so a checkout at `rev: vX.Y.Z` runs exactly that release
+  # of ctxlint — matches the pinning done by `ctxlint init`. release.sh keeps
+  # this in sync with package.json on each bump.
+  entry: npx @yawlabs/ctxlint@0.9.10 --strict
   language: node
   always_run: true
   pass_filenames: false

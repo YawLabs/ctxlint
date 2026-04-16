@@ -132,6 +132,17 @@ else
     pkg.version = '$VERSION';
     fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
   "
+  # Sync the pre-commit framework hook entry so its npx call pins to the
+  # version users get when they `rev: vX.Y.Z`. Without this the entry drifts
+  # to whatever @latest was when the user ran their install.
+  node -e "
+    const fs = require('fs');
+    const p = '.pre-commit-hooks.yaml';
+    const src = fs.readFileSync(p, 'utf-8');
+    const next = src.replace(/@yawlabs\/ctxlint@[0-9]+\.[0-9]+\.[0-9]+/, '@yawlabs/ctxlint@$VERSION');
+    if (next === src) { console.error('release.sh: failed to update .pre-commit-hooks.yaml — pattern not found'); process.exit(1); }
+    fs.writeFileSync(p, next);
+  "
   pnpm install --lockfile-only 2>/dev/null || true
   info "Version bumped"
 fi
@@ -146,7 +157,7 @@ if [ "$IS_CI" = "true" ]; then
 else
   # Commit if there are changes
   if [ -n "$(git status --porcelain)" ]; then
-    git add package.json pnpm-lock.yaml
+    git add package.json pnpm-lock.yaml .pre-commit-hooks.yaml
     git commit -m "v${VERSION}"
     info "Committed version bump"
   else

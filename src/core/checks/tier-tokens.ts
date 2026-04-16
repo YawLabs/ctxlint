@@ -128,11 +128,20 @@ function loadSettingsSources(projectRoot: string): Settings[] {
     path.join(process.env.HOME || process.env.USERPROFILE || '', '.claude', 'settings.json'),
   ];
   for (const p of candidates) {
+    let content: string;
     try {
-      const content = fs.readFileSync(p, 'utf-8');
-      sources.push(JSON.parse(content) as Settings);
+      content = fs.readFileSync(p, 'utf-8');
     } catch {
-      // missing or unparseable — skip silently
+      // Missing file is expected — not every repo has .claude/settings.json.
+      continue;
+    }
+    try {
+      sources.push(JSON.parse(content) as Settings);
+    } catch (err) {
+      // Malformed settings silently skipped would mean tier-tokens reports
+      // "no hook enforcement" even when there is one — user just has a
+      // trailing comma. Surface the parse failure on stderr so it's fixable.
+      console.warn(`ctxlint: could not parse ${p}: ${(err as Error).message}`);
     }
   }
   return sources;
