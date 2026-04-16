@@ -37,6 +37,19 @@ describe('entry point routing (index.ts)', () => {
     }
   });
 
+  it('`serve` subcommand launches MCP server (alias for --mcp-server)', () => {
+    try {
+      execFileSync('node', [CLI, 'serve'], {
+        encoding: 'utf-8',
+        input: '',
+        timeout: 5000,
+      });
+    } catch (err: any) {
+      expect(err.stdout || '').not.toContain('No context files');
+      expect(err.stdout || '').not.toContain('Scanning');
+    }
+  });
+
   it('without --mcp-server runs the CLI linter', () => {
     const { stdout, exitCode } = run([path.join(FIXTURES, 'healthy-project')]);
     expect(exitCode).toBe(0);

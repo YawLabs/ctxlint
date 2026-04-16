@@ -58,7 +58,7 @@ export async function runCli() {
     .option('--mcp', 'Enable MCP config linting alongside context file checks', false)
     .option('--mcp-only', 'Run only MCP config checks, skip context file checks', false)
     .option('--mcp-global', 'Also scan user/global MCP config files (implies --mcp)', false)
-    .option('--mcp-server', 'Start the MCP server (for IDE/agent integration)')
+    .option('--mcp-server', 'Start the MCP server (alias: `ctxlint serve`)')
     .option('--session', 'Run session audit checks (cross-project consistency)', false)
     .option('--session-only', 'Run only session checks, skip context and MCP checks', false)
     .option('--watch', 'Re-lint on context file changes', false)

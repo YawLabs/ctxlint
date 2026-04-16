@@ -260,7 +260,7 @@ Options:
   --mcp-global         Also scan user/global MCP config files (implies --mcp)
   --session            Enable session audit checks (cross-project consistency)
   --session-only       Run only session checks, skip context and MCP checks
-  --mcp-server         Start the MCP server (for IDE/agent integration)
+  --mcp-server         Start the MCP server (alias: `serve` subcommand)
   --watch              Re-lint on context file changes
   -V, --version        Output the version number
   -h, --help           Display help
@@ -405,10 +405,16 @@ CLI flags override config file settings. Use `--config <path>` to load a config 
 
 ctxlint ships with an MCP server that exposes six tools (`ctxlint_audit`, `ctxlint_mcp_audit`, `ctxlint_session_audit`, `ctxlint_validate_path`, `ctxlint_token_report`, `ctxlint_fix`). All read-only tools declare annotations so MCP clients can skip confirmation dialogs.
 
+Launch it with the `serve` subcommand (or the equivalent `--mcp-server` flag, kept for back-compat):
+
+```bash
+npx -y @yawlabs/ctxlint serve
+```
+
 ### With Claude Code
 
 ```bash
-claude mcp add ctxlint -- npx -y @yawlabs/ctxlint --mcp-server
+claude mcp add ctxlint -- npx -y @yawlabs/ctxlint serve
 ```
 
 ### With `.mcp.json` (Claude Code project config, Cursor, Windsurf)
@@ -422,7 +428,7 @@ macOS / Linux / WSL:
   "mcpServers": {
     "ctxlint": {
       "command": "npx",
-      "args": ["-y", "@yawlabs/ctxlint", "--mcp-server"]
+      "args": ["-y", "@yawlabs/ctxlint", "serve"]
     }
   }
 }
@@ -435,7 +441,7 @@ Windows:
   "mcpServers": {
     "ctxlint": {
       "command": "cmd",
-      "args": ["/c", "npx", "-y", "@yawlabs/ctxlint", "--mcp-server"]
+      "args": ["/c", "npx", "-y", "@yawlabs/ctxlint", "serve"]
     }
   }
 }
@@ -452,7 +458,7 @@ Add to `.vscode/mcp.json`:
   "servers": {
     "ctxlint": {
       "command": "npx",
-      "args": ["-y", "@yawlabs/ctxlint", "--mcp-server"]
+      "args": ["-y", "@yawlabs/ctxlint", "serve"]
     }
   }
 }
@@ -467,7 +473,7 @@ Add to your Claude Desktop config (`claude_desktop_config.json`):
   "mcpServers": {
     "ctxlint": {
       "command": "npx",
-      "args": ["-y", "@yawlabs/ctxlint", "--mcp-server"]
+      "args": ["-y", "@yawlabs/ctxlint", "serve"]
     }
   }
 }
