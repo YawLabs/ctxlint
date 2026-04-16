@@ -8,6 +8,10 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.9.12] — 2026-04-16
+
+Follow-up to 0.9.11. One correctness fix carried over from the review that was deferred at release time.
+
 ### Fixed
 - **`redundancy/duplicate-content` now uses true Jaccard similarity** (`|A ∩ B| / |A ∪ B|`) instead of `|A ∩ B| / max(|A|, |B|)`. The old metric inflated the score when one file was much smaller than the other — e.g. a 10-line AGENTS.md fully contained in a 200-line CLAUDE.md reported ~100% overlap when a user reading "content overlap" would expect ~5%. The user-facing percentage and the stored rule ID are unchanged; only the underlying computation moved. Threshold kept at 0.6 but flipped to `>=` so pairs landing exactly on the line still get flagged. Threshold and metric now documented inline.
 
