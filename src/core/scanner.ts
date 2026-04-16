@@ -79,7 +79,7 @@ export interface DiscoveredFile {
   relativePath: string;
   isSymlink: boolean;
   symlinkTarget?: string;
-  type: 'context' | 'mcp-config';
+  type: 'context' | 'mcp-config' | 'mcph-config';
 }
 
 export async function scanForContextFiles(
@@ -183,6 +183,69 @@ export async function scanForMcpConfigs(projectRoot: string): Promise<Discovered
   }
 
   return found.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+}
+
+// .mcph.json is the @yawlabs/mcph CLI's config file.
+// Precedence (most-specific to least): <cwd>/.mcph.local.json > <cwd>/.mcph.json > ~/.mcph.json.
+const MCPH_CONFIG_PATTERNS = ['.mcph.json', '.mcph.local.json'];
+
+export async function scanForMcphConfigs(projectRoot: string): Promise<DiscoveredFile[]> {
+  const found: DiscoveredFile[] = [];
+  const seen = new Set<string>();
+
+  for (const pattern of MCPH_CONFIG_PATTERNS) {
+    const matches = await glob(pattern, {
+      cwd: projectRoot,
+      absolute: true,
+      nodir: true,
+      dot: true,
+    });
+
+    for (const match of matches) {
+      const normalized = path.normalize(match);
+      if (seen.has(normalized)) continue;
+      seen.add(normalized);
+
+      const relativePath = path.relative(projectRoot, normalized);
+      const symlink = isSymlink(normalized);
+      const target = symlink ? readSymlinkTarget(normalized) : undefined;
+
+      found.push({
+        absolutePath: normalized,
+        relativePath: relativePath.replace(/\\/g, '/'),
+        isSymlink: symlink,
+        symlinkTarget: target,
+        type: 'mcph-config',
+      });
+    }
+  }
+
+  return found.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+}
+
+export async function scanGlobalMcphConfigs(): Promise<DiscoveredFile[]> {
+  const found: DiscoveredFile[] = [];
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  const filePath = path.normalize(path.join(home, '.mcph.json'));
+
+  try {
+    fs.accessSync(filePath);
+  } catch {
+    return found;
+  }
+
+  const symlink = isSymlink(filePath);
+  const target = symlink ? readSymlinkTarget(filePath) : undefined;
+
+  found.push({
+    absolutePath: filePath,
+    relativePath: '~/.mcph.json',
+    isSymlink: symlink,
+    symlinkTarget: target,
+    type: 'mcph-config',
+  });
+
+  return found;
 }
 
 export async function scanGlobalMcpConfigs(): Promise<DiscoveredFile[]> {

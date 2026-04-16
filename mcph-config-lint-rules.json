@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "specVersion": "1.0.0-draft",
+  "specDate": "2026-04-16",
+  "mcphSchemaReference": "https://raw.githubusercontent.com/YawLabs/mcph/main/schemas/mcph.config.v1.json",
+  "repository": "https://github.com/YawLabs/ctxlint",
+  "target": ".mcph.json",
+  "description": "Rules for linting .mcph.json — the config file read by the @yawlabs/mcph CLI (which orchestrates MCP servers via the mcp.hosting registry). Distinct from .mcp.json (client-side server list) — different threat model, different schema. Applies across the user-global (~/.mcph.json), per-project (.mcph.json), and machine-local (.mcph.local.json) scope cascade.",
+  "categories": [
+    {
+      "id": "mcph-token-security",
+      "name": "Token Security",
+      "description": "Detects PAT (mcp_pat_*) leaks, format errors, and promotes env-var-only posture."
+    },
+    {
+      "id": "mcph-apibase",
+      "name": "API Endpoint Validation",
+      "description": "Validates the apiBase URL, flags plaintext HTTP to public hosts."
+    },
+    {
+      "id": "mcph-schema-conformance",
+      "name": "Schema Conformance",
+      "description": "Catches unknown/typo'd fields and stale schema versions."
+    },
+    {
+      "id": "mcph-lists",
+      "name": "Allow/Deny List Semantics",
+      "description": "Flags conflicts and duplicates in the servers/blocked arrays."
+    },
+    {
+      "id": "mcph-gitignore",
+      "name": "Gitignore Hygiene",
+      "description": "Ensures machine-local override files never get committed."
+    }
+  ],
+  "rules": [
+    {
+      "id": "mcph-config/token-in-project-scope",
+      "category": "mcph-token-security",
+      "severity": "error",
+      "description": "A project-scope .mcph.json that is git-tracked contains a \"token\" field. The PAT will leak via git history.",
+      "trigger": "scope === 'project' && isGitTracked && token field present",
+      "message": "\"token\" in a git-tracked project-scope .mcph.json — PAT will leak via git history",
+      "fixable": false,
+      "remediation": "Move the token to ~/.mcph.json, .mcph.local.json (gitignored), or export MCPH_TOKEN as an environment variable. Rotate the token immediately if already committed.",
+      "stability": "stable"
+    },
+    {
+      "id": "mcph-config/local-file-not-gitignored",
+      "category": "mcph-gitignore",
+      "severity": "error",
+      "description": "A .mcph.local.json file exists but is not covered by .gitignore. The file exists precisely so machine-local overrides stay machine-local.",
+      "trigger": "scope === 'project-local' && !isGitignored",
+      "message": "{file} is not covered by .gitignore — machine-local overrides can leak via git",
+      "fixable": true,
+      "fixDescription": "Append \".mcph.local.json\" to .gitignore in the project root.",
+      "stability": "stable"
+    },
+    {
+      "id": "mcph-config/invalid-token-format",
+      "category": "mcph-token-security",
+      "severity": "error",
+      "description": "The \"token\" value doesn't match the mcp.hosting PAT format (^mcp_pat_[A-Za-z0-9_-]+$).",
+      "trigger": "token present and regex match fails",
+      "message": "\"token\" does not match expected format ^mcp_pat_[A-Za-z0-9_-]+$",
+      "fixable": false,
+      "remediation": "Re-issue the token from https://mcp.hosting/settings/tokens.",
+      "stability": "stable"
+    },
+    {
+      "id": "mcph-config/insecure-apibase",
+      "category": "mcph-apibase",
+      "severity": "warning",
+      "description": "The \"apiBase\" URL uses plaintext HTTP to a public (non-localhost, non-private) host. The MCPH_TOKEN would travel in the clear.",
+      "trigger": "apiBase protocol === 'http:' && !isPrivateHost(hostname)",
+      "message": "\"apiBase\" uses plaintext HTTP to a public host ({hostname})",
+      "fixable": false,
+      "remediation": "Use https:// instead. Private hosts (localhost, 10.*, 192.168.*, 172.16–31.*, *.local, *.internal) are allowed without TLS.",
+      "stability": "stable"
+    },
+    {
+      "id": "mcph-config/invalid-apibase",
+      "category": "mcph-apibase",
+      "severity": "error",
+      "description": "The \"apiBase\" field is not a valid absolute URL.",
+      "trigger": "new URL(apiBase) throws",
+      "message": "\"apiBase\" is not a valid URL: {value}",
+      "fixable": false,
+      "remediation": "Use an absolute http(s) URL, e.g. \"https://mcp.hosting\".",
+      "stability": "stable"
+    },
+    {
+      "id": "mcph-config/unknown-field",
+      "category": "mcph-schema-conformance",
+      "severity": "warning",
+      "description": "A top-level field appears that is not in the mcph config schema. Usually a typo (tokens vs token, blockList vs blocked).",
+      "trigger": "top-level key not in { $schema, version, token, apiBase, servers, blocked }",
+      "message": "unknown field \"{name}\" — not in the mcph config schema",
+      "fixable": false,
+      "remediation": "Check for typos; compare against https://raw.githubusercontent.com/YawLabs/mcph/main/schemas/mcph.config.v1.json.",
+      "stability": "stable"
+    },
+    {
+      "id": "mcph-config/stale-version",
+      "category": "mcph-schema-conformance",
+      "severity": "info",
+      "description": "The \"version\" field is older than the current schema version.",
+      "trigger": "version < CURRENT_SCHEMA_VERSION (=1)",
+      "message": "\"version\": {value} is older than the current schema version ({current})",
+      "fixable": false,
+      "remediation": "Bump to the current version. Older values continue to load but may miss newer fields.",
+      "stability": "stable"
+    },
+    {
+      "id": "mcph-config/allowlist-denylist-conflict",
+      "category": "mcph-lists",
+      "severity": "warning",
+      "description": "A server namespace appears in both the allow-list (\"servers\") and deny-list (\"blocked\"). Deny wins in practice, so the allow-list entry is dead weight.",
+      "trigger": "name ∈ servers && name ∈ blocked",
+      "message": "server \"{name}\" is in both \"servers\" (allow-list) and \"blocked\" (deny-list)",
+      "fixable": false,
+      "remediation": "Remove the namespace from one of the two lists.",
+      "stability": "stable"
+    },
+    {
+      "id": "mcph-config/duplicate-entries",
+      "category": "mcph-lists",
+      "severity": "info",
+      "description": "The same value appears more than once in a servers or blocked array.",
+      "trigger": "duplicate string in servers[] or blocked[]",
+      "message": "\"{value}\" appears multiple times in \"{listName}\" (first at line {firstLine})",
+      "fixable": false,
+      "remediation": "Remove the duplicate entry.",
+      "stability": "stable"
+    },
+    {
+      "id": "mcph-config/prefer-env-token",
+      "category": "mcph-token-security",
+      "severity": "warning",
+      "configurable": true,
+      "configKey": "mcphStrictEnvToken",
+      "configurableSeverity": "error",
+      "description": "The \"token\" field is present in any .mcph.json scope. An environment variable (MCPH_TOKEN) is safer — files survive backups, screen shares, cloud sync, and editor indexing.",
+      "trigger": "token field present in any scope (and token-in-project-scope did not already fire)",
+      "message": "prefer MCPH_TOKEN env var over a file-stored token in {file}",
+      "fixable": false,
+      "remediation": "Delete the \"token\" field and export MCPH_TOKEN in your shell/env manager (bash/zsh, fish, PowerShell, direnv).",
+      "stability": "stable"
+    }
+  ]
+}

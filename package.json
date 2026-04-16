@@ -1,6 +1,6 @@
 {
   "name": "@yawlabs/ctxlint",
-  "version": "0.9.16",
+  "version": "0.9.17",
   "description": "Lint your AI agent context files, MCP server configs, and session data against your actual codebase",
   "bin": {
     "ctxlint": "dist/index.js"
@@ -57,6 +57,7 @@
     "AGENT_SESSION_LINT_SPEC.md",
     "context-lint-rules.json",
     "mcp-config-lint-rules.json",
+    "mcph-config-lint-rules.json",
     "agent-session-lint-rules.json",
     "LICENSE",
     "README.md"
@@ -87,6 +88,7 @@
     "eslint": "^10.2.0",
     "fast-levenshtein": "^3.0.0",
     "glob": "^13.0.6",
+    "jsonc-parser": "^3.3.1",
     "ora": "^9.3.0",
     "prettier": "^3.8.2",
     "simple-git": "^3.35.2",

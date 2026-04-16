@@ -496,12 +496,14 @@ ctxlint is the reference implementation of three open specifications for linting
 | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **[AI Context File Linting Spec](./CONTEXT_LINT_SPEC.md)**     | 19 rules for validating context files (CLAUDE.md, .cursorrules, AGENTS.md, etc.) across 17 clients. Covers file formats, frontmatter schemas, path/command validation, staleness, token budgets, redundancy, and contradictions.   |
 | **[MCP Config Linting Spec](./MCP_CONFIG_LINT_SPEC.md)**       | 43 rules for validating MCP server configs (.mcp.json, .cursor/mcp.json, .vscode/mcp.json, etc.) across 8 clients. Covers schema validation, hardcoded secrets, env var syntax, deprecated transports, and cross-file consistency. |
+| **mcph Config Linting** (`mcph-config-lint-rules.json`)        | 10 rules for validating `.mcph.json` — the config file read by the `@yawlabs/mcph` CLI. Covers PAT format + leakage, env-var posture, plaintext API endpoints, schema drift, and allow/deny list semantics across the scope cascade. |
 | **[Agent Session Linting Spec](./AGENT_SESSION_LINT_SPEC.md)** | 7 rules for auditing agent session data (history, memory) across 8 agents. Covers cross-project secret consistency, config drift, stale memory, and loop detection.                                                                |
 
 All specs include machine-readable rule catalogs for programmatic consumption:
 
 - [`context-lint-rules.json`](./context-lint-rules.json) — context file rules and 16 supported format definitions
 - [`mcp-config-lint-rules.json`](./mcp-config-lint-rules.json) — MCP config rules and 8 client definitions
+- [`mcph-config-lint-rules.json`](./mcph-config-lint-rules.json) — mcph CLI config rules (`.mcph.json`)
 - [`agent-session-lint-rules.json`](./agent-session-lint-rules.json) — session lint rules and 8 agent data source definitions
 
 ## Also By Yaw Labs

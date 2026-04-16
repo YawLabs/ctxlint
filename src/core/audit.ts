@@ -1,6 +1,13 @@
-import { scanForContextFiles, scanForMcpConfigs, scanGlobalMcpConfigs } from './scanner.js';
+import {
+  scanForContextFiles,
+  scanForMcpConfigs,
+  scanForMcphConfigs,
+  scanGlobalMcpConfigs,
+  scanGlobalMcphConfigs,
+} from './scanner.js';
 import { parseContextFile } from './parser.js';
 import { parseMcpConfig } from './mcp-parser.js';
+import { parseMchpConfig } from './mcph-parser.js';
 import { countTokens } from '../utils/tokens.js';
 import { checkPaths } from './checks/paths.js';
 import { checkCommands } from './checks/commands.js';
@@ -18,6 +25,11 @@ import { checkMcpEnv } from './checks/mcp/env.js';
 import { checkMcpUrls } from './checks/mcp/urls.js';
 import { checkMcpConsistency } from './checks/mcp/consistency.js';
 import { checkMcpRedundancy } from './checks/mcp/redundancy.js';
+import { checkMcphTokenSecurity } from './checks/mcph/token-security.js';
+import { checkMcphApibase } from './checks/mcph/apibase.js';
+import { checkMcphSchemaConformance } from './checks/mcph/schema-conformance.js';
+import { checkMcphLists } from './checks/mcph/lists.js';
+import { checkMcphGitignore } from './checks/mcph/gitignore.js';
 import { scanSessionData } from './session-scanner.js';
 import { checkMissingSecret } from './checks/session/missing-secret.js';
 import { checkDivergedFile } from './checks/session/diverged-file.js';
@@ -34,8 +46,10 @@ import type {
   LintIssue,
   CheckName,
   McpCheckName,
+  MchpCheckName,
   SessionCheckName,
   ParsedMcpConfig,
+  ParsedMchpConfig,
 } from './types.js';
 import { VERSION } from '../version.js';
 
@@ -63,6 +77,14 @@ export const ALL_MCP_CHECKS: McpCheckName[] = [
   'mcp-redundancy',
 ];
 
+export const ALL_MCPH_CHECKS: MchpCheckName[] = [
+  'mcph-token-security',
+  'mcph-apibase',
+  'mcph-schema-conformance',
+  'mcph-lists',
+  'mcph-gitignore',
+];
+
 export const ALL_SESSION_CHECKS: SessionCheckName[] = [
   'session-missing-secret',
   'session-diverged-file',
@@ -79,12 +101,20 @@ export interface AuditOptions {
   mcp?: boolean;
   mcpGlobal?: boolean;
   mcpOnly?: boolean;
+  mcph?: boolean;
+  mcphGlobal?: boolean;
+  mcphOnly?: boolean;
+  mcphStrictEnvToken?: boolean;
   session?: boolean;
   sessionOnly?: boolean;
 }
 
 function hasMcpChecks(checks: CheckName[]): boolean {
   return checks.some((c) => c.startsWith('mcp-'));
+}
+
+function hasMcphChecks(checks: CheckName[]): boolean {
+  return checks.some((c) => c.startsWith('mcph-'));
 }
 
 function hasSessionChecks(checks: CheckName[]): boolean {
@@ -98,9 +128,12 @@ export async function runAudit(
 ): Promise<LintResult> {
   const fileResults: FileResult[] = [];
 
-  const shouldRunContextChecks = !options.mcpOnly && !options.sessionOnly;
+  const shouldRunContextChecks =
+    !options.mcpOnly && !options.mcphOnly && !options.sessionOnly;
   const shouldRunMcpChecks =
     options.mcp || options.mcpGlobal || options.mcpOnly || hasMcpChecks(activeChecks);
+  const shouldRunMcphChecks =
+    options.mcph || options.mcphGlobal || options.mcphOnly || hasMcphChecks(activeChecks);
   const shouldRunSessionChecks =
     options.session || options.sessionOnly || hasSessionChecks(activeChecks);
 
@@ -241,6 +274,83 @@ export async function runAudit(
         tokens: 0,
         lines: 0,
         issues: crossMcpIssues,
+      });
+    }
+  }
+
+  // --- mcph (mcp.hosting CLI) config checks ---
+  if (shouldRunMcphChecks) {
+    const projectMcphFiles = await scanForMcphConfigs(projectRoot);
+    const mcphConfigs: ParsedMchpConfig[] = await Promise.all(
+      projectMcphFiles.map((f) =>
+        parseMchpConfig(
+          f,
+          projectRoot,
+          f.relativePath.endsWith('.mcph.local.json') ? 'project-local' : 'project',
+        ),
+      ),
+    );
+
+    if (options.mcphGlobal) {
+      const globalMcphFiles = await scanGlobalMcphConfigs();
+      const globalMcphConfigs = await Promise.all(
+        globalMcphFiles.map((f) => parseMchpConfig(f, projectRoot, 'global')),
+      );
+      mcphConfigs.push(...globalMcphConfigs);
+    }
+
+    const activeMcphChecks = activeChecks.filter((c) => c.startsWith('mcph-')) as MchpCheckName[];
+    const mcphChecksToRun =
+      activeMcphChecks.length > 0
+        ? activeMcphChecks
+        : options.mcph || options.mcphGlobal || options.mcphOnly
+          ? ALL_MCPH_CHECKS
+          : [];
+
+    for (const config of mcphConfigs) {
+      const checkPromises: Promise<LintIssue[]>[] = [];
+
+      if (mcphChecksToRun.includes('mcph-token-security')) {
+        checkPromises.push(
+          checkMcphTokenSecurity(config, projectRoot, {
+            strictEnvToken: options.mcphStrictEnvToken,
+          }),
+        );
+      }
+      if (mcphChecksToRun.includes('mcph-apibase')) {
+        checkPromises.push(checkMcphApibase(config, projectRoot));
+      }
+      if (mcphChecksToRun.includes('mcph-schema-conformance')) {
+        checkPromises.push(checkMcphSchemaConformance(config, projectRoot));
+      }
+      if (mcphChecksToRun.includes('mcph-lists')) {
+        checkPromises.push(checkMcphLists(config, projectRoot));
+      }
+      if (mcphChecksToRun.includes('mcph-gitignore')) {
+        checkPromises.push(checkMcphGitignore(config, projectRoot));
+      }
+
+      const results = await Promise.all(checkPromises);
+      const issues = results.flat();
+
+      // Surface parse errors as issues too (so users see them).
+      for (const err of config.parseErrors) {
+        issues.push({
+          severity: 'error',
+          check: 'mcph-schema-conformance',
+          ruleId: 'mcph-config/parse-error',
+          line: 1,
+          message: err,
+        });
+      }
+
+      const lines = config.content.split('\n').length;
+      fileResults.push({
+        path: config.relativePath,
+        isSymlink: false,
+        tokens: countTokens(config.content),
+        lines,
+        issues,
       });
     }
   }

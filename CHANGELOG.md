@@ -8,6 +8,18 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.9.17] — 2026-04-16
+
+### Added
+- **`.mcph.json` linting** — 10 new rules under the `mcph-config/*` ID family for the config file read by the `@yawlabs/mcph` CLI. Distinct from `.mcp.json` (client-side MCP server list): `.mcph.json` holds auth token + API base + allow/deny lists for the mcph binary that orchestrates mcp.hosting-managed servers.
+- Rules cover five themes: **token security** (`token-in-project-scope` error on git-tracked project files, `invalid-token-format`, configurable `prefer-env-token`), **API endpoint validation** (`insecure-apibase` on public plaintext HTTP, `invalid-apibase`), **schema conformance** (`unknown-field` to catch typos like `tokens` vs `token`, `stale-version`), **allow/deny list semantics** (`allowlist-denylist-conflict`, `duplicate-entries`), and **gitignore hygiene** (`local-file-not-gitignored` with auto-fix).
+- New CLI flags: `--mcph`, `--mcph-only`, `--mcph-global`, `--mcph-strict-env-token` (upgrades `prefer-env-token` from warning to error).
+- New machine-readable catalog: [`mcph-config-lint-rules.json`](./mcph-config-lint-rules.json).
+- Token-related rules emit per-shell `export MCPH_TOKEN` examples (bash/zsh, fish, PowerShell, direnv) and include the rotation URL (`https://mcp.hosting/settings/tokens`) when a leak is already on-disk.
+
+### Why
+`mcph install` flows hand out PATs (`mcp_pat_*`) that must not land in committed config. The existing `.mcp.json` rules don't apply — different schema, different threat model. This adds a parallel rule family so teams adopting mcph get the same leak-detection bar without writing custom scripts.
+
 ## [0.9.16] — 2026-04-16
 
 ### Security

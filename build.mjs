@@ -35,6 +35,9 @@ await build({
   },
   // Node built-ins are provided by the runtime, not bundled
   external: ['node:*'],
+  // Prefer ESM entry points when present (jsonc-parser ships UMD as `main`,
+  // which uses extensionless require() that breaks inside an ESM bundle).
+  mainFields: ['module', 'main'],
   sourcemap: true,
   // Keep readable for debugging
   minify: false,

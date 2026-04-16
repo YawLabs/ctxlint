@@ -9,12 +9,23 @@ import { freeEncoder } from './utils/tokens.js';
 import { resetGit } from './utils/git.js';
 import { resetPackageJsonCache } from './utils/fs.js';
 import { loadConfig } from './core/config.js';
-import { runAudit, ALL_CHECKS, ALL_MCP_CHECKS, ALL_SESSION_CHECKS } from './core/audit.js';
+import {
+  runAudit,
+  ALL_CHECKS,
+  ALL_MCP_CHECKS,
+  ALL_MCPH_CHECKS,
+  ALL_SESSION_CHECKS,
+} from './core/audit.js';
 import type { LintOptions, CheckName } from './core/types.js';
 import * as path from 'node:path';
 import { VERSION } from './version.js';
 
-const VALID_CHECKS = new Set<string>([...ALL_CHECKS, ...ALL_MCP_CHECKS, ...ALL_SESSION_CHECKS]);
+const VALID_CHECKS = new Set<string>([
+  ...ALL_CHECKS,
+  ...ALL_MCP_CHECKS,
+  ...ALL_MCPH_CHECKS,
+  ...ALL_SESSION_CHECKS,
+]);
 
 function validateCheckNames(names: string[], source: string): CheckName[] {
   const invalid = names.filter((n) => n && !VALID_CHECKS.has(n));
@@ -59,6 +70,14 @@ export async function runCli() {
     .option('--mcp-only', 'Run only MCP config checks, skip context file checks', false)
     .option('--mcp-global', 'Also scan user/global MCP config files (implies --mcp)', false)
     .option('--mcp-server', 'Start the MCP server (alias: `ctxlint serve`)')
+    .option('--mcph', 'Enable .mcph.json (mcp.hosting CLI config) linting', false)
+    .option('--mcph-only', 'Run only mcph config checks', false)
+    .option('--mcph-global', 'Also scan ~/.mcph.json (implies --mcph)', false)
+    .option(
+      '--mcph-strict-env-token',
+      'Upgrade mcph-config/prefer-env-token from warning to error (strict env-var-only posture)',
+      false,
+    )
     .option('--session', 'Run session audit checks (cross-project consistency)', false)
     .option('--session-only', 'Run only session checks, skip context and MCP checks', false)
     .option('--watch', 'Re-lint on context file changes', false)
@@ -72,6 +91,10 @@ export async function runCli() {
       const mcpGlobal = (opts.mcpGlobal as boolean) || false;
       const mcpOnly = (opts.mcpOnly as boolean) || false;
       const mcpFlag = (opts.mcp as boolean) || mcpGlobal || mcpOnly || config?.mcp || false;
+      const mcphGlobal = (opts.mcphGlobal as boolean) || false;
+      const mcphOnly = (opts.mcphOnly as boolean) || false;
+      const mcphFlag = (opts.mcph as boolean) || mcphGlobal || mcphOnly || false;
+      const mcphStrictEnvToken = (opts.mcphStrictEnvToken as boolean) || false;
       const sessionFlag = (opts.session as boolean) || false;
       const sessionOnly = (opts.sessionOnly as boolean) || false;
 
@@ -86,8 +109,10 @@ export async function runCli() {
       if (explicitChecks?.length === 0) explicitChecks = null;
 
       const hasMcpInChecks = explicitChecks?.some((c) => c.startsWith('mcp-')) || false;
+      const hasMcphInChecks = explicitChecks?.some((c) => c.startsWith('mcph-')) || false;
       const hasSessionInChecks = explicitChecks?.some((c) => c.startsWith('session-')) || false;
       const effectiveMcp = mcpFlag || hasMcpInChecks;
+      const effectiveMcph = mcphFlag || hasMcphInChecks;
       const effectiveSession = sessionFlag || sessionOnly || hasSessionInChecks;
 
       let checks: CheckName[];
@@ -97,11 +122,14 @@ export async function runCli() {
         checks = ALL_SESSION_CHECKS;
       } else if (mcpOnly) {
         checks = ALL_MCP_CHECKS;
+      } else if (mcphOnly) {
+        checks = ALL_MCPH_CHECKS;
       } else {
         const base = config?.checks || ALL_CHECKS;
         checks = [
           ...base,
           ...(effectiveMcp ? ALL_MCP_CHECKS : []),
+          ...(effectiveMcph ? ALL_MCPH_CHECKS : []),
           ...(effectiveSession ? ALL_SESSION_CHECKS : []),
         ];
       }
@@ -125,6 +153,10 @@ export async function runCli() {
         mcp: effectiveMcp,
         mcpOnly,
         mcpGlobal: mcpGlobal || config?.mcpGlobal || false,
+        mcph: effectiveMcph,
+        mcphOnly,
+        mcphGlobal,
+        mcphStrictEnvToken,
         session: effectiveSession,
         sessionOnly,
       };
@@ -151,6 +183,10 @@ export async function runCli() {
           mcp: options.mcp,
           mcpGlobal: options.mcpGlobal,
           mcpOnly: options.mcpOnly,
+          mcph: options.mcph,
+          mcphGlobal: options.mcphGlobal,
+          mcphOnly: options.mcphOnly,
+          mcphStrictEnvToken: options.mcphStrictEnvToken,
           session: options.session,
           sessionOnly: options.sessionOnly,
         });
@@ -310,6 +346,10 @@ export async function runCli() {
                 mcp: options.mcp,
                 mcpGlobal: options.mcpGlobal,
                 mcpOnly: options.mcpOnly,
+                mcph: options.mcph,
+                mcphGlobal: options.mcphGlobal,
+                mcphOnly: options.mcphOnly,
+                mcphStrictEnvToken: options.mcphStrictEnvToken,
                 session: options.session,
                 sessionOnly: options.sessionOnly,
               });
