@@ -13,11 +13,12 @@ on:
   workflow_run:
     workflows: ['Release']
     types: [completed]
+    branches: [main]
   workflow_dispatch:
 
 jobs:
   refresh:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -60,4 +61,3 @@ jobs:
           branch: bot/compliance-badge-refresh
           delete-branch: true
           add-paths: compliance-badge.svg
-          sign-commits: true
