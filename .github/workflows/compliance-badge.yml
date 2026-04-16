@@ -1,20 +1,11 @@
 name: Compliance Badge
 
-# Regenerates compliance-badge.svg by running the published ctxlint MCP
-# server against @yawlabs/mcp-compliance, then opens a PR if the badge
-# changed. We open a PR instead of pushing direct because main requires
-# PR + signed commits; github-actions[bot] can't bypass those rules.
-#
-# Triggers:
-#   - After Release workflow completes (badge reflects what's on npm)
-#   - Manual via workflow_dispatch (refresh anytime)
-
 on:
+  workflow_dispatch:
   workflow_run:
     workflows: ['Release']
     types: [completed]
     branches: [main]
-  workflow_dispatch:
 
 jobs:
   refresh:
