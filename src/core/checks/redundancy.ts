@@ -163,10 +163,19 @@ export async function checkRedundancy(
 export function checkDuplicateContent(files: ParsedContextFile[]): LintIssue[] {
   const issues: LintIssue[] = [];
 
+  // Threshold of 0.6 Jaccard similarity ≈ "at least 60% of the union of
+  // non-trivial lines is shared between the two files." This is strict
+  // enough not to trip on files that happen to share boilerplate (a
+  // common disclaimer, a shared heading structure) and loose enough to
+  // catch AGENTS.md / CLAUDE.md pairs that were copy-pasted and lightly
+  // diverged — the most common reason for duplicate context files. Uses
+  // `>=` so a pair that lands exactly on the line still gets reported.
+  const DUPLICATE_CONTENT_THRESHOLD = 0.6;
+
   for (let i = 0; i < files.length; i++) {
     for (let j = i + 1; j < files.length; j++) {
       const overlap = calculateLineOverlap(files[i].content, files[j].content);
-      if (overlap > 0.6) {
+      if (overlap >= DUPLICATE_CONTENT_THRESHOLD) {
         issues.push({
           severity: 'warning',
           check: 'redundancy',
@@ -182,6 +191,13 @@ export function checkDuplicateContent(files: ParsedContextFile[]): LintIssue[] {
   return issues;
 }
 
+/**
+ * Jaccard similarity over non-trivial lines (trimmed, > 10 chars). Returns
+ * |A ∩ B| / |A ∪ B| in [0, 1]. Earlier versions divided by
+ * `max(|A|, |B|)` ("overlap coefficient over max"), which inflates the
+ * score when one file is much smaller than the other and doesn't match
+ * the metric the user-facing message reports ("content overlap").
+ */
 function calculateLineOverlap(contentA: string, contentB: string): number {
   const linesA = new Set(
     contentA
@@ -198,12 +214,12 @@ function calculateLineOverlap(contentA: string, contentB: string): number {
 
   if (linesA.size === 0 || linesB.size === 0) return 0;
 
-  let overlap = 0;
+  let intersection = 0;
   for (const line of linesA) {
-    if (linesB.has(line)) overlap++;
+    if (linesB.has(line)) intersection++;
   }
-
-  return overlap / Math.max(linesA.size, linesB.size);
+  const unionSize = linesA.size + linesB.size - intersection;
+  return intersection / unionSize;
 }
 
 function escapeRegex(str: string): string {
