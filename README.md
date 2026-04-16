@@ -508,7 +508,7 @@ All specs include machine-readable rule catalogs for programmatic consumption:
 
 - [Yaw](https://yaw.sh) — The AI-native terminal
 - [mcp.hosting](https://mcp.hosting) — MCP server proxy platform
-- [Token Meter](https://tokenmeter.sh) — LLM spend tracking
+- [Spend](https://spend.sh) — AI spend tracking, cost estimation, and provider comparison across 10+ providers
 - [Token Limit News](https://tokenlimit.news) — Weekly AI dev tooling newsletter
 
 ## License
