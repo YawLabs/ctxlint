@@ -8,6 +8,14 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.9.13] — 2026-04-16
+
+Third pre-1.0 review pass — MCP server schema tightening and a session-scanner edge-case guard.
+
+### Fixed
+- **MCP tools' `checks` parameter is now domain-scoped.** Previously every MCP tool (`ctxlint_audit`, `ctxlint_fix`, `ctxlint_mcp_audit`, `ctxlint_session_audit`) accepted the full union of context/MCP/session check names — so a call like `ctxlint_audit` with `checks: ['mcp-schema']` would validate and then silently produce an empty result, because the audit path for that tool only scans context files. Each tool's schema now exposes only the check names for the domain it actually runs, so hosts (Claude Code, Cursor) can present valid options in their tool UI and invalid inputs fail at schema validation instead of silently dropping.
+- **`session-scanner.ts` refuses to detect providers when `$HOME`/`%USERPROFILE%` are both unset.** In that pathological case, `join('', '.claude')` produced the relative path `.claude`, and `existsSync` would then match a project-local `.claude/` directory as if it were the user's global agent data. `detectProviders()` now returns `[]` when `home` is empty, which short-circuits every downstream reader (history, memories) because they're all gated on the matching provider being detected first.
+
 ## [0.9.12] — 2026-04-16
 
 Follow-up to 0.9.11. One correctness fix carried over from the review that was deferred at release time.

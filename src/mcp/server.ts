@@ -10,15 +10,20 @@ import { findRenames } from '../utils/git.js';
 import { freeEncoder, keepEncoderAlive } from '../utils/tokens.js';
 import { resetGit } from '../utils/git.js';
 import { resetPathsCache } from '../core/checks/paths.js';
-import type { CheckName } from '../core/types.js';
+import type { CheckName, McpCheckName, SessionCheckName } from '../core/types.js';
 import * as path from 'node:path';
 import { VERSION } from '../version.js';
 
-const allCheckNames = [...ALL_CHECKS, ...ALL_MCP_CHECKS, ...ALL_SESSION_CHECKS] as [
-  CheckName,
-  ...CheckName[],
-];
-const checkEnum = z.enum(allCheckNames);
+// Per-tool enums, not a single union. Previously every tool accepted every
+// check name — so calling `ctxlint_audit` with `checks: ['mcp-schema']`
+// would validate but silently do nothing (the audit only scans context
+// files, not MCP configs). Each tool now only accepts check names for the
+// domain it actually runs.
+const contextCheckEnum = z.enum(ALL_CHECKS as [CheckName, ...CheckName[]]);
+const mcpCheckEnum = z.enum(ALL_MCP_CHECKS as [McpCheckName, ...McpCheckName[]]);
+const sessionCheckEnum = z.enum(
+  ALL_SESSION_CHECKS as [SessionCheckName, ...SessionCheckName[]],
+);
 
 const server = new McpServer({
   name: 'ctxlint',
@@ -33,7 +38,10 @@ server.tool(
       .string()
       .optional()
       .describe('Path to the project root. Defaults to current working directory.'),
-    checks: z.array(checkEnum).optional().describe('Which checks to run. Defaults to all.'),
+    checks: z
+      .array(contextCheckEnum)
+      .optional()
+      .describe('Which context-file checks to run. Defaults to all.'),
   },
   {
     readOnlyHint: true,
@@ -172,9 +180,9 @@ server.tool(
       .optional()
       .describe('Path to the project root. Defaults to current working directory.'),
     checks: z
-      .array(checkEnum)
+      .array(contextCheckEnum)
       .optional()
-      .describe('Which checks to run before fixing. Defaults to all.'),
+      .describe('Which context-file checks to run before fixing. Defaults to all.'),
   },
   {
     // ctxlint_fix writes to disk via applyFixes() → fs.writeFileSync, so it
@@ -233,7 +241,7 @@ server.tool(
       .optional()
       .describe('Path to the project root. Defaults to current working directory.'),
     checks: z
-      .array(checkEnum)
+      .array(mcpCheckEnum)
       .optional()
       .describe('Specific MCP checks to run (default: all mcp-* checks).'),
     includeGlobal: z.boolean().optional().describe('Also scan global/user-level MCP configs.'),
@@ -279,7 +287,7 @@ server.tool(
       .optional()
       .describe('Path to the project root. Defaults to current working directory.'),
     checks: z
-      .array(checkEnum)
+      .array(sessionCheckEnum)
       .optional()
       .describe('Specific session checks to run (default: all session-* checks).'),
   },

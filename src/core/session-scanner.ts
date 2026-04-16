@@ -42,6 +42,14 @@ const AGENT_DIRS: Array<{ provider: AgentProvider; dir: string; historyFile?: st
  * Detect which agent providers are installed on this machine.
  */
 export function detectProviders(): AgentProvider[] {
+  // If neither HOME nor USERPROFILE is set, `home` is empty and
+  // `join('', '.claude')` produces the relative path `.claude`. `existsSync`
+  // on that resolves against cwd, so a project that happens to have its
+  // own `.claude/` would get mistaken for the user's global agent data.
+  // All other readers (`readClaudeHistory`, `readClaudeMemories`, etc.) are
+  // gated on this returning the matching provider, so short-circuiting here
+  // is sufficient to prevent any cwd-relative lookups.
+  if (!home) return [];
   return AGENT_DIRS.filter((a) => existsSync(a.dir)).map((a) => a.provider);
 }
 
