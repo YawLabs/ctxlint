@@ -30,7 +30,7 @@ const server = new McpServer({
 
 server.tool(
   'ctxlint_audit',
-  'Audit AI agent context files (CLAUDE.md, AGENTS.md, etc.) in the project. Checks for stale references, invalid commands, redundant content, contradictions, frontmatter issues, and token waste. Use ctxlint_mcp_audit for MCP configs or ctxlint_session_audit for session checks.',
+  'Audit AI agent context files (CLAUDE.md, AGENTS.md, etc.) in the project. Checks for stale references, invalid commands, redundant content, contradictions, frontmatter issues, and token waste. Scoped to context-file checks only; MCP-config and session-level checks are exposed as separate tools.',
   {
     projectPath: z
       .string()
