@@ -6,5 +6,19 @@ on:
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
     steps:
-      - run: echo "hello"
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - run: npm install -g @yawlabs/mcp-compliance
+      - run: mcp-compliance test "node dist/index.js serve" --output compliance-badge.svg || true
+      - run: ls -la compliance-badge.svg && head -2 compliance-badge.svg
