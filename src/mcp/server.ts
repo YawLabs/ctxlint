@@ -21,9 +21,7 @@ import { VERSION } from '../version.js';
 // domain it actually runs.
 const contextCheckEnum = z.enum(ALL_CHECKS as [CheckName, ...CheckName[]]);
 const mcpCheckEnum = z.enum(ALL_MCP_CHECKS as [McpCheckName, ...McpCheckName[]]);
-const sessionCheckEnum = z.enum(
-  ALL_SESSION_CHECKS as [SessionCheckName, ...SessionCheckName[]],
-);
+const sessionCheckEnum = z.enum(ALL_SESSION_CHECKS as [SessionCheckName, ...SessionCheckName[]]);
 
 const server = new McpServer({
   name: 'ctxlint',
