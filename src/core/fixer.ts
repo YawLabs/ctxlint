@@ -99,7 +99,12 @@ export function applyFixes(result: LintResult, options: FixOptions = {}): FixSum
       let line = lines[lineIdx];
       for (const fix of lineFixes) {
         if (line.includes(fix.oldText)) {
-          line = line.replace(fix.oldText, fix.newText);
+          // replaceAll (not replace) so that if the same oldText literal
+          // appears twice on one line — e.g. "see src/old/x.ts and src/old/y.ts"
+          // where the dir got renamed — every occurrence is rewritten.
+          // Fix actions carry literal strings (no regex), so replaceAll on a
+          // string is the correct, non-escaping form.
+          line = line.replaceAll(fix.oldText, fix.newText);
           totalFixes++;
           const prefix = dryRun ? chalk.cyan('  Would fix') : chalk.green('  Fixed');
           log(

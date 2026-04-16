@@ -8,6 +8,19 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+### Fixed
+- **SARIF now emits `logicalLocations` for synthetic cross-file buckets** instead of shoving labels like `(project)`, `(mcp)`, and `~/.claude/ (session audit)` into `physicalLocation.artifactLocation.uri`. GitHub Code Scanning interprets that URI as a repo-relative file path, so the old output either dropped cross-file findings or filed them against literal `(project)` paths. Real file paths continue to use `physicalLocation` unchanged.
+- **`ctxlint_fix` MCP tool now advertises `destructiveHint: true`** (`src/mcp/server.ts`). The tool writes to disk via `applyFixes()` → `fs.writeFileSync`, so hosts need to know it's destructive when deciding whether to prompt the user for confirmation.
+- **Fixer replaces every occurrence of `oldText` on a line**, not just the first. A directory rename landing on a line like ``"tests live in `src/old/a.ts` and `src/old/b.ts`"`` would previously leave the second reference dangling. Switched to `String.prototype.replaceAll`.
+- **Pre-commit hooks written by `ctxlint init` now pin to the installed ctxlint version** (e.g. `npx @yawlabs/ctxlint@X.Y.Z --strict`). A bare `npx @yawlabs/ctxlint` would silently upgrade to `latest` when a repo got checked out months later, so the rule set a team agreed to enforce could drift under them. Re-run `ctxlint init` to bump the pin.
+- **Watch mode closes `fs.watch` handles on `SIGINT`/`SIGTERM`** instead of relying on process exit to reap them, and clears the pending debounce timer first.
+
+### Docs
+- `AGENT_SESSION_LINT_SPEC.md` prose now says "7 lint rules" (was "5") to match the catalog and `ALL_SESSION_CHECKS`.
+- `MCP_CONFIG_LINT_SPEC.md` prose now says "43 lint rules" (was "27") — the 0.9.9 reconciliation missed this spot.
+- `README.md` example output and pre-commit-framework `rev:` pin bumped off `v0.9.0`. Bundle-size blurb corrected from "~200 KB" to "~400 KB" — the actual tarball is 390 KB per `npm pack --dry-run` (unpacks to 2.1 MB; `dist/index.js` is 1.9 MB).
+- `CLAUDE.md` end-of-session instruction clarified to exclude read-only tasks (reviews, explanations) so the assistant doesn't try to "commit and push" when there's nothing to commit.
+
 ## [0.9.10] — 2026-04-14
 
 Staleness detector fix + pre-merge bench integration.

@@ -265,6 +265,41 @@ describe('applyFixes', () => {
     }
   });
 
+  // When a directory rename lands on a line that references the renamed
+  // prefix twice (e.g. "see src/old/a.ts and src/old/b.ts"), a naive
+  // String.prototype.replace would only rewrite the first occurrence and
+  // leave the second dangling. We use replaceAll on literal strings so both
+  // get fixed in a single pass.
+  it('rewrites every occurrence when oldText appears twice on one line', () => {
+    const filePath = writeFixture(
+      'CLAUDE.md',
+      'Tests live in `src/old/foo.ts` and `src/old/bar.ts`.\n',
+    );
+    const result = makeResult([
+      {
+        path: 'CLAUDE.md',
+        isSymlink: false,
+        tokens: 10,
+        lines: 1,
+        issues: [
+          {
+            severity: 'error',
+            check: 'paths',
+            line: 1,
+            message: 'src/old/ renamed',
+            fix: { file: filePath, line: 1, oldText: 'src/old/', newText: 'src/new/' },
+          },
+        ],
+      },
+    ]);
+
+    applyFixes(result);
+    const updated = fs.readFileSync(filePath, 'utf-8');
+    expect(updated).toContain('src/new/foo.ts');
+    expect(updated).toContain('src/new/bar.ts');
+    expect(updated).not.toContain('src/old/');
+  });
+
   it('fixes across multiple files', () => {
     const file1 = writeFixture('CLAUDE.md', 'See `src/old.ts`\n');
     const file2 = writeFixture('AGENTS.md', 'Check `lib/old.ts`\n');

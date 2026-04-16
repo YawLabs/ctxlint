@@ -296,6 +296,7 @@ export async function runCli() {
           path.join(resolvedPath, '.vscode'),
         ];
 
+        const watchers: fs.FSWatcher[] = [];
         let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
         const rerun = () => {
@@ -341,7 +342,7 @@ export async function runCli() {
         // Watch individual files
         for (const filePath of watchPaths) {
           try {
-            fs.watch(filePath, rerun);
+            watchers.push(fs.watch(filePath, rerun));
           } catch {
             // File doesn't exist yet — skip
           }
@@ -350,13 +351,31 @@ export async function runCli() {
         // Watch directories (recursive)
         for (const dir of watchDirs) {
           try {
-            fs.watch(dir, { recursive: true }, rerun);
+            watchers.push(fs.watch(dir, { recursive: true }, rerun));
           } catch {
             // Directory doesn't exist — skip
           }
         }
 
-        // Keep process alive indefinitely (watch mode exits via Ctrl+C)
+        // Close watchers on SIGINT / SIGTERM so the process exits cleanly
+        // without leaking file-watch handles. `once` avoids double-close if
+        // the user hammers Ctrl+C; the handlers remove themselves afterward.
+        const shutdown = () => {
+          if (debounceTimer) clearTimeout(debounceTimer);
+          for (const w of watchers) {
+            try {
+              w.close();
+            } catch {
+              // Already closed or never opened — ignore.
+            }
+          }
+          process.exit(0);
+        };
+        process.once('SIGINT', shutdown);
+        process.once('SIGTERM', shutdown);
+
+        // Keep process alive indefinitely (watch mode exits via the
+        // SIGINT/SIGTERM handlers above).
         await new Promise(() => {});
       }
     });
@@ -380,13 +399,16 @@ export async function runCli() {
       }
 
       const hookPath = path.join(hooksDir, 'pre-commit');
+      // Pin the hook to the version of ctxlint that wrote it, so a repo
+      // checked out months later doesn't silently pull a newer ctxlint whose
+      // rule set drifted. Users can re-run `ctxlint init` to bump the pin.
       const fullHookContent = `#!/bin/sh
 # ctxlint pre-commit hook
-npx @yawlabs/ctxlint --strict
+npx @yawlabs/ctxlint@${VERSION} --strict
 `;
       const appendHookContent = `
 # ctxlint pre-commit hook
-npx @yawlabs/ctxlint --strict
+npx @yawlabs/ctxlint@${VERSION} --strict
 `;
 
       if (fs.existsSync(hookPath)) {

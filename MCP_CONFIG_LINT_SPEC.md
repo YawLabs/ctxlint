@@ -16,7 +16,7 @@ This specification defines a standard set of lint rules for validating MCP serve
 
 The specification includes:
 - A complete reference of MCP config file locations, formats, and client-specific behaviors
-- 27 lint rules organized into 8 categories with defined severities
+- 43 lint rules organized into 8 categories with defined severities
 - A machine-readable rule catalog ([`mcp-config-lint-rules.json`](./mcp-config-lint-rules.json))
 - Auto-fix definitions for rules that support automated correction
 

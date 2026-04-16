@@ -15,7 +15,7 @@ This specification defines a standard set of lint rules for validating agent ses
 
 The specification includes:
 - A reference of session data locations across 8 AI coding agents
-- 5 lint rules in the `session` category with defined severities
+- 7 lint rules in the `session` category with defined severities
 - A machine-readable rule catalog ([`agent-session-lint-rules.json`](./agent-session-lint-rules.json))
 - Sibling-repo detection for cross-project checks
 

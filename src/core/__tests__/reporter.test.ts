@@ -205,6 +205,68 @@ describe('formatSarif', () => {
     expect(parsed.runs[0].results[0].locations[0].physicalLocation.region.startLine).toBe(1);
   });
 
+  // Audit buckets cross-file findings under labels like `(project)`, `(mcp)`,
+  // and `~/.claude/ (session audit)`. Those are not real repo-relative paths,
+  // so routing them through SARIF's `physicalLocation.artifactLocation.uri`
+  // makes GitHub Code Scanning either drop the result or file it against a
+  // literal "(project)" path. We emit `logicalLocations` for these instead.
+  it('uses logicalLocations (not physicalLocation) for synthetic cross-file paths', () => {
+    const result = makeResult({
+      files: [
+        {
+          path: '(project)',
+          isSymlink: false,
+          tokens: 0,
+          lines: 0,
+          issues: [
+            {
+              severity: 'warning',
+              check: 'contradictions',
+              line: 0,
+              message: 'Jest vs Vitest',
+            },
+          ],
+        },
+        {
+          path: '~/.claude/ (session audit)',
+          isSymlink: false,
+          tokens: 0,
+          lines: 0,
+          issues: [
+            {
+              severity: 'info',
+              check: 'session-stale-memory',
+              line: 0,
+              message: 'stale memory',
+            },
+          ],
+        },
+        {
+          path: 'CLAUDE.md',
+          isSymlink: false,
+          tokens: 10,
+          lines: 1,
+          issues: [{ severity: 'error', check: 'paths', line: 3, message: 'missing' }],
+        },
+      ],
+    });
+    const parsed = JSON.parse(formatSarif(result));
+    const [projectResult, sessionResult, fileResult] = parsed.runs[0].results;
+
+    // Synthetic project bucket — no physicalLocation, logicalLocations carries the label.
+    expect(projectResult.locations[0].physicalLocation).toBeUndefined();
+    expect(projectResult.locations[0].logicalLocations[0].name).toBe('(project)');
+
+    // Synthetic session bucket — same treatment. Leading `~` is the tell.
+    expect(sessionResult.locations[0].physicalLocation).toBeUndefined();
+    expect(sessionResult.locations[0].logicalLocations[0].name).toBe('~/.claude/ (session audit)');
+
+    // Real file path — unchanged, still uses physicalLocation (regression guard).
+    expect(fileResult.locations[0].physicalLocation.artifactLocation.uri).toBe('CLAUDE.md');
+    expect(fileResult.locations[0].physicalLocation.region.startLine).toBe(3);
+    expect(fileResult.locations[0].logicalLocations).toBeUndefined();
+  });
+
   it('exposes rule descriptors in the tool driver for all ctxlint check categories', () => {
     const parsed = JSON.parse(formatSarif(makeResult()));
     const ruleIds = parsed.runs[0].tool.driver.rules.map((r: { id: string }) => r.id);

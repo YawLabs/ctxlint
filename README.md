@@ -20,7 +20,7 @@ Multiply that across a team with 5 context files, 3 MCP configs, and 2 people wh
 
 ctxlint is a linter purpose-built for this. It reads your context files, cross-references them against your actual codebase, and catches the drift before your agent does.
 
-- **Instant startup** — ships as a single self-contained bundle with zero runtime dependencies. `npx` downloads ~200 KB and starts immediately
+- **Instant startup** — ships as a single self-contained bundle with zero runtime dependencies. `npx` downloads a ~400 KB tarball and starts immediately
 - **Catches real problems** — broken paths, wrong commands, stale references, contradictions across files
 - **Smart suggestions** — detects git renames and fuzzy-matches to suggest the right path
 - **Auto-fix** — `--fix` rewrites broken paths automatically using git history
@@ -215,7 +215,7 @@ Session checks are **opt-in** because they access files outside the project dire
 ## Example Output
 
 ```
-ctxlint v0.9.0
+ctxlint v0.9.10
 
 Scanning /Users/you/my-app...
 
@@ -351,7 +351,7 @@ Add to your `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/yawlabs/ctxlint
-    rev: v0.9.0
+    rev: v0.9.10
     hooks:
       - id: ctxlint
 ```

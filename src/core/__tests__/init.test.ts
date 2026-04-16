@@ -28,6 +28,17 @@ describe('ctxlint init', () => {
     expect(content).toContain('--strict');
   });
 
+  // Pinning guards against silent rule-set drift when a repo is checked out
+  // months after `ctxlint init` ran. A bare `npx @yawlabs/ctxlint` would
+  // resolve `latest` at commit time; `@<version>` locks to the version that
+  // wrote the hook.
+  it('pins the hook to a specific ctxlint version', () => {
+    execFileSync('node', [CLI, 'init'], { cwd: tmpDir, encoding: 'utf-8' });
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    const content = fs.readFileSync(hookPath, 'utf-8');
+    expect(content).toMatch(/@yawlabs\/ctxlint@\d+\.\d+\.\d+/);
+  });
+
   it('does not overwrite existing ctxlint hook', () => {
     // Run init twice
     execFileSync('node', [CLI, 'init'], { cwd: tmpDir, encoding: 'utf-8' });

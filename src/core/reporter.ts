@@ -151,6 +151,20 @@ export function formatTokenReport(result: LintResult): string {
 }
 
 /**
+ * Audit collects cross-file and session-scope findings into synthetic
+ * file-result buckets keyed by labels like `(project)`, `(mcp)`, and
+ * `~/.claude/ (session audit)` (see audit.ts). Those labels aren't real
+ * relative paths and must not flow through to SARIF's
+ * `physicalLocation.artifactLocation.uri`, which GitHub Code Scanning
+ * interprets as a repo-relative file path. For those buckets we emit a
+ * `logicalLocations` entry instead (still valid SARIF 2.1.0) so consumers
+ * can display the bucket name without pretending it's a file.
+ */
+function isSyntheticPath(p: string): boolean {
+  return p.startsWith('(') || p.startsWith('~');
+}
+
+/**
  * Formats results as SARIF v2.1.0 for GitHub Code Scanning and other SARIF consumers.
  * https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html
  */
@@ -165,14 +179,16 @@ export function formatSarif(result: LintResult): string {
 
   for (const file of result.files) {
     for (const issue of file.issues) {
-      const sarifResult: SarifResult = {
-        ruleId: `ctxlint/${issue.check}`,
-        level: severityToLevel[issue.severity] || 'note',
-        message: {
-          text: issue.message + (issue.suggestion ? ` (${issue.suggestion})` : ''),
-        },
-        locations: [
-          {
+      const location: SarifLocation = isSyntheticPath(file.path)
+        ? {
+            logicalLocations: [
+              {
+                name: file.path,
+                kind: 'resource',
+              },
+            ],
+          }
+        : {
             physicalLocation: {
               artifactLocation: {
                 uri: file.path,
@@ -182,8 +198,15 @@ export function formatSarif(result: LintResult): string {
                 startLine: Math.max(issue.line, 1),
               },
             },
-          },
-        ],
+          };
+
+      const sarifResult: SarifResult = {
+        ruleId: `ctxlint/${issue.check}`,
+        level: severityToLevel[issue.severity] || 'note',
+        message: {
+          text: issue.message + (issue.suggestion ? ` (${issue.suggestion})` : ''),
+        },
+        locations: [location],
       };
 
       if (issue.detail) {
@@ -383,10 +406,16 @@ interface SarifResult {
 }
 
 interface SarifLocation {
-  physicalLocation: {
+  physicalLocation?: {
     artifactLocation: { uri: string; uriBaseId: string };
     region: { startLine: number };
   };
+  logicalLocations?: SarifLogicalLocation[];
+}
+
+interface SarifLogicalLocation {
+  name: string;
+  kind?: string;
 }
 
 function formatIssue(issue: LintIssue): string {

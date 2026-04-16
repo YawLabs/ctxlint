@@ -177,8 +177,11 @@ server.tool(
       .describe('Which checks to run before fixing. Defaults to all.'),
   },
   {
+    // ctxlint_fix writes to disk via applyFixes() → fs.writeFileSync, so it
+    // must advertise destructiveHint: true. Hosts (Claude Code, Cursor, etc.)
+    // use this to decide whether to require user confirmation before the call.
     readOnlyHint: false,
-    destructiveHint: false,
+    destructiveHint: true,
     idempotentHint: true,
     openWorldHint: false,
   },
