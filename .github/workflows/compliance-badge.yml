@@ -25,4 +25,11 @@ jobs:
       - run: pnpm run build
       - run: npm install -g @yawlabs/mcp-compliance
       - run: mcp-compliance test "node dist/index.js serve" --output compliance-badge.svg || true
-      - run: ls -la compliance-badge.svg
+
+      - uses: peter-evans/create-pull-request@v8
+        with:
+          commit-message: 'chore: refresh MCP compliance badge'
+          title: 'chore: refresh MCP compliance badge'
+          branch: bot/compliance-badge-refresh
+          delete-branch: true
+          add-paths: compliance-badge.svg
