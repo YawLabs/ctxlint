@@ -8,6 +8,10 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.9.11] — 2026-04-16
+
+Second pre-1.0 review pass. Ten bug fixes across SARIF output, MCP tool hints, fixer correctness, init hook pinning, watch-mode cleanup, parser section bounds, tier-tokens settings error handling, pre-commit-framework hook pinning, plus doc corrections. No breaking changes.
+
 ### Fixed
 - **SARIF now emits `logicalLocations` for synthetic cross-file buckets** instead of shoving labels like `(project)`, `(mcp)`, and `~/.claude/ (session audit)` into `physicalLocation.artifactLocation.uri`. GitHub Code Scanning interprets that URI as a repo-relative file path, so the old output either dropped cross-file findings or filed them against literal `(project)` paths. Real file paths continue to use `physicalLocation` unchanged.
 - **`ctxlint_fix` MCP tool now advertises `destructiveHint: true`** (`src/mcp/server.ts`). The tool writes to disk via `applyFixes()` → `fs.writeFileSync`, so hosts need to know it's destructive when deciding whether to prompt the user for confirmation.
