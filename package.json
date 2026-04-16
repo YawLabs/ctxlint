@@ -1,6 +1,6 @@
 {
   "name": "@yawlabs/ctxlint",
-  "version": "0.9.12",
+  "version": "0.9.13",
   "description": "Lint your AI agent context files, MCP server configs, and session data against your actual codebase",
   "bin": {
     "ctxlint": "dist/index.js"
