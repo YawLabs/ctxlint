@@ -47,7 +47,9 @@ describe('checkMcphLists', () => {
       },
     });
     const issues = await checkMcphLists(config, '/project');
-    expect(issues.find((i) => i.ruleId === 'mcph-config/allowlist-denylist-conflict')).toBeUndefined();
+    expect(
+      issues.find((i) => i.ruleId === 'mcph-config/allowlist-denylist-conflict'),
+    ).toBeUndefined();
   });
 
   it('fires duplicate-entries for repeated servers entry', async () => {

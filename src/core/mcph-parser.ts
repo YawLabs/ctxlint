@@ -3,11 +3,7 @@ import * as path from 'node:path';
 import { parseTree, type Node } from 'jsonc-parser';
 import { readFileContent } from '../utils/fs.js';
 import { getGit } from '../utils/git.js';
-import type {
-  ParsedMchpConfig,
-  MchpConfigScope,
-  MchpFieldPosition,
-} from './types.js';
+import type { ParsedMchpConfig, MchpConfigScope, MchpFieldPosition } from './types.js';
 import type { DiscoveredFile } from './scanner.js';
 
 const KNOWN_FIELDS = new Set(['$schema', 'version', 'token', 'apiBase', 'servers', 'blocked']);

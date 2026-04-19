@@ -128,8 +128,7 @@ export async function runAudit(
 ): Promise<LintResult> {
   const fileResults: FileResult[] = [];
 
-  const shouldRunContextChecks =
-    !options.mcpOnly && !options.mcphOnly && !options.sessionOnly;
+  const shouldRunContextChecks = !options.mcpOnly && !options.mcphOnly && !options.sessionOnly;
   const shouldRunMcpChecks =
     options.mcp || options.mcpGlobal || options.mcpOnly || hasMcpChecks(activeChecks);
   const shouldRunMcphChecks =
