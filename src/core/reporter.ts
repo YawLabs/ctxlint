@@ -25,7 +25,7 @@ export function formatText(result: LintResult, verbose: boolean = false): string
     for (const file of contextFiles) {
       let desc = `  ${file.path} (${file.tokens.toLocaleString()} tokens, ${file.lines} lines)`;
       if (file.isSymlink && file.symlinkTarget) {
-        desc = `  ${file.path} ${chalk.dim(`\u2192 ${file.symlinkTarget} (symlink)`)}`;
+        desc = `  ${file.path} ${chalk.dim(`-> ${file.symlinkTarget} (symlink)`)}`;
       }
       lines.push(desc);
     }
@@ -52,7 +52,7 @@ export function formatText(result: LintResult, verbose: boolean = false): string
       lines.push(chalk.underline(file.path));
 
       if (fileIssues.length === 0) {
-        lines.push(chalk.green('  \u2713 All checks passed'));
+        lines.push(chalk.green('  [ok] All checks passed'));
       } else {
         for (const issue of fileIssues) {
           lines.push(formatIssue(issue));
@@ -123,7 +123,7 @@ export function formatTokenReport(result: LintResult): string {
   lines.push(
     `  ${chalk.dim('File'.padEnd(maxPathLen))}  ${chalk.dim('Tokens'.padStart(8))}  ${chalk.dim('Lines'.padStart(6))}`,
   );
-  lines.push(`  ${'─'.repeat(maxPathLen)}  ${'─'.repeat(8)}  ${'─'.repeat(6)}`);
+  lines.push(`  ${'-'.repeat(maxPathLen)}  ${'-'.repeat(8)}  ${'-'.repeat(6)}`);
 
   for (const file of result.files) {
     const tokenStr = file.tokens.toLocaleString().padStart(8);
@@ -131,7 +131,7 @@ export function formatTokenReport(result: LintResult): string {
     lines.push(`  ${file.path.padEnd(maxPathLen)}  ${tokenStr}  ${lineStr}`);
   }
 
-  lines.push(`  ${'─'.repeat(maxPathLen)}  ${'─'.repeat(8)}  ${'─'.repeat(6)}`);
+  lines.push(`  ${'-'.repeat(maxPathLen)}  ${'-'.repeat(8)}  ${'-'.repeat(6)}`);
   lines.push(
     `  ${'Total'.padEnd(maxPathLen)}  ${result.summary.totalTokens.toLocaleString().padStart(8)}`,
   );
@@ -421,16 +421,16 @@ interface SarifLogicalLocation {
 function formatIssue(issue: LintIssue): string {
   const icon =
     issue.severity === 'error'
-      ? chalk.red('\u2717')
+      ? chalk.red('x')
       : issue.severity === 'warning'
-        ? chalk.yellow('\u26A0')
-        : chalk.blue('\u2139');
+        ? chalk.yellow('!')
+        : chalk.blue('i');
 
   const lineRef = issue.line > 0 ? `Line ${issue.line}: ` : '';
   let line = `  ${icon} ${lineRef}${issue.message}`;
 
   if (issue.suggestion) {
-    line += `\n    ${chalk.dim('\u2192')} ${chalk.dim(issue.suggestion)}`;
+    line += `\n    ${chalk.dim('->')} ${chalk.dim(issue.suggestion)}`;
   }
   if (issue.detail) {
     line += `\n    ${chalk.dim(issue.detail)}`;

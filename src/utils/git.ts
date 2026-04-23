@@ -42,28 +42,11 @@ export async function getFileLastModified(
   }
 }
 
-export async function getCommitsSince(
-  projectRoot: string,
-  filePath: string,
-  since: Date,
-): Promise<number> {
-  try {
-    const git = getGit(projectRoot);
-    const log = await git.log({
-      file: filePath,
-      '--since': since.toISOString(),
-    });
-    return log.total;
-  } catch {
-    return 0;
-  }
-}
-
 /**
- * Batched version of getCommitsSince: runs a single `git log --name-only`
- * against the repo and returns a map of {path → commit count since <date>}
- * for all requested paths. Much faster than N individual `getCommitsSince`
- * calls because each of those spawns a `git` subprocess (20-80ms on Windows).
+ * Runs a single `git log --name-only` against the repo and returns a map of
+ * {path -> commit count since <date>} for all requested paths. Batched so
+ * one subprocess handles N paths (fork+exec is 20-80ms on Windows, so the
+ * savings matter on files with many referenced paths).
  */
 export async function getCommitsSinceBatch(
   projectRoot: string,
@@ -160,24 +143,33 @@ export async function findRenames(
 
     if (!result.trim()) return null;
 
+    // Track the most recent commit header as we scan. A single commit can
+    // contain multiple rename entries; peeking at `lines[i - 1]` broke when
+    // that previous line was itself an `R<score>\told\tnew` row, causing
+    // commitHash to fall back to 'unknown'.
+    let currentHash = 'unknown';
+    let currentDateStr: string | undefined;
+
     const lines = result.trim().split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
+    for (const line of lines) {
+      const headerMatch = line.match(/^([a-f0-9]{7,40})\s+(.+)$/);
+      if (headerMatch) {
+        currentHash = headerMatch[1].substring(0, 7);
+        currentDateStr = headerMatch[2];
+        continue;
+      }
       if (line.startsWith('R')) {
         const parts = line.split('\t');
         if (parts.length >= 3) {
-          const hashLine = lines[i - 1] || '';
-          const hashMatch = hashLine.match(/^([a-f0-9]+)\s+(.+)/);
-          const commitHash = hashMatch?.[1]?.substring(0, 7) || 'unknown';
-          const dateStr = hashMatch?.[2];
-          const daysAgo = dateStr
-            ? Math.floor((Date.now() - new Date(dateStr).getTime()) / (1000 * 60 * 60 * 24))
+          const daysAgo = currentDateStr
+            ? Math.floor(
+                (Date.now() - new Date(currentDateStr).getTime()) / (1000 * 60 * 60 * 24),
+              )
             : 0;
-
           return {
             oldPath: parts[1],
             newPath: parts[2],
-            commitHash,
+            commitHash: currentHash,
             daysAgo,
           };
         }

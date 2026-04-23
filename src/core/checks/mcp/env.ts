@@ -125,18 +125,23 @@ export async function checkMcpEnv(
       }
     }
 
-    // unset-variable: check if referenced env vars are set
-    for (const value of allValues) {
-      const refs = extractEnvVarRefs(value);
-      for (const ref of refs) {
-        if (!(ref.varName in process.env)) {
-          issues.push({
-            severity: 'info',
-            check: 'mcp-env',
-            ruleId: 'unset-variable',
-            line: server.line,
-            message: `Server "${server.name}": environment variable "${ref.varName}" is not set`,
-          });
+    // unset-variable: check if referenced env vars are set.
+    // Skip for Continue — its ${{ secrets.VAR }} refs resolve from GitHub
+    // Actions secrets, not process.env, so every correct Continue config
+    // would false-positive here.
+    if (config.client !== 'continue') {
+      for (const value of allValues) {
+        const refs = extractEnvVarRefs(value);
+        for (const ref of refs) {
+          if (!(ref.varName in process.env)) {
+            issues.push({
+              severity: 'info',
+              check: 'mcp-env',
+              ruleId: 'unset-variable',
+              line: server.line,
+              message: `Server "${server.name}": environment variable "${ref.varName}" is not set`,
+            });
+          }
         }
       }
     }

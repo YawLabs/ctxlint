@@ -1,5 +1,3 @@
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import { parseTree, type Node } from 'jsonc-parser';
 import { readFileContent } from '../utils/fs.js';
 import { getGit } from '../utils/git.js';
@@ -16,7 +14,7 @@ export async function parseMchpConfig(
   const content = readFileContent(file.absolutePath);
   const scope = scopeOverride ?? detectScope(file.relativePath);
   const isGitTracked = await checkGitTracked(file.absolutePath, projectRoot);
-  const isGitignored = checkGitignored(file.absolutePath, projectRoot);
+  const isGitignored = await checkGitignored(file.absolutePath, projectRoot);
 
   const result: ParsedMchpConfig = {
     filePath: file.absolutePath,
@@ -177,23 +175,19 @@ async function checkGitTracked(filePath: string, projectRoot: string): Promise<b
   }
 }
 
-function checkGitignored(filePath: string, projectRoot: string): boolean {
-  // A file is "gitignored" if it's inside the project and matches a
-  // .gitignore rule. We approximate by reading .gitignore and checking
-  // path/basename matches — good enough for the two filenames we care about
-  // (.mcph.json, .mcph.local.json), both of which are typically ignored by
-  // literal name.
-  const gitignorePath = path.join(projectRoot, '.gitignore');
-  let content: string;
+async function checkGitignored(filePath: string, projectRoot: string): Promise<boolean> {
+  // Delegate to `git check-ignore`, which handles the full gitignore
+  // grammar (globs, negation, directory scoping, ancestor .gitignore files).
+  // A tracked file is never reported ignored by this command — which lines
+  // up with what `scope === 'project-local'` callers need anyway.
   try {
-    content = fs.readFileSync(gitignorePath, 'utf-8');
+    const git = getGit(projectRoot);
+    const result = await git.raw(['check-ignore', '--', filePath]);
+    return result.trim().length > 0;
   } catch {
+    // Non-zero exit: either no ignore rule matches the file (exit 1) or
+    // we're outside a git repo (exit 128). Both mean "not ignored" for our
+    // purposes.
     return false;
   }
-  const basename = path.basename(filePath);
-  const patterns = content
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith('#'));
-  return patterns.some((p) => p === basename || p === `/${basename}` || p === `./${basename}`);
 }

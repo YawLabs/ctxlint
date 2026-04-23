@@ -1,13 +1,18 @@
 import type { LintIssue, SessionContext } from '../../types.js';
+import { projectDirMatchesPath } from '../../session-parser.js';
 
 /**
- * Calculate line-level overlap between two text contents.
+ * Jaccard similarity over non-trivial lines. Returns |A ∩ B| / |A ∪ B|.
+ * Earlier "matches / max(|A|, |B|)" was asymmetric because linesA was an
+ * array (duplicates counted) and linesB was a set (deduplicated).
  */
 function calculateLineOverlap(a: string, b: string): number {
-  const linesA = a
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l.length > 5);
+  const linesA = new Set(
+    a
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 5),
+  );
   const linesB = new Set(
     b
       .split('\n')
@@ -15,19 +20,23 @@ function calculateLineOverlap(a: string, b: string): number {
       .filter((l) => l.length > 5),
   );
 
-  if (linesA.length === 0 || linesB.size === 0) return 0;
+  if (linesA.size === 0 || linesB.size === 0) return 0;
 
-  let matches = 0;
+  let intersection = 0;
   for (const line of linesA) {
-    if (linesB.has(line)) matches++;
+    if (linesB.has(line)) intersection++;
   }
-
-  return matches / Math.max(linesA.length, linesB.size);
+  const unionSize = linesA.size + linesB.size - intersection;
+  return intersection / unionSize;
 }
 
 /**
  * Detect near-duplicate memory entries across different projects.
  * Memories with >60% line overlap are flagged for consolidation.
+ *
+ * Scoped to pairs where at least one side belongs to the current project —
+ * otherwise every `ctxlint --session` invocation from any repo would
+ * surface the same unrelated cross-project duplicates.
  */
 export async function checkDuplicateMemory(ctx: SessionContext): Promise<LintIssue[]> {
   const issues: LintIssue[] = [];
@@ -40,6 +49,11 @@ export async function checkDuplicateMemory(ctx: SessionContext): Promise<LintIss
 
       // Only compare memories from different projects (projectDir is an encoded dir name)
       if (a.projectDir === b.projectDir) continue;
+
+      // Require at least one side to belong to the current project.
+      const aIsCurrent = projectDirMatchesPath(a.projectDir, ctx.currentProject);
+      const bIsCurrent = projectDirMatchesPath(b.projectDir, ctx.currentProject);
+      if (!aIsCurrent && !bIsCurrent) continue;
 
       // Skip very short memories (not meaningful to compare)
       if (a.content.length < 50 || b.content.length < 50) continue;

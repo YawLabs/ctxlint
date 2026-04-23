@@ -18,7 +18,14 @@ export interface CtxlintConfig {
   };
   contextFiles?: string[];
   mcp?: boolean;
+  mcpOnly?: boolean;
   mcpGlobal?: boolean;
+  mcph?: boolean;
+  mcphOnly?: boolean;
+  mcphGlobal?: boolean;
+  mcphStrictEnvToken?: boolean;
+  session?: boolean;
+  sessionOnly?: boolean;
 }
 
 const KNOWN_CONFIG_KEYS: Array<keyof CtxlintConfig> = [
@@ -28,7 +35,14 @@ const KNOWN_CONFIG_KEYS: Array<keyof CtxlintConfig> = [
   'tokenThresholds',
   'contextFiles',
   'mcp',
+  'mcpOnly',
   'mcpGlobal',
+  'mcph',
+  'mcphOnly',
+  'mcphGlobal',
+  'mcphStrictEnvToken',
+  'session',
+  'sessionOnly',
 ];
 
 const CONFIG_FILENAMES = ['.ctxlintrc', '.ctxlintrc.json'];
@@ -137,6 +151,24 @@ function warnUnknownKeys(config: unknown, source: string): void {
   }
 }
 
+function parseConfigContent(content: string, source: string): CtxlintConfig {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch (err) {
+    throw new Error(`Invalid JSON in ${source}: ${formatJsonError(content, err)}`, {
+      cause: err,
+    });
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(
+      `Invalid config in ${source}: expected a JSON object at the root, got ${Array.isArray(parsed) ? 'an array' : typeof parsed}`,
+    );
+  }
+  warnUnknownKeys(parsed, source);
+  return parsed as CtxlintConfig;
+}
+
 export function loadConfig(projectRoot: string): CtxlintConfig | null {
   for (const filename of CONFIG_FILENAMES) {
     const filePath = path.join(projectRoot, filename);
@@ -146,22 +178,22 @@ export function loadConfig(projectRoot: string): CtxlintConfig | null {
     } catch {
       continue; // file doesn't exist, try next
     }
-    // File exists — parse errors should be reported
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(content);
-    } catch (err) {
-      throw new Error(`Invalid JSON in ${filePath}: ${formatJsonError(content, err)}`, {
-        cause: err,
-      });
-    }
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error(
-        `Invalid config in ${filePath}: expected a JSON object at the root, got ${Array.isArray(parsed) ? 'an array' : typeof parsed}`,
-      );
-    }
-    warnUnknownKeys(parsed, filePath);
-    return parsed as CtxlintConfig;
+    return parseConfigContent(content, filePath);
   }
   return null;
+}
+
+/**
+ * Load a config from an explicit `--config <path>`. Shares the same
+ * JSON-error reporting + unknown-key warnings as the auto-discovered path.
+ */
+export function loadConfigFromExplicitPath(configPath: string): CtxlintConfig {
+  let content: string;
+  try {
+    content = fs.readFileSync(configPath, 'utf-8');
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`could not load config from ${configPath}: ${detail}`, { cause: err });
+  }
+  return parseConfigContent(content, configPath);
 }

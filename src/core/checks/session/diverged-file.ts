@@ -16,14 +16,19 @@ const CANONICAL_FILES = [
 ];
 
 /**
- * Calculate line-level overlap between two text contents.
- * Returns a ratio 0-1 where 1 means identical.
+ * Jaccard similarity over non-trivial lines. Returns |A ∩ B| / |A ∪ B| in
+ * [0, 1], where 1 means identical. An earlier "matches / max(|A|, |B|)"
+ * variant was asymmetric (linesA as an array counted duplicates, linesB as a
+ * set did not) and inflated/deflated similarity based on file size rather
+ * than actual shared content.
  */
 function calculateOverlap(a: string, b: string): number {
-  const linesA = a
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l.length > 3);
+  const linesA = new Set(
+    a
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 3),
+  );
   const linesB = new Set(
     b
       .split('\n')
@@ -31,15 +36,15 @@ function calculateOverlap(a: string, b: string): number {
       .filter((l) => l.length > 3),
   );
 
-  if (linesA.length === 0 && linesB.size === 0) return 1;
-  if (linesA.length === 0 || linesB.size === 0) return 0;
+  if (linesA.size === 0 && linesB.size === 0) return 1;
+  if (linesA.size === 0 || linesB.size === 0) return 0;
 
-  let matches = 0;
+  let intersection = 0;
   for (const line of linesA) {
-    if (linesB.has(line)) matches++;
+    if (linesB.has(line)) intersection++;
   }
-
-  return matches / Math.max(linesA.length, linesB.size);
+  const unionSize = linesA.size + linesB.size - intersection;
+  return intersection / unionSize;
 }
 
 /**

@@ -12,12 +12,18 @@ function makeMemory(content: string, projectDir: string, name = 'test-memory'): 
   };
 }
 
-function makeCtx(memories: MemoryEntry[]): SessionContext {
+function makeCtx(memories: MemoryEntry[], currentProject = 'project-a'): SessionContext {
+  // currentProject is compared against projectDir via projectDirMatchesPath,
+  // which normalizes both via `encodeProjectDir`. For simple single-segment
+  // names with no `:`, `/`, `\`, or `.`, the encoding is the identity, so
+  // passing `'project-a'` as currentProject matches any memory whose
+  // projectDir is `'project-a'` — which is what the tests below need to
+  // exercise the "one side is current project" scoping rule.
   return {
     history: [],
     memories,
     siblings: [],
-    currentProject: '/repos/current',
+    currentProject,
     providers: ['claude-code'],
   };
 }
@@ -82,6 +88,27 @@ describe('checkDuplicateMemory', () => {
 
   it('skips memories with content shorter than 50 characters', async () => {
     const ctx = makeCtx([makeMemory('short', 'project-a'), makeMemory('short', 'project-b')]);
+    const issues = await checkDuplicateMemory(ctx);
+    expect(issues).toHaveLength(0);
+  });
+
+  it('ignores duplicate pairs where neither side is the current project', async () => {
+    const sharedContent = [
+      'This project uses TypeScript for everything',
+      'Always run pnpm test before committing',
+      'The main entry point is src/index.ts',
+      'Use vitest for testing with describe/it/expect',
+      'Format with prettier before pushing',
+    ].join('\n');
+
+    // Both memories are in OTHER projects relative to current — should not fire.
+    const ctx = makeCtx(
+      [
+        makeMemory(sharedContent, 'project-b', 'conventions'),
+        makeMemory(sharedContent, 'project-c', 'conventions'),
+      ],
+      'project-a',
+    );
     const issues = await checkDuplicateMemory(ctx);
     expect(issues).toHaveLength(0);
   });

@@ -61,9 +61,13 @@ async function findSecretUsages(projectRoot: string): Promise<SecretUsage[]> {
 }
 
 function contextMentionsSecret(files: ParsedContextFile[], secretName: string): boolean {
-  // Escape regex-special chars, then make underscores flexible (match _, space, or hyphen)
+  // Escape regex-special chars, then allow `_`, space, or hyphen (but require
+  // at least one separator — making it optional matches `npmtoken` for
+  // `NPM_TOKEN`, and the previous empty-match collapsed to substring hits
+  // anywhere in prose like `awsaccesskey`). Anchor with `\b` so the full
+  // name must stand alone as a word, not a substring.
   const escaped = secretName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const pattern = new RegExp(escaped.replace(/_/g, '[_\\s-]?'), 'i');
+  const pattern = new RegExp(`\\b${escaped.replace(/_/g, '[_\\s-]')}\\b`, 'i');
   return files.some((f) => pattern.test(f.content));
 }
 

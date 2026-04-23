@@ -111,7 +111,7 @@ export async function checkLoopDetection(ctx: SessionContext): Promise<LintIssue
   // Check for cyclic patterns (only if no consecutive repeats covered the same commands)
   const cycles = findCyclicPatterns(displays);
   for (const { cycle, repeats: reps } of cycles) {
-    const cycleStr = cycle.map((c) => (c.length > 40 ? c.slice(0, 37) + '...' : c)).join(' → ');
+    const cycleStr = cycle.map((c) => (c.length > 40 ? c.slice(0, 37) + '...' : c)).join(' -> ');
     issues.push({
       severity: 'warning',
       check: 'session-loop-detection',
