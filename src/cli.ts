@@ -8,7 +8,7 @@ import { applyFixes } from './core/fixer.js';
 import { freeEncoder } from './utils/tokens.js';
 import { resetGit } from './utils/git.js';
 import { resetPackageJsonCache } from './utils/fs.js';
-import { loadConfig } from './core/config.js';
+import { loadConfig, loadConfigFromExplicitPath } from './core/config.js';
 import {
   runAudit,
   ALL_CHECKS,
@@ -88,15 +88,21 @@ export async function runCli() {
       const configPath = opts.config ? path.resolve(opts.config as string) : undefined;
       const config = configPath ? loadConfigFromPath(configPath) : loadConfig(resolvedPath);
 
-      const mcpGlobal = (opts.mcpGlobal as boolean) || false;
-      const mcpOnly = (opts.mcpOnly as boolean) || false;
+      // Fold config-sourced booleans into the local vars so everything
+      // downstream (effectiveMcp/effectiveMcph/effectiveSession and the
+      // final `checks` array) sees them consistently. Without this, a
+      // config-only `mcpGlobal: true` would run MCP checks via runAudit's
+      // fallback while bypassing the cli-side `ignore` filter.
+      const mcpGlobal = (opts.mcpGlobal as boolean) || config?.mcpGlobal || false;
+      const mcpOnly = (opts.mcpOnly as boolean) || config?.mcpOnly || false;
       const mcpFlag = (opts.mcp as boolean) || mcpGlobal || mcpOnly || config?.mcp || false;
-      const mcphGlobal = (opts.mcphGlobal as boolean) || false;
-      const mcphOnly = (opts.mcphOnly as boolean) || false;
-      const mcphFlag = (opts.mcph as boolean) || mcphGlobal || mcphOnly || false;
-      const mcphStrictEnvToken = (opts.mcphStrictEnvToken as boolean) || false;
-      const sessionFlag = (opts.session as boolean) || false;
-      const sessionOnly = (opts.sessionOnly as boolean) || false;
+      const mcphGlobal = (opts.mcphGlobal as boolean) || config?.mcphGlobal || false;
+      const mcphOnly = (opts.mcphOnly as boolean) || config?.mcphOnly || false;
+      const mcphFlag = (opts.mcph as boolean) || mcphGlobal || mcphOnly || config?.mcph || false;
+      const mcphStrictEnvToken =
+        (opts.mcphStrictEnvToken as boolean) || config?.mcphStrictEnvToken || false;
+      const sessionOnly = (opts.sessionOnly as boolean) || config?.sessionOnly || false;
+      const sessionFlag = (opts.session as boolean) || sessionOnly || config?.session || false;
 
       // Build checks list: if explicit --checks includes mcp-* or session-*, imply the flag
       let explicitChecks = opts.checks
@@ -152,7 +158,7 @@ export async function runCli() {
         depth: Math.max(0, Math.min(parseInt(opts.depth as string, 10) || 2, 10)),
         mcp: effectiveMcp,
         mcpOnly,
-        mcpGlobal: mcpGlobal || config?.mcpGlobal || false,
+        mcpGlobal,
         mcph: effectiveMcph,
         mcphOnly,
         mcphGlobal,
@@ -489,11 +495,10 @@ async function promptYesNo(question: string): Promise<boolean> {
 
 function loadConfigFromPath(configPath: string) {
   try {
-    const content = fs.readFileSync(configPath, 'utf-8');
-    return JSON.parse(content);
+    return loadConfigFromExplicitPath(configPath);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    console.error(`Error: could not load config from ${configPath}: ${detail}`);
+    console.error(`Error: ${detail}`);
     process.exit(2);
   }
 }

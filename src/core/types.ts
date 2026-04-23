@@ -165,7 +165,9 @@ export interface ParsedMchpConfig {
   // Raw parsed object; null if parse failed.
   raw: Record<string, unknown> | null;
   // Per-field positions for precise diagnostics. Missing entries = field absent.
-  positions: Partial<Record<'$schema' | 'version' | 'token' | 'apiBase' | 'servers' | 'blocked', MchpFieldPosition>>;
+  positions: Partial<
+    Record<'$schema' | 'version' | 'token' | 'apiBase' | 'servers' | 'blocked', MchpFieldPosition>
+  >;
   // Positions for individual array entries of `servers` and `blocked`.
   listEntries: {
     servers: { value: string; position: MchpFieldPosition }[];

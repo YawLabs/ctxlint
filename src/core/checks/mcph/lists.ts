@@ -20,8 +20,7 @@ export async function checkMcphLists(
         ruleId: 'mcph-config/allowlist-denylist-conflict',
         line: entry.position.line,
         message: `server "${entry.value}" is in both "servers" (allow-list) and "blocked" (deny-list)`,
-        suggestion:
-          `Remove "${entry.value}" from one of the two lists. "blocked" wins in practice (deny > allow), so the allow-list entry is dead weight.`,
+        suggestion: `Remove "${entry.value}" from one of the two lists. "blocked" wins in practice (deny > allow), so the allow-list entry is dead weight.`,
       });
     }
   }

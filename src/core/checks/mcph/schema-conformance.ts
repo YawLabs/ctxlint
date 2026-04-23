@@ -17,8 +17,7 @@ export async function checkMcphSchemaConformance(
       ruleId: 'mcph-config/unknown-field',
       line: field.position.line,
       message: `unknown field "${field.name}" — not in the mcph config schema`,
-      suggestion:
-        `Known fields: $schema, version, token, apiBase, servers, blocked. Check for typos (e.g. "tokens" vs "token", "blockList" vs "blocked").`,
+      suggestion: `Known fields: $schema, version, token, apiBase, servers, blocked. Check for typos (e.g. "tokens" vs "token", "blockList" vs "blocked").`,
     });
   }
 
@@ -32,8 +31,7 @@ export async function checkMcphSchemaConformance(
       ruleId: 'mcph-config/stale-version',
       line: versionPos.line,
       message: `"version": ${version} is older than the current schema version (${CURRENT_SCHEMA_VERSION})`,
-      suggestion:
-        `Update to "version": ${CURRENT_SCHEMA_VERSION}. Older versions continue to load but may miss newer fields.`,
+      suggestion: `Update to "version": ${CURRENT_SCHEMA_VERSION}. Older versions continue to load but may miss newer fields.`,
     });
   }
 

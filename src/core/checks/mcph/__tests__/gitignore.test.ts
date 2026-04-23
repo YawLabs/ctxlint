@@ -27,8 +27,10 @@ describe('checkMcphGitignore', () => {
     expect(issue).toBeDefined();
     expect(issue!.severity).toBe('error');
     expect(issue!.message).toContain('.mcph.local.json');
-    expect(issue!.fix).toBeDefined();
-    expect(issue!.fix!.newText).toContain('.mcph.local.json');
+    // No auto-fix: appending to a sibling .gitignore is a different-file
+    // side effect the current line-in-place fixer can't safely express.
+    expect(issue!.fix).toBeUndefined();
+    expect(issue!.suggestion).toContain('.gitignore');
   });
 
   it('does not fire when project-local file is already gitignored', async () => {

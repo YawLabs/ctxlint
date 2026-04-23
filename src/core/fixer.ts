@@ -80,13 +80,12 @@ export function applyFixes(result: LintResult, options: FixOptions = {}): FixSum
     const lines = content.split('\n');
     let modified = false;
 
-    // Sort fixes by line number descending so replacements don't shift line numbers
-    const sortedFixes = [...fixes].sort((a, b) => b.line - a.line);
-
     // Group fixes by line so we can apply multiple fixes to the same line
-    // against the original content before any modifications
+    // against the original content before any modifications. (No line sort
+    // needed — fixes are applied via in-place `lines[lineIdx] = ...`, not
+    // by splicing, so fix order across lines doesn't shift indices.)
     const fixesByLine = new Map<number, FixAction[]>();
-    for (const fix of sortedFixes) {
+    for (const fix of fixes) {
       const existing = fixesByLine.get(fix.line) || [];
       existing.push(fix);
       fixesByLine.set(fix.line, existing);
@@ -109,7 +108,7 @@ export function applyFixes(result: LintResult, options: FixOptions = {}): FixSum
           const prefix = dryRun ? chalk.cyan('  Would fix') : chalk.green('  Fixed');
           log(
             prefix +
-              ` Line ${fix.line}: ${chalk.dim(fix.oldText)} ${chalk.dim('\u2192')} ${fix.newText}`,
+              ` Line ${fix.line}: ${chalk.dim(fix.oldText)} ${chalk.dim('->')} ${fix.newText}`,
           );
         }
       }

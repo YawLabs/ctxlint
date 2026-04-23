@@ -44,12 +44,7 @@ export async function checkMcphTokenSecurity(
 
   // --- Rule: mcph-config/token-in-project-scope ---
   // Project-scope + git-tracked + token present = live PAT at risk of leak.
-  if (
-    tokenPos &&
-    tokenValue !== null &&
-    config.scope === 'project' &&
-    config.isGitTracked
-  ) {
+  if (tokenPos && tokenValue !== null && config.scope === 'project' && config.isGitTracked) {
     issues.push({
       severity: 'error',
       check: 'mcph-token-security',
@@ -73,10 +68,7 @@ export async function checkMcphTokenSecurity(
   // double-counting the same bad line) — that rule's remediation already
   // covers the env-var path.
   const alreadyFlaggedAsProjectLeak =
-    tokenPos &&
-    tokenValue !== null &&
-    config.scope === 'project' &&
-    config.isGitTracked;
+    tokenPos && tokenValue !== null && config.scope === 'project' && config.isGitTracked;
 
   if (tokenPos && tokenValue !== null && !alreadyFlaggedAsProjectLeak) {
     const severity = options.strictEnvToken ? 'error' : 'warning';
