@@ -162,9 +162,7 @@ export async function findRenames(
         const parts = line.split('\t');
         if (parts.length >= 3) {
           const daysAgo = currentDateStr
-            ? Math.floor(
-                (Date.now() - new Date(currentDateStr).getTime()) / (1000 * 60 * 60 * 24),
-              )
+            ? Math.floor((Date.now() - new Date(currentDateStr).getTime()) / (1000 * 60 * 60 * 24))
             : 0;
           return {
             oldPath: parts[1],

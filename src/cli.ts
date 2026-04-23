@@ -98,8 +98,7 @@ export async function runCli() {
       const mcpFlag = (opts.mcp as boolean) || mcpGlobal || mcpOnly || config?.mcp || false;
       const mcphGlobal = (opts.mcphGlobal as boolean) || config?.mcphGlobal || false;
       const mcphOnly = (opts.mcphOnly as boolean) || config?.mcphOnly || false;
-      const mcphFlag =
-        (opts.mcph as boolean) || mcphGlobal || mcphOnly || config?.mcph || false;
+      const mcphFlag = (opts.mcph as boolean) || mcphGlobal || mcphOnly || config?.mcph || false;
       const mcphStrictEnvToken =
         (opts.mcphStrictEnvToken as boolean) || config?.mcphStrictEnvToken || false;
       const sessionOnly = (opts.sessionOnly as boolean) || config?.sessionOnly || false;
