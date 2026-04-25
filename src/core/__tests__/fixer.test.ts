@@ -257,9 +257,17 @@ describe('applyFixes', () => {
     try {
       const summary = applyFixes(result);
       expect(summary.filesModified).toHaveLength(0);
+      // totalFixes must NOT count the staged-but-skipped change. An earlier
+      // version of the loop incremented `totalFixes` inside the inner per-fix
+      // pass and only used the JSON-validation skip to bail out of the write,
+      // so the summary over-reported what landed on disk.
+      expect(summary.totalFixes).toBe(0);
       expect(fs.readFileSync(filePath, 'utf-8')).toBe(original);
       const messages = logSpy.mock.calls.map((args) => args.join(' ')).join('\n');
       expect(messages).toContain('invalid JSON');
+      // No "Fixed" / "Would fix" log line should land for a skipped file.
+      expect(messages).not.toContain('Fixed');
+      expect(messages).not.toContain('Would fix');
     } finally {
       logSpy.mockRestore();
     }

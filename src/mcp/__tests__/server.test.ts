@@ -142,6 +142,29 @@ describe('MCP server tools', () => {
     });
   });
 
+  describe('ctxlint_mcph_audit', () => {
+    it('returns a well-formed result on a project with no .mcph.json', () => {
+      // healthy-project ships no .mcph.json — the tool should still respond
+      // with a valid LintResult (zero issues, zero files) instead of erroring,
+      // and prove the new tool is wired into the server's tools/list.
+      const result = callMcpTool('ctxlint_mcph_audit', {
+        projectPath: path.join(FIXTURES, 'healthy-project'),
+      }) as any;
+      expect(result.version).toBe(VERSION);
+      expect(Array.isArray(result.files)).toBe(true);
+      expect(result.summary).toBeDefined();
+      expect(typeof result.summary.errors).toBe('number');
+    });
+
+    it('accepts the strictEnvToken flag without erroring', () => {
+      const result = callMcpTool('ctxlint_mcph_audit', {
+        projectPath: path.join(FIXTURES, 'healthy-project'),
+        strictEnvToken: true,
+      }) as any;
+      expect(result.version).toBe(VERSION);
+    });
+  });
+
   describe('ctxlint_token_report', () => {
     it('returns token counts for context files', () => {
       const result = callMcpTool('ctxlint_token_report', {

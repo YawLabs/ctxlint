@@ -91,6 +91,15 @@ export function applyFixes(result: LintResult, options: FixOptions = {}): FixSum
       fixesByLine.set(fix.line, existing);
     }
 
+    // Stage per-fix counts and log lines locally; only commit them to the
+    // returned `totalFixes` and to the user-visible log once the file write
+    // is confirmed (or, in dry-run, once we know the result would be valid).
+    // Without the staging, a JSON-validation skip would still have already
+    // bumped `totalFixes` and printed `Fixed` lines for changes that never
+    // landed on disk — over-reporting the work that actually happened.
+    let perFileFixCount = 0;
+    const perFileLogs: string[] = [];
+
     for (const [lineNum, lineFixes] of fixesByLine) {
       const lineIdx = lineNum - 1; // 0-indexed
       if (lineIdx < 0 || lineIdx >= lines.length) continue;
@@ -104,9 +113,9 @@ export function applyFixes(result: LintResult, options: FixOptions = {}): FixSum
           // Fix actions carry literal strings (no regex), so replaceAll on a
           // string is the correct, non-escaping form.
           line = line.replaceAll(fix.oldText, fix.newText);
-          totalFixes++;
+          perFileFixCount++;
           const prefix = dryRun ? chalk.cyan('  Would fix') : chalk.green('  Fixed');
-          log(
+          perFileLogs.push(
             prefix +
               ` Line ${fix.line}: ${chalk.dim(fix.oldText)} ${chalk.dim('->')} ${fix.newText}`,
           );
@@ -136,6 +145,8 @@ export function applyFixes(result: LintResult, options: FixOptions = {}): FixSum
         fs.writeFileSync(filePath, newContent, 'utf-8');
       }
       filesModified.push(filePath);
+      totalFixes += perFileFixCount;
+      for (const m of perFileLogs) log(m);
     }
   }
 

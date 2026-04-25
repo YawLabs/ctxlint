@@ -84,96 +84,10 @@ export async function runCli() {
     .action(async (projectPath: string, opts: Record<string, unknown>) => {
       const resolvedPath = path.resolve(projectPath as string);
 
-      // Load project config (.ctxlintrc / .ctxlintrc.json)
-      const configPath = opts.config ? path.resolve(opts.config as string) : undefined;
-      const config = configPath ? loadConfigFromPath(configPath) : loadConfig(resolvedPath);
-
-      // Fold config-sourced booleans into the local vars so everything
-      // downstream (effectiveMcp/effectiveMcph/effectiveSession and the
-      // final `checks` array) sees them consistently. Without this, a
-      // config-only `mcpGlobal: true` would run MCP checks via runAudit's
-      // fallback while bypassing the cli-side `ignore` filter.
-      const mcpGlobal = (opts.mcpGlobal as boolean) || config?.mcpGlobal || false;
-      const mcpOnly = (opts.mcpOnly as boolean) || config?.mcpOnly || false;
-      const mcpFlag = (opts.mcp as boolean) || mcpGlobal || mcpOnly || config?.mcp || false;
-      const mcphGlobal = (opts.mcphGlobal as boolean) || config?.mcphGlobal || false;
-      const mcphOnly = (opts.mcphOnly as boolean) || config?.mcphOnly || false;
-      const mcphFlag = (opts.mcph as boolean) || mcphGlobal || mcphOnly || config?.mcph || false;
-      const mcphStrictEnvToken =
-        (opts.mcphStrictEnvToken as boolean) || config?.mcphStrictEnvToken || false;
-      const sessionOnly = (opts.sessionOnly as boolean) || config?.sessionOnly || false;
-      const sessionFlag = (opts.session as boolean) || sessionOnly || config?.session || false;
-
-      // Build checks list: if explicit --checks includes mcp-* or session-*, imply the flag
-      let explicitChecks = opts.checks
-        ? validateCheckNames(
-            (opts.checks as string).split(',').map((c: string) => c.trim()),
-            '--checks',
-          )
-        : null;
-      // Treat empty list the same as "not specified" — use defaults
-      if (explicitChecks?.length === 0) explicitChecks = null;
-
-      const hasMcpInChecks = explicitChecks?.some((c) => c.startsWith('mcp-')) || false;
-      const hasMcphInChecks = explicitChecks?.some((c) => c.startsWith('mcph-')) || false;
-      const hasSessionInChecks = explicitChecks?.some((c) => c.startsWith('session-')) || false;
-      const effectiveMcp = mcpFlag || hasMcpInChecks;
-      const effectiveMcph = mcphFlag || hasMcphInChecks;
-      const effectiveSession = sessionFlag || sessionOnly || hasSessionInChecks;
-
-      let checks: CheckName[];
-      if (explicitChecks) {
-        checks = explicitChecks;
-      } else if (sessionOnly) {
-        checks = ALL_SESSION_CHECKS;
-      } else if (mcpOnly) {
-        checks = ALL_MCP_CHECKS;
-      } else if (mcphOnly) {
-        checks = ALL_MCPH_CHECKS;
-      } else {
-        const base = config?.checks || ALL_CHECKS;
-        checks = [
-          ...base,
-          ...(effectiveMcp ? ALL_MCP_CHECKS : []),
-          ...(effectiveMcph ? ALL_MCPH_CHECKS : []),
-          ...(effectiveSession ? ALL_SESSION_CHECKS : []),
-        ];
-      }
-
-      const options: LintOptions = {
-        projectPath: resolvedPath,
-        checks,
-        strict: (opts.strict as boolean) || config?.strict || false,
-        format: opts.format as 'text' | 'json' | 'sarif',
-        verbose: opts.verbose as boolean,
-        fix: opts.fix as boolean,
-        ignore: opts.ignore
-          ? validateCheckNames(
-              (opts.ignore as string).split(',').map((c: string) => c.trim()),
-              '--ignore',
-            )
-          : config?.ignore || [],
-        tokensOnly: opts.tokens as boolean,
-        quiet: opts.quiet as boolean,
-        depth: Math.max(0, Math.min(parseInt(opts.depth as string, 10) || 2, 10)),
-        mcp: effectiveMcp,
-        mcpOnly,
-        mcpGlobal,
-        mcph: effectiveMcph,
-        mcphOnly,
-        mcphGlobal,
-        mcphStrictEnvToken,
-        session: effectiveSession,
-        sessionOnly,
-      };
-
-      // Apply token thresholds from config
-      if (config?.tokenThresholds) {
-        setTokenThresholds(config.tokenThresholds);
-      }
-
-      // Remove ignored checks
-      const activeChecks = options.checks.filter((c) => !options.ignore.includes(c));
+      // Resolve the config + folded options + active-check list. Extracted so
+      // watch mode can re-resolve on every rerun and pick up live edits to
+      // .ctxlintrc / .ctxlintrc.json without restarting the process.
+      const { config, options, activeChecks } = resolveSession(resolvedPath, opts);
 
       const spinner =
         options.format === 'text' && !options.quiet
@@ -322,6 +236,15 @@ export async function runCli() {
           path.join(resolvedPath, 'replit.md'),
           path.join(resolvedPath, 'package.json'),
           path.join(resolvedPath, '.mcp.json'),
+          // mcph configs — without these, edits to the .mcph.json the user is
+          // actively iterating on don't trigger a re-lint.
+          path.join(resolvedPath, '.mcph.json'),
+          path.join(resolvedPath, '.mcph.local.json'),
+          // ctxlint config — re-resolve on edit so threshold changes,
+          // ignore-list edits, and check-list overrides take effect without
+          // restarting the watcher.
+          path.join(resolvedPath, '.ctxlintrc'),
+          path.join(resolvedPath, '.ctxlintrc.json'),
         ];
 
         const watchDirs = [
@@ -345,31 +268,56 @@ export async function runCli() {
           if (debounceTimer) clearTimeout(debounceTimer);
           debounceTimer = setTimeout(async () => {
             if (process.stdout.isTTY) console.clear();
+            // Re-resolve on every tick so live edits to .ctxlintrc /
+            // .ctxlintrc.json (thresholds, ignore list, check overrides)
+            // take effect without restarting the watcher. The CLI flags
+            // (`opts`) are unchanged across the watch session, so the only
+            // moving parts are the config file and the project filesystem.
+            let liveConfig = config;
+            let liveOptions = options;
+            let liveActiveChecks = activeChecks;
             try {
-              const result = await runAudit(resolvedPath, activeChecks, {
-                depth: options.depth,
-                extraPatterns: config?.contextFiles,
-                mcp: options.mcp,
-                mcpGlobal: options.mcpGlobal,
-                mcpOnly: options.mcpOnly,
-                mcph: options.mcph,
-                mcphGlobal: options.mcphGlobal,
-                mcphOnly: options.mcphOnly,
-                mcphStrictEnvToken: options.mcphStrictEnvToken,
-                session: options.session,
-                sessionOnly: options.sessionOnly,
+              const resolved = resolveSession(resolvedPath, opts);
+              liveConfig = resolved.config;
+              liveOptions = resolved.options;
+              liveActiveChecks = resolved.activeChecks;
+            } catch (err) {
+              // A bad .ctxlintrc edit (invalid JSON, unknown check name) shouldn't
+              // kill the watcher. Surface the error and keep the previous
+              // resolution active until the user fixes the config.
+              console.error('Error reloading config:', err instanceof Error ? err.message : err);
+            }
+            try {
+              if (liveConfig?.tokenThresholds) {
+                setTokenThresholds(liveConfig.tokenThresholds);
+              } else {
+                resetTokenThresholds();
+              }
+
+              const result = await runAudit(resolvedPath, liveActiveChecks, {
+                depth: liveOptions.depth,
+                extraPatterns: liveConfig?.contextFiles,
+                mcp: liveOptions.mcp,
+                mcpGlobal: liveOptions.mcpGlobal,
+                mcpOnly: liveOptions.mcpOnly,
+                mcph: liveOptions.mcph,
+                mcphGlobal: liveOptions.mcphGlobal,
+                mcphOnly: liveOptions.mcphOnly,
+                mcphStrictEnvToken: liveOptions.mcphStrictEnvToken,
+                session: liveOptions.session,
+                sessionOnly: liveOptions.sessionOnly,
               });
 
               if (result.files.length === 0) {
                 console.log('\nNo context files found.\n');
-              } else if (options.tokensOnly) {
+              } else if (liveOptions.tokensOnly) {
                 console.log(formatTokenReport(result));
-              } else if (options.format === 'json') {
+              } else if (liveOptions.format === 'json') {
                 console.log(formatJson(result));
-              } else if (options.format === 'sarif') {
+              } else if (liveOptions.format === 'sarif') {
                 console.log(formatSarif(result));
               } else {
-                console.log(formatText(result, options.verbose));
+                console.log(formatText(result, liveOptions.verbose));
               }
             } catch (err) {
               console.error('Error:', err instanceof Error ? err.message : err);
@@ -379,7 +327,6 @@ export async function runCli() {
               resetPathsCache();
               resetPackageJsonCache();
               resetTokenThresholds();
-              if (config?.tokenThresholds) setTokenThresholds(config.tokenThresholds);
             }
             console.log(chalk.dim('\nWatching for changes... (Ctrl+C to stop)\n'));
           }, 300);
@@ -491,6 +438,117 @@ async function promptYesNo(question: string): Promise<boolean> {
   } finally {
     rl.close();
   }
+}
+
+interface ResolvedSession {
+  config: ReturnType<typeof loadConfig>;
+  options: LintOptions;
+  activeChecks: CheckName[];
+}
+
+/**
+ * Fold CLI flags + config-file booleans + explicit --checks list into the
+ * single source of truth used by the audit pipeline. Pure: doesn't apply
+ * token thresholds (the caller does, after deciding whether it's the
+ * initial run or a watch-mode rerun).
+ *
+ * Throws on invalid check names (process.exit via validateCheckNames) for
+ * the initial run; watch mode catches the throw and keeps the previous
+ * resolution active.
+ */
+function resolveSession(resolvedPath: string, opts: Record<string, unknown>): ResolvedSession {
+  const configPath = opts.config ? path.resolve(opts.config as string) : undefined;
+  const config = configPath ? loadConfigFromPath(configPath) : loadConfig(resolvedPath);
+
+  // Fold config-sourced booleans into the local vars so everything
+  // downstream (effectiveMcp/effectiveMcph/effectiveSession and the final
+  // `checks` array) sees them consistently. Without this, a config-only
+  // `mcpGlobal: true` would run MCP checks via runAudit's fallback while
+  // bypassing the cli-side `ignore` filter.
+  const mcpGlobal = (opts.mcpGlobal as boolean) || config?.mcpGlobal || false;
+  const mcpOnly = (opts.mcpOnly as boolean) || config?.mcpOnly || false;
+  const mcpFlag = (opts.mcp as boolean) || mcpGlobal || mcpOnly || config?.mcp || false;
+  const mcphGlobal = (opts.mcphGlobal as boolean) || config?.mcphGlobal || false;
+  const mcphOnly = (opts.mcphOnly as boolean) || config?.mcphOnly || false;
+  const mcphFlag = (opts.mcph as boolean) || mcphGlobal || mcphOnly || config?.mcph || false;
+  const mcphStrictEnvToken =
+    (opts.mcphStrictEnvToken as boolean) || config?.mcphStrictEnvToken || false;
+  const sessionOnly = (opts.sessionOnly as boolean) || config?.sessionOnly || false;
+  const sessionFlag = (opts.session as boolean) || sessionOnly || config?.session || false;
+
+  // Build checks list: if explicit --checks includes mcp-* / mcph-* /
+  // session-*, imply the corresponding --<flag>.
+  let explicitChecks = opts.checks
+    ? validateCheckNames(
+        (opts.checks as string).split(',').map((c: string) => c.trim()),
+        '--checks',
+      )
+    : null;
+  if (explicitChecks?.length === 0) explicitChecks = null;
+
+  const hasMcpInChecks =
+    explicitChecks?.some((c) => c.startsWith('mcp-') && !c.startsWith('mcph-')) || false;
+  const hasMcphInChecks = explicitChecks?.some((c) => c.startsWith('mcph-')) || false;
+  const hasSessionInChecks = explicitChecks?.some((c) => c.startsWith('session-')) || false;
+  const effectiveMcp = mcpFlag || hasMcpInChecks;
+  const effectiveMcph = mcphFlag || hasMcphInChecks;
+  const effectiveSession = sessionFlag || sessionOnly || hasSessionInChecks;
+
+  let checks: CheckName[];
+  if (explicitChecks) {
+    checks = explicitChecks;
+  } else if (sessionOnly) {
+    checks = ALL_SESSION_CHECKS;
+  } else if (mcpOnly) {
+    checks = ALL_MCP_CHECKS;
+  } else if (mcphOnly) {
+    checks = ALL_MCPH_CHECKS;
+  } else {
+    const base = config?.checks || ALL_CHECKS;
+    checks = [
+      ...base,
+      ...(effectiveMcp ? ALL_MCP_CHECKS : []),
+      ...(effectiveMcph ? ALL_MCPH_CHECKS : []),
+      ...(effectiveSession ? ALL_SESSION_CHECKS : []),
+    ];
+  }
+
+  const options: LintOptions = {
+    projectPath: resolvedPath,
+    checks,
+    strict: (opts.strict as boolean) || config?.strict || false,
+    format: opts.format as 'text' | 'json' | 'sarif',
+    verbose: opts.verbose as boolean,
+    fix: opts.fix as boolean,
+    ignore: opts.ignore
+      ? validateCheckNames(
+          (opts.ignore as string).split(',').map((c: string) => c.trim()),
+          '--ignore',
+        )
+      : config?.ignore || [],
+    tokensOnly: opts.tokens as boolean,
+    quiet: opts.quiet as boolean,
+    depth: Math.max(0, Math.min(parseInt(opts.depth as string, 10) || 2, 10)),
+    mcp: effectiveMcp,
+    mcpOnly,
+    mcpGlobal,
+    mcph: effectiveMcph,
+    mcphOnly,
+    mcphGlobal,
+    mcphStrictEnvToken,
+    session: effectiveSession,
+    sessionOnly,
+  };
+
+  // Apply token thresholds from config (initial-run path; watch-mode rerun
+  // calls setTokenThresholds itself with `liveConfig`).
+  if (config?.tokenThresholds) {
+    setTokenThresholds(config.tokenThresholds);
+  }
+
+  const activeChecks = options.checks.filter((c) => !options.ignore.includes(c));
+
+  return { config, options, activeChecks };
 }
 
 function loadConfigFromPath(configPath: string) {

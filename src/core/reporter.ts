@@ -1,5 +1,66 @@
 import chalk from 'chalk';
-import type { LintResult, LintIssue } from './types.js';
+import type { FileResult, LintResult, LintIssue } from './types.js';
+
+type FileGroup = 'context' | 'mcp' | 'mcph' | 'session';
+
+/**
+ * Classify a result row into one of the four output families. Issue-prefix is
+ * the strongest signal because audit.ts dispatches checks per-domain (one
+ * file's issues are always from a single family). Path is a fallback for
+ * empty-issue rows surfaced in --verbose mode.
+ *
+ * Note on the prefix order: `mcph-` shares the first three characters with
+ * `mcp-` but the fourth character (`h` vs `-`) makes them distinct prefixes.
+ * Test for `mcph-` BEFORE `mcp-` so a future loosening of either side can't
+ * silently route mcph rows into the MCP bucket.
+ */
+function classifyFile(f: FileResult): FileGroup {
+  // Synthetic cross-file buckets (audit.ts emits these with these exact paths).
+  if (f.path === '(mcp)') return 'mcp';
+  if (f.path.includes('session audit')) return 'session';
+  // '(project)' falls through to context.
+
+  for (const issue of f.issues) {
+    if (issue.check.startsWith('session-')) return 'session';
+    if (issue.check.startsWith('mcph-')) return 'mcph';
+    if (issue.check.startsWith('mcp-')) return 'mcp';
+  }
+
+  // Empty-issue fallback: classify by path so --verbose still groups correctly.
+  const norm = f.path.replace(/\\/g, '/');
+  if (norm.endsWith('.mcph.json') || norm.endsWith('.mcph.local.json')) return 'mcph';
+  if (
+    norm === '.mcp.json' ||
+    norm.endsWith('/.mcp.json') ||
+    norm.endsWith('/mcp.json') ||
+    norm.includes('/mcpServers/') ||
+    norm.endsWith('/.claude.json') ||
+    norm.endsWith('.claude/settings.json') ||
+    norm.endsWith('claude_desktop_config.json')
+  ) {
+    return 'mcp';
+  }
+
+  return 'context';
+}
+
+const GROUP_ORDER: FileGroup[] = ['context', 'mcp', 'mcph', 'session'];
+const GROUP_LABELS: Record<FileGroup, string> = {
+  context: 'Context Files',
+  mcp: 'MCP Configs',
+  mcph: 'mcph Configs',
+  session: 'Session Audit',
+};
+const GROUP_SUMMARY_NOUNS: Record<FileGroup, string> = {
+  context: 'context file',
+  mcp: 'MCP config',
+  mcph: 'mcph config',
+  session: 'session audit',
+};
+
+function isSyntheticBucket(p: string): boolean {
+  return p.startsWith('(') || p.includes('session audit');
+}
 
 export function formatText(result: LintResult, verbose: boolean = false): string {
   const lines: string[] = [];
@@ -10,41 +71,65 @@ export function formatText(result: LintResult, verbose: boolean = false): string
   lines.push(`Scanning ${result.projectRoot}...`);
   lines.push('');
 
-  // Split files into context files vs MCP configs
-  const isMcpFile = (f: { issues: LintIssue[] }) =>
-    f.issues.some((i) => i.check.startsWith('mcp-'));
-  const contextFiles = result.files.filter((f) => !isMcpFile(f));
-  const mcpFiles = result.files.filter((f) => isMcpFile(f));
+  // Bucket every result row by family.
+  const groups: Record<FileGroup, FileResult[]> = {
+    context: [],
+    mcp: [],
+    mcph: [],
+    session: [],
+  };
+  for (const f of result.files) {
+    groups[classifyFile(f)].push(f);
+  }
 
-  // Summary of found files
+  // Top summary: show file lists per non-empty group, hiding the synthetic
+  // cross-file buckets ('(project)', '(mcp)', '~/.claude/ (session audit)').
+  // Those aren't files the user authored — they appear in the issue listing
+  // section below.
   const totalTokens = result.summary.totalTokens;
-  if (contextFiles.length > 0) {
+  let renderedAnySummary = false;
+
+  const contextReal = groups.context.filter((f) => !isSyntheticBucket(f.path));
+  if (contextReal.length > 0) {
     lines.push(
-      `Found ${contextFiles.length} context file${contextFiles.length !== 1 ? 's' : ''} (${totalTokens.toLocaleString()} tokens total)`,
+      `Found ${contextReal.length} context file${contextReal.length !== 1 ? 's' : ''} (${totalTokens.toLocaleString()} tokens total)`,
     );
-    for (const file of contextFiles) {
+    for (const file of contextReal) {
       let desc = `  ${file.path} (${file.tokens.toLocaleString()} tokens, ${file.lines} lines)`;
       if (file.isSymlink && file.symlinkTarget) {
         desc = `  ${file.path} ${chalk.dim(`-> ${file.symlinkTarget} (symlink)`)}`;
       }
       lines.push(desc);
     }
+    renderedAnySummary = true;
   }
-  if (mcpFiles.length > 0) {
-    if (contextFiles.length > 0) lines.push('');
-    lines.push(`Found ${mcpFiles.length} MCP config${mcpFiles.length !== 1 ? 's' : ''}`);
-    for (const file of mcpFiles) {
-      lines.push(`  ${file.path}`);
-    }
+
+  for (const g of ['mcp', 'mcph'] as const) {
+    const real = groups[g].filter((f) => !isSyntheticBucket(f.path));
+    if (real.length === 0) continue;
+    if (renderedAnySummary) lines.push('');
+    lines.push(`Found ${real.length} ${GROUP_SUMMARY_NOUNS[g]}${real.length !== 1 ? 's' : ''}`);
+    for (const file of real) lines.push(`  ${file.path}`);
+    renderedAnySummary = true;
   }
-  if (contextFiles.length === 0 && mcpFiles.length === 0) {
+
+  // Session has no real files, only the synthetic audit bucket. Show it as a
+  // header (when present) so users see "session was scanned" before the
+  // detailed findings.
+  if (groups.session.length > 0) {
+    if (renderedAnySummary) lines.push('');
+    lines.push('Session audit scanned');
+    renderedAnySummary = true;
+  }
+
+  if (!renderedAnySummary) {
     lines.push(`Found ${result.files.length} file${result.files.length !== 1 ? 's' : ''}`);
   }
 
   lines.push('');
 
-  // Per-file issues — grouped by type
-  const renderFileGroup = (files: typeof result.files) => {
+  // Per-file issues — grouped by family.
+  const renderFileGroup = (files: FileResult[]) => {
     for (const file of files) {
       const fileIssues = file.issues;
       if (fileIssues.length === 0 && !verbose) continue;
@@ -63,18 +148,15 @@ export function formatText(result: LintResult, verbose: boolean = false): string
     }
   };
 
-  if (contextFiles.length > 0 && mcpFiles.length > 0) {
-    // Show grouped headers when both types present
-    const contextWithIssues = contextFiles.filter((f) => f.issues.length > 0 || verbose);
-    const mcpWithIssues = mcpFiles.filter((f) => f.issues.length > 0 || verbose);
+  // Show bold group headers whenever 2+ groups have content to render.
+  const groupsToRender = GROUP_ORDER.filter((g) =>
+    groups[g].some((f) => f.issues.length > 0 || verbose),
+  );
 
-    if (contextWithIssues.length > 0) {
-      lines.push(chalk.bold('Context Files'));
-      renderFileGroup(contextFiles);
-    }
-    if (mcpWithIssues.length > 0) {
-      lines.push(chalk.bold('MCP Configs'));
-      renderFileGroup(mcpFiles);
+  if (groupsToRender.length > 1) {
+    for (const g of groupsToRender) {
+      lines.push(chalk.bold(GROUP_LABELS[g]));
+      renderFileGroup(groups[g]);
     }
   } else {
     renderFileGroup(result.files);
@@ -332,6 +414,31 @@ function buildRuleDescriptors(): SarifRule[] {
       id: 'ctxlint/mcp-redundancy',
       shortDescription: { text: 'Redundant MCP config entry' },
       helpUri: 'https://github.com/yawlabs/ctxlint#mcp-config-linting',
+    },
+    {
+      id: 'ctxlint/mcph-token-security',
+      shortDescription: { text: 'mcp.hosting PAT leakage or env-var posture' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#mcph-config-linting',
+    },
+    {
+      id: 'ctxlint/mcph-apibase',
+      shortDescription: { text: 'mcph apiBase URL validation' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#mcph-config-linting',
+    },
+    {
+      id: 'ctxlint/mcph-schema-conformance',
+      shortDescription: { text: 'mcph config unknown field or stale schema version' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#mcph-config-linting',
+    },
+    {
+      id: 'ctxlint/mcph-lists',
+      shortDescription: { text: 'mcph allow/deny list conflict or duplicate entry' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#mcph-config-linting',
+    },
+    {
+      id: 'ctxlint/mcph-gitignore',
+      shortDescription: { text: 'mcph machine-local file not covered by .gitignore' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#mcph-config-linting',
     },
     {
       id: 'ctxlint/session-missing-secret',

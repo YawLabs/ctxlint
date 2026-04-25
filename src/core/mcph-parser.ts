@@ -1,4 +1,4 @@
-import { parseTree, type Node } from 'jsonc-parser';
+import { getNodeValue, parseTree, type Node } from 'jsonc-parser';
 import { readFileContent } from '../utils/fs.js';
 import { getGit } from '../utils/git.js';
 import type { ParsedMchpConfig, MchpConfigScope, MchpFieldPosition } from './types.js';
@@ -47,13 +47,14 @@ export async function parseMchpConfig(
     return result;
   }
 
-  // Build raw object from the tree.
-  try {
-    result.raw = JSON.parse(stripComments(content));
-  } catch {
-    // Defensive: parseTree succeeded but JSON.parse didn't (unlikely).
-    return result;
-  }
+  // Build the raw object directly from the parsed tree. Earlier versions
+  // routed through `JSON.parse(stripComments(content))`, which silently
+  // dropped to `raw: null` on any input parseTree accepted but JSON.parse
+  // didn't — most importantly, trailing commas (parseTree is configured
+  // with `allowTrailingComma: true`). That made every downstream check
+  // (`config.raw?.token`, `apiBase`, `version`) a no-op without surfacing a
+  // parse error. `getNodeValue` walks the same tree we already validated.
+  result.raw = getNodeValue(tree) as Record<string, unknown>;
 
   // Walk top-level properties to capture positions for each known field and
   // flag unknown ones.
@@ -120,49 +121,6 @@ function offsetToPosition(content: string, offset: number): { line: number; colu
     }
   }
   return { line, column };
-}
-
-// Strip line + block comments for the JSON.parse fallback. jsonc-parser's
-// parseTree already handled positions; this is only to get a plain object.
-function stripComments(src: string): string {
-  let out = '';
-  let i = 0;
-  let inString = false;
-  let escape = false;
-  while (i < src.length) {
-    const ch = src[i];
-    if (inString) {
-      out += ch;
-      if (escape) {
-        escape = false;
-      } else if (ch === '\\') {
-        escape = true;
-      } else if (ch === '"') {
-        inString = false;
-      }
-      i++;
-      continue;
-    }
-    if (ch === '"') {
-      inString = true;
-      out += ch;
-      i++;
-      continue;
-    }
-    if (ch === '/' && src[i + 1] === '/') {
-      while (i < src.length && src[i] !== '\n') i++;
-      continue;
-    }
-    if (ch === '/' && src[i + 1] === '*') {
-      i += 2;
-      while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++;
-      i += 2;
-      continue;
-    }
-    out += ch;
-    i++;
-  }
-  return out;
 }
 
 async function checkGitTracked(filePath: string, projectRoot: string): Promise<boolean> {
