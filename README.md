@@ -28,7 +28,7 @@ ctxlint is a linter purpose-built for this. It reads your context files, cross-r
 - **Token-aware** — shows how much context window your files consume and flags redundant content
 - **Every AI tool** — supports Claude Code, Cursor, Copilot, Windsurf, Gemini, Cline, Aider, and 14 more
 - **Multiple outputs** — text, JSON, and SARIF (GitHub Code Scanning)
-- **MCP server** — 6 tools for IDE/agent integration with tool annotations for auto-approval
+- **MCP server** — 7 tools for IDE/agent integration with tool annotations for auto-approval
 - **Watch mode** — `--watch` re-lints automatically when context files change
 
 ## Install
@@ -404,7 +404,7 @@ CLI flags override config file settings. Use `--config <path>` to load a config 
 
 ## Use as MCP Server
 
-ctxlint ships with an MCP server that exposes six tools (`ctxlint_audit`, `ctxlint_mcp_audit`, `ctxlint_session_audit`, `ctxlint_validate_path`, `ctxlint_token_report`, `ctxlint_fix`). All read-only tools declare annotations so MCP clients can skip confirmation dialogs.
+ctxlint ships with an MCP server that exposes seven tools (`ctxlint_audit`, `ctxlint_mcp_audit`, `ctxlint_mcph_audit`, `ctxlint_session_audit`, `ctxlint_validate_path`, `ctxlint_token_report`, `ctxlint_fix`). All read-only tools declare annotations so MCP clients can skip confirmation dialogs.
 
 Launch it with the `serve` subcommand (or the equivalent `--mcp-server` flag, kept for back-compat):
 
