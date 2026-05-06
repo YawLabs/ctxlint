@@ -259,10 +259,11 @@ export async function detectSiblings(projectRoot: string): Promise<SiblingRepo[]
   // <=50 branch keeps them, so this branch must too.
   //
   // Strategy: run the same parallel resolve over ALL candidates. For non-git
-  // entries the `simpleGit` call short-circuits with no remotes (the catch
-  // below) and we still emit a SiblingRepo with name+path. Then if we have a
-  // currentOrg we filter to org-matched git repos; otherwise we return
-  // everything (matching the <=50 branch's behavior).
+  // entries the `simpleGit` call short-circuits with no remotes and we
+  // still emit a SiblingRepo with name+path (no `gitOrg`). Then if we have
+  // a currentOrg we keep org-matched git repos AND every non-git sibling
+  // (the org filter doesn't apply to repos that don't have an org). This
+  // preserves parity with the <=50 branch, which never filters by org.
   if (candidates.length > 50) {
     let currentOrg: string | undefined;
     try {
@@ -278,7 +279,7 @@ export async function detectSiblings(projectRoot: string): Promise<SiblingRepo[]
     const results = await Promise.all(candidates.map((c) => resolveSibling(c)));
 
     if (currentOrg) {
-      return results.filter((s) => s.gitOrg === currentOrg);
+      return results.filter((s) => !s.gitOrg || s.gitOrg === currentOrg);
     }
     return results;
   }

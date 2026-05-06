@@ -145,6 +145,36 @@ describe('checkDivergedFile', () => {
     expect(mockReadFile.mock.calls.length).toBe(firstPassReads);
   });
 
+  it('evicts the oldest entry once the cache exceeds its cap', async () => {
+    // Drive the LRU past its 256-entry cap by simulating many distinct
+    // sibling paths. The first sibling read should fall out once enough
+    // newer entries have been admitted, forcing a re-read on a subsequent
+    // audit even though its mtime+size are unchanged.
+    mockExistsSync.mockReturnValue(true);
+    mockReadFile.mockResolvedValue('shared line one\nshared line two\nshared line three\n');
+
+    // Build 270 unique siblings -- with 8 canonical files per pass, that's
+    // 8 + 8*270 = 2168 paths the cache will see. The current-project file
+    // is read once per canonical filename (8 reads); each sibling adds 8.
+    // Exceeds the 256 cap by a comfortable margin.
+    const manySiblings = Array.from({ length: 270 }, (_, i) => makeSibling(`s${i}`));
+    const ctx = makeCtx(manySiblings);
+
+    await checkDivergedFile(ctx);
+    const baselineReads = mockReadFile.mock.calls.length;
+    expect(baselineReads).toBeGreaterThan(0);
+
+    // Re-running with just the FIRST sibling: its 8 canonical-file entries
+    // were the oldest cache inserts and should have been evicted by the
+    // 270 newer siblings, so we expect the cache to miss and re-read them
+    // (plus the current project's own files, which were inserted earliest
+    // of all and are also evicted). If the cache had no eviction, this
+    // second call would issue zero readFile calls.
+    const trimmedCtx = makeCtx([manySiblings[0]]);
+    await checkDivergedFile(trimmedCtx);
+    expect(mockReadFile.mock.calls.length).toBeGreaterThan(baselineReads);
+  });
+
   it('invalidates the cache when mtime changes (file edited between audits)', async () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFile.mockResolvedValue('shared line one\nshared line two\nshared line three\n');

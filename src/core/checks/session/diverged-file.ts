@@ -34,6 +34,19 @@ interface CacheEntry {
   size: number;
   lineSet: Set<string>;
 }
+
+/**
+ * LRU cap: a long-running watch / MCP-server process scanning many sibling
+ * sets across many projects would otherwise grow this map without bound.
+ * 256 entries is generous (8 canonical files * 32 sibling repos = 256
+ * tokenized files cached in memory; well past any realistic working set,
+ * far below anything that would matter for RSS).
+ *
+ * `Map` preserves insertion order, so promoting an entry on hit by deleting
+ * and re-setting moves it to the back of the iteration order. The eviction
+ * step grabs the first key (oldest) when over the cap.
+ */
+const CACHE_MAX_ENTRIES = 256;
 const lineSetCache = new Map<string, CacheEntry>();
 
 async function loadLineSet(absPath: string): Promise<Set<string> | null> {
@@ -49,6 +62,10 @@ async function loadLineSet(absPath: string): Promise<Set<string> | null> {
 
   const cached = lineSetCache.get(absPath);
   if (cached && cached.mtimeMs === mtimeMs && cached.size === size) {
+    // Promote to most-recently-used by re-inserting at the end of the
+    // iteration order.
+    lineSetCache.delete(absPath);
+    lineSetCache.set(absPath, cached);
     return cached.lineSet;
   }
 
@@ -60,6 +77,10 @@ async function loadLineSet(absPath: string): Promise<Set<string> | null> {
   }
   const lineSet = toLineSet(content, MIN_TOKEN_LEN);
   lineSetCache.set(absPath, { mtimeMs, size, lineSet });
+  if (lineSetCache.size > CACHE_MAX_ENTRIES) {
+    const oldest = lineSetCache.keys().next().value;
+    if (oldest !== undefined) lineSetCache.delete(oldest);
+  }
   return lineSet;
 }
 
