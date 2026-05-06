@@ -66,7 +66,7 @@ export type McpCheckName =
   | 'mcp-consistency'
   | 'mcp-redundancy';
 
-export type MchpCheckName =
+export type McphCheckName =
   | 'mcph-token-security'
   | 'mcph-apibase'
   | 'mcph-schema-conformance'
@@ -85,7 +85,7 @@ export type CheckName =
   | 'ci-coverage'
   | 'ci-secrets'
   | McpCheckName
-  | MchpCheckName
+  | McphCheckName
   | SessionCheckName;
 
 export type McpClient =
@@ -145,19 +145,19 @@ export interface ParsedMcpConfig {
 //
 // Canonical schema: https://raw.githubusercontent.com/YawLabs/mcph/main/schemas/mcph.config.v1.json
 
-export type MchpConfigScope = 'global' | 'project' | 'project-local';
+export type McphConfigScope = 'global' | 'project' | 'project-local';
 
-export interface MchpFieldPosition {
+export interface McphFieldPosition {
   line: number;
   column: number;
   endLine: number;
   endColumn: number;
 }
 
-export interface ParsedMchpConfig {
+export interface ParsedMcphConfig {
   filePath: string;
   relativePath: string;
-  scope: MchpConfigScope;
+  scope: McphConfigScope;
   content: string;
   parseErrors: string[];
   isGitTracked: boolean;
@@ -166,15 +166,15 @@ export interface ParsedMchpConfig {
   raw: Record<string, unknown> | null;
   // Per-field positions for precise diagnostics. Missing entries = field absent.
   positions: Partial<
-    Record<'$schema' | 'version' | 'token' | 'apiBase' | 'servers' | 'blocked', MchpFieldPosition>
+    Record<'$schema' | 'version' | 'token' | 'apiBase' | 'servers' | 'blocked', McphFieldPosition>
   >;
   // Positions for individual array entries of `servers` and `blocked`.
   listEntries: {
-    servers: { value: string; position: MchpFieldPosition }[];
-    blocked: { value: string; position: MchpFieldPosition }[];
+    servers: { value: string; position: McphFieldPosition }[];
+    blocked: { value: string; position: McphFieldPosition }[];
   };
   // Unknown fields detected alongside known ones.
-  unknownFields: { name: string; position: MchpFieldPosition }[];
+  unknownFields: { name: string; position: McphFieldPosition }[];
 }
 
 export interface Section {

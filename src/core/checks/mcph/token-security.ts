@@ -1,4 +1,4 @@
-import type { LintIssue, ParsedMchpConfig } from '../../types.js';
+import type { LintIssue, ParsedMcphConfig } from '../../types.js';
 
 // Authoritative PAT format from yaw/mcph/schemas/mcph.config.v1.json.
 const TOKEN_PATTERN = /^mcp_pat_[A-Za-z0-9_-]+$/;
@@ -17,7 +17,7 @@ export interface TokenSecurityOptions {
 }
 
 export async function checkMcphTokenSecurity(
-  config: ParsedMchpConfig,
+  config: ParsedMcphConfig,
   _projectRoot: string,
   options: TokenSecurityOptions = {},
 ): Promise<LintIssue[]> {

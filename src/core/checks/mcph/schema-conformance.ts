@@ -1,9 +1,9 @@
-import type { LintIssue, ParsedMchpConfig } from '../../types.js';
+import type { LintIssue, ParsedMcphConfig } from '../../types.js';
 
 const CURRENT_SCHEMA_VERSION = 1;
 
 export async function checkMcphSchemaConformance(
-  config: ParsedMchpConfig,
+  config: ParsedMcphConfig,
   _projectRoot: string,
 ): Promise<LintIssue[]> {
   const issues: LintIssue[] = [];

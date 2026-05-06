@@ -120,6 +120,27 @@ describe('MCP server tools', () => {
       });
       expect(result.exists).toBe(false);
     });
+
+    it('rejects a path-traversal attempt with isError', () => {
+      // Path-traversal guard: `../../../etc/passwd` resolves outside the
+      // project root, so the tool must refuse rather than `fs.stat` it.
+      const result = callMcpTool('ctxlint_validate_path', {
+        path: '../../../etc/passwd',
+        projectPath: path.join(FIXTURES, 'broken-paths'),
+      }) as any;
+      expect(result.error).toBeDefined();
+      expect(String(result.error)).toMatch(/escape/i);
+    });
+
+    it('accepts a legitimate nested relative path', () => {
+      // Sanity check that the traversal guard doesn't block normal paths
+      // that happen to contain segments resolvable inside the root.
+      const result = callMcpTool('ctxlint_validate_path', {
+        path: './src/app.ts',
+        projectPath: path.join(FIXTURES, 'broken-paths'),
+      });
+      expect(result.exists).toBe(true);
+    });
   });
 
   describe('ctxlint_mcp_audit', () => {

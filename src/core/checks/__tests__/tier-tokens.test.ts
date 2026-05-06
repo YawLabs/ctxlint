@@ -86,6 +86,24 @@ describe('isAlwaysLoaded', () => {
   it('treats random basenames as on-demand', () => {
     expect(isAlwaysLoaded(makeFile({ relativePath: 'notes.md' }))).toBe(false);
   });
+
+  it('matches .junie/guidelines.md but not docs/api/guidelines.md', () => {
+    expect(isAlwaysLoaded(makeFile({ relativePath: '.junie/guidelines.md' }))).toBe(true);
+    expect(isAlwaysLoaded(makeFile({ relativePath: 'docs/api/guidelines.md' }))).toBe(false);
+    expect(isAlwaysLoaded(makeFile({ relativePath: 'guidelines.md' }))).toBe(false);
+  });
+
+  it('matches .goose/instructions.md but not docs/api/instructions.md', () => {
+    expect(isAlwaysLoaded(makeFile({ relativePath: '.goose/instructions.md' }))).toBe(true);
+    expect(isAlwaysLoaded(makeFile({ relativePath: 'docs/api/instructions.md' }))).toBe(false);
+    expect(isAlwaysLoaded(makeFile({ relativePath: 'instructions.md' }))).toBe(false);
+  });
+
+  it('matches .github/copilot-instructions.md', () => {
+    expect(isAlwaysLoaded(makeFile({ relativePath: '.github/copilot-instructions.md' }))).toBe(
+      true,
+    );
+  });
 });
 
 describe('checkTierTokens — section breakdown', () => {
@@ -160,7 +178,7 @@ describe('checkTierTokens — hard-enforcement-missing', () => {
     expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
   });
 
-  it('skips when PreToolUse hook matches the command', async () => {
+  it('skips when a hyphenated PreToolUse hook script name matches the command', async () => {
     const dotClaude = path.join(tmpDir, '.claude');
     fs.mkdirSync(dotClaude, { recursive: true });
     fs.writeFileSync(
@@ -176,10 +194,73 @@ describe('checkTierTokens — hard-enforcement-missing', () => {
       makeFile({ content, sections: [], totalTokens: 50 }),
       tmpDir,
     );
+    // `npm login` (rule's canonical form) should match the hyphenated script
+    // name `block-npm-login.sh`. The matcher allows `[\s\-_]+` between command
+    // tokens precisely to bridge the CLI-form ↔ script-name-form gap.
+    expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
+  });
+
+  it('skips when an underscored PreToolUse hook script name matches the command', async () => {
+    const dotClaude = path.join(tmpDir, '.claude');
+    fs.mkdirSync(dotClaude, { recursive: true });
+    fs.writeFileSync(
+      path.join(dotClaude, 'settings.json'),
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'block_npm_login.py' }] }],
+        },
+      }),
+    );
+    const content = '# CLAUDE.md\n\nNEVER run `npm login` locally.\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
+  });
+
+  it('still flags when no hook genuinely protects the command', async () => {
+    const dotClaude = path.join(tmpDir, '.claude');
+    fs.mkdirSync(dotClaude, { recursive: true });
+    fs.writeFileSync(
+      path.join(dotClaude, 'settings.json'),
+      JSON.stringify({
+        hooks: {
+          // A hook that protects an unrelated command — should NOT bypass
+          // the rule for `npm login`.
+          PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'block-git-push.sh' }] }],
+        },
+      }),
+    );
+    const content = '# CLAUDE.md\n\nNEVER run `npm login` locally.\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
     const hard = issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing');
-    // The hook command contains "npm-login" (without space), but our substring
-    // check uses "npm login" (with space) so it won't match — this is expected
-    // conservative behavior. Test documents that.
+    expect(hard).toBeDefined();
+    expect(hard!.suggestion).toContain('npm login');
+  });
+
+  it('does not match an unrelated command that shares a single token (npm vs pnpm)', async () => {
+    const dotClaude = path.join(tmpDir, '.claude');
+    fs.mkdirSync(dotClaude, { recursive: true });
+    fs.writeFileSync(
+      path.join(dotClaude, 'settings.json'),
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'block-pnpm-login.sh' }] }],
+        },
+      }),
+    );
+    const content = '# CLAUDE.md\n\nNEVER run `npm login` locally.\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    // `\bnpm` requires a word boundary before `npm`; `pnpm` has none, so the
+    // rule should still fire — the hook protects pnpm, not npm.
+    const hard = issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing');
     expect(hard).toBeDefined();
   });
 

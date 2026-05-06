@@ -1,22 +1,22 @@
 import { getNodeValue, parseTree, type Node } from 'jsonc-parser';
 import { readFileContent } from '../utils/fs.js';
 import { getGit } from '../utils/git.js';
-import type { ParsedMchpConfig, MchpConfigScope, MchpFieldPosition } from './types.js';
+import type { ParsedMcphConfig, McphConfigScope, McphFieldPosition } from './types.js';
 import type { DiscoveredFile } from './scanner.js';
 
 const KNOWN_FIELDS = new Set(['$schema', 'version', 'token', 'apiBase', 'servers', 'blocked']);
 
-export async function parseMchpConfig(
+export async function parseMcphConfig(
   file: DiscoveredFile,
   projectRoot: string,
-  scopeOverride?: MchpConfigScope,
-): Promise<ParsedMchpConfig> {
+  scopeOverride?: McphConfigScope,
+): Promise<ParsedMcphConfig> {
   const content = readFileContent(file.absolutePath);
   const scope = scopeOverride ?? detectScope(file.relativePath);
   const isGitTracked = await checkGitTracked(file.absolutePath, projectRoot);
   const isGitignored = await checkGitignored(file.absolutePath, projectRoot);
 
-  const result: ParsedMchpConfig = {
+  const result: ParsedMcphConfig = {
     filePath: file.absolutePath,
     relativePath: file.relativePath,
     scope,
@@ -91,14 +91,14 @@ export async function parseMchpConfig(
   return result;
 }
 
-function detectScope(relativePath: string): MchpConfigScope {
+function detectScope(relativePath: string): McphConfigScope {
   const normalized = relativePath.replace(/\\/g, '/');
   if (normalized.startsWith('~/')) return 'global';
   if (normalized.endsWith('.mcph.local.json')) return 'project-local';
   return 'project';
 }
 
-function nodePosition(content: string, node: Node): MchpFieldPosition {
+function nodePosition(content: string, node: Node): McphFieldPosition {
   const start = offsetToPosition(content, node.offset);
   const end = offsetToPosition(content, node.offset + node.length);
   return {

@@ -9,12 +9,20 @@ export interface PackageJson {
   optionalDependencies?: Record<string, string>;
 }
 
+// A leading U+FEFF in a UTF-8 file is a byte-order mark. Windows editors
+// (Notepad, older VS Code defaults) emit it; JSON.parse rejects it, the
+// markdown heading regex won't match through it, and tokenizers count it
+// as content. Strip on every text read into the linter pipeline.
+export function stripBom(content: string): string {
+  return content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
+}
+
 let pkgJsonCache: { root: string; data: PackageJson | null } | null = null;
 
 export function loadPackageJson(projectRoot: string): PackageJson | null {
   if (pkgJsonCache?.root === projectRoot) return pkgJsonCache.data;
   try {
-    const content = fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf-8');
+    const content = stripBom(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf-8'));
     const data = JSON.parse(content) as PackageJson;
     pkgJsonCache = { root: projectRoot, data };
     return data;
@@ -63,7 +71,7 @@ export function readSymlinkTarget(filePath: string): string | undefined {
 
 export function readFileContent(filePath: string): string {
   try {
-    return fs.readFileSync(filePath, 'utf-8');
+    return stripBom(fs.readFileSync(filePath, 'utf-8'));
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') {

@@ -1,7 +1,7 @@
-import type { LintIssue, ParsedMchpConfig } from '../../types.js';
+import type { LintIssue, ParsedMcphConfig } from '../../types.js';
 
 export async function checkMcphLists(
-  config: ParsedMchpConfig,
+  config: ParsedMcphConfig,
   _projectRoot: string,
 ): Promise<LintIssue[]> {
   const issues: LintIssue[] = [];

@@ -11,12 +11,20 @@ interface FrontmatterResult {
   found: boolean;
   fields: Record<string, string>;
   endLine: number;
+  /**
+   * True when the file opens with `---` but never has a matching closing
+   * `---`. The whole file body then gets pulled into the YAML parse, which
+   * is almost always a typo (closing fence miswritten as `--` or `___`).
+   * Callers surface this as its own error so users get a useful diagnostic
+   * instead of "no frontmatter" (which is false — the user clearly tried).
+   */
+  unclosed: boolean;
 }
 
 function parseFrontmatter(content: string): FrontmatterResult {
   const lines = content.split('\n');
   if (lines[0]?.trim() !== '---') {
-    return { found: false, fields: {}, endLine: 0 };
+    return { found: false, fields: {}, endLine: 0, unclosed: false };
   }
 
   const fields: Record<string, string> = {};
@@ -54,11 +62,10 @@ function parseFrontmatter(content: string): FrontmatterResult {
   }
 
   if (endLine === 0) {
-    // Unclosed frontmatter
-    return { found: true, fields, endLine: lines.length };
+    return { found: true, fields, endLine: lines.length, unclosed: true };
   }
 
-  return { found: true, fields, endLine };
+  return { found: true, fields, endLine, unclosed: false };
 }
 
 function isCursorMdc(file: ParsedContextFile): boolean {
@@ -74,6 +81,32 @@ function isWindsurfRule(file: ParsedContextFile): boolean {
 }
 
 const VALID_WINDSURF_TRIGGERS = ['always_on', 'glob', 'manual', 'model', 'model_decision'];
+
+/**
+ * Detects unmistakably malformed YAML scalar values: unmatched brackets or quotes.
+ * Used to flag genuinely broken `globs:` values without false-positiving on bare
+ * strings like `globs: src` (which Cursor accepts).
+ */
+function hasUnbalancedBracketsOrQuotes(val: string): boolean {
+  let square = 0;
+  let curly = 0;
+  for (const ch of val) {
+    if (ch === '[') square++;
+    else if (ch === ']') square--;
+    else if (ch === '{') curly++;
+    else if (ch === '}') curly--;
+    if (square < 0 || curly < 0) return true;
+  }
+  if (square !== 0 || curly !== 0) return true;
+
+  // Count unescaped quotes; an odd count means an unmatched quote.
+  const doubleQuotes = (val.match(/"/g) || []).length;
+  const singleQuotes = (val.match(/'/g) || []).length;
+  if (doubleQuotes % 2 !== 0) return true;
+  if (singleQuotes % 2 !== 0) return true;
+
+  return false;
+}
 
 export async function checkFrontmatter(
   file: ParsedContextFile,
@@ -92,9 +125,31 @@ export async function checkFrontmatter(
   return issues;
 }
 
+function unclosedFrontmatterIssue(): LintIssue {
+  // Severity is `error` because once frontmatter is unclosed, every field
+  // we parsed is suspect — the host (Cursor / Copilot / Windsurf) loads the
+  // file with no frontmatter at all and the rule silently fails to apply.
+  // A typo'd close marker (`--` instead of `---`, or stray indentation
+  // before the fence) is the typical cause.
+  return {
+    severity: 'error',
+    check: 'frontmatter',
+    ruleId: 'frontmatter/unclosed',
+    line: 1,
+    message: 'Frontmatter opens with `---` but is never closed',
+    suggestion:
+      'Add a matching `---` line (with no leading whitespace) after the last frontmatter field',
+  };
+}
+
 function validateCursorMdc(file: ParsedContextFile): LintIssue[] {
   const issues: LintIssue[] = [];
   const fm = parseFrontmatter(file.content);
+
+  if (fm.unclosed) {
+    issues.push(unclosedFrontmatterIssue());
+    return issues;
+  }
 
   if (!fm.found) {
     issues.push({
@@ -147,22 +202,19 @@ function validateCursorMdc(file: ParsedContextFile): LintIssue[] {
     }
   }
 
-  // Validate globs field looks like an array or string
+  // Validate globs field for unmistakable malformations only.
+  // Cursor accepts bare directory names (e.g., `globs: src`) and bare extensions
+  // (e.g., `globs: ts`), so we don't flag values just because they lack `*` or `/`.
+  // Only catch genuinely malformed YAML: unmatched brackets or unmatched quotes.
   if ('globs' in fm.fields) {
     const val = fm.fields['globs'];
-    if (
-      val &&
-      !val.startsWith('[') &&
-      !val.startsWith('"') &&
-      !val.includes('*') &&
-      !val.includes('/')
-    ) {
+    if (val && hasUnbalancedBracketsOrQuotes(val)) {
       issues.push({
         severity: 'warning',
         check: 'frontmatter',
         ruleId: 'frontmatter/invalid-value',
         line: 1,
-        message: `Possibly invalid globs value: "${val}"`,
+        message: `Possibly malformed globs value: "${val}"`,
         suggestion:
           'globs should be a glob pattern like "src/**/*.ts" or an array like ["*.ts", "*.tsx"]',
       });
@@ -175,6 +227,11 @@ function validateCursorMdc(file: ParsedContextFile): LintIssue[] {
 function validateCopilotInstructions(file: ParsedContextFile): LintIssue[] {
   const issues: LintIssue[] = [];
   const fm = parseFrontmatter(file.content);
+
+  if (fm.unclosed) {
+    issues.push(unclosedFrontmatterIssue());
+    return issues;
+  }
 
   if (!fm.found) {
     issues.push({
@@ -206,6 +263,11 @@ function validateCopilotInstructions(file: ParsedContextFile): LintIssue[] {
 function validateWindsurfRule(file: ParsedContextFile): LintIssue[] {
   const issues: LintIssue[] = [];
   const fm = parseFrontmatter(file.content);
+
+  if (fm.unclosed) {
+    issues.push(unclosedFrontmatterIssue());
+    return issues;
+  }
 
   if (!fm.found) {
     issues.push({

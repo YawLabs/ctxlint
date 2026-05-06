@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import levenshteinPkg from 'fast-levenshtein';
 const levenshtein = levenshteinPkg.get;
+import { stripBom } from '../utils/fs.js';
 import type { CheckName } from './types.js';
 
 export interface CtxlintConfig {
@@ -174,7 +175,7 @@ export function loadConfig(projectRoot: string): CtxlintConfig | null {
     const filePath = path.join(projectRoot, filename);
     let content: string;
     try {
-      content = fs.readFileSync(filePath, 'utf-8');
+      content = stripBom(fs.readFileSync(filePath, 'utf-8'));
     } catch {
       continue; // file doesn't exist, try next
     }
@@ -190,7 +191,7 @@ export function loadConfig(projectRoot: string): CtxlintConfig | null {
 export function loadConfigFromExplicitPath(configPath: string): CtxlintConfig {
   let content: string;
   try {
-    content = fs.readFileSync(configPath, 'utf-8');
+    content = stripBom(fs.readFileSync(configPath, 'utf-8'));
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     throw new Error(`could not load config from ${configPath}: ${detail}`, { cause: err });

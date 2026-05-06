@@ -1,34 +1,8 @@
 import type { LintIssue, SessionContext } from '../../types.js';
 import { projectDirMatchesPath } from '../../session-parser.js';
+import { jaccardSimilarityFromSets, toLineSet } from '../../../utils/similarity.js';
 
-/**
- * Jaccard similarity over non-trivial lines. Returns |A ∩ B| / |A ∪ B|.
- * Earlier "matches / max(|A|, |B|)" was asymmetric because linesA was an
- * array (duplicates counted) and linesB was a set (deduplicated).
- */
-function calculateLineOverlap(a: string, b: string): number {
-  const linesA = new Set(
-    a
-      .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => l.length > 5),
-  );
-  const linesB = new Set(
-    b
-      .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => l.length > 5),
-  );
-
-  if (linesA.size === 0 || linesB.size === 0) return 0;
-
-  let intersection = 0;
-  for (const line of linesA) {
-    if (linesB.has(line)) intersection++;
-  }
-  const unionSize = linesA.size + linesB.size - intersection;
-  return intersection / unionSize;
-}
+const MIN_TOKEN_LEN = 5;
 
 /**
  * Detect near-duplicate memory entries across different projects.
@@ -37,10 +11,22 @@ function calculateLineOverlap(a: string, b: string): number {
  * Scoped to pairs where at least one side belongs to the current project —
  * otherwise every `ctxlint --session` invocation from any repo would
  * surface the same unrelated cross-project duplicates.
+ *
+ * Perf: precompute the line-set for each memory once and reuse across the
+ * O(N^2) pair scan, mirroring `redundancy.ts:checkDuplicateContent`. The
+ * naive `jaccardSimilarity(a, b)` call rebuilds two Sets per pair, which on
+ * a populated `~/.claude/projects` (hundreds of memory files across dozens
+ * of projects) burned O(N^2) Set allocations per audit.
  */
 export async function checkDuplicateMemory(ctx: SessionContext): Promise<LintIssue[]> {
   const issues: LintIssue[] = [];
   const reported = new Set<string>();
+
+  // Precompute per-memory data once. We tokenize even short memories — the
+  // length check below uses the original `content.length` (raw chars), not
+  // the line-set size, so we can't skip tokenization just because the file
+  // is short. The cost is amortized over N-1 pair comparisons either way.
+  const lineSets = ctx.memories.map((m) => toLineSet(m.content, MIN_TOKEN_LEN));
 
   for (let i = 0; i < ctx.memories.length; i++) {
     for (let j = i + 1; j < ctx.memories.length; j++) {
@@ -58,7 +44,7 @@ export async function checkDuplicateMemory(ctx: SessionContext): Promise<LintIss
       // Skip very short memories (not meaningful to compare)
       if (a.content.length < 50 || b.content.length < 50) continue;
 
-      const overlap = calculateLineOverlap(a.content, b.content);
+      const overlap = jaccardSimilarityFromSets(lineSets[i], lineSets[j]);
       if (overlap < 0.6) continue;
 
       // Avoid duplicate reports for the same pair

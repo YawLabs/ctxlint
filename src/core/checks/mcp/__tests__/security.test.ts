@@ -193,4 +193,65 @@ describe('checkMcpSecurity', () => {
     const issues = await checkMcpSecurity(config, '/project');
     expect(issues).toHaveLength(0);
   });
+
+  it('does not flag BUILD_ID with high-entropy value (non-secret name)', async () => {
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'service',
+          transport: 'stdio',
+          command: 'npx',
+          env: {
+            BUILD_ID: 'abc123def456ghi789jkl012mno345',
+          },
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    expect(issues.filter((i) => i.message.includes('hardcoded API key'))).toHaveLength(0);
+  });
+
+  it('still flags OPENAI_API_KEY with sk- prefix (known pattern)', async () => {
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'openai',
+          transport: 'stdio',
+          command: 'npx',
+          env: {
+            OPENAI_API_KEY: 'sk-proj-abcdefghijklmnopqrstuvwxyz1234567890',
+          },
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    const apiKey = issues.find((i) => i.message.includes('hardcoded API key'));
+    expect(apiKey).toBeDefined();
+    expect(apiKey!.severity).toBe('error');
+  });
+
+  it('does not flag SHA-shaped value in non-secret-named variable', async () => {
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'service',
+          transport: 'stdio',
+          command: 'npx',
+          env: {
+            GIT_COMMIT: 'a1b2c3d4e5f6789012345678901234567890abcd',
+            APP_VERSION: 'v1.2.3-alpha.4567890abcdef',
+            CONTENT_HASH: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+          },
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    expect(issues.filter((i) => i.message.includes('hardcoded API key'))).toHaveLength(0);
+  });
 });

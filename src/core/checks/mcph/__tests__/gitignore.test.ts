@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { checkMcphGitignore } from '../gitignore.js';
-import type { ParsedMchpConfig } from '../../../types.js';
+import type { ParsedMcphConfig } from '../../../types.js';
 
-function makeConfig(overrides: Partial<ParsedMchpConfig> = {}): ParsedMchpConfig {
+function makeConfig(overrides: Partial<ParsedMcphConfig> = {}): ParsedMcphConfig {
   return {
     filePath: '/project/.mcph.local.json',
     relativePath: '.mcph.local.json',

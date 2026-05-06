@@ -11,6 +11,7 @@ import {
   readSymlinkTarget,
   readFileContent,
   getAllProjectFiles,
+  stripBom,
 } from '../fs.js';
 
 let tmpDir: string;
@@ -141,6 +142,41 @@ describe('readFileContent', () => {
 
   it('throws "File not found" for missing paths', () => {
     expect(() => readFileContent(path.join(tmpDir, 'nope'))).toThrow('File not found');
+  });
+
+  it('strips a leading UTF-8 BOM', () => {
+    const p = path.join(tmpDir, 'bom.txt');
+    fs.writeFileSync(p, '﻿# heading\n');
+    expect(readFileContent(p)).toBe('# heading\n');
+  });
+});
+
+describe('stripBom', () => {
+  it('removes a leading U+FEFF', () => {
+    expect(stripBom('﻿hello')).toBe('hello');
+  });
+
+  it('leaves content without a BOM untouched', () => {
+    expect(stripBom('hello')).toBe('hello');
+  });
+
+  it('only strips at the start, not mid-string', () => {
+    expect(stripBom('hello﻿world')).toBe('hello﻿world');
+  });
+
+  it('handles empty input', () => {
+    expect(stripBom('')).toBe('');
+  });
+});
+
+describe('loadPackageJson with BOM', () => {
+  it('parses a BOM-prefixed package.json', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'package.json'),
+      '﻿' + JSON.stringify({ scripts: { test: 'vitest' } }),
+    );
+    const pkg = loadPackageJson(tmpDir);
+    expect(pkg?.scripts?.test).toBe('vitest');
   });
 });
 

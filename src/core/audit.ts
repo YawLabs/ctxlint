@@ -7,7 +7,7 @@ import {
 } from './scanner.js';
 import { parseContextFile } from './parser.js';
 import { parseMcpConfig } from './mcp-parser.js';
-import { parseMchpConfig } from './mcph-parser.js';
+import { parseMcphConfig } from './mcph-parser.js';
 import { countTokens } from '../utils/tokens.js';
 import { checkPaths } from './checks/paths.js';
 import { checkCommands } from './checks/commands.js';
@@ -46,10 +46,10 @@ import type {
   LintIssue,
   CheckName,
   McpCheckName,
-  MchpCheckName,
+  McphCheckName,
   SessionCheckName,
   ParsedMcpConfig,
-  ParsedMchpConfig,
+  ParsedMcphConfig,
 } from './types.js';
 import { VERSION } from '../version.js';
 
@@ -77,7 +77,7 @@ export const ALL_MCP_CHECKS: McpCheckName[] = [
   'mcp-redundancy',
 ];
 
-export const ALL_MCPH_CHECKS: MchpCheckName[] = [
+export const ALL_MCPH_CHECKS: McphCheckName[] = [
   'mcph-token-security',
   'mcph-apibase',
   'mcph-schema-conformance',
@@ -119,6 +119,31 @@ function hasMcphChecks(checks: CheckName[]): boolean {
 
 function hasSessionChecks(checks: CheckName[]): boolean {
   return checks.some((c) => c.startsWith('session-'));
+}
+
+/**
+ * Derive the list of checks to actually run for a given subsystem (mcp, mcph,
+ * session, ...). Two paths share a single rule:
+ *
+ *  - If the user passed `--checks` and any of them target this subsystem
+ *    (matched by prefix), run exactly those.
+ *  - Otherwise, if the subsystem was enabled via one of its top-level flags
+ *    (`--mcp`, `--mcph-only`, etc.), run all of its checks.
+ *  - Otherwise run none.
+ *
+ * The first branch fires even when the subsystem flag wasn't passed, which
+ * preserves the long-standing tolerance for `--checks mcp-schema` without
+ * also requiring `--mcp`.
+ */
+function deriveChecksToRun<T extends CheckName>(
+  activeChecks: CheckName[],
+  prefix: string,
+  enabled: boolean,
+  allChecks: readonly T[],
+): T[] {
+  const filtered = activeChecks.filter((c) => c.startsWith(prefix)) as T[];
+  if (filtered.length > 0) return filtered;
+  return enabled ? [...allChecks] : [];
 }
 
 export async function runAudit(
@@ -222,13 +247,12 @@ export async function runAudit(
     }
 
     // Determine active MCP checks
-    const activeMcpChecks = activeChecks.filter((c) => c.startsWith('mcp-')) as McpCheckName[];
-    const mcpChecksToRun =
-      activeMcpChecks.length > 0
-        ? activeMcpChecks
-        : options.mcp || options.mcpGlobal || options.mcpOnly
-          ? ALL_MCP_CHECKS
-          : [];
+    const mcpChecksToRun = deriveChecksToRun<McpCheckName>(
+      activeChecks,
+      'mcp-',
+      Boolean(options.mcp || options.mcpGlobal || options.mcpOnly),
+      ALL_MCP_CHECKS,
+    );
 
     for (const config of mcpConfigs) {
       const checkPromises: Promise<LintIssue[]>[] = [];
@@ -280,9 +304,9 @@ export async function runAudit(
   // --- mcph (mcp.hosting CLI) config checks ---
   if (shouldRunMcphChecks) {
     const projectMcphFiles = await scanForMcphConfigs(projectRoot);
-    const mcphConfigs: ParsedMchpConfig[] = await Promise.all(
+    const mcphConfigs: ParsedMcphConfig[] = await Promise.all(
       projectMcphFiles.map((f) =>
-        parseMchpConfig(
+        parseMcphConfig(
           f,
           projectRoot,
           f.relativePath.endsWith('.mcph.local.json') ? 'project-local' : 'project',
@@ -293,18 +317,17 @@ export async function runAudit(
     if (options.mcphGlobal) {
       const globalMcphFiles = await scanGlobalMcphConfigs();
       const globalMcphConfigs = await Promise.all(
-        globalMcphFiles.map((f) => parseMchpConfig(f, projectRoot, 'global')),
+        globalMcphFiles.map((f) => parseMcphConfig(f, projectRoot, 'global')),
       );
       mcphConfigs.push(...globalMcphConfigs);
     }
 
-    const activeMcphChecks = activeChecks.filter((c) => c.startsWith('mcph-')) as MchpCheckName[];
-    const mcphChecksToRun =
-      activeMcphChecks.length > 0
-        ? activeMcphChecks
-        : options.mcph || options.mcphGlobal || options.mcphOnly
-          ? ALL_MCPH_CHECKS
-          : [];
+    const mcphChecksToRun = deriveChecksToRun<McphCheckName>(
+      activeChecks,
+      'mcph-',
+      Boolean(options.mcph || options.mcphGlobal || options.mcphOnly),
+      ALL_MCPH_CHECKS,
+    );
 
     for (const config of mcphConfigs) {
       const checkPromises: Promise<LintIssue[]>[] = [];
@@ -332,15 +355,22 @@ export async function runAudit(
       const results = await Promise.all(checkPromises);
       const issues = results.flat();
 
-      // Surface parse errors as issues too (so users see them).
-      for (const err of config.parseErrors) {
-        issues.push({
-          severity: 'error',
-          check: 'mcph-schema-conformance',
-          ruleId: 'mcph-config/parse-error',
-          line: 1,
-          message: err,
-        });
+      // Surface parse errors as issues too (so users see them) — but only
+      // when schema-conformance is in the active check set. Otherwise
+      // `--checks mcph-token-security` would emit a `mcph-schema-conformance`
+      // issue the user explicitly opted out of, breaking the rule that the
+      // `check:` field on every emitted issue corresponds to a check the user
+      // asked to run.
+      if (mcphChecksToRun.includes('mcph-schema-conformance')) {
+        for (const err of config.parseErrors) {
+          issues.push({
+            severity: 'error',
+            check: 'mcph-schema-conformance',
+            ruleId: 'mcph-config/parse-error',
+            line: 1,
+            message: err,
+          });
+        }
       }
 
       const lines = config.content.split('\n').length;
@@ -388,15 +418,18 @@ export async function runAudit(
       const sessionResults = await Promise.all(sessionPromises);
       const sessionIssues = sessionResults.flat();
 
-      if (sessionIssues.length > 0) {
-        fileResults.push({
-          path: '~/.claude/ (session audit)',
-          isSymlink: false,
-          tokens: 0,
-          lines: 0,
-          issues: sessionIssues,
-        });
-      }
+      // Always emit the session bucket when session checks ran, even with
+      // zero issues. Otherwise a clean `--session-only` run produces "Found
+      // 0 files" and the user can't tell whether the scan actually executed.
+      // Mirrors how mcph configs are pushed even when their issue list is
+      // empty (above).
+      fileResults.push({
+        path: '~/.claude/ (session audit)',
+        isSymlink: false,
+        tokens: 0,
+        lines: 0,
+        issues: sessionIssues,
+      });
     }
   }
 

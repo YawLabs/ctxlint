@@ -68,7 +68,7 @@ describe('checkMemoryIndexOverflow', () => {
 
   it('warns when MEMORY.md exceeds 25KB', async () => {
     // Build a file that's under 200 lines but over 25KB by using very long lines.
-    const longLine = '- [x](x.md) — ' + 'y'.repeat(500);
+    const longLine = '- [x](x.md) -- ' + 'y'.repeat(500);
     const lines = Array.from({ length: 60 }, () => longLine);
     seedMemoryFile(lines.join('\n'));
     const issues = await checkMemoryIndexOverflow(makeCtx());
@@ -76,4 +76,27 @@ describe('checkMemoryIndexOverflow', () => {
     expect(byteIssue).toBeDefined();
     expect(byteIssue!.severity).toBe('warning');
   });
+
+  it('does not flag a file under the cap that only crosses it via BOM', async () => {
+    // Claude Code measures the loaded *content*, not raw disk bytes. A file
+    // whose post-BOM content is under the 25KB cap should not be flagged
+    // even though the BOM-prefixed disk size pushes it over.
+    //
+    // 25,599 content bytes + 3-byte BOM = 25,602 raw bytes (over the 25,600
+    // cap on disk, under it in memory).
+    const filler = 'a'.repeat(25_599);
+    seedMemoryFileRaw('﻿' + filler);
+    const issues = await checkMemoryIndexOverflow(makeCtx());
+    const byteIssue = issues.find((i) => i.message.includes('bytes'));
+    expect(byteIssue).toBeUndefined();
+  });
 });
+
+function seedMemoryFileRaw(content: string): void {
+  // Variant of seedMemoryFile that writes the exact bytes (including a
+  // leading BOM) without any encoding gymnastics.
+  const encoded = encodeProjectDir(projectPath);
+  const dir = path.join(tmpHome, '.claude', 'projects', encoded, 'memory');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'MEMORY.md'), content, { encoding: 'utf8' });
+}

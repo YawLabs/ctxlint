@@ -101,6 +101,21 @@ describe('extractPaths', () => {
   it('returns empty array for content with no paths', () => {
     expect(extractPaths('no paths here, just prose.')).toEqual([]);
   });
+
+  it('extracts bare relative paths with file extensions (no leading ./)', () => {
+    const paths = extractPaths('The auth middleware lives in src/api/middleware.ts somewhere.');
+    expect(paths).toContain('src/api/middleware.ts');
+  });
+
+  it('does not match prose tokens like "I/O" or "Vitest/Jest" that lack a file extension', () => {
+    const paths = extractPaths('We use Vitest/Jest for I/O testing and n/a otherwise.');
+    expect(paths).toEqual([]);
+  });
+
+  it('does not match a single segment without a slash', () => {
+    const paths = extractPaths('See package.json for the scripts.');
+    expect(paths).toEqual([]);
+  });
 });
 
 describe('parseFrontmatter', () => {

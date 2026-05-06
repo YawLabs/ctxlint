@@ -16,7 +16,7 @@ import { findRenames } from '../utils/git.js';
 import { freeEncoder, keepEncoderAlive } from '../utils/tokens.js';
 import { resetGit } from '../utils/git.js';
 import { resetPathsCache } from '../core/checks/paths.js';
-import type { CheckName, McpCheckName, MchpCheckName, SessionCheckName } from '../core/types.js';
+import type { CheckName, McpCheckName, McphCheckName, SessionCheckName } from '../core/types.js';
 import * as path from 'node:path';
 import { VERSION } from '../version.js';
 
@@ -27,7 +27,7 @@ import { VERSION } from '../version.js';
 // domain it actually runs.
 const contextCheckEnum = z.enum(ALL_CHECKS as [CheckName, ...CheckName[]]);
 const mcpCheckEnum = z.enum(ALL_MCP_CHECKS as [McpCheckName, ...McpCheckName[]]);
-const mcphCheckEnum = z.enum(ALL_MCPH_CHECKS as [MchpCheckName, ...MchpCheckName[]]);
+const mcphCheckEnum = z.enum(ALL_MCPH_CHECKS as [McphCheckName, ...McphCheckName[]]);
 const sessionCheckEnum = z.enum(ALL_SESSION_CHECKS as [SessionCheckName, ...SessionCheckName[]]);
 
 // Shell metacharacters + control chars that have no legitimate place in a
@@ -39,10 +39,22 @@ const sessionCheckEnum = z.enum(ALL_SESSION_CHECKS as [SessionCheckName, ...Sess
 // before the input gets resolved and echoed back.
 const PATH_DISALLOWED = /[\n\r\t;`|]|\$\(|\$\{/;
 
+function describeDisallowed(rawPath: string): string {
+  const m = rawPath.match(PATH_DISALLOWED);
+  if (!m) return 'unknown';
+  // Print the offending sequence in a readable, single-line form. JSON.stringify
+  // escapes control chars (`\n` -> `"\n"`) and quotes the value, which is exactly
+  // what the caller wants in an error message that may itself end up logged or
+  // copy-pasted.
+  return JSON.stringify(m[0]);
+}
+
 function validateProjectPath(rawPath: string | undefined): string {
   if (!rawPath) return process.cwd();
   if (PATH_DISALLOWED.test(rawPath)) {
-    throw new Error('projectPath contains disallowed characters');
+    throw new Error(
+      `projectPath contains disallowed character ${describeDisallowed(rawPath)} (control chars and shell metacharacters are rejected)`,
+    );
   }
   const resolved = path.resolve(rawPath);
   if (!isDirectory(resolved)) {
@@ -53,8 +65,25 @@ function validateProjectPath(rawPath: string | undefined): string {
 
 function validateFilePathInput(rawPath: string): void {
   if (PATH_DISALLOWED.test(rawPath)) {
-    throw new Error('path contains disallowed characters');
+    throw new Error(
+      `path contains disallowed character ${describeDisallowed(rawPath)} (control chars and shell metacharacters are rejected)`,
+    );
   }
+}
+
+// Resolve `filePath` against `root` and reject if the result escapes the
+// project root. Handles `..`-traversal, absolute paths outside root, and
+// (on Windows) drive-letter switches. Returns the resolved absolute path.
+function resolveWithinRoot(filePath: string, root: string): string {
+  const resolvedRoot = path.resolve(root);
+  const resolved = path.resolve(resolvedRoot, filePath);
+  const rel = path.relative(resolvedRoot, resolved);
+  // Escapes if relative path starts with `..` segment or is an absolute path
+  // (the latter happens on Windows when drive letters differ).
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error('path escapes the project root');
+  }
+  return resolved;
 }
 
 const server = new McpServer({
@@ -119,7 +148,7 @@ server.tool(
     try {
       validateFilePathInput(filePath);
       const root = validateProjectPath(projectPath);
-      const resolved = path.resolve(root, filePath);
+      const resolved = resolveWithinRoot(filePath, root);
 
       const result: Record<string, unknown> = {
         path: filePath,
@@ -402,9 +431,17 @@ server.tool(
   },
 );
 
-// Keep the tiktoken encoder alive for the server's lifetime to avoid
-// re-creating the ~4MB WASM instance on every request.
-keepEncoderAlive(true);
+export { server };
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
+/**
+ * Connect the server to a stdio transport. Pulled out of module top-level
+ * so importing this file (e.g. for tools/list inspection in tests) does
+ * NOT unconditionally hijack stdio.
+ */
+export async function startServer(): Promise<void> {
+  // Keep the tiktoken encoder alive for the server's lifetime to avoid
+  // re-creating the ~4MB WASM instance on every request.
+  keepEncoderAlive(true);
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}

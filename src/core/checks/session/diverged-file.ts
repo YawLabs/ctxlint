@@ -1,6 +1,8 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
+import { jaccardSimilarityFromSets, toLineSet } from '../../../utils/similarity.js';
+import { stripBom } from '../../../utils/fs.js';
 import type { LintIssue, SessionContext } from '../../types.js';
 
 /** Files worth comparing across sibling repos for consistency */
@@ -15,36 +17,58 @@ const CANONICAL_FILES = [
   '.gitignore',
 ];
 
+const MIN_TOKEN_LEN = 3;
+
 /**
- * Jaccard similarity over non-trivial lines. Returns |A ∩ B| / |A ∪ B| in
- * [0, 1], where 1 means identical. An earlier "matches / max(|A|, |B|)"
- * variant was asymmetric (linesA as an array counted duplicates, linesB as a
- * set did not) and inflated/deflated similarity based on file size rather
- * than actual shared content.
+ * Module-scope cache of tokenized canonical files keyed by absolute path.
+ * Each entry stores the file's mtime + size so we can invalidate when the
+ * file is rewritten. The cache pays off in long-running contexts (watch
+ * mode, MCP server) where the same canonical pairs are re-scanned every
+ * audit; without it we re-read and re-tokenize every sibling's tsconfig /
+ * release.sh / etc. on every run. CLI one-shot invocations hit the cache
+ * for free too — sibling counts of 5+ * 8 canonical files is enough for
+ * the per-pair tokenization cost to show up in profiles.
  */
-function calculateOverlap(a: string, b: string): number {
-  const linesA = new Set(
-    a
-      .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => l.length > 3),
-  );
-  const linesB = new Set(
-    b
-      .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => l.length > 3),
-  );
+interface CacheEntry {
+  mtimeMs: number;
+  size: number;
+  lineSet: Set<string>;
+}
+const lineSetCache = new Map<string, CacheEntry>();
 
-  if (linesA.size === 0 && linesB.size === 0) return 1;
-  if (linesA.size === 0 || linesB.size === 0) return 0;
-
-  let intersection = 0;
-  for (const line of linesA) {
-    if (linesB.has(line)) intersection++;
+async function loadLineSet(absPath: string): Promise<Set<string> | null> {
+  let mtimeMs: number;
+  let size: number;
+  try {
+    const stats = await stat(absPath);
+    mtimeMs = stats.mtimeMs;
+    size = stats.size;
+  } catch {
+    return null;
   }
-  const unionSize = linesA.size + linesB.size - intersection;
-  return intersection / unionSize;
+
+  const cached = lineSetCache.get(absPath);
+  if (cached && cached.mtimeMs === mtimeMs && cached.size === size) {
+    return cached.lineSet;
+  }
+
+  let content: string;
+  try {
+    content = stripBom(await readFile(absPath, 'utf-8'));
+  } catch {
+    return null;
+  }
+  const lineSet = toLineSet(content, MIN_TOKEN_LEN);
+  lineSetCache.set(absPath, { mtimeMs, size, lineSet });
+  return lineSet;
+}
+
+/**
+ * Test-only cache reset. Vitest reuses module instances across tests, so a
+ * test that mutates a fixture file would otherwise see a stale lineSet.
+ */
+export function resetDivergedFileCache(): void {
+  lineSetCache.clear();
 }
 
 /**
@@ -58,12 +82,8 @@ export async function checkDivergedFile(ctx: SessionContext): Promise<LintIssue[
     const currentPath = join(ctx.currentProject, fileName);
     if (!existsSync(currentPath)) continue;
 
-    let currentContent: string;
-    try {
-      currentContent = await readFile(currentPath, 'utf-8');
-    } catch {
-      continue;
-    }
+    const currentLineSet = await loadLineSet(currentPath);
+    if (!currentLineSet) continue;
 
     // Check which siblings have this same file
     const diverged: Array<{ sibling: string; overlap: number }> = [];
@@ -72,17 +92,20 @@ export async function checkDivergedFile(ctx: SessionContext): Promise<LintIssue[
       const sibPath = join(sib.path, fileName);
       if (!existsSync(sibPath)) continue;
 
-      try {
-        const sibContent = await readFile(sibPath, 'utf-8');
-        const overlap = calculateOverlap(currentContent, sibContent);
+      const sibLineSet = await loadLineSet(sibPath);
+      if (!sibLineSet) continue;
 
-        // Flag if overlap is between 20% and 90% — similar but diverged
-        // Below 20% means intentionally different, above 90% means close enough
-        if (overlap >= 0.2 && overlap < 0.9) {
-          diverged.push({ sibling: sib.name, overlap: Math.round(overlap * 100) });
-        }
-      } catch {
-        continue;
+      // Two empty canonical files (e.g. empty .gitignore) are trivially in
+      // sync — `bothEmptyIsIdentical: true` keeps that from emitting a 0%
+      // overlap warning.
+      const overlap = jaccardSimilarityFromSets(currentLineSet, sibLineSet, {
+        bothEmptyIsIdentical: true,
+      });
+
+      // Flag if overlap is between 20% and 90% — similar but diverged
+      // Below 20% means intentionally different, above 90% means close enough
+      if (overlap >= 0.2 && overlap < 0.9) {
+        diverged.push({ sibling: sib.name, overlap: Math.round(overlap * 100) });
       }
     }
 

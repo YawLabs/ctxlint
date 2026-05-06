@@ -35,7 +35,7 @@ function makeFile(fixturePath: string, relativePath: string): DiscoveredFile {
 describe('parseMcpConfig', () => {
   it('parses a valid .mcp.json', async () => {
     const file = makeFile(path.join(FIXTURES, 'valid'), '.mcp.json');
-    const config = await parseMcpConfig(file, path.join(FIXTURES, 'valid'));
+    const config = await parseMcpConfig(file, path.join(FIXTURES, 'valid'), 'project');
     expect(config.parseErrors).toHaveLength(0);
     expect(config.client).toBe('claude-code');
     expect(config.expectedRootKey).toBe('mcpServers');
@@ -51,7 +51,7 @@ describe('parseMcpConfig', () => {
 
   it('parses a valid .vscode/mcp.json with "servers" root key', async () => {
     const file = makeFile(path.join(FIXTURES, 'valid'), '.vscode/mcp.json');
-    const config = await parseMcpConfig(file, path.join(FIXTURES, 'valid'));
+    const config = await parseMcpConfig(file, path.join(FIXTURES, 'valid'), 'project');
     expect(config.client).toBe('vscode');
     expect(config.expectedRootKey).toBe('servers');
     expect(config.actualRootKey).toBe('servers');
@@ -60,28 +60,28 @@ describe('parseMcpConfig', () => {
 
   it('parses a valid .cursor/mcp.json', async () => {
     const file = makeFile(path.join(FIXTURES, 'valid'), '.cursor/mcp.json');
-    const config = await parseMcpConfig(file, path.join(FIXTURES, 'valid'));
+    const config = await parseMcpConfig(file, path.join(FIXTURES, 'valid'), 'project');
     expect(config.client).toBe('cursor');
     expect(config.expectedRootKey).toBe('mcpServers');
   });
 
   it('parses a valid .amazonq/mcp.json', async () => {
     const file = makeFile(path.join(FIXTURES, 'valid'), '.amazonq/mcp.json');
-    const config = await parseMcpConfig(file, path.join(FIXTURES, 'valid'));
+    const config = await parseMcpConfig(file, path.join(FIXTURES, 'valid'), 'project');
     expect(config.client).toBe('amazonq');
     expect(config.servers[0].timeout).toBe(60000);
   });
 
   it('reports JSON parse errors', async () => {
     const file = makeFile(path.join(FIXTURES, 'invalid-json'), '.mcp.json');
-    const config = await parseMcpConfig(file, path.join(FIXTURES, 'invalid-json'));
+    const config = await parseMcpConfig(file, path.join(FIXTURES, 'invalid-json'), 'project');
     expect(config.parseErrors.length).toBeGreaterThan(0);
     expect(config.servers).toHaveLength(0);
   });
 
   it('detects wrong root key', async () => {
     const file = makeFile(path.join(FIXTURES, 'wrong-root-key'), '.vscode/mcp.json');
-    const config = await parseMcpConfig(file, path.join(FIXTURES, 'wrong-root-key'));
+    const config = await parseMcpConfig(file, path.join(FIXTURES, 'wrong-root-key'), 'project');
     expect(config.expectedRootKey).toBe('servers');
     expect(config.actualRootKey).toBe('mcpServers');
   });
@@ -89,7 +89,7 @@ describe('parseMcpConfig', () => {
   it('handles missing root key', async () => {
     // .mcp.json with "servers" instead of "mcpServers"
     const file = makeFile(path.join(FIXTURES, 'wrong-root-key'), '.mcp.json');
-    const config = await parseMcpConfig(file, path.join(FIXTURES, 'wrong-root-key'));
+    const config = await parseMcpConfig(file, path.join(FIXTURES, 'wrong-root-key'), 'project');
     expect(config.expectedRootKey).toBe('mcpServers');
     // It still finds "servers" as the actual root key
     expect(config.actualRootKey).toBe('servers');
@@ -97,7 +97,7 @@ describe('parseMcpConfig', () => {
 
   it('parses missing fields config', async () => {
     const file = makeFile(path.join(FIXTURES, 'missing-fields'), '.mcp.json');
-    const config = await parseMcpConfig(file, path.join(FIXTURES, 'missing-fields'));
+    const config = await parseMcpConfig(file, path.join(FIXTURES, 'missing-fields'), 'project');
     expect(config.servers).toHaveLength(2);
     expect(config.servers[0].transport).toBe('stdio');
     expect(config.servers[0].command).toBeUndefined();
@@ -107,49 +107,77 @@ describe('parseMcpConfig', () => {
 
   it('parses empty servers', async () => {
     const file = makeFile(path.join(FIXTURES, 'empty-servers'), '.mcp.json');
-    const config = await parseMcpConfig(file, path.join(FIXTURES, 'empty-servers'));
+    const config = await parseMcpConfig(file, path.join(FIXTURES, 'empty-servers'), 'project');
     expect(config.actualRootKey).toBe('mcpServers');
     expect(config.servers).toHaveLength(0);
   });
 
   it('infers stdio transport from command field', async () => {
     const file = makeFile(path.join(FIXTURES, 'valid'), '.mcp.json');
-    const config = await parseMcpConfig(file, path.join(FIXTURES, 'valid'));
+    const config = await parseMcpConfig(file, path.join(FIXTURES, 'valid'), 'project');
     const fs = config.servers.find((s) => s.name === 'filesystem');
     expect(fs?.transport).toBe('stdio');
   });
 
   it('infers http transport from url field', async () => {
     const file = makeFile(path.join(FIXTURES, 'valid'), '.mcp.json');
-    const config = await parseMcpConfig(file, path.join(FIXTURES, 'valid'));
+    const config = await parseMcpConfig(file, path.join(FIXTURES, 'valid'), 'project');
     const remote = config.servers.find((s) => s.name === 'remote-api');
     expect(remote?.transport).toBe('http');
   });
 
   it('parseErrors includes "must be a JSON object" when root is an array', async () => {
     const file = writeTmp('[1, 2, 3]');
-    const config = await parseMcpConfig(file, tmpDir);
+    const config = await parseMcpConfig(file, tmpDir, 'project');
     expect(config.parseErrors.some((e) => e.includes('must be a JSON object'))).toBe(true);
     expect(config.servers).toHaveLength(0);
   });
 
   it('parseErrors includes "must be a JSON object" when root is a scalar', async () => {
     const file = writeTmp('"hello"');
-    const config = await parseMcpConfig(file, tmpDir);
+    const config = await parseMcpConfig(file, tmpDir, 'project');
     expect(config.parseErrors.some((e) => e.includes('must be a JSON object'))).toBe(true);
     expect(config.servers).toHaveLength(0);
   });
 
   it('parseErrors includes "must be an object" when mcpServers is a string', async () => {
     const file = writeTmp(JSON.stringify({ mcpServers: 'nope' }));
-    const config = await parseMcpConfig(file, tmpDir);
+    const config = await parseMcpConfig(file, tmpDir, 'project');
     expect(config.parseErrors.some((e) => e.includes('must be an object'))).toBe(true);
     expect(config.servers).toHaveLength(0);
   });
 
   it('parseErrors includes "must be an object" when mcpServers is an array', async () => {
     const file = writeTmp(JSON.stringify({ mcpServers: [1, 2, 3] }));
-    const config = await parseMcpConfig(file, tmpDir);
+    const config = await parseMcpConfig(file, tmpDir, 'project');
     expect(config.parseErrors.some((e) => e.includes('must be an object'))).toBe(true);
+  });
+
+  it('parses a BOM-prefixed .mcp.json', async () => {
+    // Windows editors prepend U+FEFF; without BOM stripping this throws on JSON.parse.
+    const file = writeTmp('﻿' + JSON.stringify({ mcpServers: { fs: { command: 'npx' } } }));
+    const config = await parseMcpConfig(file, tmpDir, 'project');
+    expect(config.parseErrors).toHaveLength(0);
+    expect(config.servers).toHaveLength(1);
+    expect(config.servers[0].name).toBe('fs');
+  });
+
+  it('rejects array-shaped oauth field on a server entry', async () => {
+    // `typeof [] === 'object'` and arrays are not null, so a previous guard
+    // accepted arrays here and surfaced them as `oauth: Record<string, unknown>`.
+    // The parser should now leave `oauth` undefined when the value is an array.
+    const file = writeTmp(
+      JSON.stringify({
+        mcpServers: {
+          remote: {
+            url: 'https://api.example.com/mcp',
+            oauth: ['not', 'an', 'object'],
+          },
+        },
+      }),
+    );
+    const config = await parseMcpConfig(file, tmpDir, 'project');
+    expect(config.servers).toHaveLength(1);
+    expect(config.servers[0].oauth).toBeUndefined();
   });
 });

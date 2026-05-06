@@ -12,11 +12,10 @@ import type { DiscoveredFile } from './scanner.js';
 export async function parseMcpConfig(
   file: DiscoveredFile,
   projectRoot: string,
-  scopeOverride?: McpConfigScope,
+  scope: McpConfigScope,
 ): Promise<ParsedMcpConfig> {
   const content = readFileContent(file.absolutePath);
   const client = detectClient(file.relativePath);
-  const scope = scopeOverride ?? detectScope(file.relativePath);
   const expectedRootKey = client === 'vscode' ? 'servers' : 'mcpServers';
   const isGitTracked = await checkGitTracked(file.absolutePath, projectRoot);
 
@@ -88,7 +87,7 @@ export async function parseMcpConfig(
     if (typeof raw.disabled === 'boolean') entry.disabled = raw.disabled;
     if (Array.isArray(raw.autoApprove)) entry.autoApprove = raw.autoApprove.map(String);
     if (typeof raw.timeout === 'number') entry.timeout = raw.timeout;
-    if (typeof raw.oauth === 'object' && raw.oauth !== null)
+    if (typeof raw.oauth === 'object' && raw.oauth !== null && !Array.isArray(raw.oauth))
       entry.oauth = raw.oauth as Record<string, unknown>;
     if (typeof raw.headersHelper === 'string') entry.headersHelper = raw.headersHelper;
 
@@ -117,11 +116,6 @@ function detectClient(relativePath: string): McpClient {
 
   // .mcp.json, .claude.json, .claude/settings.json → claude-code
   return 'claude-code';
-}
-
-function detectScope(_relativePath: string): McpConfigScope {
-  // Default fallback; callers should pass scopeOverride for accuracy
-  return 'project';
 }
 
 function findRootKey(parsed: Record<string, unknown>): string | null {

@@ -1,8 +1,8 @@
 import * as path from 'node:path';
-import type { LintIssue, ParsedMchpConfig } from '../../types.js';
+import type { LintIssue, ParsedMcphConfig } from '../../types.js';
 
 export async function checkMcphGitignore(
-  config: ParsedMchpConfig,
+  config: ParsedMcphConfig,
   _projectRoot: string,
 ): Promise<LintIssue[]> {
   const issues: LintIssue[] = [];

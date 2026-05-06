@@ -7,7 +7,7 @@
 [![Release](https://github.com/YawLabs/ctxlint/actions/workflows/release.yml/badge.svg)](https://github.com/YawLabs/ctxlint/actions/workflows/release.yml)
 [![MCP Compliance](https://raw.githubusercontent.com/YawLabs/ctxlint/main/compliance-badge.svg)](https://github.com/YawLabs/mcp-compliance)
 
-**Lint your AI agent context files, MCP server configs, and session data against your actual codebase.** Context linting + MCP config linting + session auditing. 21+ context formats, 8 MCP clients, cross-project consistency, auto-fix. Works as a CLI, CI step, pre-commit hook, or MCP server.
+**Lint your AI agent context files, MCP server configs, and session data against your actual codebase.** Context linting + MCP config linting + session auditing. 16 AI tools, 8 MCP clients, cross-project consistency, auto-fix. Works as a CLI, CI step, pre-commit hook, or MCP server.
 
 Your `CLAUDE.md` is lying to your agent. Your `.mcp.json` has a hardcoded API key. ctxlint catches both.
 
@@ -26,7 +26,7 @@ ctxlint is a linter purpose-built for this. It reads your context files, cross-r
 - **Smart suggestions** — detects git renames and fuzzy-matches to suggest the right path
 - **Auto-fix** — `--fix` rewrites broken paths automatically using git history
 - **Token-aware** — shows how much context window your files consume and flags redundant content
-- **Every AI tool** — supports Claude Code, Cursor, Copilot, Windsurf, Gemini, Cline, Aider, and 14 more
+- **Every AI tool** — supports Claude Code, Cursor, Copilot, Windsurf, Gemini, Cline, Aider, and 9 more
 - **Multiple outputs** — text, JSON, and SARIF (GitHub Code Scanning)
 - **MCP server** — 7 tools for IDE/agent integration with tool annotations for auto-approval
 - **Watch mode** — `--watch` re-lints automatically when context files change
@@ -175,6 +175,34 @@ The full specification for MCP config linting rules, the cross-client config lan
 - **[`MCP_CONFIG_LINT_SPEC.md`](./MCP_CONFIG_LINT_SPEC.md)** — 43 lint rules across 8 categories, the complete client/format reference, and implementation guidance. Tool-agnostic — any linter can implement it.
 - **[`mcp-config-lint-rules.json`](./mcp-config-lint-rules.json)** — Machine-readable rule catalog for programmatic consumption by AI agents, CI systems, and other tools.
 
+## mcph Config Linting
+
+ctxlint also lints `.mcph.json` — the config file read by the [`@yawlabs/mcph`](https://github.com/YawLabs/mcph) CLI, which orchestrates MCP servers via the mcp.hosting registry. Distinct from `.mcp.json` (different schema, different threat model). Applies across the user-global (`~/.mcph.json`), per-project (`.mcph.json`), and machine-local (`.mcph.local.json`) scope cascade.
+
+```bash
+# Lint context files + .mcph.json
+npx @yawlabs/ctxlint --mcph
+
+# Lint only .mcph.json
+npx @yawlabs/ctxlint --mcph-only
+
+# Include the user-global ~/.mcph.json
+npx @yawlabs/ctxlint --mcph-global
+
+# Treat any token in any .mcph.json as an error (env-var-only posture)
+npx @yawlabs/ctxlint --mcph --mcph-strict-env-token
+```
+
+### What mcph config checks catch
+
+| Check                       | What it finds                                                                                                     |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| **mcph-token-security**     | mcp.hosting PAT (`mcp_pat_*`) leaks, malformed tokens, and prefers env-var (`MCPH_TOKEN`) over file-stored tokens |
+| **mcph-apibase**            | Invalid `apiBase` URLs and plaintext HTTP to public hosts (private hosts like `localhost` / RFC 1918 are exempt)  |
+| **mcph-schema-conformance** | Unknown / typo'd fields and stale `version` numbers vs the current `mcph.config.v1.json` schema                   |
+| **mcph-lists**              | Conflicts (entries in both `servers` allow-list and `blocked` deny-list) and duplicates within either list        |
+| **mcph-gitignore**          | `.mcph.local.json` not covered by `.gitignore` — machine-local overrides exist precisely to stay machine-local    |
+
 ## Session Linting
 
 ctxlint can audit AI agent session data — history files and memory entries — for cross-project consistency. Session checks compare your current project against sibling repos to catch drift and missing setup.
@@ -198,15 +226,15 @@ Session checks are **opt-in** because they access files outside the project dire
 
 ### What session checks catch
 
-| Check                 | What it finds                                                                                                                                    |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Missing secrets**   | `gh secret set` ran on 2+ sibling repos but not this one                                                                                         |
-| **Diverged configs**  | Shared config files (CI workflows, tsconfig, .prettierrc, etc.) with 20-90% line overlap — enough to be related, different enough to be drifting |
-| **Missing workflows** | GitHub Actions workflows in 2+ siblings but absent from this project                                                                             |
-| **Stale memory**      | Memory entries referencing file paths that no longer exist                                                                                       |
-| **Duplicate memory**  | Near-duplicate memory entries across projects (>60% overlap)                                                                                     |
-| **Loop detection**    | Agent stuck in a loop — 3+ consecutive identical commands, or cyclic A,B,A,B patterns                                                            |
-| **Memory index overflow** | `MEMORY.md` exceeds Claude Code's documented 200-line / 25KB session-load cap, so entries past the cap are invisible to the agent            |
+| Check                     | What it finds                                                                                                                                    |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Missing secrets**       | `gh secret set` ran on 2+ sibling repos but not this one                                                                                         |
+| **Diverged configs**      | Shared config files (CI workflows, tsconfig, .prettierrc, etc.) with 20-90% line overlap — enough to be related, different enough to be drifting |
+| **Missing workflows**     | GitHub Actions workflows in 2+ siblings but absent from this project                                                                             |
+| **Stale memory**          | Memory entries referencing file paths that no longer exist                                                                                       |
+| **Duplicate memory**      | Near-duplicate memory entries across projects (>60% overlap)                                                                                     |
+| **Loop detection**        | Agent stuck in a loop — 3+ consecutive identical commands, or cyclic A,B,A,B patterns                                                            |
+| **Memory index overflow** | `MEMORY.md` exceeds Claude Code's documented 200-line / 25KB session-load cap, so entries past the cap are invisible to the agent                |
 
 ### Session Linting Specification
 
@@ -246,33 +274,40 @@ Arguments:
   path                 Project directory to scan (default: ".")
 
 Options:
-  --strict             Exit code 1 on any warning or error (for CI)
-  --checks <list>      Comma-separated checks to run (see below)
-  --ignore <list>      Comma-separated checks to skip
-  --fix                Auto-fix broken paths using git history and fuzzy matching
-  --format <fmt>       Output format: text, json, or sarif (default: text)
-  --tokens             Show token breakdown per file
-  --verbose            Show passing checks too
-  --quiet              Suppress all output except errors (exit code only)
-  --config <path>      Path to config file (default: .ctxlintrc in project root)
-  --depth <n>          Max subdirectory depth to scan (default: 2)
-  --mcp                Enable MCP config linting alongside context file checks
-  --mcp-only           Run only MCP config checks, skip context file checks
-  --mcp-global         Also scan user/global MCP config files (implies --mcp)
-  --session            Enable session audit checks (cross-project consistency)
-  --session-only       Run only session checks, skip context and MCP checks
-  --mcp-server         Start the MCP server (alias: `serve` subcommand)
-  --watch              Re-lint on context file changes
-  -V, --version        Output the version number
-  -h, --help           Display help
+  --strict                  Exit code 1 on any warning or error (for CI)
+  --checks <list>           Comma-separated checks to run (see below)
+  --ignore <list>           Comma-separated checks to skip
+  --fix                     Auto-fix broken paths using git history and fuzzy matching
+  --fix-dry-run             Preview --fix changes without writing
+  --yes                     Skip interactive confirmation prompts (required for --fix in TTY)
+  --follow-symlinks         Allow --fix to write through symlinks (default: skip)
+  --format <fmt>            Output format: text, json, or sarif (default: text)
+  --tokens                  Show token breakdown per file
+  --verbose                 Show passing checks too
+  --quiet                   Suppress all output except errors (exit code only)
+  --config <path>           Path to config file (default: .ctxlintrc in project root)
+  --depth <n>               Max subdirectory depth to scan (default: 2)
+  --mcp                     Enable MCP config linting alongside context file checks
+  --mcp-only                Run only MCP config checks, skip context file checks
+  --mcp-global              Also scan user/global MCP config files (implies --mcp)
+  --mcph                    Enable .mcph.json (mcp.hosting CLI config) linting
+  --mcph-only               Run only mcph config checks
+  --mcph-global             Also scan ~/.mcph.json (implies --mcph)
+  --mcph-strict-env-token   Upgrade mcph-config/prefer-env-token from warning to error
+  --session                 Enable session audit checks (cross-project consistency)
+  --session-only            Run only session checks, skip context and MCP checks
+  --mcp-server              Start the MCP server (alias: `serve` subcommand)
+  --watch                   Re-lint on context file changes
+  -V, --version             Output the version number
+  -h, --help                Display help
 
 Commands:
   init                 Set up a git pre-commit hook
 ```
 
-**Available checks:** `paths`, `commands`, `staleness`, `tokens`, `tier-tokens`, `redundancy`, `contradictions`, `frontmatter`, `ci-coverage`, `ci-secrets`, `mcp-schema`, `mcp-security`, `mcp-commands`, `mcp-deprecated`, `mcp-env`, `mcp-urls`, `mcp-consistency`, `mcp-redundancy`, `session-missing-secret`, `session-diverged-file`, `session-missing-workflow`, `session-stale-memory`, `session-duplicate-memory`, `session-loop-detection`, `session-memory-index-overflow`
+**Available checks:** `paths`, `commands`, `staleness`, `tokens`, `tier-tokens`, `redundancy`, `contradictions`, `frontmatter`, `ci-coverage`, `ci-secrets`, `mcp-schema`, `mcp-security`, `mcp-commands`, `mcp-deprecated`, `mcp-env`, `mcp-urls`, `mcp-consistency`, `mcp-redundancy`, `mcph-token-security`, `mcph-apibase`, `mcph-schema-conformance`, `mcph-lists`, `mcph-gitignore`, `session-missing-secret`, `session-diverged-file`, `session-missing-workflow`, `session-stale-memory`, `session-duplicate-memory`, `session-loop-detection`, `session-memory-index-overflow`
 
-Passing any `mcp-*` check name implies `--mcp`. Passing any `session-*` check name implies `--session`.
+Passing any `mcp-*` check name implies `--mcp`. Passing any `mcph-*` check name implies `--mcph`. Passing any `session-*` check name implies `--session`.
 
 ## Watch Mode
 
@@ -291,11 +326,11 @@ Re-lints automatically when any context file, MCP config, or `package.json` chan
 
 ### Exit Codes
 
-| Code | Meaning |
-|---|---|
-| `0` | Success — no issues, or issues below the strict threshold |
-| `1` | Strict mode caught at least one error or warning (`--strict` is set) |
-| `2` | Config error, invalid CLI option, or internal failure |
+| Code | Meaning                                                              |
+| ---- | -------------------------------------------------------------------- |
+| `0`  | Success — no issues, or issues below the strict threshold            |
+| `1`  | Strict mode caught at least one error or warning (`--strict` is set) |
+| `2`  | Config error, invalid CLI option, or internal failure                |
 
 In non-strict mode ctxlint always exits `0` — it's a reporting tool by default. Pass `--strict` to enforce in CI.
 
@@ -382,21 +417,28 @@ The `contextFiles` array adds custom file patterns to scan alongside the built-i
 
 ### Config Reference
 
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `checks` | `string[]` | all checks | Checks to run. Check names include `paths`, `commands`, `tokens`, `tier-tokens`, `redundancy`, `contradictions`, `frontmatter`, `staleness`, `ci-coverage`, `ci-secrets`, plus any `mcp-*` / `session-*`. |
-| `ignore` | `string[]` | `[]` | Checks to skip, evaluated after `checks`. |
-| `strict` | `boolean` | `false` | Exit non-zero on any warning or error. |
-| `tokenThresholds` | `object` | see below | Per-file and cross-file token thresholds. |
-| `tokenThresholds.info` | `number` | `1000` | Per-file info threshold for `tokens/info`. |
-| `tokenThresholds.warning` | `number` | `3000` | Per-file warning threshold for `tokens/large`. |
-| `tokenThresholds.error` | `number` | `8000` | Per-file error threshold for `tokens/excessive`. |
-| `tokenThresholds.aggregate` | `number` | `5000` | Cross-file total threshold for `tokens/aggregate`. |
-| `tokenThresholds.tierBreakdown` | `number` | `1000` | Always-loaded file threshold for `tier-tokens/section-breakdown`. |
-| `tokenThresholds.tierAggregate` | `number` | `4000` | Combined always-loaded threshold for `tier-tokens/aggregate`. |
-| `contextFiles` | `string[]` | `[]` | Extra glob patterns to scan alongside the built-in list. |
-| `mcp` | `boolean` | `false` | Enable MCP config checks by default (same as `--mcp`). |
-| `mcpGlobal` | `boolean` | `false` | Also scan user/global MCP configs (same as `--mcp-global`). |
+| Field                           | Type       | Default    | Meaning                                                                                                                                                                                                   |
+| ------------------------------- | ---------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `checks`                        | `string[]` | all checks | Checks to run. Check names include `paths`, `commands`, `tokens`, `tier-tokens`, `redundancy`, `contradictions`, `frontmatter`, `staleness`, `ci-coverage`, `ci-secrets`, plus any `mcp-*` / `session-*`. |
+| `ignore`                        | `string[]` | `[]`       | Checks to skip, evaluated after `checks`.                                                                                                                                                                 |
+| `strict`                        | `boolean`  | `false`    | Exit non-zero on any warning or error.                                                                                                                                                                    |
+| `tokenThresholds`               | `object`   | see below  | Per-file and cross-file token thresholds.                                                                                                                                                                 |
+| `tokenThresholds.info`          | `number`   | `1000`     | Per-file info threshold for `tokens/info`.                                                                                                                                                                |
+| `tokenThresholds.warning`       | `number`   | `3000`     | Per-file warning threshold for `tokens/large`.                                                                                                                                                            |
+| `tokenThresholds.error`         | `number`   | `8000`     | Per-file error threshold for `tokens/excessive`.                                                                                                                                                          |
+| `tokenThresholds.aggregate`     | `number`   | `5000`     | Cross-file total threshold for `tokens/aggregate`.                                                                                                                                                        |
+| `tokenThresholds.tierBreakdown` | `number`   | `1000`     | Always-loaded file threshold for `tier-tokens/section-breakdown`.                                                                                                                                         |
+| `tokenThresholds.tierAggregate` | `number`   | `4000`     | Combined always-loaded threshold for `tier-tokens/aggregate`.                                                                                                                                             |
+| `contextFiles`                  | `string[]` | `[]`       | Extra glob patterns to scan alongside the built-in list.                                                                                                                                                  |
+| `mcp`                           | `boolean`  | `false`    | Enable MCP config checks by default (same as `--mcp`).                                                                                                                                                    |
+| `mcpOnly`                       | `boolean`  | `false`    | Run only MCP config checks, skip context-file checks (same as `--mcp-only`).                                                                                                                              |
+| `mcpGlobal`                     | `boolean`  | `false`    | Also scan user/global MCP configs (same as `--mcp-global`).                                                                                                                                               |
+| `mcph`                          | `boolean`  | `false`    | Enable `.mcph.json` (mcp.hosting CLI config) checks (same as `--mcph`).                                                                                                                                   |
+| `mcphOnly`                      | `boolean`  | `false`    | Run only mcph config checks, skip context-file checks (same as `--mcph-only`).                                                                                                                            |
+| `mcphGlobal`                    | `boolean`  | `false`    | Also scan `~/.mcph.json` user-global config (same as `--mcph-global`).                                                                                                                                    |
+| `mcphStrictEnvToken`            | `boolean`  | `false`    | Upgrade `mcph-config/prefer-env-token` from warning to error (same as `--mcph-strict-env-token`).                                                                                                         |
+| `session`                       | `boolean`  | `false`    | Enable session audit checks (cross-project consistency); same as `--session`.                                                                                                                             |
+| `sessionOnly`                   | `boolean`  | `false`    | Run only session checks, skip context and MCP checks (same as `--session-only`).                                                                                                                          |
 
 Config file resolution order: `.ctxlintrc` → `.ctxlintrc.json` in the project root. Use `--config <path>` to point elsewhere. CLI flags override config fields.
 
@@ -492,12 +534,12 @@ Returns structured JSON with all file results, issues, and summary — useful fo
 
 ctxlint is the reference implementation of three open specifications for linting AI agent interfaces. These specs are tool-agnostic — any linter, IDE extension, or CI system can implement them.
 
-| Spec                                                           | What it covers                                                                                                                                                                                                                     |
-| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **[AI Context File Linting Spec](./CONTEXT_LINT_SPEC.md)**     | 19 rules for validating context files (CLAUDE.md, .cursorrules, AGENTS.md, etc.) across 17 clients. Covers file formats, frontmatter schemas, path/command validation, staleness, token budgets, redundancy, and contradictions.   |
-| **[MCP Config Linting Spec](./MCP_CONFIG_LINT_SPEC.md)**       | 43 rules for validating MCP server configs (.mcp.json, .cursor/mcp.json, .vscode/mcp.json, etc.) across 8 clients. Covers schema validation, hardcoded secrets, env var syntax, deprecated transports, and cross-file consistency. |
+| Spec                                                           | What it covers                                                                                                                                                                                                                       |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **[AI Context File Linting Spec](./CONTEXT_LINT_SPEC.md)**     | 19 rules for validating context files (CLAUDE.md, .cursorrules, AGENTS.md, etc.) across 17 clients. Covers file formats, frontmatter schemas, path/command validation, staleness, token budgets, redundancy, and contradictions.     |
+| **[MCP Config Linting Spec](./MCP_CONFIG_LINT_SPEC.md)**       | 43 rules for validating MCP server configs (.mcp.json, .cursor/mcp.json, .vscode/mcp.json, etc.) across 8 clients. Covers schema validation, hardcoded secrets, env var syntax, deprecated transports, and cross-file consistency.   |
 | **mcph Config Linting** (`mcph-config-lint-rules.json`)        | 10 rules for validating `.mcph.json` — the config file read by the `@yawlabs/mcph` CLI. Covers PAT format + leakage, env-var posture, plaintext API endpoints, schema drift, and allow/deny list semantics across the scope cascade. |
-| **[Agent Session Linting Spec](./AGENT_SESSION_LINT_SPEC.md)** | 7 rules for auditing agent session data (history, memory) across 8 agents. Covers cross-project secret consistency, config drift, stale memory, and loop detection.                                                                |
+| **[Agent Session Linting Spec](./AGENT_SESSION_LINT_SPEC.md)** | 7 rules for auditing agent session data (history, memory) across 8 agents. Covers cross-project secret consistency, config drift, stale memory, and loop detection.                                                                  |
 
 All specs include machine-readable rule catalogs for programmatic consumption:
 

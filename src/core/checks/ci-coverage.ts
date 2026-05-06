@@ -2,6 +2,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import type { ParsedContextFile, LintIssue } from '../types.js';
+import { stripBom } from '../../utils/fs.js';
 
 // Workflow filenames or YAML `name:` values that indicate release/deploy workflows
 const RELEASE_FILENAME_PATTERNS = [/release/i, /deploy/i, /publish/i, /\bcd\b/i];
@@ -44,7 +45,7 @@ async function findReleaseWorkflows(projectRoot: string): Promise<string[]> {
 
     // Check YAML `name:` field for release-related names
     try {
-      const content = await readFile(join(workflowDir, f), 'utf-8');
+      const content = stripBom(await readFile(join(workflowDir, f), 'utf-8'));
       const nameMatch = content.match(/^name:\s*(.+)$/m);
       if (nameMatch && RELEASE_FILENAME_PATTERNS.some((p) => p.test(nameMatch[1]))) {
         releaseWorkflows.push(f);

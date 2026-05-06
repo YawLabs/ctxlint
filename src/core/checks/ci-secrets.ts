@@ -2,6 +2,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import type { ParsedContextFile, LintIssue } from '../types.js';
+import { stripBom } from '../../utils/fs.js';
 
 // GitHub-provided secrets that don't need documentation
 // https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication
@@ -42,7 +43,7 @@ async function findSecretUsages(projectRoot: string): Promise<SecretUsage[]> {
 
     let content: string;
     try {
-      content = await readFile(join(workflowDir, f), 'utf-8');
+      content = stripBom(await readFile(join(workflowDir, f), 'utf-8'));
     } catch {
       continue;
     }
@@ -61,13 +62,21 @@ async function findSecretUsages(projectRoot: string): Promise<SecretUsage[]> {
 }
 
 function contextMentionsSecret(files: ParsedContextFile[], secretName: string): boolean {
-  // Escape regex-special chars, then allow `_`, space, or hyphen (but require
-  // at least one separator — making it optional matches `npmtoken` for
-  // `NPM_TOKEN`, and the previous empty-match collapsed to substring hits
-  // anywhere in prose like `awsaccesskey`). Anchor with `\b` so the full
-  // name must stand alone as a word, not a substring.
+  // Escape regex-special chars, then allow `_`, space, or hyphen between the
+  // tokens of the original name. Notes on the character class:
+  //
+  //  - We deliberately do NOT include `\s` (which matches newlines and tabs).
+  //    Using `\s` causes `NPM_TOKEN` to match the literal sequence
+  //    `NPM\nTOKEN` straddling two paragraphs, silently swallowing a real
+  //    "undocumented secret" finding when the two halves of the name happen
+  //    to land at a paragraph boundary.
+  //  - Just a literal space ` ` is the in-prose form ("npm token", "GitHub
+  //    token"); `_` is the env-var form; `-` is the kebab form ("npm-token").
+  //
+  // The trailing `\b` anchor still rejects substring hits like `npmtoken`
+  // (no separator) and prefix hits like `awsaccesskey`.
   const escaped = secretName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const pattern = new RegExp(`\\b${escaped.replace(/_/g, '[_\\s-]')}\\b`, 'i');
+  const pattern = new RegExp(`\\b${escaped.replace(/_/g, '[ _-]')}\\b`, 'i');
   return files.some((f) => pattern.test(f.content));
 }
 

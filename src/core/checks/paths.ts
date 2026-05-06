@@ -112,33 +112,41 @@ export async function checkPaths(
 function findClosestMatch(target: string, files: string[]): string | null {
   const targetNorm = target.replace(/\\/g, '/');
   const targetBase = path.basename(targetNorm);
-  let bestMatch: string | null = null;
-  let bestDistance = Infinity;
 
+  // Pass 1: prefer files whose basename matches exactly (different directory).
+  // This pass has its own distance cap so its result isn't bounded by — or
+  // bounding — the fallback pass below. Any basename-equal candidate is a
+  // strong signal regardless of overall path-edit distance.
+  let basenameMatch: string | null = null;
+  let basenameDistance = Infinity;
   for (const file of files) {
     const fileNorm = file.replace(/\\/g, '/');
-
-    // First try exact basename match with different directory
     if (path.basename(fileNorm) === targetBase && fileNorm !== targetNorm) {
       const dist = levenshtein(targetNorm, fileNorm);
-      if (dist < bestDistance) {
-        bestDistance = dist;
-        bestMatch = fileNorm;
+      if (dist < basenameDistance) {
+        basenameDistance = dist;
+        basenameMatch = fileNorm;
       }
     }
   }
+  if (basenameMatch) return basenameMatch;
 
-  // If no basename match, try Levenshtein on full paths
-  if (!bestMatch) {
-    for (const file of files) {
-      const fileNorm = file.replace(/\\/g, '/');
-      const dist = levenshtein(targetNorm, fileNorm);
-      if (dist < bestDistance && dist <= Math.max(targetNorm.length * 0.4, 5)) {
-        bestDistance = dist;
-        bestMatch = fileNorm;
-      }
+  // Pass 2 (fallback): Levenshtein over full paths with an absolute cap.
+  // Length prefilter: |len(a) - len(b)| is a lower bound on Levenshtein
+  // distance, so any candidate whose length differs from the target by more
+  // than the current best can be skipped without computing.
+  const absoluteCap = Math.max(targetNorm.length * 0.4, 5);
+  let fullPathMatch: string | null = null;
+  let fullPathDistance = Infinity;
+  for (const file of files) {
+    const fileNorm = file.replace(/\\/g, '/');
+    const lenDelta = Math.abs(targetNorm.length - fileNorm.length);
+    if (lenDelta >= fullPathDistance || lenDelta > absoluteCap) continue;
+    const dist = levenshtein(targetNorm, fileNorm);
+    if (dist < fullPathDistance && dist <= absoluteCap) {
+      fullPathDistance = dist;
+      fullPathMatch = fileNorm;
     }
   }
-
-  return bestMatch;
+  return fullPathMatch;
 }

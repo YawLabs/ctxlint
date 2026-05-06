@@ -16,9 +16,12 @@ type FileGroup = 'context' | 'mcp' | 'mcph' | 'session';
  */
 function classifyFile(f: FileResult): FileGroup {
   // Synthetic cross-file buckets (audit.ts emits these with these exact paths).
+  // Match explicitly so a future synthetic bucket can't silently fall through
+  // to the context group.
+  if (f.path === '(project)') return 'context';
   if (f.path === '(mcp)') return 'mcp';
+  if (f.path === '(mcph)') return 'mcph';
   if (f.path.includes('session audit')) return 'session';
-  // '(project)' falls through to context.
 
   for (const issue of f.issues) {
     if (issue.check.startsWith('session-')) return 'session';

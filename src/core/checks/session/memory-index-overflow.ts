@@ -1,7 +1,8 @@
-import { readFile, stat } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { LintIssue, SessionContext } from '../../types.js';
 import { encodeProjectDir } from '../../session-parser.js';
+import { stripBom } from '../../../utils/fs.js';
 
 /**
  * Claude Code loads the first 200 lines OR 25KB of MEMORY.md at session
@@ -22,19 +23,21 @@ export async function checkMemoryIndexOverflow(ctx: SessionContext): Promise<Lin
   const encoded = encodeProjectDir(ctx.currentProject);
   const memoryFile = join(home, '.claude', 'projects', encoded, 'memory', 'MEMORY.md');
 
-  let stats;
+  let content: string;
   try {
-    stats = await stat(memoryFile);
+    content = stripBom(await readFile(memoryFile, 'utf-8'));
   } catch {
     return [];
   }
-
-  const content = await readFile(memoryFile, 'utf-8').catch(() => '');
   if (!content) return [];
 
   const lines = content.split('\n');
   const lineCount = lines.length;
-  const byteSize = stats.size;
+  // Use the post-BOM-strip byte length, not stats.size. Claude Code measures
+  // the loaded *content*, so a 25600-byte file with a 3-byte BOM would only
+  // load 25597 content bytes — using stats.size flags it falsely. UTF-8 byte
+  // length is what the cap is actually expressed in.
+  const byteSize = Buffer.byteLength(content, 'utf8');
 
   const issues: LintIssue[] = [];
 

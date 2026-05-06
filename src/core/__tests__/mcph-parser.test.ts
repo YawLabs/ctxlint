@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { parseMchpConfig } from '../mcph-parser.js';
+import { parseMcphConfig } from '../mcph-parser.js';
 import type { DiscoveredFile } from '../scanner.js';
 
 let tmpDir: string;
@@ -21,7 +21,7 @@ function writeTmp(content: string, name = '.mcph.json'): DiscoveredFile {
   return { absolutePath: abs, relativePath: name, isSymlink: false, type: 'mcph-config' };
 }
 
-describe('parseMchpConfig — trailing commas + comments', () => {
+describe('parseMcphConfig -- trailing commas + comments', () => {
   // Regression: parseTree is configured with `allowTrailingComma: true`, so
   // these inputs are valid JSONC. Earlier versions then ran the input through
   // `JSON.parse(stripComments(content))`, which is NOT trailing-comma-tolerant,
@@ -32,7 +32,7 @@ describe('parseMchpConfig — trailing commas + comments', () => {
     const file = writeTmp(
       '{\n  "token": "mcp_pat_abc123",\n  "apiBase": "https://mcp.hosting",\n}\n',
     );
-    const config = await parseMchpConfig(file, tmpDir);
+    const config = await parseMcphConfig(file, tmpDir);
     expect(config.parseErrors).toEqual([]);
     expect(config.raw).not.toBeNull();
     expect(config.raw?.token).toBe('mcp_pat_abc123');
@@ -52,7 +52,7 @@ describe('parseMchpConfig — trailing commas + comments', () => {
         '',
       ].join('\n'),
     );
-    const config = await parseMchpConfig(file, tmpDir);
+    const config = await parseMcphConfig(file, tmpDir);
     expect(config.parseErrors).toEqual([]);
     expect(config.raw?.token).toBe('mcp_pat_xyz');
     expect(config.raw?.apiBase).toBe('https://mcp.hosting');
@@ -72,7 +72,7 @@ describe('parseMchpConfig — trailing commas + comments', () => {
         '',
       ].join('\n'),
     );
-    const config = await parseMchpConfig(file, tmpDir);
+    const config = await parseMcphConfig(file, tmpDir);
     expect(config.parseErrors).toEqual([]);
     expect(config.raw?.token).toBe('mcp_pat_combo');
     expect(config.listEntries.servers.map((e) => e.value)).toEqual(['alpha', 'beta']);
@@ -80,14 +80,14 @@ describe('parseMchpConfig — trailing commas + comments', () => {
 
   it('still surfaces parseErrors and leaves raw null on genuinely broken JSON', async () => {
     const file = writeTmp('{ "token": "mcp_pat_x" "apiBase": "..." }');
-    const config = await parseMchpConfig(file, tmpDir);
+    const config = await parseMcphConfig(file, tmpDir);
     expect(config.parseErrors.length).toBeGreaterThan(0);
     expect(config.raw).toBeNull();
   });
 
   it('reports "must be a JSON object at the root" when the root is an array', async () => {
     const file = writeTmp('[1, 2, 3]');
-    const config = await parseMchpConfig(file, tmpDir);
+    const config = await parseMcphConfig(file, tmpDir);
     expect(config.parseErrors.some((e) => e.includes('JSON object at the root'))).toBe(true);
     expect(config.raw).toBeNull();
   });
@@ -96,8 +96,8 @@ describe('parseMchpConfig — trailing commas + comments', () => {
     const local = writeTmp('{ "token": "mcp_pat_local" }', '.mcph.local.json');
     const proj = writeTmp('{ "token": "mcp_pat_proj" }', '.mcph.json');
 
-    const localConfig = await parseMchpConfig(local, tmpDir);
-    const projConfig = await parseMchpConfig(proj, tmpDir);
+    const localConfig = await parseMcphConfig(local, tmpDir);
+    const projConfig = await parseMcphConfig(proj, tmpDir);
 
     expect(localConfig.scope).toBe('project-local');
     expect(projConfig.scope).toBe('project');
@@ -105,7 +105,7 @@ describe('parseMchpConfig — trailing commas + comments', () => {
 
   it('flags unknown top-level fields with positions', async () => {
     const file = writeTmp('{\n  "tokens": "typo",\n  "blockList": []\n}\n');
-    const config = await parseMchpConfig(file, tmpDir);
+    const config = await parseMcphConfig(file, tmpDir);
     expect(config.unknownFields.map((f) => f.name)).toEqual(['tokens', 'blockList']);
     expect(config.unknownFields[0].position.line).toBe(2);
     expect(config.unknownFields[1].position.line).toBe(3);
@@ -115,7 +115,7 @@ describe('parseMchpConfig — trailing commas + comments', () => {
     const file = writeTmp(
       ['{', '  "servers": [', '    "alpha",', '    "beta"', '  ]', '}', ''].join('\n'),
     );
-    const config = await parseMchpConfig(file, tmpDir);
+    const config = await parseMcphConfig(file, tmpDir);
     expect(config.listEntries.servers).toHaveLength(2);
     expect(config.listEntries.servers[0]).toEqual({
       value: 'alpha',

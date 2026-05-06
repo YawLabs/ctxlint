@@ -1,4 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { parseContextFile } from '../parser.js';
 import type { DiscoveredFile } from '../scanner.js';
@@ -47,5 +49,33 @@ describe('parser', () => {
     for (const p of paths) {
       expect(p).not.toMatch(/^https?:\/\//);
     }
+  });
+});
+
+describe('parser BOM handling', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-parser-bom-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('parses sections correctly when the file starts with a UTF-8 BOM', () => {
+    const p = path.join(tmpDir, 'CLAUDE.md');
+    fs.writeFileSync(p, '﻿# Project\n\nUse `src/main.ts` as the entry.\n');
+    const file: DiscoveredFile = {
+      absolutePath: p,
+      relativePath: 'CLAUDE.md',
+      isSymlink: false,
+      type: 'context',
+    };
+    const result = parseContextFile(file);
+    expect(result.sections.length).toBeGreaterThan(0);
+    expect(result.sections[0].title).toBe('Project');
+    const paths = result.references.paths.map((r) => r.value);
+    expect(paths).toContain('src/main.ts');
   });
 });

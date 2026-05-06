@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { formatText, formatJson, formatTokenReport, formatSarif } from '../reporter.js';
+import { ALL_CHECKS, ALL_MCP_CHECKS, ALL_MCPH_CHECKS, ALL_SESSION_CHECKS } from '../audit.js';
 import { VERSION as PKG_VERSION } from '../../version.js';
 import type { LintResult } from '../types.js';
 
@@ -283,9 +284,10 @@ describe('formatSarif', () => {
   // version of THIS test forgot to include in `expected` (so the absence
   // of mcph descriptors went undetected for several releases). Keep all four
   // catalogs in sync with the constant lists in audit.ts.
-  it('SARIF descriptors cover every check in ALL_CHECKS / ALL_MCP_CHECKS / ALL_MCPH_CHECKS / ALL_SESSION_CHECKS', async () => {
-    const { ALL_CHECKS, ALL_MCP_CHECKS, ALL_MCPH_CHECKS, ALL_SESSION_CHECKS } =
-      await import('../audit.js');
+  it('SARIF descriptors cover every check in ALL_CHECKS / ALL_MCP_CHECKS / ALL_MCPH_CHECKS / ALL_SESSION_CHECKS', () => {
+    // Imported at module top — `await import()` here used to occasionally
+    // time out under parallel test load while waiting for the audit module's
+    // tiktoken/zod/etc. import chain to resolve.
     const parsed = JSON.parse(formatSarif(makeResult()));
     const ruleIds: string[] = parsed.runs[0].tool.driver.rules.map((r: { id: string }) => r.id);
     const expected = [

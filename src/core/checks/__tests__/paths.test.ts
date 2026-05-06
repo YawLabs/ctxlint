@@ -155,4 +155,48 @@ describe('checkPaths', () => {
     expect(notFound).toBeDefined();
     expect(notFound!.suggestion).toBeUndefined();
   });
+
+  // Regression: the basename pass and the full-path fallback pass each have
+  // their own distance cap. A basename-equal candidate at some non-trivial
+  // edit distance should still win over a full-path candidate that happens to
+  // have a smaller raw Levenshtein distance — basename equality is the
+  // stronger signal, and pass-scoped caps make this explicit.
+  it('prefers a basename match even when a full-path candidate has smaller raw distance', async () => {
+    seed({
+      'CLAUDE.md': 'See src/very/deeply/nested/dir/utils.ts\n',
+      // Basename match but in a totally different directory tree -- larger
+      // overall path-edit distance.
+      'lib/utils.ts': 'x',
+      // Full-path candidate with closer raw Levenshtein to the typo'd
+      // reference, but wrong basename.
+      'src/very/deeply/nested/dir/utilx.ts': 'x',
+    });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    const notFound = issues.find((i) => i.ruleId === 'paths/not-found');
+    expect(notFound).toBeDefined();
+    // Basename-equal candidate (lib/utils.ts) should win regardless of the
+    // closer-by-raw-distance full-path candidate.
+    expect(notFound!.suggestion).toContain('lib/utils.ts');
+    expect(notFound!.fix!.newText.replace(/\\/g, '/')).toBe('lib/utils.ts');
+  });
+
+  // Length-prefilter correctness: candidates with very different lengths
+  // (lower bound on Levenshtein > cap) must be skipped, but a genuinely close
+  // candidate inside the cap must still be found.
+  it('finds a close full-path match while ignoring length-distant candidates', async () => {
+    seed({
+      'CLAUDE.md': 'See src/app.ts\n',
+      // Existing file with a one-character typo in the basename so the
+      // full-path fallback (not the basename pass) is what fires.
+      'src/aqp.ts': 'x',
+      // Length-distant candidate that should be skipped by the prefilter.
+      'docs/some/very/long/and/totally/unrelated/path/document-name.md': 'x',
+    });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    const notFound = issues.find((i) => i.ruleId === 'paths/not-found');
+    expect(notFound).toBeDefined();
+    expect(notFound!.suggestion).toContain('src/aqp.ts');
+  });
 });

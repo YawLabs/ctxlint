@@ -81,19 +81,71 @@ async function parseJsonlFiltered<T>(
 }
 
 /**
+ * Pick the first non-empty string value from `entry` among the given field
+ * names. Returns `''` when none are present, so callers decide what counts
+ * as "missing" (some providers require the value, some tolerate empty).
+ */
+function pickField(entry: Record<string, unknown>, fields: readonly string[]): string {
+  for (const f of fields) {
+    const v = entry[f];
+    if (typeof v === 'string' && v.length > 0) return v;
+  }
+  return '';
+}
+
+interface JsonlHistoryReaderOptions {
+  /** Path to the provider's history.jsonl. */
+  historyPath: string;
+  /** Provider tag to stamp on each emitted entry. */
+  provider: AgentProvider;
+  /** Field names tried in order to populate `display`. */
+  displayFields: readonly string[];
+  /** Field names tried in order to populate `project`. */
+  projectFields: readonly string[];
+  /**
+   * If true, entries with no resolvable `project` are dropped. Claude Code
+   * always writes `project`; Codex CLI sometimes only writes `cwd` and
+   * occasionally neither, in which case we still want the display string.
+   */
+  requireProject: boolean;
+}
+
+/**
+ * Read a provider's history.jsonl into normalized HistoryEntry rows. Shared
+ * between Claude Code and Codex CLI — they differ only in which fields hold
+ * the user input and the project path, plus whether `project` is required.
+ */
+export async function readJsonlHistory(opts: JsonlHistoryReaderOptions): Promise<HistoryEntry[]> {
+  return parseJsonlFiltered(opts.historyPath, (parsed: unknown) => {
+    if (!parsed || typeof parsed !== 'object') return null;
+    const entry = parsed as Record<string, unknown>;
+
+    const display = pickField(entry, opts.displayFields);
+    if (!display) return null;
+
+    const project = pickField(entry, opts.projectFields);
+    if (opts.requireProject && !project) return null;
+
+    return {
+      display,
+      timestamp: typeof entry.timestamp === 'number' ? entry.timestamp : 0,
+      project: project.replace(/\\/g, '/'),
+      sessionId: typeof entry.sessionId === 'string' ? entry.sessionId : '',
+      provider: opts.provider,
+    };
+  });
+}
+
+/**
  * Read Claude Code history.jsonl — filter to command entries only.
  */
 async function readClaudeHistory(): Promise<HistoryEntry[]> {
-  const historyPath = join(home, '.claude', 'history.jsonl');
-  return parseJsonlFiltered(historyPath, (entry: any) => {
-    if (!entry.display || !entry.project) return null;
-    return {
-      display: entry.display,
-      timestamp: entry.timestamp || 0,
-      project: entry.project.replace(/\\/g, '/'),
-      sessionId: entry.sessionId || '',
-      provider: 'claude-code' as AgentProvider,
-    };
+  return readJsonlHistory({
+    historyPath: join(home, '.claude', 'history.jsonl'),
+    provider: 'claude-code',
+    displayFields: ['display'],
+    projectFields: ['project'],
+    requireProject: true,
   });
 }
 
@@ -101,16 +153,12 @@ async function readClaudeHistory(): Promise<HistoryEntry[]> {
  * Read Codex CLI history.jsonl.
  */
 async function readCodexHistory(): Promise<HistoryEntry[]> {
-  const historyPath = join(home, '.codex', 'history.jsonl');
-  return parseJsonlFiltered(historyPath, (entry: any) => {
-    if (!entry.display && !entry.command) return null;
-    return {
-      display: entry.display || entry.command || '',
-      timestamp: entry.timestamp || 0,
-      project: (entry.project || entry.cwd || '').replace(/\\/g, '/'),
-      sessionId: entry.sessionId || '',
-      provider: 'codex-cli' as AgentProvider,
-    };
+  return readJsonlHistory({
+    historyPath: join(home, '.codex', 'history.jsonl'),
+    provider: 'codex-cli',
+    displayFields: ['display', 'command'],
+    projectFields: ['project', 'cwd'],
+    requireProject: false,
   });
 }
 
@@ -204,7 +252,17 @@ export async function detectSiblings(projectRoot: string): Promise<SiblingRepo[]
     candidates.push({ fullPath, entryPath, name: entry });
   }
 
-  // If too many candidates, get current org first and only resolve git for matches
+  // If too many candidates, narrow by current-org. Resolving git for every
+  // candidate is the slow path we're trying to avoid, but skipping non-git
+  // candidates entirely silently drops valid project siblings (a Cargo
+  // workspace next door, a Python-only repo without `.git/`) — the normal
+  // <=50 branch keeps them, so this branch must too.
+  //
+  // Strategy: run the same parallel resolve over ALL candidates. For non-git
+  // entries the `simpleGit` call short-circuits with no remotes (the catch
+  // below) and we still emit a SiblingRepo with name+path. Then if we have a
+  // currentOrg we filter to org-matched git repos; otherwise we return
+  // everything (matching the <=50 branch's behavior).
   if (candidates.length > 50) {
     let currentOrg: string | undefined;
     try {
@@ -217,26 +275,7 @@ export async function detectSiblings(projectRoot: string): Promise<SiblingRepo[]
       // no git
     }
 
-    // Only resolve git remotes for candidates with .git dirs
-    const gitCandidates = candidates.filter((c) => existsSync(join(c.fullPath, '.git')));
-    const results = await Promise.all(
-      gitCandidates.map(async (c) => {
-        const sibling: SiblingRepo = { path: c.entryPath.replace(/\\/g, '/'), name: c.name };
-        try {
-          const git = simpleGit(c.fullPath);
-          const remotes = await git.getRemotes(true);
-          const origin = remotes.find((r) => r.name === 'origin');
-          if (origin?.refs?.fetch) {
-            sibling.gitRemoteUrl = origin.refs.fetch;
-            const orgMatch = origin.refs.fetch.match(/github\.com[:/]([^/]+)\//);
-            if (orgMatch) sibling.gitOrg = orgMatch[1];
-          }
-        } catch {
-          // not a git repo or no remote
-        }
-        return sibling;
-      }),
-    );
+    const results = await Promise.all(candidates.map((c) => resolveSibling(c)));
 
     if (currentOrg) {
       return results.filter((s) => s.gitOrg === currentOrg);
@@ -245,26 +284,36 @@ export async function detectSiblings(projectRoot: string): Promise<SiblingRepo[]
   }
 
   // Normal path: resolve git remotes in parallel
-  const siblings = await Promise.all(
-    candidates.map(async (c) => {
-      const sibling: SiblingRepo = { path: c.entryPath.replace(/\\/g, '/'), name: c.name };
-      try {
-        const git = simpleGit(c.fullPath);
-        const remotes = await git.getRemotes(true);
-        const origin = remotes.find((r) => r.name === 'origin');
-        if (origin?.refs?.fetch) {
-          sibling.gitRemoteUrl = origin.refs.fetch;
-          const orgMatch = origin.refs.fetch.match(/github\.com[:/]([^/]+)\//);
-          if (orgMatch) sibling.gitOrg = orgMatch[1];
-        }
-      } catch {
-        // not a git repo or no remote
-      }
-      return sibling;
-    }),
-  );
+  return Promise.all(candidates.map((c) => resolveSibling(c)));
+}
 
-  return siblings;
+/**
+ * Resolve a candidate directory into a SiblingRepo. Non-git candidates and
+ * unreadable git metadata both fall through to the catch block — callers
+ * still get a SiblingRepo with `name` and `path`, just no `gitOrg`/
+ * `gitRemoteUrl`. Both branches of `detectSiblings` (small / large) use this
+ * so the >50 fast-path doesn't silently drop non-git project siblings.
+ */
+async function resolveSibling(c: {
+  fullPath: string;
+  entryPath: string;
+  name: string;
+}): Promise<SiblingRepo> {
+  const sibling: SiblingRepo = { path: c.entryPath.replace(/\\/g, '/'), name: c.name };
+  if (!existsSync(join(c.fullPath, '.git'))) return sibling;
+  try {
+    const git = simpleGit(c.fullPath);
+    const remotes = await git.getRemotes(true);
+    const origin = remotes.find((r) => r.name === 'origin');
+    if (origin?.refs?.fetch) {
+      sibling.gitRemoteUrl = origin.refs.fetch;
+      const orgMatch = origin.refs.fetch.match(/github\.com[:/]([^/]+)\//);
+      if (orgMatch) sibling.gitOrg = orgMatch[1];
+    }
+  } catch {
+    // not a git repo or no remote
+  }
+  return sibling;
 }
 
 /**

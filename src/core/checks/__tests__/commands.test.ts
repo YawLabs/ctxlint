@@ -122,6 +122,48 @@ describe('checkCommands', () => {
     expect(byRule!.message).toContain('some-rare-tool');
   });
 
+  it('flags the actual package after `npx -y` (skips the -y flag)', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nnpx -y @yawlabs/typo\n```\n',
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    const byRule = issues.find((i) => i.ruleId === 'commands/npx-not-in-deps');
+    expect(byRule).toBeDefined();
+    expect(byRule!.message).toContain('@yawlabs/typo');
+  });
+
+  it('honors `-p <pkg>` as the package override', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nnpx -p @yawlabs/missing some-bin\n```\n',
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    const byRule = issues.find((i) => i.ruleId === 'commands/npx-not-in-deps');
+    expect(byRule).toBeDefined();
+    expect(byRule!.message).toContain('@yawlabs/missing');
+  });
+
+  it('honors `--package=<pkg>` as the package override', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nnpx --package=@yawlabs/missing some-bin\n```\n',
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    const byRule = issues.find((i) => i.ruleId === 'commands/npx-not-in-deps');
+    expect(byRule).toBeDefined();
+    expect(byRule!.message).toContain('@yawlabs/missing');
+  });
+
   it('does NOT flag npx when the package has a bin in node_modules/.bin', async () => {
     fs.mkdirSync(path.join(tmpRoot, 'node_modules', '.bin'), { recursive: true });
     fs.writeFileSync(path.join(tmpRoot, 'node_modules', '.bin', 'present-tool'), '');

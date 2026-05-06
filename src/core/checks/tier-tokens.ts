@@ -1,13 +1,22 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { countTokens } from '../../utils/tokens.js';
+import { stripBom } from '../../utils/fs.js';
 import { getTokenThresholds } from './tokens.js';
 import type { ParsedContextFile, LintIssue, Section } from '../types.js';
 
 // Files that Claude Code (and similar agents) load into every session by
-// default — the "always-loaded" tier. See docs/research/context-hierarchy.md
-// §Q2 for sources (code.claude.com/docs/en/memory).
-const ALWAYS_LOADED_BASENAMES = new Set([
+// default -- the "always-loaded" tier. See docs/research/context-hierarchy.md
+// Q2 for sources (code.claude.com/docs/en/memory).
+//
+// Two match shapes:
+//   bare basename -- matches at any depth (e.g. "CLAUDE.md" anywhere)
+//   "parent/basename" suffix -- only matches when the file actually lives
+//                                under that parent dir (handles generic names
+//                                like "instructions.md" / "guidelines.md"
+//                                that are tool-specific only inside .goose/ /
+//                                .junie/, NOT in arbitrary docs/api/ paths)
+const ALWAYS_LOADED_NAMES: readonly string[] = [
   'CLAUDE.md',
   'CLAUDE.local.md',
   'AGENTS.md',
@@ -22,10 +31,11 @@ const ALWAYS_LOADED_BASENAMES = new Set([
   '.rules',
   '.goosehints',
   'replit.md',
-  'copilot-instructions.md',
-  'guidelines.md',
-  'instructions.md',
-]);
+  '.github/copilot-instructions.md',
+  '.junie/guidelines.md',
+  '.junie/AGENTS.md',
+  '.goose/instructions.md',
+];
 
 const TOP_SECTIONS_TO_REPORT = 3;
 
@@ -73,7 +83,15 @@ export function isAlwaysLoaded(file: ParsedContextFile): boolean {
   }
 
   const basename = rel.split('/').pop() ?? '';
-  return ALWAYS_LOADED_BASENAMES.has(basename);
+  for (const name of ALWAYS_LOADED_NAMES) {
+    if (name.includes('/')) {
+      // Suffix match -- the file's parent dir must match the required parent.
+      if (rel === name || rel.endsWith('/' + name)) return true;
+    } else if (basename === name) {
+      return true;
+    }
+  }
+  return false;
 }
 
 interface SectionCost {
@@ -130,7 +148,7 @@ function loadSettingsSources(projectRoot: string): Settings[] {
   for (const p of candidates) {
     let content: string;
     try {
-      content = fs.readFileSync(p, 'utf-8');
+      content = stripBom(fs.readFileSync(p, 'utf-8'));
     } catch {
       // Missing file is expected — not every repo has .claude/settings.json.
       continue;
@@ -157,12 +175,48 @@ function canonicalizeCommand(backticked: string): string {
   return beforeFlags.replace(/\s+/g, ' ');
 }
 
+/**
+ * Build a regex that matches a command against settings entries tolerantly.
+ *
+ * The trick is that `\b` treats `_` and digits as word chars but `-` as a
+ * non-word char. That asymmetry means naive `\b`-anchored matching is
+ * wrong in both directions:
+ *
+ *  - For multi-token commands: `\bnpm login\b` does not match
+ *    `block_npm_login.py` (no boundary between `_` and `n`) AND does not
+ *    match `block-npm-login.sh` (the literal space between tokens is
+ *    missing). Both are real hook script naming styles we want to credit.
+ *  - For single-token commands: `\brm\b` falsely matches
+ *    `npm run rm-old-logs` (boundary on each side of `rm`, since `-` is
+ *    non-word), silently suppressing a real enforcement-missing warning.
+ *
+ * Strategy:
+ *
+ *  - Tokens of multi-token commands are joined with `[\s\-_]+` so the
+ *    body matches all three forms (`npm login`, `npm-login`, `npm_login`).
+ *  - Boundary on each end is a manual lookaround `(?<![A-Za-z0-9])` /
+ *    `(?![A-Za-z0-9])`. Letters and digits flanking the match still kill
+ *    it (so `pnpm` still doesn't match `npm`, `loginx` doesn't match
+ *    `login`), but `_` and `-` are *allowed* on the boundary, which lets
+ *    `block_npm_login.py` and `block-npm-login.sh` match.
+ *  - For single-token commands, we additionally exclude `_` and `-` from
+ *    the boundary class so `rm` stays out of `rm-old-logs` / `block_rm`.
+ *    We give up on matching `block-rm.sh` (a hook script for `rm`) — those
+ *    are rare in practice (deny-list entries are the common form) and the
+ *    `rm-old-logs` false negative is the higher-cost bug.
+ */
+function buildCommandPattern(cmd: string): RegExp {
+  const tokens = cmd.split(/\s+/).filter(Boolean);
+  const escaped = tokens.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  if (tokens.length === 1) {
+    return new RegExp(`(?<![A-Za-z0-9_\\-])${escaped[0]}(?![A-Za-z0-9_\\-])`, 'i');
+  }
+  const body = escaped.join('[\\s\\-_]+');
+  return new RegExp(`(?<![A-Za-z0-9])${body}(?![A-Za-z0-9])`, 'i');
+}
+
 function commandIsEnforced(cmd: string, settings: Settings[]): boolean {
-  // Match on word boundaries to avoid `rm` matching `npm run rm-old-logs`
-  // or `npm` matching `block-npm-login.sh` (different command entirely —
-  // the hook should match on `npm login`, not just `npm`).
-  const escaped = cmd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const pattern = new RegExp(`\\b${escaped}\\b`, 'i');
+  const pattern = buildCommandPattern(cmd);
   for (const s of settings) {
     for (const entry of s.permissions?.deny ?? []) {
       if (pattern.test(entry)) return true;

@@ -23,12 +23,38 @@ const HIGH_ENTROPY_PATTERN = /^[A-Za-z0-9+/=_-]{21,}$/;
 // URL secret query params
 const URL_SECRET_PARAMS = /[?&](key|token|api_key|apikey|secret|password|access_token)=/i;
 
+// Variable name keywords that indicate the value is intended to be a secret.
+// We only run the high-entropy heuristic when the env var name matches one of
+// these -- otherwise build IDs, commit SHAs, version strings, and feature-flag
+// tokens get caught as false positives.
+const SECRET_NAME_KEYWORDS = [
+  'KEY',
+  'TOKEN',
+  'SECRET',
+  'PASSWORD',
+  'PASSWD',
+  'PASS',
+  'AUTH',
+  'CREDENTIAL',
+  'CREDENTIALS',
+  'APIKEY',
+  'PRIVATE',
+  'SIGNING',
+  'SESSION',
+  'COOKIE',
+];
+
 function isEnvVarRef(value: string): boolean {
   return ENV_VAR_REF.test(value);
 }
 
 function isKnownApiKey(value: string): boolean {
   return API_KEY_PATTERNS.some((p) => p.test(value));
+}
+
+function nameSuggestsSecret(name: string): boolean {
+  const upper = name.toUpperCase();
+  return SECRET_NAME_KEYWORDS.some((kw) => upper.includes(kw));
 }
 
 function isHighEntropySecret(value: string): boolean {
@@ -101,8 +127,13 @@ export async function checkMcpSecurity(
 
     // Check env values for hardcoded secrets
     if (server.env) {
-      for (const envValue of Object.values(server.env)) {
-        if (!isEnvVarRef(envValue) && (isKnownApiKey(envValue) || isHighEntropySecret(envValue))) {
+      for (const [envName, envValue] of Object.entries(server.env)) {
+        // Known API key patterns (sk-, ghp_, AKIA, etc.) always flag.
+        // High-entropy heuristic only fires when the variable name suggests a
+        // secret -- avoids false positives on BUILD_ID, *_VERSION, *_COMMIT, etc.
+        const isSecret =
+          isKnownApiKey(envValue) || (nameSuggestsSecret(envName) && isHighEntropySecret(envValue));
+        if (!isEnvVarRef(envValue) && isSecret) {
           const envVar = deriveEnvVarName(server.name, 'API_KEY');
           issues.push({
             severity: 'error',

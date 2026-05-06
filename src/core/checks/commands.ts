@@ -1,12 +1,39 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { loadPackageJson } from '../../utils/fs.js';
+import { loadPackageJson, stripBom } from '../../utils/fs.js';
 import type { ParsedContextFile, LintIssue } from '../types.js';
 
 // Match npm/pnpm/yarn/bun run/script commands
 const NPM_SCRIPT_PATTERN = /^(?:npm\s+run|pnpm(?:\s+run)?|yarn(?:\s+run)?|bun(?:\s+run)?)\s+(\S+)/;
 const MAKE_PATTERN = /^make\s+(\S+)/;
-const NPX_PATTERN = /^npx\s+(\S+)/;
+
+/**
+ * Extract the package name from an `npx` command. Walks past leading flags
+ * (`-y`, `--yes`, `--silent`, ...) and honors `-p` / `--package` overrides.
+ * Returns null when no package can be identified.
+ *
+ * Earlier behavior only inspected the first whitespace-delimited token after
+ * `npx`, so `npx -y @scope/typo` skipped validation entirely (the `-y` was
+ * captured, then `startsWith('-')` short-circuited).
+ */
+function extractNpxPackage(cmd: string): string | null {
+  if (!/^npx\b/.test(cmd)) return null;
+  const tokens = cmd.split(/\s+/).slice(1);
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t === '-p' || t === '--package') {
+      const v = tokens[i + 1];
+      if (v && !v.startsWith('-')) return v;
+      continue;
+    }
+    if (t.startsWith('-p=') || t.startsWith('--package=')) {
+      return t.slice(t.indexOf('=') + 1) || null;
+    }
+    if (t.startsWith('-')) continue;
+    return t;
+  }
+  return null;
+}
 
 export async function checkCommands(
   file: ParsedContextFile,
@@ -56,11 +83,9 @@ export async function checkCommands(
     }
 
     // Check npx package references
-    const npxMatch = cmd.match(NPX_PATTERN);
-    if (npxMatch && pkgJson) {
-      const pkgName = npxMatch[1];
-      // Skip scoped packages (just check the base name) and flags
-      if (pkgName.startsWith('-')) continue;
+    if (/^npx\b/.test(cmd) && pkgJson) {
+      const pkgName = extractNpxPackage(cmd);
+      if (!pkgName) continue;
 
       const allDeps = {
         ...pkgJson.dependencies,
@@ -148,7 +173,7 @@ export async function checkCommands(
 
 function loadMakefile(projectRoot: string): string | null {
   try {
-    return fs.readFileSync(path.join(projectRoot, 'Makefile'), 'utf-8');
+    return stripBom(fs.readFileSync(path.join(projectRoot, 'Makefile'), 'utf-8'));
   } catch {
     return null;
   }

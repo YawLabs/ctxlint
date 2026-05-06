@@ -1,19 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { checkDivergedFile } from '../diverged-file.js';
+import { checkDivergedFile, resetDivergedFileCache } from '../diverged-file.js';
 import type { SessionContext, SiblingRepo } from '../../../types.js';
 
 vi.mock('node:fs/promises', () => ({
   readFile: vi.fn(),
+  stat: vi.fn(),
 }));
 
 vi.mock('node:fs', () => ({
   existsSync: vi.fn(),
 }));
 
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 
 const mockReadFile = vi.mocked(readFile);
+const mockStat = vi.mocked(stat);
 const mockExistsSync = vi.mocked(existsSync);
 
 function makeSibling(name: string, basePath = '/repos'): SiblingRepo {
@@ -26,6 +28,20 @@ function makeCtx(siblings: SiblingRepo[], currentProject = '/repos/current'): Se
 
 beforeEach(() => {
   vi.resetAllMocks();
+  // Clear the module-scope (mtime,size)->lineSet cache so each test starts
+  // with a clean slate. Without this, a stat result from one test would
+  // satisfy the cache lookup in the next.
+  resetDivergedFileCache();
+  // Default stat: files have stable mtime/size keyed by path so the cache
+  // hits behave deterministically. Tests that want to simulate "file
+  // changed" can override mockStat per-call.
+  mockStat.mockImplementation(async (p) => {
+    const ps = String(p);
+    return {
+      mtimeMs: 1000,
+      size: ps.length,
+    } as unknown as Awaited<ReturnType<typeof stat>>;
+  });
 });
 
 describe('checkDivergedFile', () => {
@@ -111,5 +127,44 @@ describe('checkDivergedFile', () => {
     const ctx = makeCtx([]);
     const issues = await checkDivergedFile(ctx);
     expect(issues).toHaveLength(0);
+  });
+
+  it('caches tokenized line-sets across audits keyed by (path, mtime, size)', async () => {
+    // Two consecutive audits should hit the cache on the second pass — we
+    // count readFile calls and assert the second audit makes none.
+    mockExistsSync.mockReturnValue(true);
+    mockReadFile.mockResolvedValue('shared line one\nshared line two\nshared line three\n');
+
+    const ctx = makeCtx([makeSibling('foo')]);
+
+    await checkDivergedFile(ctx);
+    const firstPassReads = mockReadFile.mock.calls.length;
+    expect(firstPassReads).toBeGreaterThan(0);
+
+    await checkDivergedFile(ctx);
+    expect(mockReadFile.mock.calls.length).toBe(firstPassReads);
+  });
+
+  it('invalidates the cache when mtime changes (file edited between audits)', async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFile.mockResolvedValue('shared line one\nshared line two\nshared line three\n');
+
+    const ctx = makeCtx([makeSibling('foo')]);
+
+    await checkDivergedFile(ctx);
+    const firstPassReads = mockReadFile.mock.calls.length;
+
+    // Bump every file's mtime — cache entries are stale, every path must be
+    // re-read and re-tokenized.
+    mockStat.mockImplementation(async (p) => {
+      const ps = String(p);
+      return {
+        mtimeMs: 9999,
+        size: ps.length,
+      } as unknown as Awaited<ReturnType<typeof stat>>;
+    });
+
+    await checkDivergedFile(ctx);
+    expect(mockReadFile.mock.calls.length).toBeGreaterThan(firstPassReads);
   });
 });

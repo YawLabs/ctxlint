@@ -1,4 +1,4 @@
-import type { LintIssue, ParsedMchpConfig } from '../../types.js';
+import type { LintIssue, ParsedMcphConfig } from '../../types.js';
 
 // RFC 1918 + loopback ranges where plaintext HTTP is typically dev-only
 // and warranted. Keep this intentionally conservative — warning on HTTP
@@ -21,7 +21,7 @@ function isPrivateHost(hostname: string): boolean {
 }
 
 export async function checkMcphApibase(
-  config: ParsedMchpConfig,
+  config: ParsedMcphConfig,
   _projectRoot: string,
 ): Promise<LintIssue[]> {
   const issues: LintIssue[] = [];

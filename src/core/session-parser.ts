@@ -1,7 +1,16 @@
 import { readFile } from 'node:fs/promises';
 import type { MemoryEntry } from './types.js';
+import { stripBom } from '../utils/fs.js';
 
+// Two passes:
+//   PATH_PATTERN matches paths that start with a leading marker (`.`, `..`,
+//     `~`, `/`). The leading marker lets us be permissive about everything
+//     after it without dragging in arbitrary `Foo/Bar` prose tokens.
+//   BARE_FILE_PATH catches relative paths *without* a leading marker --
+//     `src/api/client.ts` style. We require BOTH a `/` and a recognizable
+//     file extension to keep prose tokens (`I/O`, `n/a`, `Vitest/Jest`) out.
 const PATH_PATTERN = /(?:^|\s|['"`(])([.~/][^\s'"`),;:!?]+)/g;
+const BARE_FILE_PATH = /(?:^|[\s`"'(])([\w][\w-]*(?:\/[\w.-]+)+\.[a-zA-Z0-9]{1,8})\b/g;
 
 /**
  * Encode a filesystem path the same way Claude Code encodes project directory names.
@@ -26,12 +35,24 @@ export function projectDirMatchesPath(encodedDir: string, fsPath: string): boole
 
 /**
  * Extract file path references from memory file content.
+ *
+ * Two passes (see PATH_PATTERN / BARE_FILE_PATH for rationale): leading-marker
+ * paths (`./`, `../`, `~/`, `/`) plus bare relative paths that have BOTH a
+ * `/` and a file extension (`src/api/client.ts`). Anything weaker -- a single
+ * slash with no extension -- stays out so `I/O`, `n/a`, and `Vitest/Jest`
+ * prose don't pollute the stale-memory check.
  */
 export function extractPaths(content: string): string[] {
   const paths: string[] = [];
   for (const match of content.matchAll(PATH_PATTERN)) {
     const p = match[1].replace(/[)}\]]+$/, ''); // trim trailing brackets
     if (p.length > 2 && !p.startsWith('http') && !p.startsWith('//')) {
+      paths.push(p);
+    }
+  }
+  for (const match of content.matchAll(BARE_FILE_PATH)) {
+    const p = match[1].replace(/[)}\]]+$/, '');
+    if (p.length > 2 && !p.startsWith('http')) {
       paths.push(p);
     }
   }
@@ -81,7 +102,7 @@ export function parseFrontmatter(content: string): {
  * Parse a Claude Code memory file into a MemoryEntry.
  */
 export async function parseMemoryFile(filePath: string, projectDir: string): Promise<MemoryEntry> {
-  const content = await readFile(filePath, 'utf-8');
+  const content = stripBom(await readFile(filePath, 'utf-8'));
   const { name, description, type, body } = parseFrontmatter(content);
   const referencedPaths = extractPaths(body);
 
