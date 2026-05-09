@@ -68,6 +68,8 @@ export async function getCommitsSinceBatch(
       // what keeps git from rejecting the sentinel as an invalid --pretty
       // format ("fatal: invalid --pretty format: ___CTXLINT_COMMIT___").
       `--format=%n${SENTINEL}`,
+      '--',
+      ...paths,
     ]);
 
     // Normalize path separators for cross-platform comparison.

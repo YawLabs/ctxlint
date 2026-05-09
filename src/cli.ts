@@ -407,7 +407,18 @@ npx @yawlabs/ctxlint@${VERSION} --strict
       if (fs.existsSync(hookPath)) {
         const existing = fs.readFileSync(hookPath, 'utf-8');
         if (existing.includes('ctxlint')) {
-          console.log('Pre-commit hook already includes ctxlint.');
+          const updated = existing.replace(
+            /@yawlabs\/ctxlint@\d+\.\d+\.\d+/g,
+            `@yawlabs/ctxlint@${VERSION}`,
+          );
+          if (updated !== existing) {
+            fs.writeFileSync(hookPath, updated);
+            console.log(`Bumped pin to v${VERSION}`);
+          } else if (existing.includes(`@yawlabs/ctxlint@${VERSION}`)) {
+            console.log(`Pin already at v${VERSION}`);
+          } else {
+            console.log('Pre-commit hook already includes ctxlint.');
+          }
           return;
         }
         // Append to existing hook (without shebang — the existing hook already has one)

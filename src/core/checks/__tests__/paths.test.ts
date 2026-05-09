@@ -181,6 +181,23 @@ describe('checkPaths', () => {
     expect(notFound!.fix!.newText.replace(/\\/g, '/')).toBe('lib/utils.ts');
   });
 
+  // Basename-index: when multiple project files share the same basename, the
+  // one with the smallest Levenshtein distance to the full target path wins.
+  it('picks the basename candidate with smallest path distance when multiple share the same basename', async () => {
+    seed({
+      'CLAUDE.md': 'See src/components/utils.ts\n',
+      // Two files with the same basename; src/lib/utils.ts is path-closer
+      'src/lib/utils.ts': 'x',
+      'other/deep/nested/dir/utils.ts': 'x',
+    });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    const notFound = issues.find((i) => i.ruleId === 'paths/not-found');
+    expect(notFound).toBeDefined();
+    // src/lib/utils.ts is closer to src/components/utils.ts than the deeply nested one
+    expect(notFound!.fix!.newText.replace(/\\/g, '/')).toBe('src/lib/utils.ts');
+  });
+
   // Length-prefilter correctness: candidates with very different lengths
   // (lower bound on Levenshtein > cap) must be skipped, but a genuinely close
   // candidate inside the cap must still be found.
