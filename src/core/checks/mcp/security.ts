@@ -98,7 +98,7 @@ export async function checkMcpSecurity(
               issues.push({
                 severity: 'error',
                 check: 'mcp-security',
-                ruleId: 'hardcoded-bearer',
+                ruleId: 'mcp-security/hardcoded-bearer',
                 line: server.line,
                 message: `Server "${server.name}" has a hardcoded Bearer token in a git-tracked file`,
                 fix: {
@@ -117,7 +117,7 @@ export async function checkMcpSecurity(
           issues.push({
             severity: 'error',
             check: 'mcp-security',
-            ruleId: 'hardcoded-api-key',
+            ruleId: 'mcp-security/hardcoded-api-key',
             line: server.line,
             message: `Server "${server.name}" has a hardcoded API key in a git-tracked file`,
           });
@@ -138,7 +138,7 @@ export async function checkMcpSecurity(
           issues.push({
             severity: 'error',
             check: 'mcp-security',
-            ruleId: 'hardcoded-api-key',
+            ruleId: 'mcp-security/hardcoded-api-key',
             line: server.line,
             message: `Server "${server.name}" has a hardcoded API key in a git-tracked file`,
             fix: {
@@ -157,7 +157,7 @@ export async function checkMcpSecurity(
       issues.push({
         severity: 'error',
         check: 'mcp-security',
-        ruleId: 'secret-in-url',
+        ruleId: 'mcp-security/secret-in-url',
         line: server.line,
         message: `Server "${server.name}" has a secret in the URL query string`,
       });
@@ -178,7 +178,7 @@ export async function checkMcpSecurity(
             issues.push({
               severity: 'warning',
               check: 'mcp-security',
-              ruleId: 'http-no-tls',
+              ruleId: 'mcp-security/http-no-tls',
               line: server.line,
               message: `Server "${server.name}" uses HTTP without TLS`,
             });

@@ -282,6 +282,21 @@ export async function scanGlobalMcpConfigs(): Promise<DiscoveredFile[]> {
       continue;
     }
 
+    // ~/.claude.json and ~/.claude/settings.json are general Claude Code
+    // config files -- they MAY contain `mcpServers` but most workstations
+    // never put one there. Skip when there's no recognizable MCP root key so
+    // a clean workstation running `--mcp-global` doesn't get spurious
+    // "missing root key" info findings on these two files.
+    //
+    // The other global paths are MCP-specific by filename
+    // (.cursor/mcp.json, .codeium/windsurf/mcp_config.json,
+    // .aws/amazonq/mcp.json, claude_desktop_config.json) so we don't gate
+    // those -- a malformed MCP file there is a legitimate finding.
+    const isGeneralClaudeFile =
+      normalized.endsWith(`${path.sep}.claude.json`) ||
+      normalized.endsWith(`${path.sep}.claude${path.sep}settings.json`);
+    if (isGeneralClaudeFile && !mcpFileHasMcpKey(normalized)) continue;
+
     const symlink = isSymlink(normalized);
     const target = symlink ? readSymlinkTarget(normalized) : undefined;
 
@@ -295,4 +310,19 @@ export async function scanGlobalMcpConfigs(): Promise<DiscoveredFile[]> {
   }
 
   return found.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+}
+
+/**
+ * Cheap text-only peek: does the file have a top-level "mcpServers" or
+ * "servers" key? Avoids a full JSON parse here -- the mcp-parser will do that
+ * authoritatively later. We only need a reliable enough signal to skip
+ * obviously-non-MCP general Claude config files.
+ */
+function mcpFileHasMcpKey(filePath: string): boolean {
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    return /"(mcpServers|servers)"\s*:/.test(content);
+  } catch {
+    return false;
+  }
 }

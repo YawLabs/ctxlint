@@ -42,7 +42,7 @@ describe('checkCiSecrets', () => {
 
     expect(issues.length).toBe(1);
     expect(issues[0].check).toBe('ci-secrets');
-    expect(issues[0].ruleId).toBe('ci/undocumented-secret');
+    expect(issues[0].ruleId).toBe('ci-secrets/undocumented-secret');
     expect(issues[0].message).toContain('NPM_TOKEN');
   });
 

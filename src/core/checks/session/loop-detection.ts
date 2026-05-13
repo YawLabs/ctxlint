@@ -4,6 +4,10 @@ import type { LintIssue, SessionContext } from '../../types.js';
 const CONSECUTIVE_THRESHOLD = 3;
 const CYCLE_REPEAT_THRESHOLD = 2;
 const MAX_CYCLE_LENGTH = 3;
+// findCyclicPatterns is O(N^2 * MAX_CYCLE_LENGTH). On a populated workstation
+// history.jsonl can grow to 100k+ entries; 100k^2 is ~10B comparisons per
+// cycle length and will wedge the session-audit tool. Bound the input.
+const MAX_HISTORY_ENTRIES = 5000;
 
 function normalizeProject(p: string): string {
   return resolve(p).replace(/\\/g, '/');
@@ -84,10 +88,14 @@ export async function checkLoopDetection(ctx: SessionContext): Promise<LintIssue
   const issues: LintIssue[] = [];
   const currentNorm = normalizeProject(ctx.currentProject);
 
-  // Filter to current project entries, sorted by timestamp
-  const entries = ctx.history
+  // Filter to current project entries, sorted by timestamp. Cap to the most
+  // recent MAX_HISTORY_ENTRIES before running the O(N^2) cycle scan -- a fresh
+  // loop is captured in the tail, so older entries don't add signal.
+  const filtered = ctx.history
     .filter((e) => normalizeProject(e.project) === currentNorm)
     .sort((a, b) => a.timestamp - b.timestamp);
+  const entries =
+    filtered.length > MAX_HISTORY_ENTRIES ? filtered.slice(-MAX_HISTORY_ENTRIES) : filtered;
 
   if (entries.length < CONSECUTIVE_THRESHOLD) return issues;
 
@@ -100,7 +108,7 @@ export async function checkLoopDetection(ctx: SessionContext): Promise<LintIssue
     issues.push({
       severity: 'warning',
       check: 'session-loop-detection',
-      ruleId: 'session/consecutive-repeat',
+      ruleId: 'session-loop-detection/consecutive-repeat',
       line: 0,
       message: `Command run ${count} times consecutively: "${truncated}"`,
       suggestion:
@@ -115,7 +123,7 @@ export async function checkLoopDetection(ctx: SessionContext): Promise<LintIssue
     issues.push({
       severity: 'warning',
       check: 'session-loop-detection',
-      ruleId: 'session/cyclic-pattern',
+      ruleId: 'session-loop-detection/cyclic-pattern',
       line: 0,
       message: `Cyclic pattern repeated ${reps} times: ${cycleStr}`,
       suggestion:

@@ -24,7 +24,7 @@ export async function checkMcpUrls(
       issues.push({
         severity: 'error',
         check: 'mcp-urls',
-        ruleId: 'malformed-url',
+        ruleId: 'mcp-urls/malformed-url',
         line: server.line,
         message: `Server "${server.name}": invalid URL "${server.url}"`,
       });
@@ -39,7 +39,7 @@ export async function checkMcpUrls(
       issues.push({
         severity: 'warning',
         check: 'mcp-urls',
-        ruleId: 'localhost-in-project-config',
+        ruleId: 'mcp-urls/localhost-in-project-config',
         line: server.line,
         message: `Server "${server.name}": localhost URL in project config won't work for teammates`,
       });
@@ -50,7 +50,7 @@ export async function checkMcpUrls(
       issues.push({
         severity: 'info',
         check: 'mcp-urls',
-        ruleId: 'missing-path',
+        ruleId: 'mcp-urls/missing-path',
         line: server.line,
         message: `Server "${server.name}": URL has no path — most MCP servers expect /mcp`,
       });

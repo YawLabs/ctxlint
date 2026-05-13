@@ -28,12 +28,12 @@ export async function checkMcphTokenSecurity(
   const tokenPos = config.positions.token;
   const tokenValue = typeof config.raw?.token === 'string' ? config.raw.token : null;
 
-  // --- Rule: mcph-config/invalid-token-format ---
+  // --- Rule: mcph-token-security/invalid-token-format ---
   if (tokenPos && tokenValue !== null && !TOKEN_PATTERN.test(tokenValue)) {
     issues.push({
       severity: 'error',
       check: 'mcph-token-security',
-      ruleId: 'mcph-config/invalid-token-format',
+      ruleId: 'mcph-token-security/invalid-token-format',
       line: tokenPos.line,
       message: `"token" does not match expected format ^mcp_pat_[A-Za-z0-9_-]+$`,
       suggestion:
@@ -42,13 +42,13 @@ export async function checkMcphTokenSecurity(
     });
   }
 
-  // --- Rule: mcph-config/token-in-project-scope ---
+  // --- Rule: mcph-token-security/token-in-project-scope ---
   // Project-scope + git-tracked + token present = live PAT at risk of leak.
   if (tokenPos && tokenValue !== null && config.scope === 'project' && config.isGitTracked) {
     issues.push({
       severity: 'error',
       check: 'mcph-token-security',
-      ruleId: 'mcph-config/token-in-project-scope',
+      ruleId: 'mcph-token-security/token-in-project-scope',
       line: tokenPos.line,
       message: `"token" in a git-tracked project-scope .mcph.json — PAT will leak via git history`,
       suggestion:
@@ -62,7 +62,7 @@ export async function checkMcphTokenSecurity(
     });
   }
 
-  // --- Rule: mcph-config/prefer-env-token ---
+  // --- Rule: mcph-token-security/prefer-env-token ---
   // Token in any file-scope triggers this. Default warning; configurable error.
   // Skipped if token-in-project-scope already fired on the same field (avoid
   // double-counting the same bad line) — that rule's remediation already
@@ -75,7 +75,7 @@ export async function checkMcphTokenSecurity(
     issues.push({
       severity,
       check: 'mcph-token-security',
-      ruleId: 'mcph-config/prefer-env-token',
+      ruleId: 'mcph-token-security/prefer-env-token',
       line: tokenPos.line,
       message: `prefer MCPH_TOKEN env var over a file-stored token in ${config.relativePath}`,
       suggestion:

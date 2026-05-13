@@ -21,14 +21,18 @@ export async function checkMcpCommands(
   for (const server of config.servers) {
     if (server.transport !== 'stdio' || !server.command) continue;
 
-    // windows-npx-no-wrapper: only for project-level configs
+    // windows-npx-no-wrapper: only for project-level configs.
+    //
+    // The check is the literal `command === 'npx'` test on the outer if. If
+    // the user already wrapped via `command: 'cmd'` + `args: ['/c', 'npx',
+    // ...]` the outer condition is false and this branch is skipped -- which
+    // is the correct behavior. There is no separate "is it already wrapped?"
+    // detection because the wrapped form has `command !== 'npx'`.
     if (process.platform === 'win32' && config.scope === 'project' && server.command === 'npx') {
-      // Check if already wrapped in cmd /c
-      // If command is "npx" directly (not "cmd"), it needs wrapping
       issues.push({
         severity: 'error',
         check: 'mcp-commands',
-        ruleId: 'windows-npx-no-wrapper',
+        ruleId: 'mcp-commands/windows-npx-no-wrapper',
         line: server.line,
         message: `Server "${server.name}": npx requires "cmd /c" wrapper on Windows`,
         suggestion:
@@ -43,7 +47,7 @@ export async function checkMcpCommands(
         issues.push({
           severity: 'warning',
           check: 'mcp-commands',
-          ruleId: 'command-not-found',
+          ruleId: 'mcp-commands/command-not-found',
           line: server.line,
           message: `Server "${server.name}": command "${server.command}" not found`,
         });
@@ -61,7 +65,7 @@ export async function checkMcpCommands(
             issues.push({
               severity: 'warning',
               check: 'mcp-commands',
-              ruleId: 'args-path-missing',
+              ruleId: 'mcp-commands/args-path-missing',
               line: server.line,
               message: `Server "${server.name}": arg "${arg}" looks like a file path but doesn't exist`,
             });

@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { countTokens } from '../../utils/tokens.js';
 import { stripBom } from '../../utils/fs.js';
-import { getTokenThresholds } from './tokens.js';
+import { DEFAULT_TOKEN_THRESHOLDS, type TokenThresholds } from './tokens.js';
 import type { ParsedContextFile, LintIssue, Section } from '../types.js';
 
 // Files that Claude Code (and similar agents) load into every session by
@@ -259,11 +259,12 @@ function checkHardEnforcement(file: ParsedContextFile, settings: Settings[]): Li
 export async function checkTierTokens(
   file: ParsedContextFile,
   projectRoot: string,
+  thresholds: TokenThresholds = DEFAULT_TOKEN_THRESHOLDS,
 ): Promise<LintIssue[]> {
   if (!isAlwaysLoaded(file)) return [];
 
   const issues: LintIssue[] = [];
-  const threshold = getTokenThresholds().tierBreakdown;
+  const threshold = thresholds.tierBreakdown;
 
   // Rule 1: section-breakdown — heaviest top-level sections for large files.
   if (file.totalTokens >= threshold) {
@@ -299,12 +300,15 @@ export async function checkTierTokens(
  * Emits a single warning when the combined budget exceeds the tierAggregate
  * threshold.
  */
-export function checkAggregateTierTokens(files: ParsedContextFile[]): LintIssue | null {
+export function checkAggregateTierTokens(
+  files: ParsedContextFile[],
+  thresholds: TokenThresholds = DEFAULT_TOKEN_THRESHOLDS,
+): LintIssue | null {
   const alwaysLoaded = files.filter(isAlwaysLoaded);
   if (alwaysLoaded.length < 2) return null;
 
   const total = alwaysLoaded.reduce((sum, f) => sum + f.totalTokens, 0);
-  const threshold = getTokenThresholds().tierAggregate;
+  const threshold = thresholds.tierAggregate;
   if (total < threshold) return null;
 
   const breakdown = alwaysLoaded

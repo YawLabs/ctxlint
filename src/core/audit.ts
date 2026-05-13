@@ -12,7 +12,12 @@ import { countTokens } from '../utils/tokens.js';
 import { checkPaths } from './checks/paths.js';
 import { checkCommands } from './checks/commands.js';
 import { checkStaleness } from './checks/staleness.js';
-import { checkTokens, checkAggregateTokens } from './checks/tokens.js';
+import {
+  checkTokens,
+  checkAggregateTokens,
+  resolveTokenThresholds,
+  type TokenThresholds,
+} from './checks/tokens.js';
 import { checkTierTokens, checkAggregateTierTokens } from './checks/tier-tokens.js';
 import { checkRedundancy, checkDuplicateContent } from './checks/redundancy.js';
 import { checkContradictions } from './checks/contradictions.js';
@@ -40,6 +45,7 @@ import { checkLoopDetection } from './checks/session/loop-detection.js';
 import { checkMemoryIndexOverflow } from './checks/session/memory-index-overflow.js';
 import { checkCiCoverage } from './checks/ci-coverage.js';
 import { checkCiSecrets } from './checks/ci-secrets.js';
+import { checkContentSecrets } from './checks/content-secrets.js';
 import type {
   LintResult,
   FileResult,
@@ -64,6 +70,7 @@ export const ALL_CHECKS: CheckName[] = [
   'frontmatter',
   'ci-coverage',
   'ci-secrets',
+  'content-secrets',
 ];
 
 export const ALL_MCP_CHECKS: McpCheckName[] = [
@@ -107,6 +114,11 @@ export interface AuditOptions {
   mcphStrictEnvToken?: boolean;
   session?: boolean;
   sessionOnly?: boolean;
+  // Per-call token thresholds. When omitted, defaults from
+  // DEFAULT_TOKEN_THRESHOLDS apply. Replaces the previous module-level
+  // setTokenThresholds() so concurrent audits (e.g. from the MCP server)
+  // don't share mutable state.
+  tokenThresholds?: Partial<TokenThresholds>;
 }
 
 function hasMcpChecks(checks: CheckName[]): boolean {
@@ -152,6 +164,7 @@ export async function runAudit(
   options: AuditOptions = {},
 ): Promise<LintResult> {
   const fileResults: FileResult[] = [];
+  const thresholds = resolveTokenThresholds(options.tokenThresholds);
 
   const shouldRunContextChecks = !options.mcpOnly && !options.mcphOnly && !options.sessionOnly;
   const shouldRunMcpChecks =
@@ -175,13 +188,16 @@ export async function runAudit(
       if (activeChecks.includes('paths')) checkPromises.push(checkPaths(file, projectRoot));
       if (activeChecks.includes('commands')) checkPromises.push(checkCommands(file, projectRoot));
       if (activeChecks.includes('staleness')) checkPromises.push(checkStaleness(file, projectRoot));
-      if (activeChecks.includes('tokens')) checkPromises.push(checkTokens(file, projectRoot));
+      if (activeChecks.includes('tokens'))
+        checkPromises.push(checkTokens(file, projectRoot, thresholds));
       if (activeChecks.includes('tier-tokens'))
-        checkPromises.push(checkTierTokens(file, projectRoot));
+        checkPromises.push(checkTierTokens(file, projectRoot, thresholds));
       if (activeChecks.includes('redundancy'))
         checkPromises.push(checkRedundancy(file, projectRoot));
       if (activeChecks.includes('frontmatter'))
         checkPromises.push(checkFrontmatter(file, projectRoot));
+      if (activeChecks.includes('content-secrets'))
+        checkPromises.push(checkContentSecrets(file, projectRoot));
 
       const results = await Promise.all(checkPromises);
       const issues = results.flat();
@@ -201,11 +217,12 @@ export async function runAudit(
     if (activeChecks.includes('tokens')) {
       const aggIssue = checkAggregateTokens(
         fileResults.map((f) => ({ path: f.path, tokens: f.tokens })),
+        thresholds,
       );
       if (aggIssue) crossFileIssues.push(aggIssue);
     }
     if (activeChecks.includes('tier-tokens')) {
-      const tierAgg = checkAggregateTierTokens(parsed);
+      const tierAgg = checkAggregateTierTokens(parsed, thresholds);
       if (tierAgg) crossFileIssues.push(tierAgg);
     }
     if (activeChecks.includes('redundancy')) {
@@ -366,7 +383,7 @@ export async function runAudit(
           issues.push({
             severity: 'error',
             check: 'mcph-schema-conformance',
-            ruleId: 'mcph-config/parse-error',
+            ruleId: 'mcph-schema-conformance/parse-error',
             line: 1,
             message: err,
           });

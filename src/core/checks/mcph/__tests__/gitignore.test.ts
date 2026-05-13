@@ -23,7 +23,7 @@ describe('checkMcphGitignore', () => {
   it('fires local-file-not-gitignored on project-local file not covered by .gitignore', async () => {
     const config = makeConfig({ scope: 'project-local', isGitignored: false });
     const issues = await checkMcphGitignore(config, '/project');
-    const issue = issues.find((i) => i.ruleId === 'mcph-config/local-file-not-gitignored');
+    const issue = issues.find((i) => i.ruleId === 'mcph-gitignore/local-file-not-gitignored');
     expect(issue).toBeDefined();
     expect(issue!.severity).toBe('error');
     expect(issue!.message).toContain('.mcph.local.json');

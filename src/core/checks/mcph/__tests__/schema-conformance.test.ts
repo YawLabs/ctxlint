@@ -28,7 +28,7 @@ describe('checkMcphSchemaConformance', () => {
       ],
     });
     const issues = await checkMcphSchemaConformance(config, '/project');
-    const u = issues.find((i) => i.ruleId === 'mcph-config/unknown-field');
+    const u = issues.find((i) => i.ruleId === 'mcph-schema-conformance/unknown-field');
     expect(u).toBeDefined();
     expect(u!.severity).toBe('warning');
     expect(u!.message).toContain('tokens');
@@ -43,7 +43,9 @@ describe('checkMcphSchemaConformance', () => {
       ],
     });
     const issues = await checkMcphSchemaConformance(config, '/project');
-    expect(issues.filter((i) => i.ruleId === 'mcph-config/unknown-field')).toHaveLength(2);
+    expect(issues.filter((i) => i.ruleId === 'mcph-schema-conformance/unknown-field')).toHaveLength(
+      2,
+    );
   });
 
   it('fires stale-version when version < 1', async () => {
@@ -52,7 +54,7 @@ describe('checkMcphSchemaConformance', () => {
       positions: { version: { line: 3, column: 5, endLine: 3, endColumn: 15 } },
     });
     const issues = await checkMcphSchemaConformance(config, '/project');
-    const s = issues.find((i) => i.ruleId === 'mcph-config/stale-version');
+    const s = issues.find((i) => i.ruleId === 'mcph-schema-conformance/stale-version');
     expect(s).toBeDefined();
     expect(s!.severity).toBe('info');
     expect(s!.line).toBe(3);
@@ -64,13 +66,17 @@ describe('checkMcphSchemaConformance', () => {
       positions: { version: { line: 3, column: 5, endLine: 3, endColumn: 15 } },
     });
     const issues = await checkMcphSchemaConformance(config, '/project');
-    expect(issues.find((i) => i.ruleId === 'mcph-config/stale-version')).toBeUndefined();
+    expect(
+      issues.find((i) => i.ruleId === 'mcph-schema-conformance/stale-version'),
+    ).toBeUndefined();
   });
 
   it('does not fire stale-version when version is absent', async () => {
     const config = makeConfig({ raw: {}, positions: {} });
     const issues = await checkMcphSchemaConformance(config, '/project');
-    expect(issues.find((i) => i.ruleId === 'mcph-config/stale-version')).toBeUndefined();
+    expect(
+      issues.find((i) => i.ruleId === 'mcph-schema-conformance/stale-version'),
+    ).toBeUndefined();
   });
 
   it('returns no issues when there are parse errors', async () => {

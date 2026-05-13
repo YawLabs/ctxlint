@@ -28,7 +28,7 @@ describe('checkMcphTokenSecurity', () => {
       positions: { token: { line: 3, column: 5, endLine: 3, endColumn: 12 } },
     });
     const issues = await checkMcphTokenSecurity(config, '/project');
-    const leak = issues.find((i) => i.ruleId === 'mcph-config/token-in-project-scope');
+    const leak = issues.find((i) => i.ruleId === 'mcph-token-security/token-in-project-scope');
     expect(leak).toBeDefined();
     expect(leak!.severity).toBe('error');
     expect(leak!.line).toBe(3);
@@ -44,7 +44,9 @@ describe('checkMcphTokenSecurity', () => {
       positions: { token: { line: 3, column: 5, endLine: 3, endColumn: 12 } },
     });
     const issues = await checkMcphTokenSecurity(config, '/project');
-    expect(issues.find((i) => i.ruleId === 'mcph-config/token-in-project-scope')).toBeUndefined();
+    expect(
+      issues.find((i) => i.ruleId === 'mcph-token-security/token-in-project-scope'),
+    ).toBeUndefined();
   });
 
   it('does not fire token-in-project-scope on global scope', async () => {
@@ -55,7 +57,9 @@ describe('checkMcphTokenSecurity', () => {
       positions: { token: { line: 2, column: 5, endLine: 2, endColumn: 12 } },
     });
     const issues = await checkMcphTokenSecurity(config, '/project');
-    expect(issues.find((i) => i.ruleId === 'mcph-config/token-in-project-scope')).toBeUndefined();
+    expect(
+      issues.find((i) => i.ruleId === 'mcph-token-security/token-in-project-scope'),
+    ).toBeUndefined();
   });
 
   it('fires invalid-token-format when pattern fails', async () => {
@@ -64,7 +68,7 @@ describe('checkMcphTokenSecurity', () => {
       positions: { token: { line: 3, column: 5, endLine: 3, endColumn: 12 } },
     });
     const issues = await checkMcphTokenSecurity(config, '/project');
-    const bad = issues.find((i) => i.ruleId === 'mcph-config/invalid-token-format');
+    const bad = issues.find((i) => i.ruleId === 'mcph-token-security/invalid-token-format');
     expect(bad).toBeDefined();
     expect(bad!.severity).toBe('error');
   });
@@ -76,7 +80,7 @@ describe('checkMcphTokenSecurity', () => {
       positions: { token: { line: 2, column: 5, endLine: 2, endColumn: 12 } },
     });
     const issues = await checkMcphTokenSecurity(config, '/project');
-    const pref = issues.find((i) => i.ruleId === 'mcph-config/prefer-env-token');
+    const pref = issues.find((i) => i.ruleId === 'mcph-token-security/prefer-env-token');
     expect(pref).toBeDefined();
     expect(pref!.severity).toBe('warning');
     expect(pref!.suggestion).toContain('MCPH_TOKEN');
@@ -90,7 +94,7 @@ describe('checkMcphTokenSecurity', () => {
       positions: { token: { line: 2, column: 5, endLine: 2, endColumn: 12 } },
     });
     const issues = await checkMcphTokenSecurity(config, '/project', { strictEnvToken: true });
-    const pref = issues.find((i) => i.ruleId === 'mcph-config/prefer-env-token');
+    const pref = issues.find((i) => i.ruleId === 'mcph-token-security/prefer-env-token');
     expect(pref!.severity).toBe('error');
   });
 
@@ -102,8 +106,12 @@ describe('checkMcphTokenSecurity', () => {
       positions: { token: { line: 3, column: 5, endLine: 3, endColumn: 12 } },
     });
     const issues = await checkMcphTokenSecurity(config, '/project');
-    expect(issues.filter((i) => i.ruleId === 'mcph-config/token-in-project-scope')).toHaveLength(1);
-    expect(issues.filter((i) => i.ruleId === 'mcph-config/prefer-env-token')).toHaveLength(0);
+    expect(
+      issues.filter((i) => i.ruleId === 'mcph-token-security/token-in-project-scope'),
+    ).toHaveLength(1);
+    expect(issues.filter((i) => i.ruleId === 'mcph-token-security/prefer-env-token')).toHaveLength(
+      0,
+    );
   });
 
   it('returns no issues when token is absent', async () => {

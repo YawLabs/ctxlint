@@ -39,7 +39,7 @@ describe('checkCiCoverage', () => {
 
     expect(issues.length).toBe(1);
     expect(issues[0].check).toBe('ci-coverage');
-    expect(issues[0].ruleId).toBe('ci/no-release-docs');
+    expect(issues[0].ruleId).toBe('ci-coverage/no-release-docs');
     expect(issues[0].message).toContain('release.yml');
   });
 

@@ -83,7 +83,7 @@ export async function checkCiCoverage(
     {
       severity: 'info',
       check: 'ci-coverage',
-      ruleId: 'ci/no-release-docs',
+      ruleId: 'ci-coverage/no-release-docs',
       line: 0,
       message: `Release workflow${releaseWorkflows.length > 1 ? 's' : ''} found (${releaseWorkflows.join(', ')}) but no context file documents the release process`,
       suggestion:

@@ -29,7 +29,7 @@ describe('checkLoopDetection', () => {
     const issues = await checkLoopDetection(makeCtx(entries));
     expect(issues.length).toBe(1);
     expect(issues[0].check).toBe('session-loop-detection');
-    expect(issues[0].ruleId).toBe('session/consecutive-repeat');
+    expect(issues[0].ruleId).toBe('session-loop-detection/consecutive-repeat');
     expect(issues[0].message).toContain('npm test');
     expect(issues[0].message).toContain('3 times');
   });
@@ -51,7 +51,7 @@ describe('checkLoopDetection', () => {
 
     const issues = await checkLoopDetection(makeCtx(entries));
     expect(issues.length).toBe(1);
-    expect(issues[0].ruleId).toBe('session/cyclic-pattern');
+    expect(issues[0].ruleId).toBe('session-loop-detection/cyclic-pattern');
     expect(issues[0].message).toContain('2 times');
   });
 
@@ -109,7 +109,7 @@ describe('checkLoopDetection', () => {
 
     const issues = await checkLoopDetection(makeCtx(entries));
     expect(issues.length).toBe(1);
-    expect(issues[0].ruleId).toBe('session/cyclic-pattern');
+    expect(issues[0].ruleId).toBe('session-loop-detection/cyclic-pattern');
   });
 
   it('truncates long command names in messages', async () => {

@@ -11,13 +11,13 @@ export async function checkMcphLists(
   const blocked = config.listEntries.blocked;
   const blockedSet = new Set(blocked.map((e) => e.value));
 
-  // --- Rule: mcph-config/allowlist-denylist-conflict ---
+  // --- Rule: mcph-lists/allowlist-denylist-conflict ---
   for (const entry of servers) {
     if (blockedSet.has(entry.value)) {
       issues.push({
         severity: 'warning',
         check: 'mcph-lists',
-        ruleId: 'mcph-config/allowlist-denylist-conflict',
+        ruleId: 'mcph-lists/allowlist-denylist-conflict',
         line: entry.position.line,
         message: `server "${entry.value}" is in both "servers" (allow-list) and "blocked" (deny-list)`,
         suggestion: `Remove "${entry.value}" from one of the two lists. "blocked" wins in practice (deny > allow), so the allow-list entry is dead weight.`,
@@ -25,7 +25,7 @@ export async function checkMcphLists(
     }
   }
 
-  // --- Rule: mcph-config/duplicate-entries ---
+  // --- Rule: mcph-lists/duplicate-entries ---
   for (const listName of ['servers', 'blocked'] as const) {
     const entries = config.listEntries[listName];
     const seen = new Map<string, number>();
@@ -35,7 +35,7 @@ export async function checkMcphLists(
         issues.push({
           severity: 'info',
           check: 'mcph-lists',
-          ruleId: 'mcph-config/duplicate-entries',
+          ruleId: 'mcph-lists/duplicate-entries',
           line: entry.position.line,
           message: `"${entry.value}" appears multiple times in "${listName}" (first at line ${prevLine})`,
           suggestion: `Remove the duplicate entry at line ${entry.position.line}.`,

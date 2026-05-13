@@ -135,7 +135,7 @@ export async function checkDivergedFile(ctx: SessionContext): Promise<LintIssue[
       issues.push({
         severity: 'warning',
         check: 'session-diverged-file',
-        ruleId: 'session/diverged-file',
+        ruleId: 'session-diverged-file/diverged-file',
         line: 0,
         message: `${fileName} has diverged from sibling repos: ${details}`,
         suggestion: `Compare with sibling versions to identify unintentional drift`,

@@ -52,7 +52,7 @@ export async function checkMcpConsistency(configs: ParsedMcpConfig[]): Promise<L
           issues.push({
             severity: 'warning',
             check: 'mcp-consistency',
-            ruleId: 'same-server-different-config',
+            ruleId: 'mcp-consistency/same-server-different-config',
             line: a.line,
             message: `Server "${name}" is configured differently in ${a.config.relativePath} and ${b.config.relativePath}`,
           });
@@ -94,7 +94,7 @@ function checkMissingFromClient(configs: ParsedMcpConfig[]): LintIssue[] {
         issues.push({
           severity: 'info',
           check: 'mcp-consistency',
-          ruleId: 'missing-from-client',
+          ruleId: 'mcp-consistency/missing-from-client',
           line: primaryServer.line,
           message: `Server "${primaryServer.name}" is in .mcp.json but missing from ${other.relativePath}`,
         });
@@ -189,7 +189,7 @@ function checkSingleFileIssues(configs: ParsedMcpConfig[]): LintIssue[] {
         issues.push({
           severity: 'warning',
           check: 'mcp-consistency',
-          ruleId: 'duplicate-server-name',
+          ruleId: 'mcp-consistency/duplicate-server-name',
           line: 1,
           message: `Duplicate server name "${name}" in ${config.relativePath} — only the last definition is used`,
         });

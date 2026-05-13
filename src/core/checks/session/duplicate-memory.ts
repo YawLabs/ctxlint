@@ -60,7 +60,7 @@ export async function checkDuplicateMemory(ctx: SessionContext): Promise<LintIss
       issues.push({
         severity: 'info',
         check: 'session-duplicate-memory',
-        ruleId: 'session/duplicate-memory',
+        ruleId: 'session-duplicate-memory/duplicate-memory',
         line: 0,
         message: `Memory "${nameA}" (${projA}) and "${nameB}" (${projB}) have ${Math.round(overlap * 100)}% overlap`,
         suggestion: `Consider consolidating into a shared memory or removing the duplicate`,

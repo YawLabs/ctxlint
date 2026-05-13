@@ -2,7 +2,6 @@ import * as fs from 'node:fs';
 import { Command, Option } from 'commander';
 import ora from 'ora';
 import { resetPathsCache } from './core/checks/paths.js';
-import { setTokenThresholds, resetTokenThresholds } from './core/checks/tokens.js';
 import { formatText, formatJson, formatTokenReport, formatSarif } from './core/reporter.js';
 import { applyFixes } from './core/fixer.js';
 import { freeEncoder } from './utils/tokens.js';
@@ -69,6 +68,11 @@ export async function runCli() {
     .option('--mcp', 'Enable MCP config linting alongside context file checks', false)
     .option('--mcp-only', 'Run only MCP config checks, skip context file checks', false)
     .option('--mcp-global', 'Also scan user/global MCP config files (implies --mcp)', false)
+    // --mcp-server is intercepted in src/index.ts BEFORE commander runs (it's
+    // a sibling of the `serve` subcommand). Declared here only so --help lists
+    // it and unknown-flag handling doesn't reject it. The action handler below
+    // never sees this flag; if you refactor index.ts to always route through
+    // commander, also wire startServer() into the action handler.
     .option('--mcp-server', 'Start the MCP server (alias: `ctxlint serve`)')
     .option('--mcph', 'Enable .mcph.json (mcp.hosting CLI config) linting', false)
     .option('--mcph-only', 'Run only mcph config checks', false)
@@ -109,6 +113,7 @@ export async function runCli() {
           mcphStrictEnvToken: options.mcphStrictEnvToken,
           session: options.session,
           sessionOnly: options.sessionOnly,
+          tokenThresholds: config?.tokenThresholds,
         });
 
         spinner?.stop();
@@ -212,7 +217,6 @@ export async function runCli() {
         resetGit();
         resetPathsCache();
         resetPackageJsonCache();
-        resetTokenThresholds();
       }
 
       // Watch mode: re-lint when context files, MCP configs, or package.json change
@@ -288,12 +292,6 @@ export async function runCli() {
               console.error('Error reloading config:', err instanceof Error ? err.message : err);
             }
             try {
-              if (liveConfig?.tokenThresholds) {
-                setTokenThresholds(liveConfig.tokenThresholds);
-              } else {
-                resetTokenThresholds();
-              }
-
               const result = await runAudit(resolvedPath, liveActiveChecks, {
                 depth: liveOptions.depth,
                 extraPatterns: liveConfig?.contextFiles,
@@ -306,6 +304,7 @@ export async function runCli() {
                 mcphStrictEnvToken: liveOptions.mcphStrictEnvToken,
                 session: liveOptions.session,
                 sessionOnly: liveOptions.sessionOnly,
+                tokenThresholds: liveConfig?.tokenThresholds,
               });
 
               if (result.files.length === 0) {
@@ -326,7 +325,6 @@ export async function runCli() {
               resetGit();
               resetPathsCache();
               resetPackageJsonCache();
-              resetTokenThresholds();
             }
             console.log(chalk.dim('\nWatching for changes... (Ctrl+C to stop)\n'));
           }, 300);
@@ -540,11 +538,9 @@ function resolveSession(resolvedPath: string, opts: Record<string, unknown>): Re
     sessionOnly,
   };
 
-  // Apply token thresholds from config (initial-run path; watch-mode rerun
-  // calls setTokenThresholds itself with `liveConfig`).
-  if (config?.tokenThresholds) {
-    setTokenThresholds(config.tokenThresholds);
-  }
+  // Token thresholds from config flow through runAudit's tokenThresholds
+  // option (passed by both initial and watch-mode call sites). There is no
+  // module-level state to apply here.
 
   const activeChecks = options.checks.filter((c) => !options.ignore.includes(c));
 

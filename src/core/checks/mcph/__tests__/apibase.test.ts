@@ -26,7 +26,7 @@ describe('checkMcphApibase', () => {
       positions: { apiBase: { line: 2, column: 5, endLine: 2, endColumn: 15 } },
     });
     const issues = await checkMcphApibase(config, '/project');
-    const bad = issues.find((i) => i.ruleId === 'mcph-config/invalid-apibase');
+    const bad = issues.find((i) => i.ruleId === 'mcph-apibase/invalid-apibase');
     expect(bad).toBeDefined();
     expect(bad!.severity).toBe('error');
     expect(bad!.line).toBe(2);
@@ -38,7 +38,7 @@ describe('checkMcphApibase', () => {
       positions: { apiBase: { line: 2, column: 5, endLine: 2, endColumn: 25 } },
     });
     const issues = await checkMcphApibase(config, '/project');
-    const insecure = issues.find((i) => i.ruleId === 'mcph-config/insecure-apibase');
+    const insecure = issues.find((i) => i.ruleId === 'mcph-apibase/insecure-apibase');
     expect(insecure).toBeDefined();
     expect(insecure!.severity).toBe('warning');
     expect(insecure!.message).toContain('mcp.hosting');
@@ -59,7 +59,7 @@ describe('checkMcphApibase', () => {
       positions: { apiBase: { line: 2, column: 5, endLine: 2, endColumn: 28 } },
     });
     const issues = await checkMcphApibase(config, '/project');
-    expect(issues.find((i) => i.ruleId === 'mcph-config/insecure-apibase')).toBeUndefined();
+    expect(issues.find((i) => i.ruleId === 'mcph-apibase/insecure-apibase')).toBeUndefined();
   });
 
   it('does not fire on http://127.0.0.1', async () => {
@@ -68,7 +68,7 @@ describe('checkMcphApibase', () => {
       positions: { apiBase: { line: 2, column: 5, endLine: 2, endColumn: 28 } },
     });
     const issues = await checkMcphApibase(config, '/project');
-    expect(issues.find((i) => i.ruleId === 'mcph-config/insecure-apibase')).toBeUndefined();
+    expect(issues.find((i) => i.ruleId === 'mcph-apibase/insecure-apibase')).toBeUndefined();
   });
 
   it('does not fire on RFC1918 10.x', async () => {
@@ -77,7 +77,7 @@ describe('checkMcphApibase', () => {
       positions: { apiBase: { line: 2, column: 5, endLine: 2, endColumn: 22 } },
     });
     const issues = await checkMcphApibase(config, '/project');
-    expect(issues.find((i) => i.ruleId === 'mcph-config/insecure-apibase')).toBeUndefined();
+    expect(issues.find((i) => i.ruleId === 'mcph-apibase/insecure-apibase')).toBeUndefined();
   });
 
   it('does not fire on *.local', async () => {
@@ -86,7 +86,7 @@ describe('checkMcphApibase', () => {
       positions: { apiBase: { line: 2, column: 5, endLine: 2, endColumn: 28 } },
     });
     const issues = await checkMcphApibase(config, '/project');
-    expect(issues.find((i) => i.ruleId === 'mcph-config/insecure-apibase')).toBeUndefined();
+    expect(issues.find((i) => i.ruleId === 'mcph-apibase/insecure-apibase')).toBeUndefined();
   });
 
   it('does not fire on *.internal', async () => {
@@ -95,7 +95,7 @@ describe('checkMcphApibase', () => {
       positions: { apiBase: { line: 2, column: 5, endLine: 2, endColumn: 26 } },
     });
     const issues = await checkMcphApibase(config, '/project');
-    expect(issues.find((i) => i.ruleId === 'mcph-config/insecure-apibase')).toBeUndefined();
+    expect(issues.find((i) => i.ruleId === 'mcph-apibase/insecure-apibase')).toBeUndefined();
   });
 
   it('returns no issues when apiBase is absent', async () => {

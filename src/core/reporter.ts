@@ -17,10 +17,10 @@ type FileGroup = 'context' | 'mcp' | 'mcph' | 'session';
 function classifyFile(f: FileResult): FileGroup {
   // Synthetic cross-file buckets (audit.ts emits these with these exact paths).
   // Match explicitly so a future synthetic bucket can't silently fall through
-  // to the context group.
+  // to the context group. Note: there is no '(mcph)' bucket today -- mcph has
+  // no cross-file checks. If one is added, also add a match arm here.
   if (f.path === '(project)') return 'context';
   if (f.path === '(mcp)') return 'mcp';
-  if (f.path === '(mcph)') return 'mcph';
   if (f.path.includes('session audit')) return 'session';
 
   for (const issue of f.issues) {
@@ -376,6 +376,11 @@ function buildRuleDescriptors(): SarifRule[] {
     {
       id: 'ctxlint/ci-secrets',
       shortDescription: { text: 'CI secret not documented in context files' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
+      id: 'ctxlint/content-secrets',
+      shortDescription: { text: 'Inline-pasted secret detected in a context file' },
       helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
     },
     {

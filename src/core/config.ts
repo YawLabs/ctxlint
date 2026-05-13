@@ -130,7 +130,13 @@ function suggestKey(unknown: string): string | null {
   }
   // Only suggest when the typo distance is small relative to the key length —
   // avoids "did you mean checks?" for completely unrelated junk like `license`.
-  if (best && bestDist <= Math.max(2, Math.floor(unknown.length / 3))) {
+  //
+  // Threshold: scale by 1/3 of key length for short keys, but CAP at 4. Without
+  // the cap, a long key like `mcphStrictEnvToken` (18 chars) would accept
+  // distance up to 6, which produces surprising "did you mean ...?" hits on
+  // genuinely unrelated keys.
+  const threshold = Math.min(4, Math.max(2, Math.floor(unknown.length / 3)));
+  if (best && bestDist <= threshold) {
     return best;
   }
   return null;

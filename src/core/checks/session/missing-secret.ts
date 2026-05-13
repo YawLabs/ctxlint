@@ -86,7 +86,7 @@ export async function checkMissingSecret(ctx: SessionContext): Promise<LintIssue
       issues.push({
         severity: 'error',
         check: 'session-missing-secret',
-        ruleId: 'session/missing-secret',
+        ruleId: 'session-missing-secret/missing-secret',
         line: 0,
         message: `GitHub secret "${secretName}" is set on ${siblingMatches.length} sibling repos (${sibNames}) but not on this project`,
         suggestion: `Run: gh secret set ${secretName} --repo <owner>/<repo>`,

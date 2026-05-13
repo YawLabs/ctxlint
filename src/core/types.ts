@@ -84,6 +84,7 @@ export type CheckName =
   | 'frontmatter'
   | 'ci-coverage'
   | 'ci-secrets'
+  | 'content-secrets'
   | McpCheckName
   | McphCheckName
   | SessionCheckName;

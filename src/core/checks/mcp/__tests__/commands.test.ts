@@ -117,7 +117,7 @@ describe('checkMcpCommands', () => {
           ],
         });
         const issues = await checkMcpCommands(config, '/project');
-        const w = issues.find((i) => i.ruleId === 'windows-npx-no-wrapper');
+        const w = issues.find((i) => i.ruleId === 'mcp-commands/windows-npx-no-wrapper');
         expect(w).toBeDefined();
         expect(w!.message).toContain('cmd /c');
       } finally {
@@ -133,7 +133,9 @@ describe('checkMcpCommands', () => {
           servers: [{ name: 'srv', transport: 'stdio', command: 'npx', line: 3, raw: {} }],
         });
         const issues = await checkMcpCommands(config, '/project');
-        expect(issues.find((i) => i.ruleId === 'windows-npx-no-wrapper')).toBeUndefined();
+        expect(
+          issues.find((i) => i.ruleId === 'mcp-commands/windows-npx-no-wrapper'),
+        ).toBeUndefined();
       } finally {
         restore();
       }
@@ -147,7 +149,9 @@ describe('checkMcpCommands', () => {
           servers: [{ name: 'srv', transport: 'stdio', command: 'npx', line: 3, raw: {} }],
         });
         const issues = await checkMcpCommands(config, '/project');
-        expect(issues.find((i) => i.ruleId === 'windows-npx-no-wrapper')).toBeUndefined();
+        expect(
+          issues.find((i) => i.ruleId === 'mcp-commands/windows-npx-no-wrapper'),
+        ).toBeUndefined();
       } finally {
         restore();
       }
@@ -170,7 +174,9 @@ describe('checkMcpCommands', () => {
           ],
         });
         const issues = await checkMcpCommands(config, '/project');
-        expect(issues.find((i) => i.ruleId === 'windows-npx-no-wrapper')).toBeUndefined();
+        expect(
+          issues.find((i) => i.ruleId === 'mcp-commands/windows-npx-no-wrapper'),
+        ).toBeUndefined();
       } finally {
         restore();
       }

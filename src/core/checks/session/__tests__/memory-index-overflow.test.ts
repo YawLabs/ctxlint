@@ -63,7 +63,7 @@ describe('checkMemoryIndexOverflow', () => {
     const lineIssue = issues.find((i) => i.message.includes('lines'));
     expect(lineIssue).toBeDefined();
     expect(lineIssue!.severity).toBe('warning');
-    expect(lineIssue!.ruleId).toBe('session/memory-index-overflow');
+    expect(lineIssue!.ruleId).toBe('session-memory-index-overflow/memory-index-overflow');
   });
 
   it('warns when MEMORY.md exceeds 25KB', async () => {

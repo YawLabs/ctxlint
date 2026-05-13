@@ -15,7 +15,7 @@ export async function checkMcpDeprecated(
       issues.push({
         severity: 'warning',
         check: 'mcp-deprecated',
-        ruleId: 'sse-transport',
+        ruleId: 'mcp-deprecated/sse-transport',
         line,
         message: `Server "${server.name}" uses deprecated SSE transport — use "http" (Streamable HTTP) instead`,
         fix: {

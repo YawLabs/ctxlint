@@ -63,13 +63,14 @@ export async function parseMcpConfig(
 
   // Parse server entries
   const lines = content.split('\n');
+  const rootKeyLine = findRootKeyLine(lines, rootKey);
   for (const [name, value] of Object.entries(serversObj as Record<string, unknown>)) {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) {
       continue;
     }
 
     const raw = value as Record<string, unknown>;
-    const line = findServerLine(lines, name);
+    const line = findServerLine(lines, name, rootKeyLine);
     const transport = inferTransport(raw);
 
     const entry: McpServerEntry = {
@@ -136,15 +137,43 @@ function inferTransport(raw: Record<string, unknown>): McpTransport {
   return 'unknown';
 }
 
-function findServerLine(lines: string[], serverName: string): number {
-  const escaped = serverName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/**
+ * Find the line index (0-based) of the root key ("mcpServers" / "servers").
+ * Returns -1 if not found textually (the parser only calls this AFTER
+ * confirming the key is present in the parsed object, but JSON comments /
+ * unusual formatting could still defeat the regex -- in that case callers
+ * fall back to scanning from line 0).
+ */
+function findRootKeyLine(lines: string[], rootKey: string): number {
+  const escaped = rootKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const pattern = new RegExp(`"${escaped}"\\s*:`);
   for (let i = 0; i < lines.length; i++) {
+    if (pattern.test(lines[i])) return i;
+  }
+  return -1;
+}
+
+/**
+ * Find the 1-indexed line of a server entry by name. Search starts AFTER the
+ * root key line so a top-level key colliding with a server name (e.g. a
+ * server actually named "version" alongside a top-level "version" field)
+ * doesn't get reported at line 1.
+ *
+ * Fallbacks (in order):
+ *  - If no match is found after the root key: return the root key line + 1
+ *    so diagnostics still point inside the relevant block.
+ *  - If the root key wasn't located textually: return 1.
+ */
+function findServerLine(lines: string[], serverName: string, rootKeyLine: number): number {
+  const escaped = serverName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`"${escaped}"\\s*:`);
+  const start = rootKeyLine >= 0 ? rootKeyLine + 1 : 0;
+  for (let i = start; i < lines.length; i++) {
     if (pattern.test(lines[i])) {
       return i + 1; // 1-indexed
     }
   }
-  return 1;
+  return rootKeyLine >= 0 ? rootKeyLine + 1 : 1;
 }
 
 function isStringRecord(value: unknown): value is Record<string, string> {

@@ -38,7 +38,7 @@ export async function checkMcphApibase(
     issues.push({
       severity: 'error',
       check: 'mcph-apibase',
-      ruleId: 'mcph-config/invalid-apibase',
+      ruleId: 'mcph-apibase/invalid-apibase',
       line: pos.line,
       message: `"apiBase" is not a valid URL: ${value}`,
       suggestion: `Use an absolute http(s) URL, e.g. "https://mcp.hosting".`,
@@ -46,12 +46,12 @@ export async function checkMcphApibase(
     return issues;
   }
 
-  // --- Rule: mcph-config/insecure-apibase ---
+  // --- Rule: mcph-apibase/insecure-apibase ---
   if (parsed.protocol === 'http:' && !isPrivateHost(parsed.hostname)) {
     issues.push({
       severity: 'warning',
       check: 'mcph-apibase',
-      ruleId: 'mcph-config/insecure-apibase',
+      ruleId: 'mcph-apibase/insecure-apibase',
       line: pos.line,
       message: `"apiBase" uses plaintext HTTP to a public host (${parsed.hostname})`,
       suggestion:

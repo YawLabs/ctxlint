@@ -12,7 +12,7 @@ export async function checkMcpSchema(
       issues.push({
         severity: 'error',
         check: 'mcp-schema',
-        ruleId: 'invalid-json',
+        ruleId: 'mcp-schema/invalid-json',
         line: 1,
         message: `MCP config is not valid JSON: ${err}`,
       });
@@ -25,7 +25,7 @@ export async function checkMcpSchema(
     issues.push({
       severity: 'error',
       check: 'mcp-schema',
-      ruleId: 'missing-root-key',
+      ruleId: 'mcp-schema/missing-root-key',
       line: 1,
       message: `MCP config has no "${config.expectedRootKey}" key`,
     });
@@ -38,7 +38,7 @@ export async function checkMcpSchema(
     issues.push({
       severity: 'error',
       check: 'mcp-schema',
-      ruleId: 'wrong-root-key',
+      ruleId: 'mcp-schema/wrong-root-key',
       line,
       message: `${config.relativePath} must use "${config.expectedRootKey}" as root key, not "${config.actualRootKey}"`,
       fix: {
@@ -55,7 +55,7 @@ export async function checkMcpSchema(
     issues.push({
       severity: 'info',
       check: 'mcp-schema',
-      ruleId: 'empty-servers',
+      ruleId: 'mcp-schema/empty-servers',
       line: 1,
       message: 'MCP config has no server entries',
     });
@@ -69,7 +69,7 @@ export async function checkMcpSchema(
       issues.push({
         severity: 'error',
         check: 'mcp-schema',
-        ruleId: 'no-name-field',
+        ruleId: 'mcp-schema/no-name-field',
         line: server.line,
         message: 'Server name cannot be empty',
       });
@@ -83,7 +83,7 @@ export async function checkMcpSchema(
         issues.push({
           severity: 'warning',
           check: 'mcp-schema',
-          ruleId: 'unknown-transport',
+          ruleId: 'mcp-schema/unknown-transport',
           line: server.line,
           message: `Server "${server.name}" has unknown transport type "${typeVal}"`,
         });
@@ -95,7 +95,7 @@ export async function checkMcpSchema(
       issues.push({
         severity: 'warning',
         check: 'mcp-schema',
-        ruleId: 'ambiguous-transport',
+        ruleId: 'mcp-schema/ambiguous-transport',
         line: server.line,
         message: `Server "${server.name}" has both "command" and "url" — transport is ambiguous`,
       });
@@ -106,7 +106,7 @@ export async function checkMcpSchema(
       issues.push({
         severity: 'error',
         check: 'mcp-schema',
-        ruleId: 'missing-command',
+        ruleId: 'mcp-schema/missing-command',
         line: server.line,
         message: `Server "${server.name}" has no "command" field`,
       });
@@ -117,7 +117,7 @@ export async function checkMcpSchema(
       issues.push({
         severity: 'error',
         check: 'mcp-schema',
-        ruleId: 'missing-url',
+        ruleId: 'mcp-schema/missing-url',
         line: server.line,
         message: `Server "${server.name}" has no "url" field`,
       });

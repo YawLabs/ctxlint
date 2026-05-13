@@ -46,7 +46,7 @@ export async function checkMemoryIndexOverflow(ctx: SessionContext): Promise<Lin
     issues.push({
       severity: 'warning',
       check: 'session-memory-index-overflow',
-      ruleId: 'session/memory-index-overflow',
+      ruleId: 'session-memory-index-overflow/memory-index-overflow',
       line: MAX_LINES + 1,
       message: `MEMORY.md has ${lineCount.toLocaleString()} lines — only the first ${MAX_LINES} are loaded. ${excess.toLocaleString()} line(s) are effectively invisible to the agent.`,
       detail: `File: ${memoryFile}`,
@@ -60,7 +60,7 @@ export async function checkMemoryIndexOverflow(ctx: SessionContext): Promise<Lin
     issues.push({
       severity: 'warning',
       check: 'session-memory-index-overflow',
-      ruleId: 'session/memory-index-overflow',
+      ruleId: 'session-memory-index-overflow/memory-index-overflow',
       line: 0,
       message: `MEMORY.md is ${byteSize.toLocaleString()} bytes — only the first ${MAX_BYTES.toLocaleString()} bytes are loaded. ~${excess.toLocaleString()} bytes are effectively invisible.`,
       detail: `File: ${memoryFile}`,

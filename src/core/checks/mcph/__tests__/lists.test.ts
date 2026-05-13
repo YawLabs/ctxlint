@@ -32,7 +32,7 @@ describe('checkMcphLists', () => {
       },
     });
     const issues = await checkMcphLists(config, '/project');
-    const conflict = issues.find((i) => i.ruleId === 'mcph-config/allowlist-denylist-conflict');
+    const conflict = issues.find((i) => i.ruleId === 'mcph-lists/allowlist-denylist-conflict');
     expect(conflict).toBeDefined();
     expect(conflict!.severity).toBe('warning');
     expect(conflict!.line).toBe(5);
@@ -48,7 +48,7 @@ describe('checkMcphLists', () => {
     });
     const issues = await checkMcphLists(config, '/project');
     expect(
-      issues.find((i) => i.ruleId === 'mcph-config/allowlist-denylist-conflict'),
+      issues.find((i) => i.ruleId === 'mcph-lists/allowlist-denylist-conflict'),
     ).toBeUndefined();
   });
 
@@ -60,7 +60,7 @@ describe('checkMcphLists', () => {
       },
     });
     const issues = await checkMcphLists(config, '/project');
-    const dup = issues.find((i) => i.ruleId === 'mcph-config/duplicate-entries');
+    const dup = issues.find((i) => i.ruleId === 'mcph-lists/duplicate-entries');
     expect(dup).toBeDefined();
     expect(dup!.severity).toBe('info');
     expect(dup!.line).toBe(7);
@@ -76,7 +76,7 @@ describe('checkMcphLists', () => {
       },
     });
     const issues = await checkMcphLists(config, '/project');
-    const dup = issues.find((i) => i.ruleId === 'mcph-config/duplicate-entries');
+    const dup = issues.find((i) => i.ruleId === 'mcph-lists/duplicate-entries');
     expect(dup).toBeDefined();
     expect(dup!.message).toContain('blocked');
   });

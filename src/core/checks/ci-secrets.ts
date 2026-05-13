@@ -100,7 +100,7 @@ export async function checkCiSecrets(
     issues.push({
       severity: 'info',
       check: 'ci-secrets',
-      ruleId: 'ci/undocumented-secret',
+      ruleId: 'ci-secrets/undocumented-secret',
       line: 0,
       message: `CI secret "${name}" is used in ${workflows.join(', ')} but not mentioned in any context file`,
       suggestion: `Document what ${name} is and how to set it (e.g. "gh secret set ${name}") so agents don't create new tokens or guess`,

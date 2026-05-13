@@ -81,7 +81,7 @@ export async function checkMcpEnv(
           issues.push({
             severity: 'error',
             check: 'mcp-env',
-            ruleId: 'wrong-syntax',
+            ruleId: 'mcp-env/wrong-syntax',
             line: server.line,
             message: `Server "${server.name}": Claude Code uses \${VAR}, not \${env:VAR}`,
             fix: buildSyntaxFix(config, server.line, value, 'claude-code'),
@@ -99,7 +99,7 @@ export async function checkMcpEnv(
           issues.push({
             severity: 'error',
             check: 'mcp-env',
-            ruleId: 'wrong-syntax',
+            ruleId: 'mcp-env/wrong-syntax',
             line: server.line,
             message: `Server "${server.name}": Cursor uses \${env:VAR}, not \${VAR}`,
             fix: buildSyntaxFix(config, server.line, value, 'cursor'),
@@ -116,7 +116,7 @@ export async function checkMcpEnv(
           issues.push({
             severity: 'error',
             check: 'mcp-env',
-            ruleId: 'wrong-syntax',
+            ruleId: 'mcp-env/wrong-syntax',
             line: server.line,
             message: `Server "${server.name}": Continue uses \${{ secrets.VAR }}, not \${VAR}`,
             fix: buildSyntaxFix(config, server.line, value, 'continue'),
@@ -137,7 +137,7 @@ export async function checkMcpEnv(
             issues.push({
               severity: 'info',
               check: 'mcp-env',
-              ruleId: 'unset-variable',
+              ruleId: 'mcp-env/unset-variable',
               line: server.line,
               message: `Server "${server.name}": environment variable "${ref.varName}" is not set`,
             });
@@ -151,7 +151,7 @@ export async function checkMcpEnv(
       issues.push({
         severity: 'info',
         check: 'mcp-env',
-        ruleId: 'empty-env-block',
+        ruleId: 'mcp-env/empty-env-block',
         line: server.line,
         message: `Server "${server.name}": empty "env" block can be removed`,
       });

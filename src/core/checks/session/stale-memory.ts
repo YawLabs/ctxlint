@@ -48,7 +48,7 @@ export async function checkStaleMemory(ctx: SessionContext): Promise<LintIssue[]
       issues.push({
         severity: 'info',
         check: 'session-stale-memory',
-        ruleId: 'session/stale-memory',
+        ruleId: 'session-stale-memory/stale-memory',
         line: 0,
         message: `Memory "${name}" references ${brokenPaths.length} path(s) that no longer exist: ${brokenPaths.join(', ')}`,
         suggestion: `Update or remove the memory file: ${mem.filePath}`,

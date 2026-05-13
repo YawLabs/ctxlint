@@ -3,14 +3,12 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { checkTierTokens, checkAggregateTierTokens, isAlwaysLoaded } from '../tier-tokens.js';
-import { resetTokenThresholds } from '../tokens.js';
 import type { ParsedContextFile, Section } from '../../types.js';
 
 let tmpDir: string;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-tier-'));
-  resetTokenThresholds();
 });
 
 afterEach(() => {

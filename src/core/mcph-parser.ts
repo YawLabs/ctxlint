@@ -92,8 +92,10 @@ export async function parseMcphConfig(
 }
 
 function detectScope(relativePath: string): McphConfigScope {
+  // Global configs are scanned via scanGlobalMcphConfigs() in audit.ts, which
+  // always passes scopeOverride='global'. So this function only sees project
+  // and project-local paths -- no '~/'-prefixed input ever reaches here.
   const normalized = relativePath.replace(/\\/g, '/');
-  if (normalized.startsWith('~/')) return 'global';
   if (normalized.endsWith('.mcph.local.json')) return 'project-local';
   return 'project';
 }
