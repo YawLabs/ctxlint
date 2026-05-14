@@ -11,6 +11,10 @@
 
 Your `CLAUDE.md` is lying to your agent. Your `.mcp.json` has a hardcoded API key. ctxlint catches both.
 
+[![Add to mcp.hosting](https://mcp.hosting/install-button.svg)](https://mcp.hosting/install?name=ctxlint&command=npx&args=-y%2C%40yawlabs%2Fctxlint%2Cserve&description=Lint%20AI%20agent%20context%20files%20and%20MCP%20configs%20against%20your%20codebase&source=https%3A%2F%2Fgithub.com%2FYawLabs%2Fctxlint)
+
+One click adds this to your [mcp.hosting](https://mcp.hosting) account so it syncs to every MCP client you use. Or install manually below.
+
 ## Why ctxlint?
 
 Every AI coding tool ships a context file: `CLAUDE.md`, `.cursorrules`, `AGENTS.md`, `.mcp.json`. These files are the single most important interface between you and your agent — they tell it what to build, how to test, where things live.
