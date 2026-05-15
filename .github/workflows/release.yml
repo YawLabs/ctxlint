@@ -32,3 +32,27 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Publish to the Official MCP Registry (registry.modelcontextprotocol.io)
+      # so downstream registries (Glama, PulseMCP, mcpservers.org, etc.) that
+      # auto-source from it pick this release up. Uses GitHub OIDC: the runner
+      # is inside the YawLabs org, GitHub mints a token whose `repository_owner`
+      # claim is "YawLabs", and the registry grants publish permission on the
+      # `io.github.YawLabs/*` namespace from that claim alone (no pre-
+      # registration with the registry needed -- the auth is purely OIDC).
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" \
+            | tar xz mcp-publisher
+
+      - name: Sync server.json version to the pushed tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' server.json > server.tmp
+          mv server.tmp server.json
+
+      - name: Authenticate to MCP Registry (GitHub OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish to MCP Registry
+        run: ./mcp-publisher publish
