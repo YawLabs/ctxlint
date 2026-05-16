@@ -155,31 +155,30 @@ export async function scanForMcpConfigs(projectRoot: string): Promise<Discovered
   const found: DiscoveredFile[] = [];
   const seen = new Set<string>();
 
-  for (const pattern of MCP_CONFIG_PATTERNS) {
-    const matches = await glob(pattern, {
-      cwd: projectRoot,
-      absolute: true,
-      nodir: true,
-      dot: true,
+  // Single batched glob call across all patterns (mirrors scanForContextFiles).
+  const matches = await glob(MCP_CONFIG_PATTERNS, {
+    cwd: projectRoot,
+    absolute: true,
+    nodir: true,
+    dot: true,
+  });
+
+  for (const match of matches) {
+    const normalized = path.normalize(match);
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+
+    const relativePath = path.relative(projectRoot, normalized);
+    const symlink = isSymlink(normalized);
+    const target = symlink ? readSymlinkTarget(normalized) : undefined;
+
+    found.push({
+      absolutePath: normalized,
+      relativePath: relativePath.replace(/\\/g, '/'),
+      isSymlink: symlink,
+      symlinkTarget: target,
+      type: 'mcp-config',
     });
-
-    for (const match of matches) {
-      const normalized = path.normalize(match);
-      if (seen.has(normalized)) continue;
-      seen.add(normalized);
-
-      const relativePath = path.relative(projectRoot, normalized);
-      const symlink = isSymlink(normalized);
-      const target = symlink ? readSymlinkTarget(normalized) : undefined;
-
-      found.push({
-        absolutePath: normalized,
-        relativePath: relativePath.replace(/\\/g, '/'),
-        isSymlink: symlink,
-        symlinkTarget: target,
-        type: 'mcp-config',
-      });
-    }
   }
 
   return found.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
@@ -193,31 +192,30 @@ export async function scanForMcphConfigs(projectRoot: string): Promise<Discovere
   const found: DiscoveredFile[] = [];
   const seen = new Set<string>();
 
-  for (const pattern of MCPH_CONFIG_PATTERNS) {
-    const matches = await glob(pattern, {
-      cwd: projectRoot,
-      absolute: true,
-      nodir: true,
-      dot: true,
+  // Single batched glob call across all patterns (mirrors scanForContextFiles).
+  const matches = await glob(MCPH_CONFIG_PATTERNS, {
+    cwd: projectRoot,
+    absolute: true,
+    nodir: true,
+    dot: true,
+  });
+
+  for (const match of matches) {
+    const normalized = path.normalize(match);
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+
+    const relativePath = path.relative(projectRoot, normalized);
+    const symlink = isSymlink(normalized);
+    const target = symlink ? readSymlinkTarget(normalized) : undefined;
+
+    found.push({
+      absolutePath: normalized,
+      relativePath: relativePath.replace(/\\/g, '/'),
+      isSymlink: symlink,
+      symlinkTarget: target,
+      type: 'mcph-config',
     });
-
-    for (const match of matches) {
-      const normalized = path.normalize(match);
-      if (seen.has(normalized)) continue;
-      seen.add(normalized);
-
-      const relativePath = path.relative(projectRoot, normalized);
-      const symlink = isSymlink(normalized);
-      const target = symlink ? readSymlinkTarget(normalized) : undefined;
-
-      found.push({
-        absolutePath: normalized,
-        relativePath: relativePath.replace(/\\/g, '/'),
-        isSymlink: symlink,
-        symlinkTarget: target,
-        type: 'mcph-config',
-      });
-    }
   }
 
   return found.sort((a, b) => a.relativePath.localeCompare(b.relativePath));

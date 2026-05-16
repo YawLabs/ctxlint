@@ -186,6 +186,28 @@ describe('scanForMcpConfigs', () => {
     const names = files.map((f) => f.relativePath);
     expect(names).toEqual([...names].sort());
   });
+
+  it('discovers all MCP_CONFIG_PATTERNS in a single batched call', async () => {
+    // Create one file for each pattern family to guard against a sequential-
+    // loop regression that accidentally drops patterns in the batched form.
+    fs.writeFileSync(path.join(tmpDir, '.mcp.json'), '{}');
+    fs.mkdirSync(path.join(tmpDir, '.cursor'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.cursor', 'mcp.json'), '{}');
+    fs.mkdirSync(path.join(tmpDir, '.vscode'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.vscode', 'mcp.json'), '{}');
+    fs.mkdirSync(path.join(tmpDir, '.amazonq'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.amazonq', 'mcp.json'), '{}');
+    fs.mkdirSync(path.join(tmpDir, '.continue', 'mcpServers'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.continue', 'mcpServers', 'my-server.json'), '{}');
+
+    const files = await scanForMcpConfigs(tmpDir);
+    const rel = files.map((f) => f.relativePath.replace(/\\/g, '/'));
+    expect(rel).toContain('.mcp.json');
+    expect(rel).toContain('.cursor/mcp.json');
+    expect(rel).toContain('.vscode/mcp.json');
+    expect(rel).toContain('.amazonq/mcp.json');
+    expect(rel).toContain('.continue/mcpServers/my-server.json');
+  });
 });
 
 describe('scanGlobalMcpConfigs', () => {

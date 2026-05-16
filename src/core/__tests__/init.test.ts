@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { VERSION } from '../../version.js';
 
 const CLI = path.resolve(__dirname, '../../../dist/index.js');
 
@@ -62,6 +63,28 @@ describe('ctxlint init', () => {
     const content = fs.readFileSync(hookPath, 'utf-8');
     expect(content).toContain('existing hook');
     expect(content).toContain('ctxlint');
+  });
+
+  it('bumps an outdated version pin when init is run on an existing hook', () => {
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    fs.mkdirSync(path.dirname(hookPath), { recursive: true });
+    // Seed a hook with an old version pin
+    fs.writeFileSync(
+      hookPath,
+      '#!/bin/sh\n# ctxlint pre-commit hook\nnpx @yawlabs/ctxlint@0.0.1 --strict\n',
+      { mode: 0o755 },
+    );
+
+    const output = execFileSync('node', [CLI, 'init'], { cwd: tmpDir, encoding: 'utf-8' });
+    expect(output).toContain('Bumped pin');
+
+    const content = fs.readFileSync(hookPath, 'utf-8');
+    expect(content).not.toContain('@yawlabs/ctxlint@0.0.1');
+    expect(content).toContain(`@yawlabs/ctxlint@${VERSION}`);
+
+    // Running init a second time should report pin already current
+    const output2 = execFileSync('node', [CLI, 'init'], { cwd: tmpDir, encoding: 'utf-8' });
+    expect(output2).toContain('already');
   });
 
   it('fails outside a git repo', () => {

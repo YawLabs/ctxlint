@@ -7,6 +7,7 @@ import { findRenames } from '../../utils/git.js';
 import type { ParsedContextFile, LintIssue } from '../types.js';
 
 let cachedProjectFiles: { root: string; files: string[] } | null = null;
+let cachedBasenameIndex: { root: string; index: Map<string, string[]> } | null = null;
 
 function getProjectFiles(projectRoot: string): string[] {
   if (cachedProjectFiles?.root === projectRoot) return cachedProjectFiles.files;
@@ -15,8 +16,23 @@ function getProjectFiles(projectRoot: string): string[] {
   return files;
 }
 
+function getBasenameIndex(projectRoot: string, files: string[]): Map<string, string[]> {
+  if (cachedBasenameIndex?.root === projectRoot) return cachedBasenameIndex.index;
+  const index = new Map<string, string[]>();
+  for (const file of files) {
+    const norm = file.replace(/\\/g, '/');
+    const base = path.basename(norm);
+    const list = index.get(base);
+    if (list) list.push(norm);
+    else index.set(base, [norm]);
+  }
+  cachedBasenameIndex = { root: projectRoot, index };
+  return index;
+}
+
 export function resetPathsCache(): void {
   cachedProjectFiles = null;
+  cachedBasenameIndex = null;
 }
 
 export async function checkPaths(
@@ -25,6 +41,7 @@ export async function checkPaths(
 ): Promise<LintIssue[]> {
   const issues: LintIssue[] = [];
   const projectFiles = getProjectFiles(projectRoot);
+  const basenameIndex = getBasenameIndex(projectRoot, projectFiles);
 
   // Resolve relative paths from the context file's directory
   const contextDir = path.dirname(file.filePath);
@@ -85,7 +102,7 @@ export async function checkPaths(
       detail = `Renamed ${rename.daysAgo} days ago in commit ${rename.commitHash}`;
     } else {
       // Fuzzy match against project files
-      const match = findClosestMatch(normalizedRef, projectFiles);
+      const match = findClosestMatch(normalizedRef, projectFiles, basenameIndex);
       if (match) {
         fixTarget = match;
         suggestion = `Did you mean ${match}?`;
@@ -109,19 +126,22 @@ export async function checkPaths(
   return issues;
 }
 
-function findClosestMatch(target: string, files: string[]): string | null {
+function findClosestMatch(
+  target: string,
+  files: string[],
+  basenameIndex: Map<string, string[]>,
+): string | null {
   const targetNorm = target.replace(/\\/g, '/');
   const targetBase = path.basename(targetNorm);
 
-  // Pass 1: prefer files whose basename matches exactly (different directory).
-  // This pass has its own distance cap so its result isn't bounded by — or
-  // bounding — the fallback pass below. Any basename-equal candidate is a
-  // strong signal regardless of overall path-edit distance.
+  // Pass 1: O(1) basename index lookup + small-list levenshtein.
+  // Basename-equal candidates in different directories are a strong signal
+  // regardless of overall path-edit distance.
+  const candidates = basenameIndex.get(targetBase) ?? [];
   let basenameMatch: string | null = null;
   let basenameDistance = Infinity;
-  for (const file of files) {
-    const fileNorm = file.replace(/\\/g, '/');
-    if (path.basename(fileNorm) === targetBase && fileNorm !== targetNorm) {
+  for (const fileNorm of candidates) {
+    if (fileNorm !== targetNorm) {
       const dist = levenshtein(targetNorm, fileNorm);
       if (dist < basenameDistance) {
         basenameDistance = dist;
