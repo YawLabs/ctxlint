@@ -13,6 +13,16 @@ import { readFileSync } from 'node:fs';
 
 const pkg = JSON.parse(readFileSync('package.json', 'utf-8'));
 
+// Path classifier's web-first-segment list lives in tests/fixtures so additions
+// go through a fixture edit + a test, not a code edit. Bundled in here so the
+// dist doesn't need the tests/ tree at runtime.
+const webFirstSegments = JSON.parse(
+  readFileSync('tests/fixtures/web-first-segments.json', 'utf-8'),
+);
+const webFirstSegmentsList = Array.isArray(webFirstSegments)
+  ? webFirstSegments
+  : webFirstSegments.segments;
+
 // Some bundled deps (commander, simple-git) are CJS and use require() for
 // Node built-ins. ESM output needs a createRequire shim so those calls work.
 const requireShim = `
@@ -29,6 +39,7 @@ await build({
   outfile: 'dist/index.js',
   define: {
     __VERSION__: JSON.stringify(pkg.version),
+    __WEB_FIRST_SEGMENTS__: JSON.stringify(webFirstSegmentsList),
   },
   banner: {
     js: `#!/usr/bin/env node\n${requireShim}`,

@@ -1,6 +1,35 @@
 import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { MemoryEntry } from './types.js';
 import { stripBom } from '../utils/fs.js';
+
+declare const __WEB_FIRST_SEGMENTS__: string[] | undefined;
+
+/**
+ * First-segment vocabulary used by `classifyPath` to distinguish URL paths
+ * (/blog, /docs, /api/...) from filesystem paths. Source of truth lives at
+ * `tests/fixtures/web-first-segments.json` so additions go through a fixture
+ * edit + a test, not a code edit.
+ *
+ * Two load paths mirror `version.ts`:
+ *   - Bundled by esbuild: `__WEB_FIRST_SEGMENTS__` is replaced at build time
+ *     with the fixture contents inlined as a literal.
+ *   - Unbundled in vitest: read the fixture from disk via `import.meta.url`.
+ */
+function loadWebFirstSegments(): Set<string> {
+  if (typeof __WEB_FIRST_SEGMENTS__ !== 'undefined') {
+    return new Set(__WEB_FIRST_SEGMENTS__);
+  }
+  const __dir = dirname(fileURLToPath(import.meta.url));
+  const fixturePath = resolve(__dir, '../../tests/fixtures/web-first-segments.json');
+  const raw = JSON.parse(readFileSync(fixturePath, 'utf-8'));
+  const list: string[] = Array.isArray(raw) ? raw : raw.segments;
+  return new Set(list);
+}
+
+const WEB_FIRST_SEGMENTS: Set<string> = loadWebFirstSegments();
 
 // Two passes:
 //   PATH_PATTERN matches paths that start with a leading marker (`.`, `..`,
@@ -33,6 +62,90 @@ export function projectDirMatchesPath(encodedDir: string, fsPath: string): boole
   return encodedDir === encodeProjectDir(normalized);
 }
 
+export type PathClass = 'fs-path' | 'slash-command' | 'url-path' | 'approximation' | 'template';
+
+export interface ClassifiedPath {
+  value: string;
+  class: PathClass;
+}
+
+/**
+ * Reject candidates that look path-like but aren't filesystem paths.
+ * Order matters: cheaper / more specific rules first.
+ *
+ * The two regexes above are a cheap first-pass filter that captures anything
+ * starting with `.`, `~`, `/` (PATH_PATTERN) or a bare `dir/file.ext` shape
+ * (BARE_FILE_PATH). That filter happily eats slash-commands, tilde
+ * approximations, URL paths, and template placeholders -- this classifier is
+ * the second-pass gate that keeps those out of `extractPaths`.
+ */
+export function classifyPath(p: string, contextHints?: { baseUrls?: string[] }): PathClass {
+  // 1. Approximation: ~ followed by a digit, optionally with a unit suffix.
+  //    Matches: ~80%, ~23h, ~600, ~1KB, ~1.5x, ~Nx
+  //    Does NOT match: ~/.bashrc, ~/projects/foo
+  if (/^~(?:\d|[A-Z](?=[a-z]?(?:x|\b)))/.test(p)) return 'approximation';
+
+  // 2. Template placeholder: contains <...> or {{...}} -- never a real path.
+  //    Matches: ~/.claude/skills/<name>/SKILL.md, src/{{module}}/index.ts
+  if (/<[^>]+>|\{\{[^}]+\}\}/.test(p)) return 'template';
+
+  // 3. URL path: starts with /, no file extension, AND either the first
+  //    segment is in the known-web-first-segments set OR a base URL appears
+  //    in the surrounding memory. Runs BEFORE the slash-command rule because
+  //    single-segment URL paths (/blog, /docs) also match the slash-command
+  //    regex; whichever check runs first wins, and the URL-path signal is
+  //    the stronger one (explicit vocabulary or explicit base-URL hint).
+  if (p.startsWith('/')) {
+    const hasExt = /\.[a-zA-Z0-9]{1,8}$/.test(p);
+    if (!hasExt) {
+      const firstSeg = p.slice(1).split('/')[0];
+      if (WEB_FIRST_SEGMENTS.has(firstSeg)) return 'url-path';
+      if (contextHints?.baseUrls?.length) return 'url-path';
+    }
+  }
+
+  // 4. Slash command: starts with /, has exactly one path segment (no inner /),
+  //    no file extension, all-kebab or all-snake. Matches /yaw-review,
+  //    /release-yaw, /yaw-session-audit. Does NOT match /var/log/app.log.
+  if (/^\/[a-z][a-z0-9_-]*$/.test(p)) return 'slash-command';
+
+  return 'fs-path';
+}
+
+/**
+ * Internal helper: scan content for path-like candidates and return each with
+ * its classification. Not exported from the package (no entry in `index.ts`)
+ * -- exists for future detectors (URL-staleness, template-validity) and for
+ * debug tooling. Public callers should keep using `extractPaths`.
+ */
+export function extractPathsClassified(content: string): ClassifiedPath[] {
+  const baseUrls = [...content.matchAll(/https?:\/\/[^\s'"`)]+/g)].map((m) => m[0]);
+  const hints = { baseUrls };
+
+  const candidates: string[] = [];
+  for (const match of content.matchAll(PATH_PATTERN)) {
+    const p = match[1].replace(/[)}\]]+$/, '');
+    if (p.length > 2 && !p.startsWith('http') && !p.startsWith('//')) {
+      candidates.push(p);
+    }
+  }
+  for (const match of content.matchAll(BARE_FILE_PATH)) {
+    const p = match[1].replace(/[)}\]]+$/, '');
+    if (p.length > 2 && !p.startsWith('http')) {
+      candidates.push(p);
+    }
+  }
+
+  const seen = new Set<string>();
+  const out: ClassifiedPath[] = [];
+  for (const value of candidates) {
+    if (seen.has(value)) continue;
+    seen.add(value);
+    out.push({ value, class: classifyPath(value, hints) });
+  }
+  return out;
+}
+
 /**
  * Extract file path references from memory file content.
  *
@@ -41,22 +154,16 @@ export function projectDirMatchesPath(encodedDir: string, fsPath: string): boole
  * `/` and a file extension (`src/api/client.ts`). Anything weaker -- a single
  * slash with no extension -- stays out so `I/O`, `n/a`, and `Vitest/Jest`
  * prose don't pollute the stale-memory check.
+ *
+ * Each candidate is then run through `classifyPath` and only `'fs-path'`
+ * candidates are returned. Other classes (slash-command, url-path,
+ * approximation, template) are dropped silently to keep `session-stale-memory`
+ * focused on real filesystem references.
  */
 export function extractPaths(content: string): string[] {
-  const paths: string[] = [];
-  for (const match of content.matchAll(PATH_PATTERN)) {
-    const p = match[1].replace(/[)}\]]+$/, ''); // trim trailing brackets
-    if (p.length > 2 && !p.startsWith('http') && !p.startsWith('//')) {
-      paths.push(p);
-    }
-  }
-  for (const match of content.matchAll(BARE_FILE_PATH)) {
-    const p = match[1].replace(/[)}\]]+$/, '');
-    if (p.length > 2 && !p.startsWith('http')) {
-      paths.push(p);
-    }
-  }
-  return [...new Set(paths)];
+  return extractPathsClassified(content)
+    .filter((c) => c.class === 'fs-path')
+    .map((c) => c.value);
 }
 
 /**

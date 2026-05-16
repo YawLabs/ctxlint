@@ -184,9 +184,59 @@ export function formatText(result: LintResult, verbose: boolean = false): string
     lines.push(`  Estimated waste: ~${result.summary.estimatedWaste} tokens (redundant content)`);
   }
 
+  // Ignore-rule drift footer. Surfaces dropped count + unused rules + rules
+  // missing a `reason` so maintainers can review their `.ctxlintrc.json`
+  // ignoreRules entries periodically. Mirrors the JSON `_meta.ignoreReport`
+  // block and the MCP response payload.
+  const ig = result._meta?.ignoreReport;
+  if (ig && (ig.dropped > 0 || ig.unusedRules.length > 0 || ig.rulesMissingReason.length > 0)) {
+    lines.push('');
+    lines.push(chalk.bold('Ignore rules'));
+    if (ig.dropped > 0) {
+      lines.push(
+        chalk.dim(
+          `  ${ig.dropped} finding${ig.dropped !== 1 ? 's' : ''} dropped by ignoreRules`,
+        ),
+      );
+    }
+    if (ig.unusedRules.length > 0) {
+      lines.push(
+        chalk.yellow(
+          `  ${ig.unusedRules.length} ignore rule${ig.unusedRules.length !== 1 ? 's' : ''} never fired (drift -- consider removing):`,
+        ),
+      );
+      for (const r of ig.unusedRules) {
+        lines.push(`    - ${formatIgnoreRule(r)}`);
+      }
+    }
+    if (ig.rulesMissingReason.length > 0) {
+      lines.push(
+        chalk.yellow(
+          `  ${ig.rulesMissingReason.length} ignore rule${ig.rulesMissingReason.length !== 1 ? 's' : ''} missing a "reason" field:`,
+        ),
+      );
+      for (const r of ig.rulesMissingReason) {
+        lines.push(`    - ${formatIgnoreRule(r)}`);
+      }
+    }
+  }
+
   lines.push('');
 
   return lines.join('\n');
+}
+
+function formatIgnoreRule(r: {
+  check: string;
+  match?: string;
+  pathPattern?: string;
+  reason?: string;
+}): string {
+  const parts: string[] = [r.check];
+  if (r.match) parts.push(`match=/${r.match}/`);
+  if (r.pathPattern) parts.push(`pathPattern=/${r.pathPattern}/`);
+  if (r.reason) parts.push(`reason="${r.reason}"`);
+  return parts.join(' ');
 }
 
 export function formatJson(result: LintResult): string {

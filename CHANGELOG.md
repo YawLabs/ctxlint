@@ -8,6 +8,22 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-05-15
+
+### Added
+- **Path-detector classification stage** in `session-stale-memory`. A new `classifyPath()` filter rejects candidates that look path-like but aren't filesystem paths: slash commands (`/yaw-review`, `/release-yaw`), tilde approximations (`~80%`, `~23h`, `~1KB`, `~Nx`), URL paths (`/blog`, `/docs`, `/api/...` -- recognized via a `WEB_FIRST_SEGMENTS` vocabulary or a co-occurring `https?://` base URL in the same memory), and template placeholders (`~/.claude/skills/<name>/SKILL.md`, `src/{{module}}/index.ts`). Order: approximation -> template -> URL-path -> slash-command -> fall-through fs-path. `WEB_FIRST_SEGMENTS` lives at `tests/fixtures/web-first-segments.json` so additions go through a fixture edit + a test rather than a code edit, bundled into the dist at build time via an esbuild define.
+- **`ignoreRules` config field** alongside the existing `ignore: CheckName[]`. Granular per-finding suppression with three filter axes: `check` (required, exact `CheckName`), `match` (regex tested against the finding message), and `pathPattern` (regex tested against each extracted path in a `session-stale-memory` message -- every path must match for the rule to fire). Optional `reason` field surfaces in drift reports. `ignore` is unchanged; `ignoreRules` is purely additive.
+- **Drift report** in all three output formats: CLI text footer (after the main report), JSON `_meta.ignoreReport` block on `LintResult`, and the MCP response payload. Reports `dropped` count, `unusedRules` (rules that never fired -- stale-config debt), and `rulesMissingReason` (rules without a `reason` field -- undocumented suppression debt).
+
+### Changed
+- `session-stale-memory` produces fewer false positives. The same content that previously surfaced `~80%`, `/blog`, `/yaw-review`, etc. as broken filesystem references no longer flags them at all. Behaviour change is user-visible (hence the minor bump), but no consumer relied on the false-positive output.
+
+### Security
+- Ignore-rule regexes from `.ctxlintrc.json` are repo-author-trusted, same posture as `.eslintrc.json`. Compiled with `new RegExp(...)` and run with no step cap. Documented at the top of `src/core/ignore-rules.ts`.
+
+### Why
+A `ctxlint_session_audit` run against `~/yaw/mcp-hosting` on 2026-05-15 returned 20 findings, only 5 of which were actionable. 9 of the 15 false positives came from the path detector flagging slash commands / URL paths / approximations; the remaining 6 needed per-project context the auditor couldn't know (intentionally diverged config files, intentionally absent `release.yml`). Improvement 1 fixes the detector; Improvement 2 adds the mechanism so per-project context can be suppressed without disabling whole checks. Same audit now produces 5 findings, all actionable.
+
 ## [0.9.17] — 2026-04-16
 
 ### Added

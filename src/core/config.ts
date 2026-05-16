@@ -4,10 +4,12 @@ import levenshteinPkg from 'fast-levenshtein';
 const levenshtein = levenshteinPkg.get;
 import { stripBom } from '../utils/fs.js';
 import type { CheckName } from './types.js';
+import type { IgnoreRule } from './ignore-rules.js';
 
 export interface CtxlintConfig {
   checks?: CheckName[];
   ignore?: CheckName[];
+  ignoreRules?: IgnoreRule[];
   strict?: boolean;
   tokenThresholds?: {
     info?: number;
@@ -32,6 +34,7 @@ export interface CtxlintConfig {
 const KNOWN_CONFIG_KEYS: Array<keyof CtxlintConfig> = [
   'checks',
   'ignore',
+  'ignoreRules',
   'strict',
   'tokenThresholds',
   'contextFiles',

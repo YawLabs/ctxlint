@@ -114,6 +114,7 @@ export async function runCli() {
           session: options.session,
           sessionOnly: options.sessionOnly,
           tokenThresholds: config?.tokenThresholds,
+          ignoreRules: config?.ignoreRules,
         });
 
         spinner?.stop();
@@ -305,6 +306,7 @@ export async function runCli() {
                 session: liveOptions.session,
                 sessionOnly: liveOptions.sessionOnly,
                 tokenThresholds: liveConfig?.tokenThresholds,
+                ignoreRules: liveConfig?.ignoreRules,
               });
 
               if (result.files.length === 0) {

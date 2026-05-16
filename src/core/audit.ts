@@ -46,6 +46,7 @@ import { checkMemoryIndexOverflow } from './checks/session/memory-index-overflow
 import { checkCiCoverage } from './checks/ci-coverage.js';
 import { checkCiSecrets } from './checks/ci-secrets.js';
 import { checkContentSecrets } from './checks/content-secrets.js';
+import { applyIgnoreRules, type IgnoreRule } from './ignore-rules.js';
 import type {
   LintResult,
   FileResult,
@@ -56,6 +57,7 @@ import type {
   SessionCheckName,
   ParsedMcpConfig,
   ParsedMcphConfig,
+  IgnoreReport,
 } from './types.js';
 import { VERSION } from '../version.js';
 
@@ -119,6 +121,12 @@ export interface AuditOptions {
   // setTokenThresholds() so concurrent audits (e.g. from the MCP server)
   // don't share mutable state.
   tokenThresholds?: Partial<TokenThresholds>;
+  /**
+   * Granular per-finding suppression rules. Applied after all checks run --
+   * a finding suppressed by an ignoreRule never appears in `LintResult.files`
+   * but is reflected in `_meta.ignoreReport.dropped`.
+   */
+  ignoreRules?: IgnoreRule[];
 }
 
 function hasMcpChecks(checks: CheckName[]): boolean {
@@ -450,6 +458,41 @@ export async function runAudit(
     }
   }
 
+  // Apply ignoreRules (granular per-finding suppression) before computing
+  // summary / estimatedWaste so dropped findings aren't counted in either.
+  // The rule engine is per-issue-list, but we want a single fired-tracking
+  // pass across the whole audit -- so apply rules to the flattened issue
+  // stream once, then partition kept issues back per FileResult by position.
+  let ignoreReport: IgnoreReport | undefined;
+  if (options.ignoreRules && options.ignoreRules.length > 0) {
+    const flat: LintIssue[] = [];
+    const owners: number[] = [];
+    fileResults.forEach((fr, idx) => {
+      for (const issue of fr.issues) {
+        flat.push(issue);
+        owners.push(idx);
+      }
+    });
+    const applied = applyIgnoreRules(flat, options.ignoreRules);
+    // Rebuild per-FileResult issue lists from the kept subset, preserving
+    // order. We walk the flat list again, keeping items whose corresponding
+    // entry survived: a Set of preserved indices is built from `kept`'s
+    // reference identity.
+    const keptSet = new Set(applied.kept);
+    const rebuilt: LintIssue[][] = fileResults.map(() => []);
+    flat.forEach((issue, i) => {
+      if (keptSet.has(issue)) rebuilt[owners[i]].push(issue);
+    });
+    fileResults.forEach((fr, idx) => {
+      fr.issues = rebuilt[idx];
+    });
+    ignoreReport = {
+      dropped: applied.dropped,
+      unusedRules: applied.unusedRules,
+      rulesMissingReason: applied.rulesMissingReason,
+    };
+  }
+
   let estimatedWaste = 0;
   for (const fr of fileResults) {
     for (const issue of fr.issues) {
@@ -460,7 +503,7 @@ export async function runAudit(
     }
   }
 
-  return {
+  const result: LintResult = {
     version: VERSION,
     scannedAt: new Date().toISOString(),
     projectRoot,
@@ -482,4 +525,10 @@ export async function runAudit(
       estimatedWaste,
     },
   };
+
+  if (ignoreReport) {
+    result._meta = { ignoreReport };
+  }
+
+  return result;
 }

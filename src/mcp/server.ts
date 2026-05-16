@@ -11,6 +11,7 @@ import {
   ALL_SESSION_CHECKS,
 } from '../core/audit.js';
 import { applyFixes } from '../core/fixer.js';
+import { loadConfig } from '../core/config.js';
 import { fileExists, isDirectory, resetPackageJsonCache } from '../utils/fs.js';
 import { findRenames } from '../utils/git.js';
 import { freeEncoder, keepEncoderAlive } from '../utils/tokens.js';
@@ -61,6 +62,20 @@ function validateProjectPath(rawPath: string | undefined): string {
     throw new Error('projectPath is not an existing directory');
   }
   return resolved;
+}
+
+/**
+ * Load .ctxlintrc[.json] from the project root, swallowing errors. The MCP
+ * tools should not fail the audit if the config file is malformed -- the
+ * audit's value is the findings, not the config. CLI surfaces parse errors
+ * to the user; MCP returns the un-ignored result instead.
+ */
+function safeLoadConfig(projectRoot: string): ReturnType<typeof loadConfig> {
+  try {
+    return loadConfig(projectRoot);
+  } catch {
+    return null;
+  }
 }
 
 function validateFilePathInput(rawPath: string): void {
@@ -114,7 +129,10 @@ server.tool(
     try {
       const root = validateProjectPath(projectPath);
       const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_CHECKS;
-      const result = await runAudit(root, activeChecks);
+      const config = safeLoadConfig(root);
+      const result = await runAudit(root, activeChecks, {
+        ignoreRules: config?.ignoreRules,
+      });
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -257,7 +275,10 @@ server.tool(
     try {
       const root = validateProjectPath(projectPath);
       const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_CHECKS;
-      const result = await runAudit(root, activeChecks);
+      const config = safeLoadConfig(root);
+      const result = await runAudit(root, activeChecks, {
+        ignoreRules: config?.ignoreRules,
+      });
       const fixSummary = applyFixes(result, { quiet: true });
 
       return {
@@ -315,10 +336,12 @@ server.tool(
     try {
       const root = validateProjectPath(projectPath);
       const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_MCP_CHECKS;
+      const config = safeLoadConfig(root);
       const result = await runAudit(root, activeChecks, {
         mcp: true,
         mcpOnly: true,
         mcpGlobal: includeGlobal || false,
+        ignoreRules: config?.ignoreRules,
       });
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     } catch (err) {
@@ -366,11 +389,13 @@ server.tool(
     try {
       const root = validateProjectPath(projectPath);
       const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_MCPH_CHECKS;
+      const config = safeLoadConfig(root);
       const result = await runAudit(root, activeChecks, {
         mcph: true,
         mcphOnly: true,
         mcphGlobal: includeGlobal || false,
         mcphStrictEnvToken: strictEnvToken || false,
+        ignoreRules: config?.ignoreRules,
       });
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     } catch (err) {
@@ -411,9 +436,11 @@ server.tool(
     try {
       const root = validateProjectPath(projectPath);
       const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_SESSION_CHECKS;
+      const config = safeLoadConfig(root);
       const result = await runAudit(root, activeChecks, {
         session: true,
         sessionOnly: true,
+        ignoreRules: config?.ignoreRules,
       });
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     } catch (err) {

@@ -241,6 +241,19 @@ export interface FileResult {
   issues: LintIssue[];
 }
 
+export interface IgnoreRuleSummary {
+  check: CheckName;
+  match?: string;
+  pathPattern?: string;
+  reason?: string;
+}
+
+export interface IgnoreReport {
+  dropped: number;
+  unusedRules: IgnoreRuleSummary[];
+  rulesMissingReason: IgnoreRuleSummary[];
+}
+
 export interface LintResult {
   version: string;
   scannedAt: string;
@@ -252,6 +265,9 @@ export interface LintResult {
     info: number;
     totalTokens: number;
     estimatedWaste: number;
+  };
+  _meta?: {
+    ignoreReport?: IgnoreReport;
   };
 }
 
