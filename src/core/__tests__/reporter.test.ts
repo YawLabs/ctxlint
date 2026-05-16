@@ -99,6 +99,88 @@ describe('formatJson', () => {
     expect(parsed.files).toHaveLength(1);
     expect(parsed.summary.errors).toBe(1);
   });
+
+  it('includes _meta.ignoreReport when present', () => {
+    const result = makeResult({
+      _meta: {
+        ignoreReport: {
+          dropped: 3,
+          unusedRules: [{ check: 'paths', match: 'foo', reason: 'r' }],
+          rulesMissingReason: [{ check: 'commands' }],
+        },
+      },
+    });
+    const parsed = JSON.parse(formatJson(result));
+    expect(parsed._meta.ignoreReport.dropped).toBe(3);
+    expect(parsed._meta.ignoreReport.unusedRules).toHaveLength(1);
+    expect(parsed._meta.ignoreReport.unusedRules[0].match).toBe('foo');
+    expect(parsed._meta.ignoreReport.rulesMissingReason).toHaveLength(1);
+  });
+});
+
+describe('formatText — ignore-rule drift footer', () => {
+  function stripAnsi(s: string): string {
+    // eslint-disable-next-line no-control-regex
+    return s.replace(/\x1b\[[0-9;]*m/g, '');
+  }
+
+  it('renders nothing when ignoreReport is absent', () => {
+    const plain = stripAnsi(formatText(makeResult()));
+    expect(plain).not.toContain('Ignore rules');
+  });
+
+  it('renders nothing when ignoreReport has zero drift', () => {
+    const result = makeResult({
+      _meta: {
+        ignoreReport: { dropped: 0, unusedRules: [], rulesMissingReason: [] },
+      },
+    });
+    const plain = stripAnsi(formatText(result));
+    expect(plain).not.toContain('Ignore rules');
+  });
+
+  it('reports dropped count, unused rules, and rules missing reason', () => {
+    const result = makeResult({
+      _meta: {
+        ignoreReport: {
+          dropped: 2,
+          unusedRules: [
+            {
+              check: 'session-stale-memory',
+              pathPattern: '^/[a-z-]+$',
+              reason: 'covered by classifier',
+            },
+          ],
+          rulesMissingReason: [{ check: 'commands', match: 'foo' }],
+        },
+      },
+    });
+    const plain = stripAnsi(formatText(result));
+    expect(plain).toContain('Ignore rules');
+    expect(plain).toContain('2 findings dropped by ignoreRules');
+    expect(plain).toContain('1 ignore rule never fired');
+    expect(plain).toContain('session-stale-memory');
+    expect(plain).toContain('pathPattern=/^/[a-z-]+$/');
+    expect(plain).toContain('1 ignore rule missing a "reason" field');
+    expect(plain).toContain('commands');
+    expect(plain).toContain('match=/foo/');
+  });
+
+  it('pluralizes correctly with multiple drift entries', () => {
+    const result = makeResult({
+      _meta: {
+        ignoreReport: {
+          dropped: 1,
+          unusedRules: [{ check: 'paths' }, { check: 'commands' }],
+          rulesMissingReason: [{ check: 'paths' }, { check: 'commands' }],
+        },
+      },
+    });
+    const plain = stripAnsi(formatText(result));
+    expect(plain).toContain('1 finding dropped by ignoreRules');
+    expect(plain).toContain('2 ignore rules never fired');
+    expect(plain).toContain('2 ignore rules missing a "reason" field');
+  });
 });
 
 describe('formatTokenReport', () => {
