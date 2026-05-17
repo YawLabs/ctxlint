@@ -194,9 +194,7 @@ export function formatText(result: LintResult, verbose: boolean = false): string
     lines.push(chalk.bold('Ignore rules'));
     if (ig.dropped > 0) {
       lines.push(
-        chalk.dim(
-          `  ${ig.dropped} finding${ig.dropped !== 1 ? 's' : ''} dropped by ignoreRules`,
-        ),
+        chalk.dim(`  ${ig.dropped} finding${ig.dropped !== 1 ? 's' : ''} dropped by ignoreRules`),
       );
     }
     if (ig.unusedRules.length > 0) {

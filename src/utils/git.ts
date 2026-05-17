@@ -71,7 +71,8 @@ export async function getCommitsSinceBatch(
     ]);
 
     // Normalize path separators for cross-platform comparison.
-    const normalize = (p: string) => p.replace(/\\/g, '/');
+    // Also strips Windows drive letters (e.g., C:) since git stores them without.
+    const normalize = (p: string) => p.replace(/\\/g, '/').replace(/^[A-Z]:/, '');
     const requested = new Set(paths.map(normalize));
 
     // Parse commit blocks: sentinel line, optional blank line, then a list of
@@ -99,7 +100,12 @@ export async function getCommitsSinceBatch(
       // Count a changed file against any requested path that matches either
       // exactly or as a prefix (directory reference like `src/components/`).
       for (const req of requested) {
-        if (changed === req || changed.startsWith(req.endsWith('/') ? req : req + '/')) {
+        const matchTarget = req.endsWith('/') ? req : req + '/';
+        if (
+          changed === req ||
+          (changed.startsWith(matchTarget) &&
+            (changed.length === matchTarget.length || changed[matchTarget.length] === '/'))
+        ) {
           seenThisCommit.add(req);
         }
       }

@@ -82,10 +82,7 @@ export function extractPathsFromMessage(msg: string): string[] {
     .filter(Boolean);
 }
 
-export function applyIgnoreRules(
-  issues: LintIssue[],
-  rules: IgnoreRule[],
-): IgnoreApplyResult {
+export function applyIgnoreRules(issues: LintIssue[], rules: IgnoreRule[]): IgnoreApplyResult {
   const compiled = compileRules(rules);
   const kept: LintIssue[] = [];
   let dropped = 0;

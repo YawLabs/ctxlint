@@ -17,8 +17,7 @@ function issue(partial: Partial<LintIssue> & Pick<LintIssue, 'check' | 'message'
 
 describe('extractPathsFromMessage', () => {
   it('parses the session-stale-memory path-list segment', () => {
-    const msg =
-      'Memory "feedback" references 3 path(s) that no longer exist: /a, /b, /c';
+    const msg = 'Memory "feedback" references 3 path(s) that no longer exist: /a, /b, /c';
     expect(extractPathsFromMessage(msg)).toEqual(['/a', '/b', '/c']);
   });
 
@@ -84,7 +83,8 @@ describe('applyIgnoreRules', () => {
       const issues = [
         issue({
           check: 'session-stale-memory',
-          message: 'Memory "a" references 2 path(s) that no longer exist: /yaw-review, /release-yaw',
+          message:
+            'Memory "a" references 2 path(s) that no longer exist: /yaw-review, /release-yaw',
         }),
         issue({
           check: 'session-stale-memory',
