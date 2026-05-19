@@ -105,7 +105,14 @@ export function applyFixes(result: LintResult, options: FixOptions = {}): FixSum
       if (lineIdx < 0 || lineIdx >= lines.length) continue;
 
       let line = lines[lineIdx];
-      for (const fix of lineFixes) {
+      // Sort longest-oldText-first so a more-specific fix (e.g.
+      // `src/old/util.ts` -> `src/new/util.ts`) runs before a more-general
+      // one that contains it as a substring (e.g. `src/old` -> `src/new`).
+      // Otherwise the general fix rewrites the prefix first and the specific
+      // fix's oldText is no longer present in the line, silently dropping it.
+      // Stable sort is fine -- ties (equal length) keep their original order.
+      const orderedLineFixes = [...lineFixes].sort((a, b) => b.oldText.length - a.oldText.length);
+      for (const fix of orderedLineFixes) {
         if (line.includes(fix.oldText)) {
           // replaceAll (not replace) so that if the same oldText literal
           // appears twice on one line — e.g. "see src/old/x.ts and src/old/y.ts"

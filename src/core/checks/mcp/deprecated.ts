@@ -59,7 +59,10 @@ function findTypeLine(content: string, serverName: string): number | null {
         if (enteredObject && depth === 0) return null; // left the server object
       }
     }
-    if (enteredObject && lines[i].includes('"type"') && lines[i].includes('"sse"')) {
+    // Match the JSON key-value pair shape, not two free-floating substrings --
+    // a server whose body happens to contain `"type"` as a value-side label
+    // and `"sse"` somewhere else on the same line used to false-positive.
+    if (enteredObject && /"type"\s*:\s*"sse"/.test(lines[i])) {
       return i + 1;
     }
   }

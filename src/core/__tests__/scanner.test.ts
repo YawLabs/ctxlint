@@ -199,3 +199,136 @@ describe('scanGlobalMcpConfigs', () => {
     }
   });
 });
+
+describe('nested-dotted dir discovery (fix 1)', () => {
+  // The blanket `!entry.name.startsWith('.')` skip in collectDirs prevented
+  // the walker from descending INTO `.claude/`, `.cursor/`, `.github/`, etc.
+  // -- so bare-named files like AGENTS.md / CLAUDE.md sitting inside a
+  // nested-dotted dir were invisible. These guards make sure the allowlist
+  // walk recovers those cases.
+
+  it('finds AGENTS.md inside .claude/ at the project root', async () => {
+    // Bare AGENTS.md pattern only matches directly inside scanned dirs --
+    // before fix 1, .claude/ was skipped and AGENTS.md inside it was lost.
+    const dir = path.join(tmpDir, '.claude');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), '# nested');
+    const files = await scanForContextFiles(tmpDir);
+    const paths = files.map((f) => f.relativePath.replace(/\\/g, '/'));
+    expect(paths).toContain('.claude/AGENTS.md');
+  });
+
+  it('finds AGENTS.md inside packages/foo/.claude/ when depth allows', async () => {
+    // Same shape one level deeper -- the walker needs the explicit depth
+    // bump to reach the nested .claude/, but fix 1 is what lets it descend
+    // INTO that dir once reached.
+    const dir = path.join(tmpDir, 'packages', 'foo', '.claude');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), '# nested');
+    const files = await scanForContextFiles(tmpDir, { depth: 3 });
+    const paths = files.map((f) => f.relativePath.replace(/\\/g, '/'));
+    expect(paths).toContain('packages/foo/.claude/AGENTS.md');
+  });
+
+  it('finds .claude/rules/x.md in a deeply-nested subpackage', async () => {
+    const dir = path.join(tmpDir, 'packages', 'foo', '.claude', 'rules');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'x.md'), '# rule');
+    const files = await scanForContextFiles(tmpDir);
+    const paths = files.map((f) => f.relativePath.replace(/\\/g, '/'));
+    expect(paths).toContain('packages/foo/.claude/rules/x.md');
+  });
+
+  it('still skips non-allowlisted dotted dirs (e.g. .hidden, .cache)', async () => {
+    fs.mkdirSync(path.join(tmpDir, '.hidden'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.hidden', 'AGENTS.md'), '# should-not-find');
+    fs.mkdirSync(path.join(tmpDir, '.cache'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.cache', 'AGENTS.md'), '# should-not-find');
+    const files = await scanForContextFiles(tmpDir);
+    const paths = files.map((f) => f.relativePath.replace(/\\/g, '/'));
+    expect(paths).not.toContain('.hidden/AGENTS.md');
+    expect(paths).not.toContain('.cache/AGENTS.md');
+  });
+});
+
+describe('mcpFileHasMcpKey prefix-only read (fix 2)', () => {
+  // scanGlobalMcpConfigs gates `~/.claude.json` and `~/.claude/settings.json`
+  // through a cheap text-only peek. The peek must (a) detect the mcpServers
+  // key when present in the file's first 8KB, and (b) NOT read past the
+  // prefix -- a key buried at byte 1MB inside a multi-MB file should look
+  // like "no mcp key" from the peek's perspective.
+  //
+  // We exercise the peek through scanGlobalMcpConfigs by pointing HOME at a
+  // throwaway dir, then asserting whether `.claude.json` is included in the
+  // returned set.
+
+  let savedHome: string | undefined;
+  let savedUserprofile: string | undefined;
+
+  beforeEach(() => {
+    savedHome = process.env.HOME;
+    savedUserprofile = process.env.USERPROFILE;
+    process.env.HOME = tmpDir;
+    process.env.USERPROFILE = tmpDir;
+  });
+
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedUserprofile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = savedUserprofile;
+  });
+
+  it('detects mcpServers when it appears in the first 8KB of a large file', async () => {
+    const claudeJson = path.join(tmpDir, '.claude.json');
+    // mcpServers key right at the top, then ~5MB of filler. The peek should
+    // hit the key in its 8KB prefix read and INCLUDE the file in results.
+    const body = '{"mcpServers":{"x":{"command":"node"}},"filler":"' + 'x'.repeat(5_000_000) + '"}';
+    fs.writeFileSync(claudeJson, body);
+    const files = await scanGlobalMcpConfigs();
+    const paths = files.map((f) => f.relativePath);
+    expect(paths).toContain('~/.claude.json');
+  });
+
+  it('does NOT detect mcpServers when key is buried past the 8KB prefix', async () => {
+    const claudeJson = path.join(tmpDir, '.claude.json');
+    // 50KB of leading filler, THEN the mcpServers key. The 8KB prefix peek
+    // must miss it and the file must be SKIPPED.
+    const filler = '"a":"' + 'x'.repeat(50_000) + '",';
+    const body = '{' + filler + '"mcpServers":{"x":{"command":"node"}}}';
+    fs.writeFileSync(claudeJson, body);
+    const files = await scanGlobalMcpConfigs();
+    const paths = files.map((f) => f.relativePath);
+    expect(paths).not.toContain('~/.claude.json');
+  });
+
+  it('completes the peek fast on a large file (no full read)', async () => {
+    const claudeJson = path.join(tmpDir, '.claude.json');
+    // 10MB file -- a full readFileSync would take noticeably longer than a
+    // prefix read. Detection should succeed since the key sits in the prefix.
+    const body =
+      '{"mcpServers":{"x":{"command":"node"}},"filler":"' + 'x'.repeat(10_000_000) + '"}';
+    fs.writeFileSync(claudeJson, body);
+    const start = Date.now();
+    const files = await scanGlobalMcpConfigs();
+    const elapsed = Date.now() - start;
+    expect(files.map((f) => f.relativePath)).toContain('~/.claude.json');
+    // Generous bound -- a true full-read of 10MB is ~50-200ms on most disks,
+    // a prefix read is <5ms. 250ms catches the regression without flaking.
+    expect(elapsed).toBeLessThan(250);
+  });
+
+  it('handles files smaller than the 8KB prefix', async () => {
+    const claudeJson = path.join(tmpDir, '.claude.json');
+    fs.writeFileSync(claudeJson, '{"mcpServers":{"x":{"command":"node"}}}');
+    const files = await scanGlobalMcpConfigs();
+    expect(files.map((f) => f.relativePath)).toContain('~/.claude.json');
+  });
+
+  it('skips a small general .claude.json with no mcp key', async () => {
+    const claudeJson = path.join(tmpDir, '.claude.json');
+    fs.writeFileSync(claudeJson, '{"theme":"dark","other":"setting"}');
+    const files = await scanGlobalMcpConfigs();
+    expect(files.map((f) => f.relativePath)).not.toContain('~/.claude.json');
+  });
+});

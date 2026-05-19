@@ -1,6 +1,7 @@
 import { getNodeValue, parseTree, type Node } from 'jsonc-parser';
 import { readFileContent } from '../utils/fs.js';
 import { getGit } from '../utils/git.js';
+import { offsetToPosition } from '../utils/positions.js';
 import type { ParsedMcphConfig, McphConfigScope, McphFieldPosition } from './types.js';
 import type { DiscoveredFile } from './scanner.js';
 
@@ -109,20 +110,6 @@ function nodePosition(content: string, node: Node): McphFieldPosition {
     endLine: end.line,
     endColumn: end.column,
   };
-}
-
-function offsetToPosition(content: string, offset: number): { line: number; column: number } {
-  let line = 1;
-  let column = 1;
-  for (let i = 0; i < offset && i < content.length; i++) {
-    if (content[i] === '\n') {
-      line++;
-      column = 1;
-    } else {
-      column++;
-    }
-  }
-  return { line, column };
 }
 
 async function checkGitTracked(filePath: string, projectRoot: string): Promise<boolean> {

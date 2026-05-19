@@ -47,17 +47,18 @@ import { checkCiCoverage } from './checks/ci-coverage.js';
 import { checkCiSecrets } from './checks/ci-secrets.js';
 import { checkContentSecrets } from './checks/content-secrets.js';
 import { applyIgnoreRules, type IgnoreRule } from './ignore-rules.js';
-import type {
-  LintResult,
-  FileResult,
-  LintIssue,
-  CheckName,
-  McpCheckName,
-  McphCheckName,
-  SessionCheckName,
-  ParsedMcpConfig,
-  ParsedMcphConfig,
-  IgnoreReport,
+import {
+  SESSION_AUDIT_LABEL,
+  type LintResult,
+  type FileResult,
+  type LintIssue,
+  type CheckName,
+  type McpCheckName,
+  type McphCheckName,
+  type SessionCheckName,
+  type ParsedMcpConfig,
+  type ParsedMcphConfig,
+  type IgnoreReport,
 } from './types.js';
 import { VERSION } from '../version.js';
 
@@ -449,7 +450,7 @@ export async function runAudit(
       // Mirrors how mcph configs are pushed even when their issue list is
       // empty (above).
       fileResults.push({
-        path: '~/.claude/ (session audit)',
+        path: SESSION_AUDIT_LABEL,
         isSymlink: false,
         tokens: 0,
         lines: 0,

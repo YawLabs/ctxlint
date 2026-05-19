@@ -58,6 +58,28 @@ describe('checkMcpDeprecated', () => {
     expect(issues).toHaveLength(0);
   });
 
+  it('locates the right line when an earlier line contains both "type" and "sse" as separate substrings', async () => {
+    // Reproduces the prior bug: the old `.includes('"type"') && .includes('"sse"')`
+    // check would fire on line 4 (which has both substrings as part of an
+    // unrelated metadata object), not on the real `"type": "sse"` at line 5.
+    const config = makeConfig({
+      content:
+        '{\n  "mcpServers": {\n    "old": {\n      "metadata": { "type": "x", "fallback": "sse" },\n      "type": "sse",\n      "url": "https://old.example.com/sse"\n    }\n  }\n}',
+      servers: [
+        {
+          name: 'old',
+          transport: 'sse',
+          url: 'https://old.example.com/sse',
+          line: 3,
+          raw: { type: 'sse', url: 'https://old.example.com/sse' },
+        },
+      ],
+    });
+    const issues = await checkMcpDeprecated(config, '/project');
+    expect(issues).toHaveLength(1);
+    expect(issues[0].line).toBe(5);
+  });
+
   it('does not flag stdio transport', async () => {
     const config = makeConfig({
       servers: [

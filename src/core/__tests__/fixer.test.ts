@@ -308,6 +308,63 @@ describe('applyFixes', () => {
     expect(updated).not.toContain('src/old/');
   });
 
+  // When two fixes target the same line and one's oldText is a substring of
+  // the other (e.g. a dir rename `src/old` -> `src/new` plus a specific file
+  // rename `src/old/util.ts` -> `src/new/util.ts`), applying the shorter one
+  // first rewrites the prefix and leaves the longer fix's oldText no longer
+  // present in the line -- silently dropping the more-specific fix. The
+  // applier sorts longest-oldText-first to ensure the specific fix lands.
+  it('applies overlapping same-line fixes when one oldText contains the other', () => {
+    const filePath = writeFixture(
+      'CLAUDE.md',
+      'See `src/old/util.ts` plus other refs in `src/old/misc.ts`.\n',
+    );
+    const result = makeResult([
+      {
+        path: 'CLAUDE.md',
+        isSymlink: false,
+        tokens: 10,
+        lines: 1,
+        issues: [
+          // Order matters: the general dir-rename fix is listed FIRST to
+          // exercise the sort. Without the longest-first sort, this fix
+          // would run before the specific one and rewrite `src/old/` to
+          // `src/new/`, after which `src/old/util.ts` is no longer present.
+          {
+            severity: 'error',
+            check: 'paths',
+            line: 1,
+            message: 'src/old/ renamed',
+            fix: { file: filePath, line: 1, oldText: 'src/old/', newText: 'src/new/' },
+          },
+          {
+            severity: 'error',
+            check: 'paths',
+            line: 1,
+            message: 'src/old/util.ts moved',
+            fix: {
+              file: filePath,
+              line: 1,
+              oldText: 'src/old/util.ts',
+              newText: 'src/renamed/util.ts',
+            },
+          },
+        ],
+      },
+    ]);
+
+    const summary = applyFixes(result);
+    expect(summary.totalFixes).toBe(2);
+
+    const updated = fs.readFileSync(filePath, 'utf-8');
+    // The specific fix wins on its exact match.
+    expect(updated).toContain('src/renamed/util.ts');
+    // The general fix still rewrites the OTHER occurrence of src/old/.
+    expect(updated).toContain('src/new/misc.ts');
+    // Neither original path survives.
+    expect(updated).not.toContain('src/old/');
+  });
+
   it('fixes across multiple files', () => {
     const file1 = writeFixture('CLAUDE.md', 'See `src/old.ts`\n');
     const file2 = writeFixture('AGENTS.md', 'Check `lib/old.ts`\n');

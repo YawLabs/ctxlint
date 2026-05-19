@@ -6,7 +6,11 @@ function normalizePath(p: string): string {
   return resolve(p).replace(/\\/g, '/').toLowerCase();
 }
 
-const SECRET_SET_PATTERN = /gh\s+secret\s+set\s+(\S+)\s+(?:--repo\s+(\S+)|.*-b\s+)/;
+// `--repo owner/repo` capture; the SIMPLE fallback below handles the bare
+// `gh secret set NAME -b "..."` shape (the `.*-b\s+` arm that used to live
+// in this alternation never actually fired -- `.*` after `\s+NAME` required
+// text between the name and `-b`, which real invocations don't have).
+const SECRET_SET_PATTERN = /gh\s+secret\s+set\s+(\S+)\s+--repo\s+(\S+)/;
 const SECRET_SET_SIMPLE = /gh\s+secret\s+set\s+(\S+)/;
 
 interface SecretRecord {

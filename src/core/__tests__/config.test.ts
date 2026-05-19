@@ -117,4 +117,33 @@ describe('loadConfig', () => {
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
   });
+
+  it('warns when ignoreRules.pathPattern is used with a non-stale-memory check', () => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fs.writeFileSync(
+      path.join(tmpDir, '.ctxlintrc'),
+      JSON.stringify({
+        ignoreRules: [{ check: 'paths', pathPattern: '^node_modules/' }],
+      }),
+    );
+    loadConfig(tmpDir);
+    const messages = warn.mock.calls.map((args) => args.join(' ')).join('\n');
+    expect(messages).toContain('pathPattern is only honored for');
+    expect(messages).toContain('session-stale-memory');
+    warn.mockRestore();
+  });
+
+  it('does not warn when ignoreRules.pathPattern is used with session-stale-memory', () => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fs.writeFileSync(
+      path.join(tmpDir, '.ctxlintrc'),
+      JSON.stringify({
+        ignoreRules: [{ check: 'session-stale-memory', pathPattern: '^archive/' }],
+      }),
+    );
+    loadConfig(tmpDir);
+    const messages = warn.mock.calls.map((args) => args.join(' ')).join('\n');
+    expect(messages).not.toContain('pathPattern is only honored for');
+    warn.mockRestore();
+  });
 });

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { formatText, formatJson, formatTokenReport, formatSarif } from '../reporter.js';
 import { ALL_CHECKS, ALL_MCP_CHECKS, ALL_MCPH_CHECKS, ALL_SESSION_CHECKS } from '../audit.js';
 import { VERSION as PKG_VERSION } from '../../version.js';
-import type { LintResult } from '../types.js';
+import { SESSION_AUDIT_LABEL, type LintResult } from '../types.js';
 
 function makeResult(overrides?: Partial<LintResult>): LintResult {
   return {
@@ -311,7 +311,7 @@ describe('formatSarif', () => {
           ],
         },
         {
-          path: '~/.claude/ (session audit)',
+          path: SESSION_AUDIT_LABEL,
           isSymlink: false,
           tokens: 0,
           lines: 0,
@@ -426,7 +426,7 @@ describe('formatText — group classification', () => {
           ],
         },
         {
-          path: '~/.claude/ (session audit)',
+          path: SESSION_AUDIT_LABEL,
           isSymlink: false,
           tokens: 0,
           lines: 0,
@@ -485,6 +485,52 @@ describe('formatText — group classification', () => {
     const mcpHeaderIdx = plain.indexOf('MCP Configs');
     const contextSection = plain.slice(contextHeaderIdx, mcpHeaderIdx);
     expect(contextSection).not.toContain('~/.claude/ (session audit)');
+  });
+
+  it('routes session bucket via SESSION_AUDIT_PATH_MARKER, not the full label string', () => {
+    // Re-skin the label: same `(session audit)` marker, different surrounding
+    // path. The classifier should still route to the Session Audit header.
+    // Use a non-session check on this row so the issue-prefix arm of the
+    // classifier can't satisfy the routing -- only the path-marker arm can.
+    // Need at least one other group with issues so headers render at all
+    // (single-group results render flat without headers).
+    const result = makeResult({
+      files: [
+        {
+          path: 'CLAUDE.md',
+          isSymlink: false,
+          tokens: 100,
+          lines: 5,
+          issues: [{ severity: 'error', check: 'paths', line: 1, message: 'context filler' }],
+        },
+        {
+          path: '$HOME/.claude/ (session audit)',
+          isSymlink: false,
+          tokens: 0,
+          lines: 0,
+          issues: [
+            {
+              severity: 'info',
+              check: 'paths',
+              line: 0,
+              message: 'reskinned session-audit label',
+            },
+          ],
+        },
+      ],
+      summary: { errors: 1, warnings: 0, info: 1, totalTokens: 100, estimatedWaste: 0 },
+    });
+    const plain = stripAnsi(formatText(result));
+    const sessionIdx = plain.indexOf('Session Audit');
+    expect(sessionIdx).toBeGreaterThan(-1);
+    const rowIdx = plain.indexOf('$HOME/.claude/ (session audit)', sessionIdx);
+    expect(rowIdx).toBeGreaterThan(sessionIdx);
+    // Sanity: the reskinned row didn't land in the context section.
+    const contextIdx = plain.indexOf('Context Files');
+    if (contextIdx > -1 && sessionIdx > contextIdx) {
+      const contextSection = plain.slice(contextIdx, sessionIdx);
+      expect(contextSection).not.toContain('$HOME/.claude/ (session audit)');
+    }
   });
 
   it('renders flat (no bold headers) when only one group has issues', () => {

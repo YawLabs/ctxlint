@@ -69,6 +69,28 @@ const CONTEXT_FILE_PATTERNS = [
 
 const IGNORED_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'vendor']);
 
+// Dotted directory names we DO want to descend into for context-file
+// discovery. Blanket-skipping `.*` dirs (the old behavior) meant that
+// e.g. `packages/foo/.claude/AGENTS.md` was never found, because the walker
+// stopped at `packages/foo/` and never registered the nested `.claude/` for
+// the bare `AGENTS.md` pattern. Keep this list in sync with the dotted
+// prefixes appearing in CONTEXT_FILE_PATTERNS + MCP_CONFIG_PATTERNS and the
+// CLI's --watch directory list (src/cli.ts).
+const ALLOWED_DOT_DIRS = new Set([
+  '.claude',
+  '.cursor',
+  '.github',
+  '.windsurf',
+  '.clinerules',
+  '.aide',
+  '.amazonq',
+  '.goose',
+  '.junie',
+  '.aiassistant',
+  '.continue',
+  '.vscode',
+]);
+
 export interface ScanOptions {
   depth?: number;
   extraPatterns?: string[];
@@ -99,11 +121,14 @@ export async function scanForContextFiles(
     try {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       for (const entry of entries) {
-        if (entry.isDirectory() && !IGNORED_DIRS.has(entry.name) && !entry.name.startsWith('.')) {
-          const fullPath = path.join(dir, entry.name);
-          dirsToScan.push(fullPath);
-          collectDirs(fullPath, currentDepth + 1);
-        }
+        if (!entry.isDirectory() || IGNORED_DIRS.has(entry.name)) continue;
+        // Allow non-dotted dirs, or dotted dirs on the allowlist (e.g.
+        // nested .claude/, .cursor/, .github/ in monorepo subpackages).
+        // Blanket-skipping all dotted dirs hid context files inside them.
+        if (entry.name.startsWith('.') && !ALLOWED_DOT_DIRS.has(entry.name)) continue;
+        const fullPath = path.join(dir, entry.name);
+        dirsToScan.push(fullPath);
+        collectDirs(fullPath, currentDepth + 1);
       }
     } catch {
       // skip inaccessible directories
@@ -295,7 +320,7 @@ export async function scanGlobalMcpConfigs(): Promise<DiscoveredFile[]> {
     const isGeneralClaudeFile =
       normalized.endsWith(`${path.sep}.claude.json`) ||
       normalized.endsWith(`${path.sep}.claude${path.sep}settings.json`);
-    if (isGeneralClaudeFile && !mcpFileHasMcpKey(normalized)) continue;
+    if (isGeneralClaudeFile && !(await mcpFileHasMcpKey(normalized))) continue;
 
     const symlink = isSymlink(normalized);
     const target = symlink ? readSymlinkTarget(normalized) : undefined;
@@ -317,12 +342,24 @@ export async function scanGlobalMcpConfigs(): Promise<DiscoveredFile[]> {
  * "servers" key? Avoids a full JSON parse here -- the mcp-parser will do that
  * authoritatively later. We only need a reliable enough signal to skip
  * obviously-non-MCP general Claude config files.
+ *
+ * Reads only the first 8KB of the file. `~/.claude.json` can be many MB on a
+ * heavily-used workstation, and a synchronous full read just to regex-peek
+ * for a top-level key blocks the event loop. The key, if present, is at the
+ * top of a normally-serialized JSON object, so the prefix is plenty.
  */
-function mcpFileHasMcpKey(filePath: string): boolean {
+const PREFIX_BYTES = 8192;
+async function mcpFileHasMcpKey(filePath: string): Promise<boolean> {
+  let fd: fs.promises.FileHandle | undefined;
   try {
-    const content = fs.readFileSync(filePath, 'utf8');
-    return /"(mcpServers|servers)"\s*:/.test(content);
+    fd = await fs.promises.open(filePath, 'r');
+    const buf = Buffer.alloc(PREFIX_BYTES);
+    const { bytesRead } = await fd.read(buf, 0, PREFIX_BYTES, 0);
+    const prefix = buf.subarray(0, bytesRead).toString('utf8');
+    return /"(mcpServers|servers)"\s*:/.test(prefix);
   } catch {
     return false;
+  } finally {
+    await fd?.close().catch(() => {});
   }
 }

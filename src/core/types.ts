@@ -1,5 +1,17 @@
 export type Severity = 'error' | 'warning' | 'info';
 
+// Label audit.ts stamps onto the synthetic session-audit FileResult bucket.
+// Exported so reporter.ts can route on the SAME literal it was authored
+// against, rather than a substring grep that drifts silently when the label
+// is reskinned.
+export const SESSION_AUDIT_LABEL = '~/.claude/ (session audit)';
+
+// Tighter substring the reporter uses for path-based classification. A
+// reskinned label (different leading path, different trailing punctuation)
+// keeps routing correctly as long as it contains this marker; that's the
+// decoupling the const is here to provide.
+export const SESSION_AUDIT_PATH_MARKER = '(session audit)';
+
 // --- Session check types ---
 
 export type SessionCheckName =

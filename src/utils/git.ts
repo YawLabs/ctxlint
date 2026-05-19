@@ -1,4 +1,47 @@
+import * as path from 'node:path';
 import simpleGit, { type SimpleGit } from 'simple-git';
+
+/**
+ * Normalize a path for cross-platform git comparison:
+ *   - if the input is absolute and lives under `projectRoot`, relativize it
+ *     against the project root (a Windows caller passing
+ *     `C:\repo\src\foo.ts` for a project rooted at `C:\repo` collapses to
+ *     `src/foo.ts`, which is what git emits)
+ *   - swap backslashes for forward slashes
+ *   - collapse `./` segments and resolve interior `../` where syntactically
+ *     possible
+ *
+ * Both the caller's referenced paths AND each line of git output get run
+ * through this before being compared. Git emits paths relative to the repo
+ * root with forward slashes and without drive letters, so normalizing the
+ * caller side is what lets `./src/foo.ts`, `src/foo.ts`, and
+ * `C:\repo\src\foo.ts` all match the same `src/foo.ts` git output line.
+ *
+ * Trailing slashes are preserved (caller may pass `src/components/` to
+ * indicate "match anything under this dir"); the match logic uses that
+ * trailing slash as the directory-boundary signal.
+ */
+function normalizePath(p: string, projectRoot?: string): string {
+  let cleaned = p.replace(/\\/g, '/');
+  if (projectRoot && path.isAbsolute(p)) {
+    // Use node's path.relative so case-insensitive Windows matches and
+    // mixed-separator project roots both fall out naturally. Fall back to
+    // the raw input if the absolute path is OUTSIDE the project root --
+    // path.relative would emit `../../...` in that case, which is correct
+    // but unlikely to match anything git logs from inside this repo.
+    const rel = path.relative(projectRoot, p).replace(/\\/g, '/');
+    if (rel && !rel.startsWith('..')) {
+      cleaned = rel;
+    } else {
+      // Strip drive letter as a last-ditch sanitization so we at least
+      // don't carry `C:` into the comparison.
+      cleaned = cleaned.replace(/^[A-Za-z]:/, '');
+    }
+  }
+  // Preserve trailing `/` (path.posix.normalize keeps it; we don't strip
+  // it on purpose -- the match loop relies on it as a directory boundary).
+  return path.posix.normalize(cleaned);
+}
 
 let gitInstance: SimpleGit | null = null;
 let gitProjectRoot: string | null = null;
@@ -53,9 +96,25 @@ export async function getCommitsSinceBatch(
   paths: string[],
   since: Date,
 ): Promise<Map<string, number>> {
+  // Caller-facing output map -- always keyed by the ORIGINAL strings the
+  // caller passed in, regardless of how normalization mangled them
+  // internally. Preserving the original keys is the function's contract;
+  // staleness.ts:52 iterates this map expecting its own ref strings back.
+  const out = new Map<string, number>();
+  for (const p of paths) out.set(p, 0);
+  if (paths.length === 0) return out;
+
+  // Internal counts keyed by the NORMALIZED form. Multiple originals may
+  // collapse to the same normalized key (e.g. `src/foo.ts` and
+  // `./src/foo.ts`); they share a count slot, then fan back out to each
+  // original on the way out.
   const counts = new Map<string, number>();
-  for (const p of paths) counts.set(p, 0);
-  if (paths.length === 0) return counts;
+  const originalToNormalized = new Map<string, string>();
+  for (const p of paths) {
+    const n = normalizePath(p, projectRoot);
+    originalToNormalized.set(p, n);
+    if (!counts.has(n)) counts.set(n, 0);
+  }
 
   try {
     const git = getGit(projectRoot);
@@ -70,10 +129,7 @@ export async function getCommitsSinceBatch(
       `--format=%n${SENTINEL}`,
     ]);
 
-    // Normalize path separators for cross-platform comparison.
-    // Also strips Windows drive letters (e.g., C:) since git stores them without.
-    const normalize = (p: string) => p.replace(/\\/g, '/').replace(/^[A-Z]:/, '');
-    const requested = new Set(paths.map(normalize));
+    const requested = new Set(counts.keys());
 
     // Parse commit blocks: sentinel line, optional blank line, then a list of
     // changed paths until the next sentinel.
@@ -96,29 +152,34 @@ export async function getCommitsSinceBatch(
       if (!inCommit) continue;
       const trimmed = line.trim();
       if (!trimmed) continue;
-      const changed = normalize(trimmed);
+      // Git output paths are already relative to the repo root, but run them
+      // through the same normalizer for consistency (collapses any unusual
+      // paths git might emit).
+      const changed = normalizePath(trimmed);
       // Count a changed file against any requested path that matches either
       // exactly or as a prefix (directory reference like `src/components/`).
+      // When `req` already ends in `/`, that slash IS the boundary --
+      // startsWith alone is sufficient. Otherwise we synthesize a trailing
+      // slash and require the next char in `changed` to be that slash
+      // (handled by startsWith on `req + '/'`).
       for (const req of requested) {
-        const matchTarget = req.endsWith('/') ? req : req + '/';
-        if (
-          changed === req ||
-          (changed.startsWith(matchTarget) &&
-            (changed.length === matchTarget.length || changed[matchTarget.length] === '/'))
-        ) {
+        if (changed === req || (req.endsWith('/') && changed.startsWith(req))) {
+          seenThisCommit.add(req);
+          continue;
+        }
+        if (changed.startsWith(req + '/')) {
           seenThisCommit.add(req);
         }
       }
     }
     if (inCommit) flush();
   } catch {
-    // Fall through — leave zero counts for every path.
+    // Fall through -- leave zero counts for every path.
   }
 
-  // Remap back to caller's original (non-normalized) path strings.
-  const out = new Map<string, number>();
-  for (const p of paths) {
-    out.set(p, counts.get(p.replace(/\\/g, '/')) ?? 0);
+  // Fan normalized counts back out to each caller-supplied original key.
+  for (const [original, normalized] of originalToNormalized) {
+    out.set(original, counts.get(normalized) ?? 0);
   }
   return out;
 }

@@ -1,5 +1,10 @@
 import chalk from 'chalk';
-import type { FileResult, LintResult, LintIssue } from './types.js';
+import {
+  SESSION_AUDIT_PATH_MARKER,
+  type FileResult,
+  type LintResult,
+  type LintIssue,
+} from './types.js';
 
 type FileGroup = 'context' | 'mcp' | 'mcph' | 'session';
 
@@ -21,7 +26,7 @@ function classifyFile(f: FileResult): FileGroup {
   // no cross-file checks. If one is added, also add a match arm here.
   if (f.path === '(project)') return 'context';
   if (f.path === '(mcp)') return 'mcp';
-  if (f.path.includes('session audit')) return 'session';
+  if (f.path.includes(SESSION_AUDIT_PATH_MARKER)) return 'session';
 
   for (const issue of f.issues) {
     if (issue.check.startsWith('session-')) return 'session';
@@ -62,7 +67,7 @@ const GROUP_SUMMARY_NOUNS: Record<FileGroup, string> = {
 };
 
 function isSyntheticBucket(p: string): boolean {
-  return p.startsWith('(') || p.includes('session audit');
+  return p.startsWith('(') || p.includes(SESSION_AUDIT_PATH_MARKER);
 }
 
 export function formatText(result: LintResult, verbose: boolean = false): string {
