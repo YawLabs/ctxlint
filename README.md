@@ -40,7 +40,7 @@ ctxlint is a linter purpose-built for this. It reads your context files, cross-r
 Run directly (no install needed):
 
 ```bash
-npx @yawlabs/ctxlint
+npx -y @yawlabs/ctxlint@latest
 ```
 
 ### Project install (recommended for teams)
@@ -116,13 +116,13 @@ ctxlint also lints MCP server configuration files — the JSON configs that tell
 
 ```bash
 # Lint context files + MCP configs
-npx @yawlabs/ctxlint --mcp
+npx @yawlabs/ctxlint@latest --mcp
 
 # Lint only MCP configs
-npx @yawlabs/ctxlint --mcp-only
+npx @yawlabs/ctxlint@latest --mcp-only
 
 # Include global/user-level configs (Claude Desktop, Cursor, Windsurf, etc.)
-npx @yawlabs/ctxlint --mcp-global
+npx @yawlabs/ctxlint@latest --mcp-global
 ```
 
 ### What MCP config files are scanned
@@ -185,16 +185,16 @@ ctxlint also lints `.mcph.json` — the config file read by the [`@yawlabs/mcph`
 
 ```bash
 # Lint context files + .mcph.json
-npx @yawlabs/ctxlint --mcph
+npx @yawlabs/ctxlint@latest --mcph
 
 # Lint only .mcph.json
-npx @yawlabs/ctxlint --mcph-only
+npx @yawlabs/ctxlint@latest --mcph-only
 
 # Include the user-global ~/.mcph.json
-npx @yawlabs/ctxlint --mcph-global
+npx @yawlabs/ctxlint@latest --mcph-global
 
 # Treat any token in any .mcph.json as an error (env-var-only posture)
-npx @yawlabs/ctxlint --mcph --mcph-strict-env-token
+npx @yawlabs/ctxlint@latest --mcph --mcph-strict-env-token
 ```
 
 ### What mcph config checks catch
@@ -213,10 +213,10 @@ ctxlint can audit AI agent session data — history files and memory entries —
 
 ```bash
 # Lint context files + session data
-npx @yawlabs/ctxlint --session
+npx @yawlabs/ctxlint@latest --session
 
 # Lint only session data
-npx @yawlabs/ctxlint --session-only
+npx @yawlabs/ctxlint@latest --session-only
 ```
 
 Session checks are **opt-in** because they access files outside the project directory (agent history in your home directory, sibling repos in the parent directory).
@@ -316,7 +316,7 @@ Passing any `mcp-*` check name implies `--mcp`. Passing any `mcph-*` check name 
 ## Watch Mode
 
 ```bash
-npx @yawlabs/ctxlint --watch
+npx @yawlabs/ctxlint@latest --watch
 ```
 
 Re-lints automatically when any context file, MCP config, or `package.json` changes. Useful during development when you're editing context files alongside code.
@@ -325,7 +325,7 @@ Re-lints automatically when any context file, MCP config, or `package.json` chan
 
 ```yaml
 - name: Lint context files
-  run: npx @yawlabs/ctxlint --strict
+  run: npx @yawlabs/ctxlint@latest --strict
 ```
 
 ### Exit Codes
@@ -358,7 +358,7 @@ Or with options:
 
 ```yaml
 - name: Lint context files
-  run: npx @yawlabs/ctxlint --format sarif > ctxlint.sarif
+  run: npx @yawlabs/ctxlint@latest --format sarif > ctxlint.sarif
 
 - name: Upload SARIF
   uses: github/codeql-action/upload-sarif@v3
@@ -369,7 +369,7 @@ Or with options:
 ## Auto-fix
 
 ```bash
-npx @yawlabs/ctxlint --fix
+npx @yawlabs/ctxlint@latest --fix
 ```
 
 When a broken path was renamed in git or has a close match in the project, `--fix` rewrites the context file automatically.
@@ -379,7 +379,7 @@ When a broken path was renamed in git or has a close match in the project, `--fi
 ### Built-in
 
 ```bash
-npx @yawlabs/ctxlint init
+npx @yawlabs/ctxlint@latest init
 ```
 
 Sets up a git pre-commit hook that runs `ctxlint --strict` before each commit.
@@ -455,13 +455,13 @@ ctxlint ships with an MCP server that exposes seven tools (`ctxlint_audit`, `ctx
 Launch it with the `serve` subcommand (or the equivalent `--mcp-server` flag, kept for back-compat):
 
 ```bash
-npx -y @yawlabs/ctxlint serve
+npx -y @yawlabs/ctxlint@latest serve
 ```
 
 ### With Claude Code
 
 ```bash
-claude mcp add ctxlint -- npx -y @yawlabs/ctxlint serve
+claude mcp add ctxlint -- npx -y @yawlabs/ctxlint@latest serve
 ```
 
 ### With `.mcp.json` (Claude Code project config, Cursor, Windsurf)
@@ -475,7 +475,7 @@ macOS / Linux / WSL:
   "mcpServers": {
     "ctxlint": {
       "command": "npx",
-      "args": ["-y", "@yawlabs/ctxlint", "serve"]
+      "args": ["-y", "@yawlabs/ctxlint@latest", "serve"]
     }
   }
 }
@@ -488,7 +488,7 @@ Windows:
   "mcpServers": {
     "ctxlint": {
       "command": "cmd",
-      "args": ["/c", "npx", "-y", "@yawlabs/ctxlint", "serve"]
+      "args": ["/c", "npx", "-y", "@yawlabs/ctxlint@latest", "serve"]
     }
   }
 }
@@ -505,7 +505,7 @@ Add to `.vscode/mcp.json`:
   "servers": {
     "ctxlint": {
       "command": "npx",
-      "args": ["-y", "@yawlabs/ctxlint", "serve"]
+      "args": ["-y", "@yawlabs/ctxlint@latest", "serve"]
     }
   }
 }
@@ -520,7 +520,7 @@ Add to your Claude Desktop config (`claude_desktop_config.json`):
   "mcpServers": {
     "ctxlint": {
       "command": "npx",
-      "args": ["-y", "@yawlabs/ctxlint", "serve"]
+      "args": ["-y", "@yawlabs/ctxlint@latest", "serve"]
     }
   }
 }
@@ -529,7 +529,7 @@ Add to your Claude Desktop config (`claude_desktop_config.json`):
 ## JSON Output
 
 ```bash
-npx @yawlabs/ctxlint --format json
+npx @yawlabs/ctxlint@latest --format json
 ```
 
 Returns structured JSON with all file results, issues, and summary — useful for building integrations or dashboards.
