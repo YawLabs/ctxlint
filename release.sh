@@ -29,7 +29,28 @@ info() { echo -e "${GREEN}  ✓ $1${NC}"; }
 warn() { echo -e "${YELLOW}  ! $1${NC}"; }
 fail() { echo -e "${RED}  ✗ $1${NC}"; exit 1; }
 
-TOTAL_STEPS=8
+# SKIP_LINT=1 escape hatch -- wraps `npm`/`pnpm` so lint-related runs are
+# no-ops. Workaround for the MINGW64-ARM64 npm-run-script wrapper that
+# segfaults on exit-cleanup (platform-windows.md). Apply only when the
+# lint runner is broken on the host; CI catches lint regressions anyway.
+if [ "${SKIP_LINT:-}" = "1" ]; then
+  npm() {
+    if [ "$1" = "run" ] && [[ "$2" == lint* ]]; then
+      warn "SKIP_LINT=1 -- noop 'npm run $2'"
+      return 0
+    fi
+    command npm "$@"
+  }
+  pnpm() {
+    if [ "$1" = "run" ] && [[ "$2" == lint* ]]; then
+      warn "SKIP_LINT=1 -- noop 'pnpm run $2'"
+      return 0
+    fi
+    command pnpm "$@"
+  }
+fi
+
+TOTAL_STEPS=9
 
 # ---- Resolve version ----
 VERSION="${1:-}"
@@ -306,13 +327,30 @@ else
 fi
 
 # =============================================================================
-# Step 7: Publish to the Official MCP Registry
+# Step 7: Create GitHub release
+# =============================================================================
+step 7 "Create GitHub release"
+if gh release view "v${VERSION}" >/dev/null 2>&1; then
+  info "GitHub release v${VERSION} already exists -- skipping"
+else
+  PREV_TAG=$(git tag --sort=-v:refname | grep -A1 "^v${VERSION}$" | tail -1)
+  if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "v${VERSION}" ]; then
+    CHANGELOG=$(git log --oneline "${PREV_TAG}..v${VERSION}" --no-decorate | sed 's/^[a-f0-9]* /- /')
+  else
+    CHANGELOG="Initial release"
+  fi
+  gh release create "v${VERSION}" --title "v${VERSION}" --notes "$CHANGELOG"
+  info "GitHub release created"
+fi
+
+# =============================================================================
+# Step 8: Publish to the Official MCP Registry
 # =============================================================================
 # Downstream catalogs (Glama, PulseMCP, mcpservers.org) auto-source from the
 # Official MCP Registry; publishing here is what makes the new version visible
 # to them. server.json was already bumped in step 4 so the version matches the
 # tag.
-step 7 "Publish to MCP Registry"
+step 8 "Publish to MCP Registry"
 
 if [ ! -f server.json ]; then
   info "No server.json -- not an MCP server, skipping registry publish"
@@ -360,9 +398,9 @@ else
 fi
 
 # =============================================================================
-# Step 8: Verify
+# Step 9: Verify
 # =============================================================================
-step 8 "Verify"
+step 9 "Verify"
 
 # Wait a moment for npm registry to propagate
 sleep 3
