@@ -29,7 +29,7 @@ info() { echo -e "${GREEN}  ✓ $1${NC}"; }
 warn() { echo -e "${YELLOW}  ! $1${NC}"; }
 fail() { echo -e "${RED}  ✗ $1${NC}"; exit 1; }
 
-TOTAL_STEPS=7
+TOTAL_STEPS=8
 
 # ---- Resolve version ----
 VERSION="${1:-}"
@@ -84,7 +84,8 @@ if [ "$IS_CI" != "true" ] && [ "$RESUMING" != "true" ]; then
   echo "  4. Bump version in package.json"
   echo "  5. Commit, tag, and push"
   echo "  6. Publish to npm"
-  echo "  7. Verify"
+  echo "  7. Publish to MCP Registry"
+  echo "  8. Verify"
   echo ""
   read -p "Continue? (y/N) " -n 1 -r
   echo
@@ -144,6 +145,13 @@ else
     fs.writeFileSync(p, next);
   "
   pnpm install --lockfile-only 2>/dev/null || true
+  # server.json is published to the MCP Registry in step 7; bump its version
+  # alongside package.json so the bump commit fully reflects the release and
+  # server.json is never left dirty in the working tree after a publish.
+  if [ -f server.json ]; then
+    jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' server.json > server.tmp
+    mv server.tmp server.json
+  fi
   info "Version bumped"
 fi
 
@@ -156,8 +164,10 @@ if [ "$IS_CI" = "true" ]; then
   info "CI mode — skipping commit/tag/push (already tagged)"
 else
   # Commit if there are changes
-  if [ -n "$(git status --porcelain)" ]; then
-    git add package.json pnpm-lock.yaml .pre-commit-hooks.yaml
+  BUMP_FILES="package.json pnpm-lock.yaml .pre-commit-hooks.yaml"
+  [ -f server.json ] && BUMP_FILES="$BUMP_FILES server.json"
+  if [ -n "$(git status --porcelain $BUMP_FILES 2>/dev/null)" ]; then
+    git add $BUMP_FILES
     git commit -m "v${VERSION}"
     info "Committed version bump"
   else
@@ -283,9 +293,60 @@ else
 fi
 
 # =============================================================================
-# Step 7: Verify
+# Step 7: Publish to the Official MCP Registry
 # =============================================================================
-step 7 "Verify"
+# Downstream catalogs (Glama, PulseMCP, mcpservers.org) auto-source from the
+# Official MCP Registry; publishing here is what makes the new version visible
+# to them. server.json was already bumped in step 4 so the version matches the
+# tag.
+step 7 "Publish to MCP Registry"
+
+if [ ! -f server.json ]; then
+  info "No server.json -- not an MCP server, skipping registry publish"
+else
+  # mcp-publisher binary cached at ~/.local/bin. Pinned to "latest" upstream;
+  # if the registry's CLI introduces a breaking change, the next release will
+  # surface it. The OS/arch detection handles Linux, macOS, and Git Bash on
+  # Windows (MINGW/MSYS uname -s starts with "mingw" / "msys").
+  MP="${MCP_PUBLISHER:-$HOME/.local/bin/mcp-publisher}"
+  if ! [ -x "$MP" ]; then
+    info "mcp-publisher not found at $MP -- downloading"
+    mkdir -p "$(dirname "$MP")"
+    OS_RAW=$(uname -s | tr '[:upper:]' '[:lower:]')
+    case "$OS_RAW" in mingw*|msys*|cygwin*) OS=windows ;; *) OS="$OS_RAW" ;; esac
+    ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+    TMP=$(mktemp -d)
+    curl -sL -o "$TMP/mp.tar.gz" \
+      "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_${OS}_${ARCH}.tar.gz" \
+      || fail "Failed to download mcp-publisher (${OS}/${ARCH})"
+    tar xzf "$TMP/mp.tar.gz" -C "$TMP" || fail "Failed to extract mcp-publisher tarball"
+    if [ -f "$TMP/mcp-publisher.exe" ]; then
+      mv "$TMP/mcp-publisher.exe" "$MP"
+    else
+      mv "$TMP/mcp-publisher" "$MP"
+    fi
+    rm -rf "$TMP"
+    chmod +x "$MP" 2>/dev/null || true
+  fi
+
+  # OIDC auth (used by the old release.yml) only works inside Actions; locally
+  # we use a GitHub PAT via `login github -token <PAT>`. The PAT needs read:org
+  # for YawLabs so the registry can verify org membership for the
+  # io.github.YawLabs/* namespace.
+  if [ -z "${MCP_REGISTRY_TOKEN:-}" ]; then
+    fail "MCP_REGISTRY_TOKEN unset -- set it to a GitHub PAT with read:org for YawLabs (or run '$MP login github' once interactively to cache the session)."
+  fi
+  "$MP" login github -token "$MCP_REGISTRY_TOKEN" >/dev/null 2>&1 \
+    || fail "mcp-publisher login failed -- check MCP_REGISTRY_TOKEN scopes (needs read:org for YawLabs)"
+  "$MP" publish \
+    || fail "mcp-publisher publish failed -- npm + GitHub release succeeded, but the MCP Registry did not. Retry the step (re-run the script) once the cause is identified."
+  info "Published to MCP Registry"
+fi
+
+# =============================================================================
+# Step 8: Verify
+# =============================================================================
+step 8 "Verify"
 
 # Wait a moment for npm registry to propagate
 sleep 3
