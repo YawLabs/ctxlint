@@ -11,7 +11,7 @@
 
 Your `CLAUDE.md` is lying to your agent. Your `.mcp.json` has a hardcoded API key. ctxlint catches both.
 
-[![Add to Yaw MCP](https://yaw.sh/yaw-mcp-button.svg)](yaw://install?name=ctxlint&command=npx&args=-y%2C%40yawlabs%2Fctxlint%2Cserve&description=Lint%20AI%20agent%20context%20files%20and%20MCP%20configs%20against%20your%20codebase&source=https%3A%2F%2Fgithub.com%2FYawLabs%2Fctxlint)
+[![Add to Yaw MCP](https://yaw.sh/yaw-mcp-button.svg)](https://yaw.sh/mcp/install?name=ctxlint&command=npx&args=-y%2C%40yawlabs%2Fctxlint%2Cserve&description=Lint%20AI%20agent%20context%20files%20and%20MCP%20configs%20against%20your%20codebase&source=https%3A%2F%2Fgithub.com%2FYawLabs%2Fctxlint)
 
 One click adds this to your local Yaw MCP config so it's available in every Yaw Terminal session. Or install manually below.
 
