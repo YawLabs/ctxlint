@@ -191,6 +191,54 @@ export interface RenameInfo {
   daysAgo: number;
 }
 
+/**
+ * Pure parser for the output of
+ *   `git log --diff-filter=R --find-renames --name-status --format=%H %ai`.
+ *
+ * Extracted from `findRenames` so the line-by-line parsing (commit-header
+ * tracking, multi-rename-per-commit handling, the `daysAgo` fallback when no
+ * date header has been seen, and the malformed-`R`-line guard) can be unit
+ * tested against representative raw git output without standing up a repo
+ * whose rename happens to survive a path-scoped log. Behavior is identical to
+ * the inline loop it replaces.
+ */
+export function parseRenameLog(result: string): RenameInfo | null {
+  if (!result.trim()) return null;
+
+  // Track the most recent commit header as we scan. A single commit can
+  // contain multiple rename entries; peeking at `lines[i - 1]` broke when
+  // that previous line was itself an `R<score>\told\tnew` row, causing
+  // commitHash to fall back to 'unknown'.
+  let currentHash = 'unknown';
+  let currentDateStr: string | undefined;
+
+  const lines = result.trim().split('\n');
+  for (const line of lines) {
+    const headerMatch = line.match(/^([a-f0-9]{7,40})\s+(.+)$/);
+    if (headerMatch) {
+      currentHash = headerMatch[1].substring(0, 7);
+      currentDateStr = headerMatch[2];
+      continue;
+    }
+    if (line.startsWith('R')) {
+      const parts = line.split('\t');
+      if (parts.length >= 3) {
+        const daysAgo = currentDateStr
+          ? Math.floor((Date.now() - new Date(currentDateStr).getTime()) / (1000 * 60 * 60 * 24))
+          : 0;
+        return {
+          oldPath: parts[1],
+          newPath: parts[2],
+          commitHash: currentHash,
+          daysAgo,
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
 export async function findRenames(
   projectRoot: string,
   filePath: string,
@@ -208,40 +256,7 @@ export async function findRenames(
       filePath,
     ]);
 
-    if (!result.trim()) return null;
-
-    // Track the most recent commit header as we scan. A single commit can
-    // contain multiple rename entries; peeking at `lines[i - 1]` broke when
-    // that previous line was itself an `R<score>\told\tnew` row, causing
-    // commitHash to fall back to 'unknown'.
-    let currentHash = 'unknown';
-    let currentDateStr: string | undefined;
-
-    const lines = result.trim().split('\n');
-    for (const line of lines) {
-      const headerMatch = line.match(/^([a-f0-9]{7,40})\s+(.+)$/);
-      if (headerMatch) {
-        currentHash = headerMatch[1].substring(0, 7);
-        currentDateStr = headerMatch[2];
-        continue;
-      }
-      if (line.startsWith('R')) {
-        const parts = line.split('\t');
-        if (parts.length >= 3) {
-          const daysAgo = currentDateStr
-            ? Math.floor((Date.now() - new Date(currentDateStr).getTime()) / (1000 * 60 * 60 * 24))
-            : 0;
-          return {
-            oldPath: parts[1],
-            newPath: parts[2],
-            commitHash: currentHash,
-            daysAgo,
-          };
-        }
-      }
-    }
-
-    return null;
+    return parseRenameLog(result);
   } catch {
     return null;
   }

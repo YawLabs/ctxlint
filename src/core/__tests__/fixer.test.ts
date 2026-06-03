@@ -405,4 +405,212 @@ describe('applyFixes', () => {
     expect(summary.totalFixes).toBe(2);
     expect(summary.filesModified).toHaveLength(2);
   });
+
+  // -------------------------------------------------------------------------
+  // Gap 3: dryRun.
+  //
+  // dryRun must leave every target file byte-for-byte unchanged while still
+  // returning the same totalFixes / filesModified counts a real run would
+  // (the "would-modify" contract documented on FixOptions.dryRun), and must
+  // emit "Would fix" log lines instead of "Fixed".
+  // -------------------------------------------------------------------------
+  describe('dryRun', () => {
+    it('writes nothing but returns the same counts as a real run', () => {
+      const filePath = writeFixture('CLAUDE.md', 'Check `src/old/file.ts` for details.\n');
+      const original = fs.readFileSync(filePath, 'utf-8');
+      const result = makeResult([
+        {
+          path: 'CLAUDE.md',
+          isSymlink: false,
+          tokens: 10,
+          lines: 1,
+          issues: [
+            {
+              severity: 'error',
+              check: 'paths',
+              line: 1,
+              message: 'src/old/file.ts does not exist',
+              fix: {
+                file: filePath,
+                line: 1,
+                oldText: 'src/old/file.ts',
+                newText: 'src/new/file.ts',
+              },
+            },
+          ],
+        },
+      ]);
+
+      const summary = applyFixes(result, { dryRun: true });
+      // Counts mirror a real run...
+      expect(summary.totalFixes).toBe(1);
+      expect(summary.filesModified).toEqual([filePath]);
+      // ...but the file on disk is untouched.
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe(original);
+    });
+
+    it("logs 'Would fix' (not 'Fixed') under dryRun", () => {
+      const filePath = writeFixture('CLAUDE.md', 'See `src/old.ts` here.\n');
+      const result = makeResult([
+        {
+          path: 'CLAUDE.md',
+          isSymlink: false,
+          tokens: 10,
+          lines: 1,
+          issues: [
+            {
+              severity: 'error',
+              check: 'paths',
+              line: 1,
+              message: '',
+              fix: { file: filePath, line: 1, oldText: 'src/old.ts', newText: 'src/new.ts' },
+            },
+          ],
+        },
+      ]);
+
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        applyFixes(result, { dryRun: true });
+        const messages = logSpy.mock.calls.map((args) => args.join(' ')).join('\n');
+        expect(messages).toContain('Would fix');
+        expect(messages).not.toContain('Fixed');
+        // The change-detail still names old -> new so the preview is useful.
+        expect(messages).toContain('src/old.ts');
+        expect(messages).toContain('src/new.ts');
+      } finally {
+        logSpy.mockRestore();
+      }
+    });
+
+    it('dryRun still respects quiet (no logs at all)', () => {
+      const filePath = writeFixture('CLAUDE.md', 'See `src/old.ts` here.\n');
+      const result = makeResult([
+        {
+          path: 'CLAUDE.md',
+          isSymlink: false,
+          tokens: 10,
+          lines: 1,
+          issues: [
+            {
+              severity: 'error',
+              check: 'paths',
+              line: 1,
+              message: '',
+              fix: { file: filePath, line: 1, oldText: 'src/old.ts', newText: 'src/new.ts' },
+            },
+          ],
+        },
+      ]);
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        const summary = applyFixes(result, { dryRun: true, quiet: true });
+        expect(summary.totalFixes).toBe(1);
+        expect(logSpy).not.toHaveBeenCalled();
+      } finally {
+        logSpy.mockRestore();
+      }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Gap 4: skipSymlinks default + --follow-symlinks override.
+  //
+  // The fixer keys symlink-skipping entirely off the scanner-supplied
+  // `file.isSymlink` flag in the LintResult (fixer.ts:34-38, 51-54) -- it never
+  // touches the filesystem to detect a symlink. So these tests set
+  // isSymlink: true on a PLAIN on-disk file and assert the flag-driven branch,
+  // which is faithful to the code path and does not require a real symlink
+  // (symlink creation is EPERM on this Windows host without dev-mode anyway).
+  // -------------------------------------------------------------------------
+  describe('skipSymlinks', () => {
+    it('skips a file flagged isSymlink by default, writes nothing, logs the skip', () => {
+      const filePath = writeFixture('CLAUDE.md', 'See `src/old.ts` here.\n');
+      const original = fs.readFileSync(filePath, 'utf-8');
+      const result = makeResult([
+        {
+          path: filePath,
+          isSymlink: true,
+          tokens: 10,
+          lines: 1,
+          issues: [
+            {
+              severity: 'error',
+              check: 'paths',
+              line: 1,
+              message: '',
+              fix: { file: filePath, line: 1, oldText: 'src/old.ts', newText: 'src/new.ts' },
+            },
+          ],
+        },
+      ]);
+
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        const summary = applyFixes(result); // skipSymlinks defaults to true
+        expect(summary.totalFixes).toBe(0);
+        expect(summary.filesModified).toHaveLength(0);
+        expect(fs.readFileSync(filePath, 'utf-8')).toBe(original);
+        const messages = logSpy.mock.calls.map((args) => args.join(' ')).join('\n');
+        expect(messages).toContain('Skipped');
+        expect(messages).toContain('symlink');
+        expect(messages).toContain('--follow-symlinks');
+      } finally {
+        logSpy.mockRestore();
+      }
+    });
+
+    it('applies the fix to a symlink-flagged file when skipSymlinks: false (--follow-symlinks)', () => {
+      const filePath = writeFixture('CLAUDE.md', 'See `src/old.ts` here.\n');
+      const result = makeResult([
+        {
+          path: filePath,
+          isSymlink: true,
+          tokens: 10,
+          lines: 1,
+          issues: [
+            {
+              severity: 'error',
+              check: 'paths',
+              line: 1,
+              message: '',
+              fix: { file: filePath, line: 1, oldText: 'src/old.ts', newText: 'src/new.ts' },
+            },
+          ],
+        },
+      ]);
+
+      const summary = applyFixes(result, { skipSymlinks: false });
+      expect(summary.totalFixes).toBe(1);
+      expect(summary.filesModified).toEqual([filePath]);
+      const updated = fs.readFileSync(filePath, 'utf-8');
+      expect(updated).toContain('src/new.ts');
+      expect(updated).not.toContain('src/old.ts');
+    });
+
+    it('does not skip a non-symlink file (isSymlink: false applies normally)', () => {
+      const filePath = writeFixture('CLAUDE.md', 'See `src/old.ts` here.\n');
+      const result = makeResult([
+        {
+          path: filePath,
+          isSymlink: false,
+          tokens: 10,
+          lines: 1,
+          issues: [
+            {
+              severity: 'error',
+              check: 'paths',
+              line: 1,
+              message: '',
+              fix: { file: filePath, line: 1, oldText: 'src/old.ts', newText: 'src/new.ts' },
+            },
+          ],
+        },
+      ]);
+
+      const summary = applyFixes(result); // default skipSymlinks: true, but file isn't a symlink
+      expect(summary.totalFixes).toBe(1);
+      expect(fs.readFileSync(filePath, 'utf-8')).toContain('src/new.ts');
+    });
+  });
 });
