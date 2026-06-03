@@ -8,6 +8,14 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-06-02
+
+### Fixed
+- **`findRenames` now detects real git renames.** The git-history auto-fixer's "Did you mean `<new path>`?" suggestion never fired: a path-scoped `git log -- <old>` returns nothing once `<old>` has been renamed away (the name no longer exists at HEAD, and `--follow` only tracks a path that still exists), so a referenced-but-renamed path always fell through to a fuzzy match. `findRenames` now scans an unscoped `--diff-filter=R` rename log and matches the entry whose source path is the broken reference. `parseRenameLog` gained an optional `targetPath` (exact match, then a most-recent basename fallback; no-target behaviour unchanged).
+
+### Internal
+- High-severity test coverage added across the lint engine: `findRenames`/`parseRenameLog`, the fixer dry-run and symlink-skip branches, and the catalog-schema validator's error paths. `parseRenameLog` was extracted from `findRenames` for direct testing (behaviour-preserving).
+
 ## [0.11.0] — 2026-05-15
 
 ### Added
