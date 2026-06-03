@@ -16,7 +16,7 @@ const RENAME_LOG_ARGS = [
   '--find-renames',
   '--name-status',
   '--format=%H %ai',
-  '-10',
+  '-50',
 ];
 
 let tmpDir: string;
@@ -65,17 +65,15 @@ async function commit(msg: string, files: Array<{ rel: string; body: string }>) 
 // ---------------------------------------------------------------------------
 // Gap 1: findRenames against a REAL `git mv`, at the real git boundary.
 //
-// Observed behavior of the SHIPPED code: findRenames scopes its `git log` to a
-// single pathspec WITHOUT `--follow`. A path-scoped `--diff-filter=R` log does
-// not surface the rename commit (git does not follow the rename across the
-// pathspec boundary), so for BOTH the old and the new path findRenames returns
-// null after a genuine `git mv`. These tests assert that real, current
-// contract -- they are not aspirational. If someone adds `--follow` (or drops
-// the pathspec) to make detection work, these assertions flip and force a
-// deliberate decision rather than a silent behavior change.
+// findRenames scans an UN-scoped `--diff-filter=R` rename log (a path-scoped
+// log finds nothing once the old name has been renamed away, and `--follow`
+// only tracks a path that still exists at HEAD) and matches the entry whose
+// SOURCE path is the queried ref. So for the OLD path (the caller pattern from
+// paths.ts) it returns the rename; the NEW path is not a rename SOURCE, so it
+// stays null.
 // ---------------------------------------------------------------------------
-describe('findRenames (real git mv, path-scoped) ', { timeout: 30000 }, () => {
-  it('returns null for the OLD (now-missing) path -- the caller pattern from paths.ts', async () => {
+describe('findRenames (real git mv, unscoped rename match)', { timeout: 30000 }, () => {
+  it('finds the rename for the OLD (now-missing) path -- the caller pattern from paths.ts', async () => {
     await commit('add', [{ rel: 'src/old.ts', body: 'a\nb\nc\nd\ne\n' }]);
     const git = simpleGit(realTmpDir);
     await git.mv('src/old.ts', 'src/new.ts');
@@ -84,10 +82,15 @@ describe('findRenames (real git mv, path-scoped) ', { timeout: 30000 }, () => {
     // paths.ts:81 passes ref.value, which is the path the doc references --
     // i.e. the OLD path that no longer exists on disk.
     const result = await findRenames(realTmpDir, 'src/old.ts');
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
+    const r = result as RenameInfo;
+    expect(r.oldPath).toBe('src/old.ts');
+    expect(r.newPath).toBe('src/new.ts');
+    expect(r.commitHash).toMatch(/^[a-f0-9]{7}$/);
+    expect(r.daysAgo).toBe(0);
   });
 
-  it('returns null for the NEW path too (path-scoped R-log surfaces no commit without --follow)', async () => {
+  it('returns null for the NEW path (it is not the SOURCE of any rename)', async () => {
     await commit('add', [{ rel: 'src/old.ts', body: 'a\nb\nc\nd\ne\n' }]);
     const git = simpleGit(realTmpDir);
     await git.mv('src/old.ts', 'src/new.ts');
@@ -243,5 +246,35 @@ describe('parseRenameLog', () => {
       `R100\tsrc/old.ts\tsrc/new.ts\n`;
     const info = parseRenameLog(raw);
     expect(info).toMatchObject({ oldPath: 'src/old.ts', newPath: 'src/new.ts' });
+  });
+
+  // targetPath matching: findRenames scans an unscoped log and asks the parser
+  // to return the rename whose SOURCE path equals the queried ref.
+  it('with a targetPath, returns the rename whose old path matches (not just the first)', () => {
+    const raw =
+      `${HASH} 2026-06-02 18:54:28 -0700\n\n` +
+      `R100\tsrc/a.ts\tsrc/a2.ts\n` +
+      `R100\tsrc/b.ts\tsrc/b2.ts\n`;
+    expect(parseRenameLog(raw, 'src/b.ts')).toMatchObject({
+      oldPath: 'src/b.ts',
+      newPath: 'src/b2.ts',
+    });
+  });
+
+  it('normalizes ./ and backslashes when matching the targetPath', () => {
+    const raw = `${HASH} 2026-06-02 18:54:28 -0700\n\nR100\tsrc/old.ts\tsrc/new.ts\n`;
+    expect(parseRenameLog(raw, './src/old.ts')).toMatchObject({ newPath: 'src/new.ts' });
+    expect(parseRenameLog(raw, 'src\\old.ts')).toMatchObject({ newPath: 'src/new.ts' });
+  });
+
+  it('falls back to a basename match when no source path matches exactly', () => {
+    const raw = `${HASH} 2026-06-02 18:54:28 -0700\n\nR100\tsrc/lib/old.ts\tsrc/lib/new.ts\n`;
+    // doc referenced a bare filename; repo tracks a nested path
+    expect(parseRenameLog(raw, 'old.ts')).toMatchObject({ newPath: 'src/lib/new.ts' });
+  });
+
+  it('returns null with a targetPath that matches no rename source or basename', () => {
+    const raw = `${HASH} 2026-06-02 18:54:28 -0700\n\nR100\tsrc/old.ts\tsrc/new.ts\n`;
+    expect(parseRenameLog(raw, 'src/unrelated.ts')).toBeNull();
   });
 });

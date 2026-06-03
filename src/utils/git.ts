@@ -191,6 +191,10 @@ export interface RenameInfo {
   daysAgo: number;
 }
 
+function normalizeRenamePath(p: string): string {
+  return p.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
 /**
  * Pure parser for the output of
  *   `git log --diff-filter=R --find-renames --name-status --format=%H %ai`.
@@ -198,12 +202,19 @@ export interface RenameInfo {
  * Extracted from `findRenames` so the line-by-line parsing (commit-header
  * tracking, multi-rename-per-commit handling, the `daysAgo` fallback when no
  * date header has been seen, and the malformed-`R`-line guard) can be unit
- * tested against representative raw git output without standing up a repo
- * whose rename happens to survive a path-scoped log. Behavior is identical to
- * the inline loop it replaces.
+ * tested against representative raw git output.
+ *
+ * When `targetPath` is given, return the rename whose SOURCE (old) path matches
+ * it -- exact first, then a most-recent basename fallback. This is what lets
+ * `findRenames` scan an UN-scoped rename log (the only query that surfaces a
+ * renamed-away path; see `findRenames`) and still pick the right entry. With no
+ * `targetPath` the first parsable rename wins (the original parser contract).
  */
-export function parseRenameLog(result: string): RenameInfo | null {
+export function parseRenameLog(result: string, targetPath?: string): RenameInfo | null {
   if (!result.trim()) return null;
+
+  const want = targetPath ? normalizeRenamePath(targetPath) : undefined;
+  const wantBase = want ? (want.split('/').pop() ?? want) : undefined;
 
   // Track the most recent commit header as we scan. A single commit can
   // contain multiple rename entries; peeking at `lines[i - 1]` broke when
@@ -211,6 +222,10 @@ export function parseRenameLog(result: string): RenameInfo | null {
   // commitHash to fall back to 'unknown'.
   let currentHash = 'unknown';
   let currentDateStr: string | undefined;
+  // Most-recent rename whose source basename matches, used only when no row
+  // matches the target path exactly (a doc may reference a bare filename while
+  // git tracks a repo-relative path).
+  let basenameFallback: RenameInfo | null = null;
 
   const lines = result.trim().split('\n');
   for (const line of lines) {
@@ -226,17 +241,23 @@ export function parseRenameLog(result: string): RenameInfo | null {
         const daysAgo = currentDateStr
           ? Math.floor((Date.now() - new Date(currentDateStr).getTime()) / (1000 * 60 * 60 * 24))
           : 0;
-        return {
+        const info: RenameInfo = {
           oldPath: parts[1],
           newPath: parts[2],
           commitHash: currentHash,
           daysAgo,
         };
+        if (!want) return info;
+        const oldNorm = normalizeRenamePath(info.oldPath);
+        if (oldNorm === want) return info;
+        if (!basenameFallback && wantBase && (oldNorm.split('/').pop() ?? oldNorm) === wantBase) {
+          basenameFallback = info;
+        }
       }
     }
   }
 
-  return null;
+  return basenameFallback;
 }
 
 export async function findRenames(
@@ -245,18 +266,21 @@ export async function findRenames(
 ): Promise<RenameInfo | null> {
   try {
     const git = getGit(projectRoot);
+    // A path-scoped `git log -- <old>` returns nothing once <old> has been
+    // renamed away: the name no longer exists at HEAD, and `--follow` only
+    // tracks a path that still exists. So scan recent renames across the repo
+    // (unscoped) and let parseRenameLog match the entry whose SOURCE path is
+    // filePath. `-50` bounds the walk to the 50 most recent rename commits.
     const result = await git.raw([
       'log',
       '--diff-filter=R',
       '--find-renames',
       '--name-status',
       '--format=%H %ai',
-      '-10',
-      '--',
-      filePath,
+      '-50',
     ]);
 
-    return parseRenameLog(result);
+    return parseRenameLog(result, filePath);
   } catch {
     return null;
   }
