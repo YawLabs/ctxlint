@@ -16,6 +16,42 @@ See [Versioning policy](#versioning-policy) below.
 ### Internal
 - High-severity test coverage added across the lint engine: `findRenames`/`parseRenameLog`, the fixer dry-run and symlink-skip branches, and the catalog-schema validator's error paths. `parseRenameLog` was extracted from `findRenames` for direct testing (behaviour-preserving).
 
+## [0.13.0] - 2026-06-02
+
+### Added
+- **Agent-skill lint pillar** (`AGENT_SKILL_LINT_SPEC`) - a fourth open spec covering Claude Code `~/.claude/skills/<name>/SKILL.md` and `~/.claude/agents/*.md`: frontmatter presence, broken path/command references, trigger-phrase collisions, orphaned skills, and dead tool restrictions. New `--skills` / `--skills-only` flags and an `agent-skill-lint-rules.json` catalog.
+- **`hook-coverage` / dead-hook rule** - flags `.claude/settings.json` hook and permission entries that reference a script or path missing on disk (a dead gate silently no-ops). The user-global `~/.claude/settings.json` scan is gated behind `--hooks-global`.
+- **Catalog JSON Schema + generate-from-catalog** - a governing schema for the rule catalogs with normalized metadata, plus a build step that generates the spec rule-count headers and the README family-table counts from the catalogs so the prose cannot drift from the machine-readable source.
+
+### Fixed
+- Corrected rule-count drift across the spec headers and the README table.
+- The skill `broken-ref` check no longer false-flags `./` paths inside shell code fences.
+- Removed stale references to the archived `mcp.hosting`.
+
+## [0.12.3] - 2026-05-28
+
+### Internal
+- `release.sh` hardening: a tag-drift push guard, a `SKIP_LINT` escape hatch for the Windows-ARM lint segfault, and a `gh release create` step.
+
+## [0.12.2] - 2026-05-28
+
+### Changed
+- `release.sh` now publishes to the MCP Registry and creates the GitHub release itself; `release.yml` and the other CI workflows were dropped in favor of the local release flow.
+- README: replaced the mcp.hosting badge with an "Add to Yaw MCP" deep link, and pinned the `npx` spawn to `@latest` for auto-update.
+
+### Internal
+- Release-flow fixes: tty-gated confirmation prompt, unconditional `server.json` version sync, a `gh auth token` fallback for the MCP Registry, and CI hand-off instead of racing it.
+
+## [0.12.1] - 2026-05-19
+
+### Fixed
+- A batch of correctness fixes across the git utilities, file scanner, fixer, and checks (from a full-pass review).
+
+## [0.12.0] - 2026-05-17
+
+### Fixed
+- Path matching in `getCommitsSinceBatch` (the git commit-history utility).
+
 ## [0.11.0] — 2026-05-15
 
 ### Added
