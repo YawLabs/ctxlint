@@ -1,5 +1,5 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$schema": "https://raw.githubusercontent.com/YawLabs/ctxlint/main/schemas/ctxlint-catalog.schema.json",
   "title": "AI Agent Session Lint Rules",
   "description": "Machine-readable catalog of lint rules for AI agent session data cross-project consistency",
   "specVersion": "1.0.0-draft",

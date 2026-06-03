@@ -1,0 +1,270 @@
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { parseTree, findNodeAtLocation, getNodeValue, type Node } from 'jsonc-parser';
+import { stripBom, fileExists } from '../../utils/fs.js';
+import { offsetToPosition } from '../../utils/positions.js';
+import type { LintIssue } from '../types.js';
+
+/**
+ * hook-coverage/dead-hook — the INVERSE of tier-tokens/hard-enforcement-missing.
+ *
+ * tier-tokens checks the FORWARD direction: an inviolable rule with no hook to
+ * enforce it. This checks the BACKWARD direction: a hook (or a permissions
+ * entry) in .claude/settings.json that points at a script/path which no longer
+ * exists on disk. A PreToolUse hook whose `command` references a deleted script
+ * silently NO-OPS — Claude Code can't run a file that isn't there, so the gate
+ * the user thinks is protecting them does nothing. That's a dangerous false
+ * sense of security (the canonical example: a `--admin`-blocking gate that was
+ * renamed, so the block silently stopped firing).
+ *
+ * Sources scanned: project `.claude/settings.json` + `.claude/settings.local.json`
+ * by default. The user-global `~/.claude/settings.json` is scanned ONLY when the
+ * caller opts in (`--hooks-global` / `hooksGlobal`), mirroring the opt-in posture
+ * the session + skills pillars use for reading outside the project directory.
+ */
+
+interface SettingsSource {
+  /** Absolute path of the settings file. */
+  filePath: string;
+  /** Display path used in the issue (relative for project, ~/.claude/... for user). */
+  displayPath: string;
+  /** True for the user-global file (findings can't be opened in the repo). */
+  isUserGlobal: boolean;
+  content: string;
+  tree: Node | undefined;
+}
+
+/**
+ * A path candidate extracted from a hook command or a permissions entry, with
+ * the JSON value it came from (for position lookup) and whether it resolved.
+ */
+interface PathCandidate {
+  /** The raw script-path token as written in settings. */
+  raw: string;
+  /** Absolute resolved path, or null if it referenced an env var we can't resolve. */
+  resolved: string | null;
+}
+
+function loadSettingsSources(
+  projectRoot: string,
+  homeDir: string,
+  includeUserGlobal: boolean,
+): SettingsSource[] {
+  const home = homeDir;
+  const candidates: Array<{ filePath: string; displayPath: string; isUserGlobal: boolean }> = [
+    {
+      filePath: path.join(projectRoot, '.claude', 'settings.json'),
+      displayPath: path.join('.claude', 'settings.json'),
+      isUserGlobal: false,
+    },
+    {
+      filePath: path.join(projectRoot, '.claude', 'settings.local.json'),
+      displayPath: path.join('.claude', 'settings.local.json'),
+      isUserGlobal: false,
+    },
+  ];
+  // User-global ~/.claude/settings.json is read only on explicit opt-in, so the
+  // default run never touches files outside the project directory.
+  if (includeUserGlobal) {
+    candidates.push({
+      filePath: path.join(home, '.claude', 'settings.json'),
+      displayPath: '~/.claude/settings.json',
+      isUserGlobal: true,
+    });
+  }
+
+  const sources: SettingsSource[] = [];
+  for (const c of candidates) {
+    let content: string;
+    try {
+      content = stripBom(fs.readFileSync(c.filePath, 'utf-8'));
+    } catch {
+      continue; // missing file is expected
+    }
+    const tree = parseTree(content, [], { allowTrailingComma: true });
+    sources.push({ ...c, content, tree });
+  }
+  return sources;
+}
+
+/**
+ * Expand the env vars Claude Code documents for hook/settings paths. Returns
+ * null if the string still contains an UNresolvable `$VAR` after expansion --
+ * we must not flag a path we can't actually resolve (that would be a false
+ * "dead hook" report).
+ */
+function expandPath(raw: string, projectRoot: string, homeDir: string): string | null {
+  let s = raw;
+  // Leading ~ -> home dir.
+  if (s === '~' || s.startsWith('~/') || s.startsWith('~\\')) {
+    s = path.join(homeDir, s.slice(1));
+  }
+  const replacements: Record<string, string> = {
+    CLAUDE_PROJECT_DIR: projectRoot,
+    CLAUDE_CONFIG_DIR: path.join(homeDir, '.claude'),
+    HOME: homeDir,
+    USERPROFILE: homeDir,
+  };
+  s = s.replace(/\$\{?([A-Z_][A-Z0-9_]*)\}?/g, (m, name: string) =>
+    name in replacements ? replacements[name] : m,
+  );
+  // Any remaining $VAR means we can't resolve -> bail (don't false-positive).
+  if (/\$\{?[A-Za-z_]/.test(s)) return null;
+  if (!path.isAbsolute(s)) s = path.resolve(projectRoot, s);
+  return s;
+}
+
+// A token looks like a script PATH (vs an inline shell matcher like
+// "npm login") when it has a path separator and ends in a script-ish
+// extension, OR starts with an explicit path prefix. This is intentionally
+// conservative: a false negative (missing a dead hook) is safer than a false
+// positive (flagging "git push" as a missing file).
+const SCRIPT_EXT = /\.(sh|bash|zsh|fish|js|mjs|cjs|ts|py|rb|pl|ps1|cmd|bat|exe)$/i;
+const PATH_PREFIX = /^(~|\.\.?[/\\]|[/\\]|\$\{?[A-Za-z_]|[A-Za-z]:[/\\])/;
+
+function looksLikePath(token: string): boolean {
+  const hasSep = token.includes('/') || token.includes('\\');
+  if (PATH_PREFIX.test(token)) return true;
+  return hasSep && SCRIPT_EXT.test(token);
+}
+
+/**
+ * Pull script-path candidates out of a hook command line. A command can be a
+ * bare path ("./.claude/hooks/gate.sh") or an interpreter invocation
+ * ("bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/gate.sh\" --flag"). We tokenize on
+ * whitespace, strip surrounding quotes, and keep tokens that look like paths.
+ */
+function extractCommandPaths(
+  command: string,
+  projectRoot: string,
+  homeDir: string,
+): PathCandidate[] {
+  const tokens = command.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+  const out: PathCandidate[] = [];
+  for (const t of tokens) {
+    const token = t.replace(/^['"]|['"]$/g, '');
+    if (!looksLikePath(token)) continue;
+    out.push({ raw: token, resolved: expandPath(token, projectRoot, homeDir) });
+  }
+  return out;
+}
+
+/**
+ * Permissions entries are usually tool matchers ("Bash(npm login)"), not file
+ * paths -- but some setups reference a script directly. We extract any
+ * path-shaped token from the entry (including from inside a `Tool(...)` wrapper)
+ * and verify those; non-path entries yield nothing.
+ */
+function extractPermissionPaths(
+  entry: string,
+  projectRoot: string,
+  homeDir: string,
+): PathCandidate[] {
+  // Unwrap a single Tool(...) wrapper if present, e.g. "Bash(./x.sh)".
+  const inner = entry.replace(/^[A-Za-z]+\((.*)\)$/, '$1');
+  return extractCommandPaths(inner, projectRoot, homeDir);
+}
+
+function lineForPath(source: SettingsSource, jsonPath: (string | number)[]): number {
+  if (!source.tree) return 1;
+  const node = findNodeAtLocation(source.tree, jsonPath);
+  if (!node) return 1;
+  return offsetToPosition(source.content, node.offset).line;
+}
+
+interface SettingsShape {
+  permissions?: { allow?: string[]; deny?: string[]; ask?: string[] };
+  hooks?: Record<
+    string,
+    Array<{ matcher?: string; hooks?: Array<{ command?: string; type?: string }> }>
+  >;
+}
+
+function checkSource(source: SettingsSource, projectRoot: string, homeDir: string): LintIssue[] {
+  if (!source.tree) return [];
+  const data = getNodeValue(source.tree) as SettingsShape | undefined;
+  if (!data || typeof data !== 'object') return [];
+
+  const issues: LintIssue[] = [];
+
+  const report = (cand: PathCandidate, line: number, origin: string) => {
+    // Unresolvable (env-var) paths are skipped -- can't prove they're dead.
+    if (cand.resolved === null) return;
+    if (fileExists(cand.resolved)) return;
+    const where = source.isUserGlobal ? ` (in ${source.displayPath})` : '';
+    issues.push({
+      severity: 'warning',
+      check: 'hook-coverage',
+      ruleId: 'hook-coverage/dead-hook',
+      line,
+      message: `${origin} references "${cand.raw}" which does not exist on disk${where} — the gate silently no-ops`,
+      suggestion: source.isUserGlobal
+        ? `Restore the script at ${cand.resolved}, or remove the dead entry from ${source.displayPath}.`
+        : `Restore the script, fix the path, or remove the dead entry. A PreToolUse hook pointing at a missing script does not block anything.`,
+    });
+  };
+
+  // --- Hooks ---
+  const hooks = data.hooks ?? {};
+  for (const [event, matchers] of Object.entries(hooks)) {
+    if (!Array.isArray(matchers)) continue;
+    matchers.forEach((matcher, mi) => {
+      const subHooks = matcher?.hooks;
+      if (!Array.isArray(subHooks)) return;
+      subHooks.forEach((h, hi) => {
+        if (!h || typeof h.command !== 'string') return;
+        const line = lineForPath(source, ['hooks', event, mi, 'hooks', hi, 'command']);
+        for (const cand of extractCommandPaths(h.command, projectRoot, homeDir)) {
+          report(cand, line, `${event} hook`);
+        }
+      });
+    });
+  }
+
+  // --- Permissions ---
+  const perms = data.permissions ?? {};
+  for (const listName of ['allow', 'deny', 'ask'] as const) {
+    const list = perms[listName];
+    if (!Array.isArray(list)) continue;
+    list.forEach((entry, i) => {
+      if (typeof entry !== 'string') return;
+      const line = lineForPath(source, ['permissions', listName, i]);
+      for (const cand of extractPermissionPaths(entry, projectRoot, homeDir)) {
+        report(cand, line, `permissions.${listName} entry`);
+      }
+    });
+  }
+
+  return issues;
+}
+
+/**
+ * Cross-cutting check (no per-file input): scans the project + user
+ * `.claude/settings.json` files for hook/permission entries pointing at
+ * scripts that no longer exist on disk.
+ */
+export interface HookCoverageOptions {
+  /**
+   * When true, also scan the user-global `~/.claude/settings.json`. Off by
+   * default so the standard run stays inside the project directory (the same
+   * opt-in contract the session + skills pillars follow). Wired to the
+   * `--hooks-global` CLI flag / `hooksGlobal` audit option.
+   */
+  userGlobal?: boolean;
+}
+
+export async function checkHookCoverage(
+  projectRoot: string,
+  // homeDir is injectable so tests can isolate from the real user-global
+  // ~/.claude/settings.json. Production callers omit it (defaults to the OS home).
+  homeDir: string = os.homedir(),
+  options: HookCoverageOptions = {},
+): Promise<LintIssue[]> {
+  const sources = loadSettingsSources(projectRoot, homeDir, options.userGlobal ?? false);
+  const issues: LintIssue[] = [];
+  for (const source of sources) {
+    issues.push(...checkSource(source, projectRoot, homeDir));
+  }
+  return issues;
+}

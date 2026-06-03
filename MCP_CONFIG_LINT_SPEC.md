@@ -16,7 +16,7 @@ This specification defines a standard set of lint rules for validating MCP serve
 
 The specification includes:
 - A complete reference of MCP config file locations, formats, and client-specific behaviors
-- 43 lint rules organized into 8 categories with defined severities
+- 27 lint rules organized into 8 categories with defined severities
 - A machine-readable rule catalog ([`mcp-config-lint-rules.json`](./mcp-config-lint-rules.json))
 - Auto-fix definitions for rules that support automated correction
 
@@ -408,4 +408,3 @@ This specification follows semver:
 - [Model Context Protocol Specification](https://spec.modelcontextprotocol.io/) — the underlying protocol this config format serves
 - [ctxlint](https://github.com/YawLabs/ctxlint) — reference implementation of this specification
 - [mcp-compliance](https://github.com/YawLabs/mcp-compliance) — tests MCP server *behavior* against the protocol spec (complementary to config linting)
-- [mcp.hosting](https://mcp.hosting) — managed MCP server hosting (eliminates many config issues by providing remote endpoints)

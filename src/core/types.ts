@@ -12,6 +12,11 @@ export const SESSION_AUDIT_LABEL = '~/.claude/ (session audit)';
 // decoupling the const is here to provide.
 export const SESSION_AUDIT_PATH_MARKER = '(session audit)';
 
+// Label for the synthetic agent-skill audit bucket (fourth pillar). Same
+// shape as SESSION_AUDIT_LABEL: findings live outside the project dir
+// (~/.claude/skills, ~/.claude/agents).
+export const SKILL_AUDIT_LABEL = '~/.claude/ (skill audit)';
+
 // --- Session check types ---
 
 export type SessionCheckName =
@@ -22,6 +27,35 @@ export type SessionCheckName =
   | 'session-duplicate-memory'
   | 'session-loop-detection'
   | 'session-memory-index-overflow';
+
+// --- Agent-skill check types (fourth pillar) ---
+
+export type SkillCheckName =
+  | 'skill-frontmatter'
+  | 'skill-broken-ref'
+  | 'skill-trigger-collision'
+  | 'skill-orphaned'
+  | 'skill-dead-tool-restriction';
+
+/** A discovered skill (SKILL.md) or agent (.md) definition under ~/.claude. */
+export interface SkillFile {
+  /** Absolute path of the SKILL.md / agent .md file. */
+  filePath: string;
+  /** Display path, e.g. ~/.claude/skills/foo/SKILL.md. */
+  displayPath: string;
+  /** 'skill' (skills/<name>/SKILL.md) or 'agent' (agents/<name>.md). */
+  kind: 'skill' | 'agent';
+  /** Logical name derived from the directory (skill) or filename (agent). */
+  name: string;
+  content: string;
+}
+
+export interface SkillContext {
+  /** Skill + agent definition files found. */
+  files: SkillFile[];
+  /** Skill directories that contain no SKILL.md (orphaned). */
+  orphanedSkillDirs: { name: string; displayPath: string }[];
+}
 
 export type AgentProvider =
   | 'claude-code'
@@ -97,9 +131,11 @@ export type CheckName =
   | 'ci-coverage'
   | 'ci-secrets'
   | 'content-secrets'
+  | 'hook-coverage'
   | McpCheckName
   | McphCheckName
-  | SessionCheckName;
+  | SessionCheckName
+  | SkillCheckName;
 
 export type McpClient =
   | 'claude-code'
@@ -304,4 +340,7 @@ export interface LintOptions {
   mcphStrictEnvToken: boolean;
   session: boolean;
   sessionOnly: boolean;
+  skills: boolean;
+  skillsOnly: boolean;
+  hooksGlobal: boolean;
 }

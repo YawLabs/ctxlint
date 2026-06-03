@@ -10,6 +10,22 @@
 
 import { build } from 'esbuild';
 import { readFileSync } from 'node:fs';
+import { computeTargets } from './scripts/generate-catalog-prose.mjs';
+import { writeFileSync } from 'node:fs';
+import { relative } from 'node:path';
+
+// Generate-from-catalog: regenerate the spec count headers + README family-table
+// counts FROM the *-rules.json catalogs before bundling, so the checked-in prose
+// can never drift from the machine-readable source of truth. The catalog-generate
+// vitest test runs the same script in --check mode (see
+// scripts/generate-catalog-prose.mjs) and fails if a count was hand-edited without
+// regen; that test runs in release.sh via `pnpm run test:run`.
+for (const t of computeTargets()) {
+  if (t.current !== t.generated) {
+    writeFileSync(t.file, t.generated, 'utf-8');
+    console.log('regenerated ' + relative(process.cwd(), t.file));
+  }
+}
 
 const pkg = JSON.parse(readFileSync('package.json', 'utf-8'));
 

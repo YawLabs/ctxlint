@@ -15,7 +15,7 @@ This specification defines a standard set of lint rules for validating agent ses
 
 The specification includes:
 - A reference of session data locations across 8 AI coding agents
-- 7 lint rules in the `session` category with defined severities
+- 8 lint rules in the `session` category with defined severities
 - A machine-readable rule catalog ([`agent-session-lint-rules.json`](./agent-session-lint-rules.json))
 - Sibling-repo detection for cross-project checks
 
@@ -128,7 +128,7 @@ Skip hidden directories (starting with `.`) and `node_modules`.
 
 ## 2. Lint Rules
 
-7 rules in 1 category (`session`). All rules in this category perform cross-project checks using sibling detection or per-project history analysis.
+8 rules in 1 category (`session`). All rules in this category perform cross-project checks using sibling detection or per-project history analysis.
 
 Severity levels:
 - **error** -- the session data reveals a verifiably missing configuration. Should fail CI.
@@ -437,6 +437,5 @@ This specification follows semver:
 
 - [AI Context File Linting Specification](./CONTEXT_LINT_SPEC.md) -- context file lint rules (the first pillar)
 - [MCP Server Configuration Linting Specification](./MCP_CONFIG_LINT_SPEC.md) -- MCP config lint rules (the second pillar)
-- [ctxlint](https://github.com/YawLabs/ctxlint) -- reference implementation of all three specifications
+- [ctxlint](https://github.com/YawLabs/ctxlint) -- reference implementation of all four specifications
 - [mcp-compliance](https://github.com/YawLabs/mcp-compliance) -- tests MCP server behavior against the protocol spec
-- [mcp.hosting](https://mcp.hosting) -- managed MCP server hosting

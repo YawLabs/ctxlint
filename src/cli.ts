@@ -14,6 +14,7 @@ import {
   ALL_MCP_CHECKS,
   ALL_MCPH_CHECKS,
   ALL_SESSION_CHECKS,
+  ALL_SKILL_CHECKS,
 } from './core/audit.js';
 import type { LintOptions, CheckName } from './core/types.js';
 import * as path from 'node:path';
@@ -24,6 +25,7 @@ const VALID_CHECKS = new Set<string>([
   ...ALL_MCP_CHECKS,
   ...ALL_MCPH_CHECKS,
   ...ALL_SESSION_CHECKS,
+  ...ALL_SKILL_CHECKS,
 ]);
 
 function validateCheckNames(names: string[], source: string): CheckName[] {
@@ -84,6 +86,13 @@ export async function runCli() {
     )
     .option('--session', 'Run session audit checks (cross-project consistency)', false)
     .option('--session-only', 'Run only session checks, skip context and MCP checks', false)
+    .option('--skills', 'Run agent-skill checks (~/.claude/skills + ~/.claude/agents)', false)
+    .option('--skills-only', 'Run only agent-skill checks, skip everything else', false)
+    .option(
+      '--hooks-global',
+      'Also scan the user-global ~/.claude/settings.json in the dead-hook check (off by default; the standard run only reads project .claude/settings.json[.local])',
+      false,
+    )
     .option('--watch', 'Re-lint on context file changes', false)
     .action(async (projectPath: string, opts: Record<string, unknown>) => {
       const resolvedPath = path.resolve(projectPath as string);
@@ -113,6 +122,9 @@ export async function runCli() {
           mcphStrictEnvToken: options.mcphStrictEnvToken,
           session: options.session,
           sessionOnly: options.sessionOnly,
+          skills: options.skills,
+          skillsOnly: options.skillsOnly,
+          hooksGlobal: options.hooksGlobal,
           tokenThresholds: config?.tokenThresholds,
           ignoreRules: config?.ignoreRules,
         });
@@ -305,6 +317,9 @@ export async function runCli() {
                 mcphStrictEnvToken: liveOptions.mcphStrictEnvToken,
                 session: liveOptions.session,
                 sessionOnly: liveOptions.sessionOnly,
+                skills: liveOptions.skills,
+                skillsOnly: liveOptions.skillsOnly,
+                hooksGlobal: liveOptions.hooksGlobal,
                 tokenThresholds: liveConfig?.tokenThresholds,
                 ignoreRules: liveConfig?.ignoreRules,
               });
@@ -475,6 +490,9 @@ function resolveSession(resolvedPath: string, opts: Record<string, unknown>): Re
     (opts.mcphStrictEnvToken as boolean) || config?.mcphStrictEnvToken || false;
   const sessionOnly = (opts.sessionOnly as boolean) || config?.sessionOnly || false;
   const sessionFlag = (opts.session as boolean) || sessionOnly || config?.session || false;
+  const skillsOnly = (opts.skillsOnly as boolean) || config?.skillsOnly || false;
+  const skillsFlag = (opts.skills as boolean) || skillsOnly || config?.skills || false;
+  const hooksGlobal = (opts.hooksGlobal as boolean) || config?.hooksGlobal || false;
 
   // Build checks list: if explicit --checks includes mcp-* / mcph-* /
   // session-*, imply the corresponding --<flag>.
@@ -490,15 +508,19 @@ function resolveSession(resolvedPath: string, opts: Record<string, unknown>): Re
     explicitChecks?.some((c) => c.startsWith('mcp-') && !c.startsWith('mcph-')) || false;
   const hasMcphInChecks = explicitChecks?.some((c) => c.startsWith('mcph-')) || false;
   const hasSessionInChecks = explicitChecks?.some((c) => c.startsWith('session-')) || false;
+  const hasSkillInChecks = explicitChecks?.some((c) => c.startsWith('skill-')) || false;
   const effectiveMcp = mcpFlag || hasMcpInChecks;
   const effectiveMcph = mcphFlag || hasMcphInChecks;
   const effectiveSession = sessionFlag || sessionOnly || hasSessionInChecks;
+  const effectiveSkills = skillsFlag || skillsOnly || hasSkillInChecks;
 
   let checks: CheckName[];
   if (explicitChecks) {
     checks = explicitChecks;
   } else if (sessionOnly) {
     checks = ALL_SESSION_CHECKS;
+  } else if (skillsOnly) {
+    checks = ALL_SKILL_CHECKS;
   } else if (mcpOnly) {
     checks = ALL_MCP_CHECKS;
   } else if (mcphOnly) {
@@ -510,6 +532,7 @@ function resolveSession(resolvedPath: string, opts: Record<string, unknown>): Re
       ...(effectiveMcp ? ALL_MCP_CHECKS : []),
       ...(effectiveMcph ? ALL_MCPH_CHECKS : []),
       ...(effectiveSession ? ALL_SESSION_CHECKS : []),
+      ...(effectiveSkills ? ALL_SKILL_CHECKS : []),
     ];
   }
 
@@ -538,6 +561,9 @@ function resolveSession(resolvedPath: string, opts: Record<string, unknown>): Re
     mcphStrictEnvToken,
     session: effectiveSession,
     sessionOnly,
+    skills: effectiveSkills,
+    skillsOnly,
+    hooksGlobal,
   };
 
   // Token thresholds from config flow through runAudit's tokenThresholds

@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/YawLabs/ctxlint/main/schemas/ctxlint-catalog.schema.json",
+  "title": "ctxlint rule catalog",
+  "description": "Governing schema for the machine-readable rule catalogs that back the ctxlint specifications (context-, mcp-config-, mcph-config-, agent-session-lint-rules.json). Defines the shared metadata block + the rule/category shape every catalog must satisfy. Per-catalog extras (formats, clients, agents, dataSources, target, mcphSchemaReference) are permitted via additionalProperties.",
+  "type": "object",
+  "required": ["$schema", "specVersion", "specDate", "repository", "categories", "rules"],
+  "additionalProperties": true,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Points at this governing schema so editors and CI validate against it."
+    },
+    "title": {
+      "type": "string",
+      "description": "Optional human title for the catalog."
+    },
+    "description": {
+      "type": "string",
+      "description": "Optional human description of the catalog's scope."
+    },
+    "specVersion": {
+      "type": "string",
+      "description": "Semantic version of the specification this catalog implements.",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$"
+    },
+    "specDate": {
+      "type": "string",
+      "description": "ISO date (YYYY-MM-DD) the spec version was authored/updated.",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "mcpSpecCompatibility": {
+      "type": "string",
+      "description": "Shared optional field: the Model Context Protocol wire-spec version this catalog tracks (date-stamped, e.g. \"2025-11-25\"). Present only on catalogs whose rules are bound to the MCP protocol version (mcp-config). Absent (meaningfully) on catalogs that are protocol-agnostic (context, agent-session, mcph-config).",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "repository": {
+      "type": "string",
+      "format": "uri",
+      "description": "Canonical repository URL for the reference implementation."
+    },
+    "categories": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/category" }
+    },
+    "rules": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/rule" }
+    }
+  },
+  "$defs": {
+    "category": {
+      "type": "object",
+      "required": ["id", "name", "description"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "scope": { "type": "string" }
+      }
+    },
+    "rule": {
+      "type": "object",
+      "required": [
+        "id",
+        "category",
+        "severity",
+        "description",
+        "trigger",
+        "message",
+        "fixable",
+        "stability"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable rule ID in ctxlint `category/slug` format (a single `/` separator). NOTE: the sibling mcp-compliance project uses `category-suffix` (a `-` separator) instead; the difference is deliberate -- see CONTRIBUTING.md \"Rule ID format\".",
+          "pattern": "^[a-z0-9-]+/[a-z0-9-]+$"
+        },
+        "category": { "type": "string", "minLength": 1 },
+        "severity": { "type": "string", "enum": ["error", "warning", "info"] },
+        "description": { "type": "string", "minLength": 1 },
+        "trigger": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 },
+        "fixable": { "type": "boolean" },
+        "stability": { "type": "string", "enum": ["stable", "experimental"] }
+      }
+    }
+  }
+}

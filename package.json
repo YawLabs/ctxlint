@@ -10,6 +10,8 @@
   "scripts": {
     "build": "node build.mjs",
     "dev": "node build.mjs",
+    "generate": "node scripts/generate-catalog-prose.mjs",
+    "generate:check": "node scripts/generate-catalog-prose.mjs --check",
     "test": "vitest",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage --coverage.reporter=text-summary --coverage.reporter=html --coverage.exclude='**/__tests__/**' --coverage.exclude='**/fixtures/**' --coverage.exclude='dist/**' --coverage.exclude='build.mjs' --coverage.exclude='coverage-report.mjs'",
@@ -56,10 +58,13 @@
     "CONTEXT_LINT_SPEC.md",
     "MCP_CONFIG_LINT_SPEC.md",
     "AGENT_SESSION_LINT_SPEC.md",
+    "AGENT_SKILL_LINT_SPEC.md",
     "context-lint-rules.json",
     "mcp-config-lint-rules.json",
     "mcph-config-lint-rules.json",
     "agent-session-lint-rules.json",
+    "agent-skill-lint-rules.json",
+    "schemas/ctxlint-catalog.schema.json",
     "LICENSE",
     "README.md"
   ],

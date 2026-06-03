@@ -30,6 +30,9 @@ export interface CtxlintConfig {
   mcphStrictEnvToken?: boolean;
   session?: boolean;
   sessionOnly?: boolean;
+  skills?: boolean;
+  skillsOnly?: boolean;
+  hooksGlobal?: boolean;
 }
 
 // Bidirectional check between this array and `CtxlintConfig`:
@@ -56,6 +59,9 @@ const KNOWN_CONFIG_KEYS = [
   'mcphStrictEnvToken',
   'session',
   'sessionOnly',
+  'skills',
+  'skillsOnly',
+  'hooksGlobal',
 ] as const satisfies readonly (keyof CtxlintConfig)[];
 
 // Missing-element guard: if CtxlintConfig gains a key that isn't in

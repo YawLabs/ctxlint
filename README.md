@@ -82,6 +82,7 @@ Useful if you want `ctxlint` available in every project without per-project setu
 | **Frontmatter**       | Invalid or missing YAML frontmatter in Cursor .mdc, Copilot instructions, and Windsurf rules  |
 | **CI coverage**       | Release/deploy workflows in `.github/workflows/` not documented in any context file           |
 | **CI secrets**        | Secrets used in CI workflows (`${{ secrets.X }}`) not mentioned in context files              |
+| **Dead hooks**        | PreToolUse hooks / permissions entries in `.claude/settings.json` pointing at scripts that no longer exist (a dead gate silently no-ops). Scans project `.claude/settings.json[.local]` by default; pass `--hooks-global` to also scan the user-global `~/.claude/settings.json` |
 | **Missing secrets**   | GitHub secrets set on sibling repos but missing from current project                          |
 | **Diverged configs**  | Canonical config files (CI, tsconfig, etc.) drifting across sibling projects                  |
 | **Missing workflows** | GitHub Actions workflows present in 2+ siblings but absent here                               |
@@ -176,12 +177,14 @@ Summary: 3 errors, 2 warnings, 1 info
 
 The full specification for MCP config linting rules, the cross-client config landscape, and a machine-readable rule catalog are published as open specifications:
 
-- **[`MCP_CONFIG_LINT_SPEC.md`](./MCP_CONFIG_LINT_SPEC.md)** — 43 lint rules across 8 categories, the complete client/format reference, and implementation guidance. Tool-agnostic — any linter can implement it.
+- **[`MCP_CONFIG_LINT_SPEC.md`](./MCP_CONFIG_LINT_SPEC.md)** — the full lint-rule set (rule count in the [Specifications](#specifications) family table), the complete client/format reference, and implementation guidance. Tool-agnostic — any linter can implement it.
 - **[`mcp-config-lint-rules.json`](./mcp-config-lint-rules.json)** — Machine-readable rule catalog for programmatic consumption by AI agents, CI systems, and other tools.
 
 ## mcph Config Linting
 
-ctxlint also lints `.mcph.json` — the config file read by the [`@yawlabs/mcph`](https://github.com/YawLabs/mcph) CLI, which orchestrates MCP servers via the mcp.hosting registry. Distinct from `.mcp.json` (different schema, different threat model). Applies across the user-global (`~/.mcph.json`), per-project (`.mcph.json`), and machine-local (`.mcph.local.json`) scope cascade.
+ctxlint also lints `.mcph.json` — the config file read by the [`@yawlabs/mcph`](https://github.com/YawLabs/mcph) CLI. Distinct from `.mcp.json` (different schema, different threat model). Applies across the user-global (`~/.mcph.json`), per-project (`.mcph.json`), and machine-local (`.mcph.local.json`) scope cascade.
+
+> **Note:** the mcph rule family (and the `ctxlint_mcph_audit` MCP tool) is **under review** — the upstream mcp.hosting platform is archived, so this family's future is being reassessed. The rules and tool still ship and work; only their long-term status is undecided.
 
 ```bash
 # Lint context files + .mcph.json
@@ -536,14 +539,15 @@ Returns structured JSON with all file results, issues, and summary — useful fo
 
 ## Specifications
 
-ctxlint is the reference implementation of three open specifications for linting AI agent interfaces. These specs are tool-agnostic — any linter, IDE extension, or CI system can implement them.
+ctxlint is the reference implementation of four open specifications for linting AI agent interfaces. These specs are tool-agnostic — any linter, IDE extension, or CI system can implement them.
 
 | Spec                                                           | What it covers                                                                                                                                                                                                                       |
 | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **[AI Context File Linting Spec](./CONTEXT_LINT_SPEC.md)**     | 19 rules for validating context files (CLAUDE.md, .cursorrules, AGENTS.md, etc.) across 17 clients. Covers file formats, frontmatter schemas, path/command validation, staleness, token budgets, redundancy, and contradictions.     |
-| **[MCP Config Linting Spec](./MCP_CONFIG_LINT_SPEC.md)**       | 43 rules for validating MCP server configs (.mcp.json, .cursor/mcp.json, .vscode/mcp.json, etc.) across 8 clients. Covers schema validation, hardcoded secrets, env var syntax, deprecated transports, and cross-file consistency.   |
+| **[AI Context File Linting Spec](./CONTEXT_LINT_SPEC.md)**     | 28 rules for validating context files (CLAUDE.md, .cursorrules, AGENTS.md, etc.) across 17 clients. Covers file formats, frontmatter schemas, path/command validation, staleness, token budgets, redundancy, and contradictions.     |
+| **[MCP Config Linting Spec](./MCP_CONFIG_LINT_SPEC.md)**       | 27 rules for validating MCP server configs (.mcp.json, .cursor/mcp.json, .vscode/mcp.json, etc.) across 8 clients. Covers schema validation, hardcoded secrets, env var syntax, deprecated transports, and cross-file consistency.   |
 | **mcph Config Linting** (`mcph-config-lint-rules.json`)        | 10 rules for validating `.mcph.json` — the config file read by the `@yawlabs/mcph` CLI. Covers PAT format + leakage, env-var posture, plaintext API endpoints, schema drift, and allow/deny list semantics across the scope cascade. |
-| **[Agent Session Linting Spec](./AGENT_SESSION_LINT_SPEC.md)** | 7 rules for auditing agent session data (history, memory) across 8 agents. Covers cross-project secret consistency, config drift, stale memory, and loop detection.                                                                  |
+| **[Agent Session Linting Spec](./AGENT_SESSION_LINT_SPEC.md)** | 8 rules for auditing agent session data (history, memory) across 8 agents. Covers cross-project secret consistency, config drift, stale memory, and loop detection.                                                                  |
+| **[Agent Skill Linting Spec](./AGENT_SKILL_LINT_SPEC.md)**     | 5 rules for auditing Claude Code skill (`SKILL.md`) and agent (`.md`) definitions under `~/.claude`. Covers frontmatter presence, broken refs, trigger-phrase collisions, orphaned skills, and dead tool restrictions. (v1, experimental) |
 
 All specs include machine-readable rule catalogs for programmatic consumption:
 
@@ -551,11 +555,11 @@ All specs include machine-readable rule catalogs for programmatic consumption:
 - [`mcp-config-lint-rules.json`](./mcp-config-lint-rules.json) — MCP config rules and 8 client definitions
 - [`mcph-config-lint-rules.json`](./mcph-config-lint-rules.json) — mcph CLI config rules (`.mcph.json`)
 - [`agent-session-lint-rules.json`](./agent-session-lint-rules.json) — session lint rules and 8 agent data source definitions
+- [`agent-skill-lint-rules.json`](./agent-skill-lint-rules.json) — agent-skill lint rules (`~/.claude/skills`, `~/.claude/agents`)
 
 ## Also By Yaw Labs
 
 - [Yaw](https://yaw.sh) — The AI-native terminal
-- [mcp.hosting](https://mcp.hosting) — MCP server proxy platform
 - [Spend](https://spend.sh) — AI spend tracking, cost estimation, and provider comparison across 10+ providers
 - [Token Limit News](https://tokenlimit.news) — Weekly AI dev tooling newsletter
 

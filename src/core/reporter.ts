@@ -6,7 +6,10 @@ import {
   type LintIssue,
 } from './types.js';
 
-type FileGroup = 'context' | 'mcp' | 'mcph' | 'session';
+// Marker substring for the skill-audit bucket (mirrors SESSION_AUDIT_PATH_MARKER).
+const SKILL_AUDIT_PATH_MARKER = '(skill audit)';
+
+type FileGroup = 'context' | 'mcp' | 'mcph' | 'session' | 'skill';
 
 /**
  * Classify a result row into one of the four output families. Issue-prefix is
@@ -27,9 +30,11 @@ function classifyFile(f: FileResult): FileGroup {
   if (f.path === '(project)') return 'context';
   if (f.path === '(mcp)') return 'mcp';
   if (f.path.includes(SESSION_AUDIT_PATH_MARKER)) return 'session';
+  if (f.path.includes(SKILL_AUDIT_PATH_MARKER)) return 'skill';
 
   for (const issue of f.issues) {
     if (issue.check.startsWith('session-')) return 'session';
+    if (issue.check.startsWith('skill-')) return 'skill';
     if (issue.check.startsWith('mcph-')) return 'mcph';
     if (issue.check.startsWith('mcp-')) return 'mcp';
   }
@@ -52,22 +57,28 @@ function classifyFile(f: FileResult): FileGroup {
   return 'context';
 }
 
-const GROUP_ORDER: FileGroup[] = ['context', 'mcp', 'mcph', 'session'];
+const GROUP_ORDER: FileGroup[] = ['context', 'mcp', 'mcph', 'session', 'skill'];
 const GROUP_LABELS: Record<FileGroup, string> = {
   context: 'Context Files',
   mcp: 'MCP Configs',
   mcph: 'mcph Configs',
   session: 'Session Audit',
+  skill: 'Skill Audit',
 };
 const GROUP_SUMMARY_NOUNS: Record<FileGroup, string> = {
   context: 'context file',
   mcp: 'MCP config',
   mcph: 'mcph config',
   session: 'session audit',
+  skill: 'skill audit',
 };
 
 function isSyntheticBucket(p: string): boolean {
-  return p.startsWith('(') || p.includes(SESSION_AUDIT_PATH_MARKER);
+  return (
+    p.startsWith('(') ||
+    p.includes(SESSION_AUDIT_PATH_MARKER) ||
+    p.includes(SKILL_AUDIT_PATH_MARKER)
+  );
 }
 
 export function formatText(result: LintResult, verbose: boolean = false): string {
@@ -85,6 +96,7 @@ export function formatText(result: LintResult, verbose: boolean = false): string
     mcp: [],
     mcph: [],
     session: [],
+    skill: [],
   };
   for (const f of result.files) {
     groups[classifyFile(f)].push(f);
@@ -437,6 +449,11 @@ function buildRuleDescriptors(): SarifRule[] {
       helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
     },
     {
+      id: 'ctxlint/hook-coverage',
+      shortDescription: { text: 'Hook/permission entry references a script that no longer exists' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
       id: 'ctxlint/mcp-schema',
       shortDescription: { text: 'MCP config structural validation error' },
       helpUri: 'https://github.com/yawlabs/ctxlint#mcp-config-linting',
@@ -536,6 +553,31 @@ function buildRuleDescriptors(): SarifRule[] {
       shortDescription: {
         text: "MEMORY.md exceeds Claude Code's 200-line / 25KB session-load cap",
       },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
+      id: 'ctxlint/skill-frontmatter',
+      shortDescription: { text: 'Skill/agent definition missing required frontmatter' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
+      id: 'ctxlint/skill-broken-ref',
+      shortDescription: { text: 'Skill/agent body references a path that does not exist' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
+      id: 'ctxlint/skill-trigger-collision',
+      shortDescription: { text: 'Two skills/agents declare the same trigger phrase' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
+      id: 'ctxlint/skill-orphaned',
+      shortDescription: { text: 'Skill directory has no SKILL.md' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
+      id: 'ctxlint/skill-dead-tool-restriction',
+      shortDescription: { text: 'Agent tool restriction names an unknown Claude Code tool' },
       helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
     },
   ];

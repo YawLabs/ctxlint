@@ -15,7 +15,7 @@ This specification defines a standard set of lint rules for validating AI agent 
 
 The specification includes:
 - A complete reference of context file formats across 17 AI coding clients (21+ file patterns)
-- 21 lint rules organized into 9 categories with defined severities
+- 28 lint rules organized into 11 categories with defined severities
 - A machine-readable rule and format catalog ([`context-lint-rules.json`](./context-lint-rules.json))
 - Auto-fix definitions for rules that support automated correction
 - Frontmatter schema requirements per client
@@ -47,6 +47,7 @@ The specification includes:
   - [3.7 frontmatter — client metadata validation](#37-frontmatter--client-metadata-validation)
   - [3.8 ci-coverage — CI workflow documentation](#38-ci-coverage--ci-workflow-documentation)
   - [3.9 ci-secrets — CI secrets documentation](#39-ci-secrets--ci-secrets-documentation)
+  - [3.11 hook-coverage — hook enforcement coverage](#311-hook-coverage--hook-enforcement-coverage)
 - [4. Rule Catalog (machine-readable)](#4-rule-catalog-machine-readable)
 - [5. Implementing This Specification](#5-implementing-this-specification)
 - [6. Contributing](#6-contributing)
@@ -300,7 +301,7 @@ Context files consume an agent's context window. Counting tokens helps teams und
 
 ## 3. Lint Rules
 
-21 rules organized into 9 categories.
+28 rules organized into 11 categories.
 
 Severity levels:
 - **error** — the context file has a verifiably incorrect reference or invalid metadata. Should fail CI.
@@ -592,6 +593,23 @@ Checks that secrets referenced in CI workflow files are mentioned in context fil
 4. For each remaining secret, search all context files for the secret name (case-insensitive, flexible underscore/space matching).
 5. Emit one info-level issue per undocumented secret.
 
+### 3.11 hook-coverage — hook enforcement coverage
+
+The inverse of `tier-tokens/hard-enforcement-missing`. Where `tier-tokens` flags an inviolable rule that has *no* hook to enforce it, `hook-coverage` flags a hook (or permissions entry) that points at a script which no longer exists — a dead gate that silently no-ops. Claude Code cannot run a script that isn't on disk, so a `PreToolUse` hook whose `command` references a deleted/renamed file stops blocking anything, while the user still believes the protection is in place.
+
+| Rule ID | Severity | Trigger | Message |
+|---|---|---|---|
+| `hook-coverage/dead-hook` | warning | A `hooks.<Event>[].hooks[].command` or `permissions.{allow,deny,ask}[]` entry in `.claude/settings.json` contains a path-shaped token that does not exist on disk | `{origin} references "{path}" which does not exist on disk — the gate silently no-ops` |
+
+**Detection algorithm:**
+
+1. Load settings from project `.claude/settings.json`, project `.claude/settings.local.json`, and user `~/.claude/settings.json` (parsed as JSONC; missing files are skipped).
+2. For each hook command and each `permissions` list entry, tokenize on whitespace (respecting quotes) and keep tokens that look like script paths (a path separator + a script extension such as `.sh`/`.js`/`.py`/`.ps1`, or an explicit `./` `~/` `/` `$VAR/` `C:\` prefix). Inline tool matchers like `Bash(npm login)` yield no path tokens.
+3. Resolve each path token: expand a leading `~` and the env vars Claude Code documents for settings paths — `$CLAUDE_PROJECT_DIR`, `$CLAUDE_CONFIG_DIR`, `$HOME`, `$USERPROFILE`. A token that still contains an unresolvable `$VAR` is skipped (it cannot be verified, and a false "dead hook" is worse than a missed one).
+4. Emit one warning per resolved path that does not exist on disk, with the source file's line number for project files (the user-global file is noted inline).
+
+**Stability:** experimental — the path-extraction heuristic is conservative by design (it prefers a missed dead hook over a false positive) and may broaden as more hook-command shapes are observed.
+
 ---
 
 ## 4. Rule Catalog (machine-readable)
@@ -665,6 +683,5 @@ This specification follows semver:
 - [AAIF AGENTS.md](https://github.com/anthropics/agents-spec) — Linux Foundation standard for multi-agent context files
 - [Model Context Protocol Specification](https://spec.modelcontextprotocol.io/) — the protocol that MCP server configs serve
 - [MCP Server Configuration Linting Specification](./MCP_CONFIG_LINT_SPEC.md) — companion spec for linting MCP server configs
-- [ctxlint](https://github.com/YawLabs/ctxlint) — reference implementation of both specifications
+- [ctxlint](https://github.com/YawLabs/ctxlint) — reference implementation of all four specifications
 - [mcp-compliance](https://github.com/YawLabs/mcp-compliance) — tests MCP server behavior against the protocol spec
-- [mcp.hosting](https://mcp.hosting) — managed MCP server hosting

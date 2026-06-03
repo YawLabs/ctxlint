@@ -25,7 +25,7 @@ npm test
 
 1. **One PR per change.** Keep PRs focused — a bug fix, a new feature, or a refactor, not all three.
 2. **Branch from `main`** (or `master` if that's the default branch).
-3. **Run `npm run format && npm run lint`** before committing — CI will reject formatting issues.
+3. **Run `npm run format && npm run lint`** before committing — formatting drift breaks the local release flow (`release.sh` runs the checks; this repo has no CI).
 4. **Run `npm test`** and confirm all tests pass.
 5. **Write a clear PR title and description** — explain *what* changed and *why*.
 6. **All PRs require approval** from a maintainer before merging.
@@ -63,6 +63,12 @@ If you're an AI agent (Claude Code, Copilot, Cursor, etc.) submitting a PR:
 ## Writing a new check
 
 A "check" is a single lint category (e.g., `paths`, `tokens`, `tier-tokens`). Each check lives in its own file under `src/core/checks/` and can emit one or more **rules** — specific issue variants identified by `ruleId` like `paths/not-found` or `tier-tokens/section-breakdown`. Here's the end-to-end recipe.
+
+### Rule ID format (canonical)
+
+ctxlint rule IDs use **`category/slug`** — a single forward-slash separating the category from the rule slug, both lowercase kebab-case (e.g. `paths/not-found`, `tier-tokens/hard-enforcement-missing`, `mcph-config/token-in-project-scope`). This is enforced by the catalog schema (`schemas/ctxlint-catalog.schema.json`, the `rule.id` `pattern`) and validated by the `src/core/__tests__/catalog-schema.test.ts` vitest test (run in `release.sh` via `pnpm run test:run`).
+
+> **Why this differs from mcp-compliance.** The sibling [`mcp-compliance`](https://github.com/YawLabs/mcp-compliance) project uses **`category-suffix`** (a hyphen, no slash) for its rule IDs. The difference is **deliberate, not drift**: ctxlint lints static config/context files on disk, mcp-compliance tests live servers over the wire, and the two rule namespaces are intentionally kept visually distinct so a `category/slug` ID is unambiguously a ctxlint rule and a `category-suffix` ID is unambiguously an mcp-compliance rule. Do not "harmonize" them. This note is the single canonical statement of the difference; other docs link here rather than restating it.
 
 ### 1. Pick a check name and rule IDs
 

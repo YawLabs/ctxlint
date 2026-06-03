@@ -46,9 +46,13 @@ import { checkMemoryIndexOverflow } from './checks/session/memory-index-overflow
 import { checkCiCoverage } from './checks/ci-coverage.js';
 import { checkCiSecrets } from './checks/ci-secrets.js';
 import { checkContentSecrets } from './checks/content-secrets.js';
+import { checkHookCoverage } from './checks/hook-coverage.js';
+import { scanSkillFiles } from './skill-scanner.js';
+import { checkSkills } from './checks/skills.js';
 import { applyIgnoreRules, type IgnoreRule } from './ignore-rules.js';
 import {
   SESSION_AUDIT_LABEL,
+  SKILL_AUDIT_LABEL,
   type LintResult,
   type FileResult,
   type LintIssue,
@@ -56,6 +60,7 @@ import {
   type McpCheckName,
   type McphCheckName,
   type SessionCheckName,
+  type SkillCheckName,
   type ParsedMcpConfig,
   type ParsedMcphConfig,
   type IgnoreReport,
@@ -74,6 +79,7 @@ export const ALL_CHECKS: CheckName[] = [
   'ci-coverage',
   'ci-secrets',
   'content-secrets',
+  'hook-coverage',
 ];
 
 export const ALL_MCP_CHECKS: McpCheckName[] = [
@@ -105,6 +111,14 @@ export const ALL_SESSION_CHECKS: SessionCheckName[] = [
   'session-memory-index-overflow',
 ];
 
+export const ALL_SKILL_CHECKS: SkillCheckName[] = [
+  'skill-frontmatter',
+  'skill-broken-ref',
+  'skill-trigger-collision',
+  'skill-orphaned',
+  'skill-dead-tool-restriction',
+];
+
 export interface AuditOptions {
   depth?: number;
   extraPatterns?: string[];
@@ -117,6 +131,14 @@ export interface AuditOptions {
   mcphStrictEnvToken?: boolean;
   session?: boolean;
   sessionOnly?: boolean;
+  skills?: boolean;
+  skillsOnly?: boolean;
+  /**
+   * Opt-in: also scan the user-global `~/.claude/settings.json` in the
+   * hook-coverage (dead-hook) check. Off by default so the standard run stays
+   * inside the project directory, matching the session/skills opt-in posture.
+   */
+  hooksGlobal?: boolean;
   // Per-call token thresholds. When omitted, defaults from
   // DEFAULT_TOKEN_THRESHOLDS apply. Replaces the previous module-level
   // setTokenThresholds() so concurrent audits (e.g. from the MCP server)
@@ -140,6 +162,10 @@ function hasMcphChecks(checks: CheckName[]): boolean {
 
 function hasSessionChecks(checks: CheckName[]): boolean {
   return checks.some((c) => c.startsWith('session-'));
+}
+
+function hasSkillChecks(checks: CheckName[]): boolean {
+  return checks.some((c) => c.startsWith('skill-'));
 }
 
 /**
@@ -175,13 +201,15 @@ export async function runAudit(
   const fileResults: FileResult[] = [];
   const thresholds = resolveTokenThresholds(options.tokenThresholds);
 
-  const shouldRunContextChecks = !options.mcpOnly && !options.mcphOnly && !options.sessionOnly;
+  const shouldRunContextChecks =
+    !options.mcpOnly && !options.mcphOnly && !options.sessionOnly && !options.skillsOnly;
   const shouldRunMcpChecks =
     options.mcp || options.mcpGlobal || options.mcpOnly || hasMcpChecks(activeChecks);
   const shouldRunMcphChecks =
     options.mcph || options.mcphGlobal || options.mcphOnly || hasMcphChecks(activeChecks);
   const shouldRunSessionChecks =
     options.session || options.sessionOnly || hasSessionChecks(activeChecks);
+  const shouldRunSkillChecks = options.skills || options.skillsOnly || hasSkillChecks(activeChecks);
 
   // --- Context file checks ---
   if (shouldRunContextChecks) {
@@ -245,6 +273,13 @@ export async function runAudit(
     }
     if (activeChecks.includes('ci-secrets')) {
       crossFileIssues.push(...(await checkCiSecrets(parsed, projectRoot)));
+    }
+    if (activeChecks.includes('hook-coverage')) {
+      crossFileIssues.push(
+        ...(await checkHookCoverage(projectRoot, undefined, {
+          userGlobal: options.hooksGlobal,
+        })),
+      );
     }
     if (crossFileIssues.length > 0) {
       fileResults.push({
@@ -455,6 +490,38 @@ export async function runAudit(
         tokens: 0,
         lines: 0,
         issues: sessionIssues,
+      });
+    }
+  }
+
+  // --- Agent-skill checks (fourth pillar) ---
+  if (shouldRunSkillChecks) {
+    const skillChecksToRun = deriveChecksToRun<SkillCheckName>(
+      activeChecks,
+      'skill-',
+      Boolean(options.skills || options.skillsOnly),
+      ALL_SKILL_CHECKS,
+    );
+
+    if (skillChecksToRun.length > 0) {
+      const skillCtx = scanSkillFiles();
+      const skillIssues = checkSkills(skillCtx, {
+        frontmatter: skillChecksToRun.includes('skill-frontmatter'),
+        brokenRef: skillChecksToRun.includes('skill-broken-ref'),
+        triggerCollision: skillChecksToRun.includes('skill-trigger-collision'),
+        orphaned: skillChecksToRun.includes('skill-orphaned'),
+        deadToolRestriction: skillChecksToRun.includes('skill-dead-tool-restriction'),
+      });
+
+      // Always emit the skill bucket when skill checks ran (even with zero
+      // issues), mirroring the session bucket -- so a clean `--skills-only`
+      // run shows the scan executed rather than "0 files found".
+      fileResults.push({
+        path: SKILL_AUDIT_LABEL,
+        isSymlink: false,
+        tokens: 0,
+        lines: 0,
+        issues: skillIssues,
       });
     }
   }

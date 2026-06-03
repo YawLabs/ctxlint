@@ -1,5 +1,5 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$schema": "https://raw.githubusercontent.com/YawLabs/ctxlint/main/schemas/ctxlint-catalog.schema.json",
   "specVersion": "1.0.0-draft",
   "specDate": "2026-04-07",
   "repository": "https://github.com/YawLabs/ctxlint",
@@ -63,6 +63,12 @@
       "id": "ci-secrets",
       "name": "CI Secrets Documentation",
       "description": "Checks that CI secrets used in workflows are documented in context files.",
+      "scope": "cross-file"
+    },
+    {
+      "id": "hook-coverage",
+      "name": "Hook Enforcement Coverage",
+      "description": "Validates that PreToolUse hooks and permissions entries in .claude/settings.json reference scripts that exist on disk. The inverse of tier-tokens/hard-enforcement-missing.",
       "scope": "cross-file"
     }
   ],
@@ -379,6 +385,16 @@
       "message": "CI secret \"{name}\" is used in {workflow} but not mentioned in any context file",
       "fixable": false,
       "stability": "stable"
+    },
+    {
+      "id": "hook-coverage/dead-hook",
+      "category": "hook-coverage",
+      "severity": "warning",
+      "description": "A PreToolUse (or other) hook command, or a permissions entry, in .claude/settings.json references a script/path that does not exist on disk. The gate silently no-ops -- Claude Code cannot run a missing script, so the protection the user believes is in place does nothing.",
+      "trigger": "A hooks.<Event>[].hooks[].command or permissions.{allow,deny,ask}[] entry contains a path-shaped token (resolved through ~, $CLAUDE_PROJECT_DIR, $CLAUDE_CONFIG_DIR, $HOME) that does not exist on disk. Entries with unresolvable env vars are skipped (cannot be verified). Scans project .claude/settings.json + settings.local.json and user ~/.claude/settings.json.",
+      "message": "{origin} references \"{path}\" which does not exist on disk -- the gate silently no-ops",
+      "fixable": false,
+      "stability": "experimental"
     }
   ],
   "formats": [
