@@ -138,7 +138,17 @@ interface Settings {
   };
 }
 
+// Cache parsed settings per projectRoot. checkTierTokens runs once PER
+// always-loaded file, so without this the read+parse (and, crucially, the
+// malformed-settings console.warn) would fire N times for one settings.json —
+// a single trailing comma yielded N identical stderr lines. Caching collapses
+// that to one parse + at most one warn per (root, audit run). Mirrors the
+// loadPackageJson cache shape in utils/fs.ts; resettable for tests.
+let settingsCache: { root: string; data: Settings[] } | null = null;
+
 function loadSettingsSources(projectRoot: string): Settings[] {
+  if (settingsCache?.root === projectRoot) return settingsCache.data;
+
   const sources: Settings[] = [];
   const candidates = [
     path.join(projectRoot, '.claude', 'settings.json'),
@@ -162,7 +172,13 @@ function loadSettingsSources(projectRoot: string): Settings[] {
       console.warn(`ctxlint: could not parse ${p}: ${(err as Error).message}`);
     }
   }
+  settingsCache = { root: projectRoot, data: sources };
   return sources;
+}
+
+/** Clear the per-root settings cache. Call between audit runs / in tests. */
+export function resetSettingsCache(): void {
+  settingsCache = null;
 }
 
 /**

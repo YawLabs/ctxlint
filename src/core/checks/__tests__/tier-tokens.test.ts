@@ -1,18 +1,25 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { checkTierTokens, checkAggregateTierTokens, isAlwaysLoaded } from '../tier-tokens.js';
+import {
+  checkTierTokens,
+  checkAggregateTierTokens,
+  isAlwaysLoaded,
+  resetSettingsCache,
+} from '../tier-tokens.js';
 import type { ParsedContextFile, Section } from '../../types.js';
 
 let tmpDir: string;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-tier-'));
+  resetSettingsCache();
 });
 
 afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
+  resetSettingsCache();
 });
 
 function makeFile(overrides: Partial<ParsedContextFile> = {}): ParsedContextFile {
@@ -269,6 +276,30 @@ describe('checkTierTokens — hard-enforcement-missing', () => {
       tmpDir,
     );
     expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
+  });
+
+  it('warns only ONCE for a malformed settings.json across many always-loaded files', async () => {
+    const dotClaude = path.join(tmpDir, '.claude');
+    fs.mkdirSync(dotClaude, { recursive: true });
+    // Trailing comma — JSON.parse throws.
+    fs.writeFileSync(
+      path.join(dotClaude, 'settings.json'),
+      '{ "permissions": { "deny": ["Bash(npm login)"], } }',
+    );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // Simulate the audit calling checkTierTokens once per always-loaded file.
+      const content = '# CLAUDE.md\n\nNEVER run `npm login` locally.\n';
+      for (let i = 0; i < 4; i++) {
+        await checkTierTokens(makeFile({ content, sections: [], totalTokens: 50 }), tmpDir);
+      }
+      const parseWarns = warnSpy.mock.calls.filter((c) =>
+        String(c[0]).includes('could not parse'),
+      );
+      expect(parseWarns).toHaveLength(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 

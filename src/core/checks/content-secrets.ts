@@ -140,6 +140,27 @@ const PLACEHOLDER_TOKENS = [
 
 const COMMENT_PREFIX = /^\s*(?:#|\/\/|--|<!--)/;
 
+/**
+ * Line-scoped placeholder guard: returns true if ANY placeholder token appears
+ * anywhere on the line, suppressing the whole line.
+ *
+ * RECALL GAP (deliberate): this is line-scoped, not token-scoped. A real secret
+ * that happens to share its line with a benign "example"/"redacted"/etc. word
+ * elsewhere on the line (e.g. `Example value: AKIA<real-key>`) is suppressed.
+ * A token-scoped tightening — only treating the match as a placeholder when the
+ * placeholder token is adjacent to the matched secret (as `isPlaceholderWrapped`
+ * already does for `${...}`/`<...>` wrappers) — was considered, but the existing
+ * false-positive corpus deliberately relies on line-scoped suppression: lines
+ * like `Placeholder token: ghp_...`, `Your-key here: ASIA...`, and
+ * `redacted: mcp_pat_...` mention the placeholder word NON-adjacent to the
+ * secret and must stay suppressed. Tightening to adjacency would re-flag all of
+ * those, trading the (rare) recall miss for a wave of false positives that
+ * trains users to ignore the check — the opposite of this module's
+ * precision-over-recall stance (see file header).
+ *
+ * The "never leaks a real secret value" guarantee is unaffected: this only
+ * controls WHETHER a line is scanned, never what an emitted issue contains.
+ */
 function lineLooksLikePlaceholder(line: string): boolean {
   const lower = line.toLowerCase();
   for (const tok of PLACEHOLDER_TOKENS) {

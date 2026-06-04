@@ -43,6 +43,13 @@ interface CompiledRule {
 
 export interface IgnoreApplyResult {
   kept: LintIssue[];
+  /**
+   * Boolean mask aligned 1:1 with the input `issues` array (same length, same
+   * order): `keepMask[i]` is true iff `issues[i]` survived suppression. Lets
+   * callers partition the original array by index without relying on object
+   * reference identity between `issues` and `kept`.
+   */
+  keepMask: boolean[];
   dropped: number;
   unusedRules: IgnoreRule[];
   rulesMissingReason: IgnoreRule[];
@@ -85,6 +92,7 @@ export function extractPathsFromMessage(msg: string): string[] {
 export function applyIgnoreRules(issues: LintIssue[], rules: IgnoreRule[]): IgnoreApplyResult {
   const compiled = compileRules(rules);
   const kept: LintIssue[] = [];
+  const keepMask: boolean[] = [];
   let dropped = 0;
 
   for (const issue of issues) {
@@ -111,13 +119,16 @@ export function applyIgnoreRules(issues: LintIssue[], rules: IgnoreRule[]): Igno
     }
     if (suppress) {
       dropped++;
+      keepMask.push(false);
     } else {
       kept.push(issue);
+      keepMask.push(true);
     }
   }
 
   return {
     kept,
+    keepMask,
     dropped,
     unusedRules: compiled.filter((r) => !r.fired).map(stripCompiled),
     rulesMissingReason: rules.filter((r) => !r.reason),

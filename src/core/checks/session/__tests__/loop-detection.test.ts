@@ -112,6 +112,42 @@ describe('checkLoopDetection', () => {
     expect(issues[0].ruleId).toBe('session-loop-detection/cyclic-pattern');
   });
 
+  it('reports a consecutive run and an interleaved cycle without double-counting the run', async () => {
+    // [A,A,A, B,A,B,A,B]: the A,A,A run is a consecutive-repeat (span 0-2);
+    // the trailing B,A,B,A,B is a B->A cycle that sits after the run. The run
+    // must be reported once (not also re-counted inside an A,B cycle that
+    // reaches back into it), and the post-run cycle must still fire.
+    const entries = [
+      makeEntry('cmd A', 1),
+      makeEntry('cmd A', 2),
+      makeEntry('cmd A', 3),
+      makeEntry('cmd B', 4),
+      makeEntry('cmd A', 5),
+      makeEntry('cmd B', 6),
+      makeEntry('cmd A', 7),
+      makeEntry('cmd B', 8),
+    ];
+
+    const issues = await checkLoopDetection(makeCtx(entries));
+    const consecutive = issues.filter(
+      (i) => i.ruleId === 'session-loop-detection/consecutive-repeat',
+    );
+    const cyclic = issues.filter((i) => i.ruleId === 'session-loop-detection/cyclic-pattern');
+
+    // The A,A,A run is reported exactly once by the consecutive check.
+    expect(consecutive).toHaveLength(1);
+    expect(consecutive[0].message).toContain('3 times');
+
+    // The trailing B<->A loop still fires. Every surviving cyclic finding is
+    // about that post-run loop (mentions both commands); none re-reports the
+    // consecutive A-run — the [A,B] cycle that overlapped span 0-2 is gated out.
+    expect(cyclic.length).toBeGreaterThanOrEqual(1);
+    for (const issue of cyclic) {
+      expect(issue.message).toContain('cmd A');
+      expect(issue.message).toContain('cmd B');
+    }
+  });
+
   it('truncates long command names in messages', async () => {
     const longCmd = 'a'.repeat(100);
     const entries = [makeEntry(longCmd, 1), makeEntry(longCmd, 2), makeEntry(longCmd, 3)];

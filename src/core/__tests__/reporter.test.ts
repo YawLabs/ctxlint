@@ -8,7 +8,7 @@ import {
   ALL_SKILL_CHECKS,
 } from '../audit.js';
 import { VERSION as PKG_VERSION } from '../../version.js';
-import { SESSION_AUDIT_LABEL, type LintResult } from '../types.js';
+import { SESSION_AUDIT_LABEL, SKILL_AUDIT_LABEL, type LintResult } from '../types.js';
 
 function makeResult(overrides?: Partial<LintResult>): LintResult {
   return {
@@ -567,5 +567,66 @@ describe('formatText — group classification', () => {
     // The mcph file's content still renders.
     expect(plain).toContain('.mcph.json');
     expect(plain).toContain('token in mcph file');
+  });
+});
+
+describe('formatText — top-summary for synthetic audit buckets', () => {
+  function stripAnsi(s: string): string {
+    // eslint-disable-next-line no-control-regex
+    return s.replace(/\x1b\[[0-9;]*m/g, '');
+  }
+
+  // The session bucket is synthetic (SESSION_AUDIT_LABEL, path starting with
+  // '~', filtered out of the real-file summaries). A clean --session-only run
+  // must show "Session audit scanned" rather than the misleading "Found N
+  // files" fallback.
+  it('prints "Session audit scanned" for a session-only result (no "Found N files" fallback)', () => {
+    const result = makeResult({
+      files: [
+        {
+          path: SESSION_AUDIT_LABEL,
+          isSymlink: false,
+          tokens: 0,
+          lines: 0,
+          issues: [
+            { severity: 'info', check: 'session-stale-memory', line: 0, message: 'stale memory' },
+          ],
+        },
+      ],
+      summary: { errors: 0, warnings: 0, info: 1, totalTokens: 0, estimatedWaste: 0 },
+    });
+    const plain = stripAnsi(formatText(result));
+    expect(plain).toContain('Session audit scanned');
+    expect(plain).not.toContain('Found 1 file');
+  });
+
+  // Mirror of the session case: a clean --skills-only run must show "Skill
+  // audit scanned", not fall through to "Found N files". The skill bucket is
+  // synthetic too (SKILL_AUDIT_LABEL, path starting with '~').
+  it('prints "Skill audit scanned" for a skill-only result (no "Found N files" fallback)', () => {
+    const result = makeResult({
+      files: [
+        {
+          path: SKILL_AUDIT_LABEL,
+          isSymlink: false,
+          tokens: 0,
+          lines: 0,
+          issues: [
+            {
+              severity: 'warning',
+              check: 'skill-trigger-collision',
+              line: 0,
+              message: 'two skills share a trigger',
+            },
+          ],
+        },
+      ],
+      summary: { errors: 0, warnings: 1, info: 0, totalTokens: 0, estimatedWaste: 0 },
+    });
+    const plain = stripAnsi(formatText(result));
+    expect(plain).toContain('Skill audit scanned');
+    expect(plain).not.toContain('Found 1 file');
+    // The finding still renders in the issue section.
+    expect(plain).toContain('two skills share a trigger');
   });
 });

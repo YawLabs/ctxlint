@@ -84,6 +84,24 @@ describe('checkMissingSecret', () => {
     expect(issues[0].message).toContain('NPM_TOKEN');
   });
 
+  it('captures --repo when the body flag precedes it (body-before-repo ordering)', async () => {
+    // `-b "val"` comes BEFORE `--repo` here. The repo binding must still be
+    // captured (siblings are matched via the --repo basename, not the history
+    // project path, which here is unrelated to the sibling dirs).
+    const ctx = makeCtx(
+      [
+        makeEntry('gh secret set NPM_TOKEN -b "val" --repo org/foo', '/unrelated/x'),
+        makeEntry('gh secret set NPM_TOKEN -b "val" --repo org/bar', '/unrelated/y'),
+      ],
+      [makeSibling('foo'), makeSibling('bar')],
+    );
+    const issues = await checkMissingSecret(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('NPM_TOKEN');
+    expect(issues[0].message).toContain('foo');
+    expect(issues[0].message).toContain('bar');
+  });
+
   // Regression for the substring-match false-positive: `ctxlint-old` should
   // not count as "current has the secret" when current is `ctxlint`.
   it('does not treat basename-substring sibling as current project', async () => {

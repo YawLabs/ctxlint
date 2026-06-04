@@ -93,6 +93,30 @@ describe('checkCiCoverage', () => {
     expect(issues[0].message).toContain('build.yml');
   });
 
+  it('detects a quoted YAML name field (single and double quotes)', async () => {
+    mkdirSync(join(tempDir, '.github', 'workflows'), { recursive: true });
+    writeFileSync(join(tempDir, '.github', 'workflows', 'dq.yml'), 'name: "Release"\non: push');
+    writeFileSync(join(tempDir, '.github', 'workflows', 'sq.yml'), "name: 'Deploy'\non: push");
+
+    const files = [makeFile('CLAUDE.md', 'No release info here.')];
+    const issues = await checkCiCoverage(files, tempDir);
+
+    expect(issues.length).toBe(1);
+    expect(issues[0].message).toContain('dq.yml');
+    expect(issues[0].message).toContain('sq.yml');
+  });
+
+  it('detects an indented (leading-whitespace) YAML name field', async () => {
+    mkdirSync(join(tempDir, '.github', 'workflows'), { recursive: true });
+    writeFileSync(join(tempDir, '.github', 'workflows', 'indented.yml'), '  name: Release\non: push');
+
+    const files = [makeFile('CLAUDE.md', 'No release info here.')];
+    const issues = await checkCiCoverage(files, tempDir);
+
+    expect(issues.length).toBe(1);
+    expect(issues[0].message).toContain('indented.yml');
+  });
+
   it('matches various release documentation phrases', async () => {
     mkdirSync(join(tempDir, '.github', 'workflows'), { recursive: true });
     writeFileSync(join(tempDir, '.github', 'workflows', 'release.yml'), 'name: Release\non: push');

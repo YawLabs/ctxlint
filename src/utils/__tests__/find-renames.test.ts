@@ -248,6 +248,27 @@ describe('parseRenameLog', () => {
     expect(info).toMatchObject({ oldPath: 'src/old.ts', newPath: 'src/new.ts' });
   });
 
+  it('does not misdetect a non-rename line of "hex + whitespace + non-date" as a commit header', () => {
+    // `deadbee somefile.ts` starts with 7 hex chars + a space but is NOT the
+    // shipped `%H %ai` header shape (no year-leading ISO date). The loose
+    // `/^([a-f0-9]{7,40})\s+(.+)$/` regex matched it, overwriting currentHash
+    // with `deadbee` and currentDateStr with `somefile.ts` (then NaN daysAgo).
+    // The tightened regex must skip it so the real header's hash + date win.
+    const raw =
+      `${HASH} 2026-06-02 18:54:28 -0700\n\n` +
+      `deadbee somefile.ts\n` + // hex + space + non-date -> must NOT be a header
+      `R100\tsrc/old.ts\tsrc/new.ts\n`;
+    const info = parseRenameLog(raw);
+    expect(info).toMatchObject({
+      oldPath: 'src/old.ts',
+      newPath: 'src/new.ts',
+      commitHash: '6912509', // header hash survived, not "deadbee"
+    });
+    // daysAgo is a finite whole number computed from the real header date,
+    // never NaN (which it would be if `somefile.ts` had become currentDateStr).
+    expect(Number.isFinite((info as RenameInfo).daysAgo)).toBe(true);
+  });
+
   // targetPath matching: findRenames scans an unscoped log and asks the parser
   // to return the rename whose SOURCE path equals the queried ref.
   it('with a targetPath, returns the rename whose old path matches (not just the first)', () => {

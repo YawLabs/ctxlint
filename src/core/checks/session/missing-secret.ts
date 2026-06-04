@@ -6,12 +6,12 @@ function normalizePath(p: string): string {
   return resolve(p).replace(/\\/g, '/').toLowerCase();
 }
 
-// `--repo owner/repo` capture; the SIMPLE fallback below handles the bare
-// `gh secret set NAME -b "..."` shape (the `.*-b\s+` arm that used to live
-// in this alternation never actually fired -- `.*` after `\s+NAME` required
-// text between the name and `-b`, which real invocations don't have).
-const SECRET_SET_PATTERN = /gh\s+secret\s+set\s+(\S+)\s+--repo\s+(\S+)/;
+// Match the secret NAME, then capture `--repo owner/repo` separately so the
+// flag binds regardless of where it sits on the line. The old single regex
+// required `--repo` immediately after NAME, so `gh secret set NAME -b "val"
+// --repo org/repo` (body before flag) silently dropped the repo binding.
 const SECRET_SET_SIMPLE = /gh\s+secret\s+set\s+(\S+)/;
+const REPO_FLAG_PATTERN = /--repo\s+(\S+)/;
 
 interface SecretRecord {
   name: string;
@@ -29,12 +29,16 @@ export async function checkMissingSecret(ctx: SessionContext): Promise<LintIssue
 
   // Extract all `gh secret set` commands from history
   for (const entry of ctx.history) {
-    const match = entry.display.match(SECRET_SET_PATTERN) || entry.display.match(SECRET_SET_SIMPLE);
+    const match = entry.display.match(SECRET_SET_SIMPLE);
     if (!match) continue;
+
+    // Capture `--repo` independently of where it appears on the line, so a
+    // body-before-flag ordering still binds the repo.
+    const repoMatch = entry.display.match(REPO_FLAG_PATTERN);
 
     secrets.push({
       name: match[1],
-      repo: match[2],
+      repo: repoMatch ? repoMatch[1] : undefined,
       project: entry.project,
     });
   }

@@ -92,6 +92,18 @@ describe('checkFrontmatter', () => {
       expect(globsIssue!.message).toContain('malformed');
     });
 
+    it('accepts a globs value with a literal mid-value apostrophe', async () => {
+      // A lone apostrophe inside the path (not at the start) is literal, not
+      // YAML quoting — must not trip the odd-quote-count branch.
+      const file = makeFile(
+        '.cursor/rules/test.mdc',
+        "---\ndescription: My rule\nglobs: src/don't/**\nalwaysApply: false\n---\nContent.",
+      );
+      const issues = await checkFrontmatter(file, '/project');
+      const globsIssue = issues.find((i) => i.message.toLowerCase().includes('globs'));
+      expect(globsIssue).toBeUndefined();
+    });
+
     it('flags globs with unmatched quotes', async () => {
       const file = makeFile(
         '.cursor/rules/test.mdc',

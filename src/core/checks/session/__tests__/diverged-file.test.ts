@@ -86,6 +86,11 @@ describe('checkDivergedFile', () => {
     expect(issues.length).toBeGreaterThanOrEqual(1);
     expect(issues[0].check).toBe('session-diverged-file');
     expect(issues[0].severity).toBe('warning');
+    // detail carries navigable absolute paths for both the current file and
+    // the diverged sibling (message itself is basename-only).
+    expect(issues[0].detail).toContain('File:');
+    expect(issues[0].detail).toMatch(/repos[\\/]current[\\/]/);
+    expect(issues[0].detail).toMatch(/repos[\\/]foo[\\/]/);
   });
 
   it('does not flag files with >90% overlap (close enough)', async () => {

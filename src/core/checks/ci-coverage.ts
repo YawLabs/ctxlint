@@ -43,12 +43,22 @@ async function findReleaseWorkflows(projectRoot: string): Promise<string[]> {
       continue;
     }
 
-    // Check YAML `name:` field for release-related names
+    // Check YAML `name:` field for release-related names. Allow optional
+    // leading whitespace (a `name:` nested under another key, or just an
+    // indented top-level key) and strip surrounding single/double quotes from
+    // the captured value (`name: "Release"` / `name: 'Release'`). This stays a
+    // line regex rather than a full YAML parse on purpose -- the one shape it
+    // still can't see is a block scalar (`name: >` / `name: |` with the value
+    // on the following indented line), which is vanishingly rare for a
+    // workflow name and would require real YAML parsing to resolve.
     try {
       const content = stripBom(await readFile(join(workflowDir, f), 'utf-8'));
-      const nameMatch = content.match(/^name:\s*(.+)$/m);
-      if (nameMatch && RELEASE_FILENAME_PATTERNS.some((p) => p.test(nameMatch[1]))) {
-        releaseWorkflows.push(f);
+      const nameMatch = content.match(/^\s*name:\s*(.+?)\s*$/m);
+      if (nameMatch) {
+        const name = nameMatch[1].replace(/^(['"])(.*)\1$/, '$2');
+        if (RELEASE_FILENAME_PATTERNS.some((p) => p.test(name))) {
+          releaseWorkflows.push(f);
+        }
       }
     } catch {
       // skip unreadable files

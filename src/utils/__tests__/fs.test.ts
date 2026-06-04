@@ -71,6 +71,43 @@ describe('loadPackageJson', () => {
     resetPackageJsonCache();
     expect(loadPackageJson(tmpDir)?.scripts?.a).toBe('2');
   });
+
+  it('keeps both sibling roots cached when alternating between them (no single-slot thrash)', () => {
+    // The single-slot {root,data} cache evicted the other root on every switch,
+    // so a long-running server alternating between sibling roots re-read +
+    // re-parsed on each call. The keyed LRU keeps both resident.
+    const rootA = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-fs-a-'));
+    const rootB = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-fs-b-'));
+    try {
+      fs.writeFileSync(path.join(rootA, 'package.json'), JSON.stringify({ scripts: { x: 'a' } }));
+      fs.writeFileSync(path.join(rootB, 'package.json'), JSON.stringify({ scripts: { x: 'b' } }));
+
+      const a1 = loadPackageJson(rootA);
+      const b1 = loadPackageJson(rootB);
+
+      // Overwrite both files on disk. If the cache thrashed (evicted on switch)
+      // the next reads would re-parse and see the new content; the keyed cache
+      // must still serve the originals for BOTH roots.
+      fs.writeFileSync(
+        path.join(rootA, 'package.json'),
+        JSON.stringify({ scripts: { x: 'changed-a' } }),
+      );
+      fs.writeFileSync(
+        path.join(rootB, 'package.json'),
+        JSON.stringify({ scripts: { x: 'changed-b' } }),
+      );
+
+      // Alternate the access order to exercise LRU promotion on both.
+      expect(loadPackageJson(rootA)?.scripts?.x).toBe('a');
+      expect(loadPackageJson(rootB)?.scripts?.x).toBe('b');
+      // Identity preserved per root (served from cache, not re-parsed).
+      expect(loadPackageJson(rootA)).toBe(a1);
+      expect(loadPackageJson(rootB)).toBe(b1);
+    } finally {
+      fs.rmSync(rootA, { recursive: true, force: true });
+      fs.rmSync(rootB, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('fileExists', () => {

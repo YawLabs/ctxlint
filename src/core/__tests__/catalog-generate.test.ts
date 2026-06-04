@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { describe, it, expect } from 'vitest';
-import { CATALOGS, REPO_ROOT } from '../catalog-meta.js';
+import { describe, it, expect, afterEach } from 'vitest';
+import { CATALOGS, REPO_ROOT, type CatalogMeta } from '../catalog-meta.js';
 import { specCoverageGaps } from '../catalog-generate.js';
 
 /**
@@ -27,4 +28,53 @@ describe('generate-from-catalog', () => {
       expect(gaps, `rule IDs missing from ${meta.spec}: ${gaps.join(', ')}`).toEqual([]);
     });
   }
+});
+
+describe('specCoverageGaps token-bounded matching', () => {
+  // Fixtures live under REPO_ROOT because specCoverageGaps resolves meta.catalog
+  // and meta.spec relative to it. A temp subdir keeps them out of the way.
+  const fixtureDir = path.join('src', 'core', '__tests__', '.coverage-fixtures');
+  const absFixtureDir = path.join(REPO_ROOT, fixtureDir);
+
+  afterEach(() => {
+    fs.rmSync(absFixtureDir, { recursive: true, force: true });
+  });
+
+  function writeFixture(rules: string[], specBody: string): CatalogMeta {
+    fs.mkdirSync(absFixtureDir, { recursive: true });
+    const catalogRel = path.join(fixtureDir, 'cat.json');
+    const specRel = path.join(fixtureDir, 'spec.md');
+    fs.writeFileSync(
+      path.join(REPO_ROOT, catalogRel),
+      JSON.stringify({ rules: rules.map((id) => ({ id })) }),
+    );
+    fs.writeFileSync(path.join(REPO_ROOT, specRel), specBody);
+    return {
+      key: 'fixture',
+      catalog: catalogRel,
+      spec: specRel,
+      label: 'Fixture',
+      ruleIdFormat: 'category/slug',
+    };
+  }
+
+  it('reports a shorter ID hidden behind a documented longer superstring as a gap', () => {
+    // The spec documents `tier-tokens/aggregate` but NOT the bare
+    // `tokens/aggregate`. A raw substring scan would see `tokens/aggregate`
+    // inside `tier-tokens/aggregate` and wrongly call it covered; the
+    // token-bounded test must flag it.
+    const meta = writeFixture(
+      ['tokens/aggregate', 'tier-tokens/aggregate'],
+      'The `tier-tokens/aggregate` rule sums always-loaded context tokens.\n',
+    );
+    expect(specCoverageGaps(meta)).toEqual(['tokens/aggregate']);
+  });
+
+  it('treats an ID documented as its own token as covered', () => {
+    const meta = writeFixture(
+      ['tokens/aggregate', 'tier-tokens/aggregate'],
+      'Rules: `tokens/aggregate` and `tier-tokens/aggregate` both apply.\n',
+    );
+    expect(specCoverageGaps(meta)).toEqual([]);
+  });
 });

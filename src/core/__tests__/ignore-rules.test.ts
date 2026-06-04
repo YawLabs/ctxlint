@@ -199,10 +199,45 @@ describe('applyIgnoreRules', () => {
       const result = applyIgnoreRules([], []);
       expect(result).toEqual({
         kept: [],
+        keepMask: [],
         dropped: 0,
         unusedRules: [],
         rulesMissingReason: [],
       });
+    });
+  });
+
+  describe('keepMask', () => {
+    it('returns a mask aligned 1:1 with input order (true = kept, false = dropped)', () => {
+      const issues = [
+        issue({ check: 'paths', message: 'a' }),
+        issue({ check: 'commands', message: 'b' }),
+        issue({ check: 'paths', message: 'c' }),
+      ];
+      const result = applyIgnoreRules(issues, [{ check: 'paths' }]);
+      expect(result.keepMask).toEqual([false, true, false]);
+      // The mask lets a caller partition the ORIGINAL array by index without
+      // relying on object identity between `issues` and `kept`.
+      const keptByIndex = issues.filter((_, i) => result.keepMask[i]);
+      expect(keptByIndex).toEqual(result.kept);
+    });
+
+    it('keepMask is all-true when no rule matches', () => {
+      const issues = [issue({ check: 'paths', message: 'x' }), issue({ check: 'tokens', message: 'y' })];
+      const result = applyIgnoreRules(issues, [{ check: 'commands' }]);
+      expect(result.keepMask).toEqual([true, true]);
+    });
+
+    it('distinguishes structurally-identical issues by position, not identity', () => {
+      // Two findings with the SAME check/line/message but distinct objects.
+      // An object-identity Set would treat them the same; the index-aligned
+      // mask keeps them independent.
+      const a = issue({ check: 'paths', message: 'dup', line: 5 });
+      const b = issue({ check: 'paths', message: 'dup', line: 5 });
+      const result = applyIgnoreRules([a, b], [{ check: 'paths', match: 'nope' }]);
+      // Neither dropped (match doesn't fire); both kept, both true.
+      expect(result.keepMask).toEqual([true, true]);
+      expect(result.kept).toHaveLength(2);
     });
   });
 });

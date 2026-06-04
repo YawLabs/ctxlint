@@ -22,11 +22,20 @@ export async function checkDuplicateMemory(ctx: SessionContext): Promise<LintIss
   const issues: LintIssue[] = [];
   const reported = new Set<string>();
 
-  // Precompute per-memory data once. We tokenize even short memories — the
-  // length check below uses the original `content.length` (raw chars), not
-  // the line-set size, so we can't skip tokenization just because the file
-  // is short. The cost is amortized over N-1 pair comparisons either way.
-  const lineSets = ctx.memories.map((m) => toLineSet(m.content, MIN_TOKEN_LEN));
+  // Tokenize lazily: most memories never reach a `jaccardSimilarityFromSets`
+  // call because the pair loop skips same-project pairs and pairs where
+  // neither side is the current project. Memoize a line-set per memory index,
+  // built only the first time that memory participates in a surviving pair —
+  // so memories that are never compared are never tokenized.
+  const lineSets: Array<Set<string> | undefined> = new Array(ctx.memories.length);
+  const getLineSet = (idx: number): Set<string> => {
+    let ls = lineSets[idx];
+    if (ls === undefined) {
+      ls = toLineSet(ctx.memories[idx].content, MIN_TOKEN_LEN);
+      lineSets[idx] = ls;
+    }
+    return ls;
+  };
 
   for (let i = 0; i < ctx.memories.length; i++) {
     for (let j = i + 1; j < ctx.memories.length; j++) {
@@ -44,7 +53,7 @@ export async function checkDuplicateMemory(ctx: SessionContext): Promise<LintIss
       // Skip very short memories (not meaningful to compare)
       if (a.content.length < 50 || b.content.length < 50) continue;
 
-      const overlap = jaccardSimilarityFromSets(lineSets[i], lineSets[j]);
+      const overlap = jaccardSimilarityFromSets(getLineSet(i), getLineSet(j));
       if (overlap < 0.6) continue;
 
       // Avoid duplicate reports for the same pair

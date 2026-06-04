@@ -229,7 +229,12 @@ export function parseRenameLog(result: string, targetPath?: string): RenameInfo 
 
   const lines = result.trim().split('\n');
   for (const line of lines) {
-    const headerMatch = line.match(/^([a-f0-9]{7,40})\s+(.+)$/);
+    // Require the shipped `--format=%H %ai` shape: a 7-40 char hex hash, a
+    // space, then a year-leading ISO date (`2026-06-02 ...`). The looser
+    // `\s+(.+)` form would misdetect any non-rename line that merely starts
+    // with 7-40 hex chars + whitespace as a commit header, overwriting
+    // currentHash/currentDateStr mid-parse.
+    const headerMatch = line.match(/^([a-f0-9]{7,40})\s+(\d{4}-\d\d-\d\d\b.*)$/);
     if (headerMatch) {
       currentHash = headerMatch[1].substring(0, 7);
       currentDateStr = headerMatch[2];

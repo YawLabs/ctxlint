@@ -127,6 +127,30 @@ describe('checkContradictions', () => {
     expect(issues[0].message).toContain('state management');
   });
 
+  it('does not falsely match "test ... deploy with <fw>" prose as a framework directive', () => {
+    // The unbounded `test.*with jest` pattern used to match this sentence
+    // (the `.*` spanned "suite and then deploy"), which — paired with a real
+    // Vitest directive elsewhere — emitted a spurious testing-framework
+    // conflict. The bounded `test\w*\s+with` no longer matches.
+    const files = [
+      makeFile('CLAUDE.md', 'Use Vitest for testing.'),
+      makeFile('AGENTS.md', 'Run our test suite and then deploy with jest.'),
+    ];
+    const issues = checkContradictions(files);
+    const fwIssues = issues.filter((i) => i.message.includes('testing framework'));
+    expect(fwIssues).toHaveLength(0);
+  });
+
+  it('still detects tight "test with <fw>" framework directives', () => {
+    const files = [
+      makeFile('CLAUDE.md', 'test with jest'),
+      makeFile('AGENTS.md', 'Run tests with vitest'),
+    ];
+    const issues = checkContradictions(files);
+    const fwIssues = issues.filter((i) => i.message.includes('testing framework'));
+    expect(fwIssues.length).toBeGreaterThan(0);
+  });
+
   it('emits a single cluster issue for 3+ file conflict', () => {
     const files = [
       makeFile('CLAUDE.md', 'Always use pnpm as the package manager.'),

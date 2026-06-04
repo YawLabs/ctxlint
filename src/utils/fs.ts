@@ -17,23 +17,48 @@ export function stripBom(content: string): string {
   return content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
 }
 
-let pkgJsonCache: { root: string; data: PackageJson | null } | null = null;
+/**
+ * Keyed LRU cache of parsed package.json per project root (mirrors the
+ * diverged-file lineSet cache). A single-slot {root,data} cache thrashes when a
+ * long-running MCP server alternates between sibling roots -- each switch evicts
+ * the other root's parse, so a back-and-forth scan re-reads + re-parses on every
+ * call. The keyed Map keeps each root's data resident; the 256-entry LRU cap
+ * bounds memory (`Map` is insertion-ordered, so delete+set on hit promotes to
+ * most-recently-used and the oldest key evicts when over the cap).
+ *
+ * `null` (missing / malformed package.json) is cached too, so repeated misses
+ * for the same root don't re-stat the filesystem.
+ */
+const PKG_CACHE_MAX_ENTRIES = 256;
+const pkgJsonCache = new Map<string, PackageJson | null>();
 
 export function loadPackageJson(projectRoot: string): PackageJson | null {
-  if (pkgJsonCache?.root === projectRoot) return pkgJsonCache.data;
+  if (pkgJsonCache.has(projectRoot)) {
+    const cached = pkgJsonCache.get(projectRoot) ?? null;
+    // Promote to most-recently-used.
+    pkgJsonCache.delete(projectRoot);
+    pkgJsonCache.set(projectRoot, cached);
+    return cached;
+  }
+
+  let data: PackageJson | null;
   try {
     const content = stripBom(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf-8'));
-    const data = JSON.parse(content) as PackageJson;
-    pkgJsonCache = { root: projectRoot, data };
-    return data;
+    data = JSON.parse(content) as PackageJson;
   } catch {
-    pkgJsonCache = { root: projectRoot, data: null };
-    return null;
+    data = null;
   }
+
+  pkgJsonCache.set(projectRoot, data);
+  if (pkgJsonCache.size > PKG_CACHE_MAX_ENTRIES) {
+    const oldest = pkgJsonCache.keys().next().value;
+    if (oldest !== undefined) pkgJsonCache.delete(oldest);
+  }
+  return data;
 }
 
 export function resetPackageJsonCache(): void {
-  pkgJsonCache = null;
+  pkgJsonCache.clear();
 }
 
 export function fileExists(filePath: string): boolean {

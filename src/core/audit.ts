@@ -148,6 +148,15 @@ export interface AuditOptions {
    * Granular per-finding suppression rules. Applied after all checks run --
    * a finding suppressed by an ignoreRule never appears in `LintResult.files`
    * but is reflected in `_meta.ignoreReport.dropped`.
+   *
+   * TRUST BOUNDARY: the `match` / `pathPattern` strings on each rule are
+   * compiled via `new RegExp(...)` and executed against finding messages with
+   * NO step cap (see ignore-rules.ts:compileRules). That is fine for the
+   * current callers -- repo-author-trusted CLI input (`.ctxlintrc.json`),
+   * same posture as an `.eslintrc.json` regex. If `ignoreRules` ever becomes
+   * reachable from a less-trusted source (e.g. an MCP tool argument supplied
+   * by a remote caller), these patterns become a ReDoS vector and MUST be run
+   * through a safe-regex / step-bounded matcher before compilation.
    */
   ignoreRules?: IgnoreRule[];
 }
@@ -543,13 +552,13 @@ export async function runAudit(
     });
     const applied = applyIgnoreRules(flat, options.ignoreRules);
     // Rebuild per-FileResult issue lists from the kept subset, preserving
-    // order. We walk the flat list again, keeping items whose corresponding
-    // entry survived: a Set of preserved indices is built from `kept`'s
-    // reference identity.
-    const keptSet = new Set(applied.kept);
+    // order. `applied.keepMask` is aligned 1:1 with `flat`, so we partition by
+    // index + the parallel `owners` array -- no reliance on LintIssue object
+    // reference identity between `flat` and `applied.kept` (two structurally
+    // identical findings in different files would collide in a Set).
     const rebuilt: LintIssue[][] = fileResults.map(() => []);
     flat.forEach((issue, i) => {
-      if (keptSet.has(issue)) rebuilt[owners[i]].push(issue);
+      if (applied.keepMask[i]) rebuilt[owners[i]].push(issue);
     });
     fileResults.forEach((fr, idx) => {
       fr.issues = rebuilt[idx];
@@ -564,7 +573,13 @@ export async function runAudit(
   let estimatedWaste = 0;
   for (const fr of fileResults) {
     for (const issue of fr.issues) {
-      if (issue.check === 'redundancy' && issue.suggestion) {
+      if (issue.check !== 'redundancy') continue;
+      if (typeof issue.wastedTokens === 'number') {
+        // Structured field set by the check -- preferred over scraping.
+        estimatedWaste += issue.wastedTokens;
+      } else if (issue.suggestion) {
+        // Fallback: scrape `~N tokens` out of the suggestion for findings
+        // that don't set the structured field (no regression).
         const tokenMatch = issue.suggestion.match(/~(\d+)\s+tokens/);
         if (tokenMatch) estimatedWaste += parseInt(tokenMatch[1], 10);
       }

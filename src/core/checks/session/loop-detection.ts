@@ -15,10 +15,13 @@ function normalizeProject(p: string): string {
 
 /**
  * Detect consecutive runs of the same command.
- * Returns ranges of [startIdx, endIdx] where the same display string repeats.
+ * Returns each run's command, repeat count, and [startIdx, endIdx) span so
+ * the cyclic scan can skip spans a consecutive-repeat already covered.
  */
-function findConsecutiveRepeats(displays: string[]): Array<{ command: string; count: number }> {
-  const results: Array<{ command: string; count: number }> = [];
+function findConsecutiveRepeats(
+  displays: string[],
+): Array<{ command: string; count: number; startIdx: number; endIdx: number }> {
+  const results: Array<{ command: string; count: number; startIdx: number; endIdx: number }> = [];
   let i = 0;
 
   while (i < displays.length) {
@@ -26,7 +29,7 @@ function findConsecutiveRepeats(displays: string[]): Array<{ command: string; co
     while (j < displays.length && displays[j] === displays[i]) j++;
     const count = j - i;
     if (count >= CONSECUTIVE_THRESHOLD) {
-      results.push({ command: displays[i], count });
+      results.push({ command: displays[i], count, startIdx: i, endIdx: j });
     }
     i = j;
   }
@@ -37,9 +40,16 @@ function findConsecutiveRepeats(displays: string[]): Array<{ command: string; co
 /**
  * Detect short repeating cycles in a sequence.
  * E.g. [A, B, A, B] is a cycle of length 2 repeated 2 times.
+ *
+ * `consecutiveSpans` are the [startIdx, endIdx) ranges already reported by the
+ * consecutive-repeat check. A cycle whose span overlaps one of those is
+ * suppressed so a run like [A,A,A, B,A,B,A,B] doesn't report the consecutive
+ * A-run a second time as part of an [A,B] cycle that reaches back into it. An
+ * interleaved cycle that sits entirely after the consecutive run still fires.
  */
 function findCyclicPatterns(
   displays: string[],
+  consecutiveSpans: Array<{ startIdx: number; endIdx: number }>,
 ): Array<{ cycle: string[]; repeats: number; startIdx: number }> {
   const results: Array<{ cycle: string[]; repeats: number; startIdx: number }> = [];
 
@@ -63,11 +73,20 @@ function findCyclicPatterns(
       }
 
       if (repeats >= CYCLE_REPEAT_THRESHOLD) {
+        const cycleEnd = start + cycleLen * repeats;
+
+        // Skip a cycle whose span overlaps a consecutive-repeat finding — those
+        // commands were already reported once by the consecutive check.
+        const overlapsConsecutive = consecutiveSpans.some(
+          (s) => s.startIdx < cycleEnd && start < s.endIdx,
+        );
+        if (overlapsConsecutive) continue;
+
         // Check we haven't already reported a subsuming pattern at this position
         const alreadyCovered = results.some(
           (r) =>
             r.startIdx <= start &&
-            r.startIdx + r.cycle.length * r.repeats >= start + cycleLen * repeats,
+            r.startIdx + r.cycle.length * r.repeats >= cycleEnd,
         );
         if (!alreadyCovered) {
           results.push({ cycle, repeats, startIdx: start });
@@ -116,8 +135,10 @@ export async function checkLoopDetection(ctx: SessionContext): Promise<LintIssue
     });
   }
 
-  // Check for cyclic patterns (only if no consecutive repeats covered the same commands)
-  const cycles = findCyclicPatterns(displays);
+  // Check for cyclic patterns, skipping any whose span a consecutive-repeat
+  // finding already covers (so the same commands aren't reported twice).
+  const consecutiveSpans = repeats.map((r) => ({ startIdx: r.startIdx, endIdx: r.endIdx }));
+  const cycles = findCyclicPatterns(displays, consecutiveSpans);
   for (const { cycle, repeats: reps } of cycles) {
     const cycleStr = cycle.map((c) => (c.length > 40 ? c.slice(0, 37) + '...' : c)).join(' -> ');
     issues.push({

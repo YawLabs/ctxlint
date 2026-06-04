@@ -218,6 +218,37 @@ describe('checkCommands', () => {
     expect(issues.find((i) => i.ruleId === 'commands/tool-not-found')).toBeUndefined();
   });
 
+  it('emits a single info when package.json is missing but a command would be checked', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nnpm run build\nvitest run\n```\n',
+      },
+      null, // no package.json written
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    const skipped = issues.filter((i) => i.ruleId === 'commands/package-json-missing');
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0].severity).toBe('info');
+    expect(skipped[0].message).toContain('command checks skipped');
+    // The script/tool branches themselves must stay silent without a pkgJson.
+    expect(issues.find((i) => i.ruleId === 'commands/script-not-found')).toBeUndefined();
+    expect(issues.find((i) => i.ruleId === 'commands/tool-not-found')).toBeUndefined();
+  });
+
+  it('does NOT emit the missing-package.json info when only a make target is referenced', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nmake build\n```\n',
+        Makefile: 'build:\n\techo build\n',
+      },
+      null, // no package.json; make branch is independent of pkgJson
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/package-json-missing')).toBeUndefined();
+  });
+
   it('flags shorthand package manager test/build/etc. when script missing', async () => {
     seed(
       {

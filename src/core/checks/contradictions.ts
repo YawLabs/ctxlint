@@ -22,19 +22,23 @@ const DIRECTIVE_CATEGORIES: DirectiveCategory[] = [
     options: [
       {
         label: 'Jest',
-        patterns: [/\buse\s+jest\b/i, /\bjest\s+for\s+test/i, /\btest.*with\s+jest\b/i],
+        // The third pattern bounds the gap between `test` and `with <fw>` to a
+        // few intra-clause chars so prose like "run our test suite and then
+        // deploy with jest" no longer matches the framework directive — only
+        // tight phrasings like "test with jest" / "tests run with jest" do.
+        patterns: [/\buse\s+jest\b/i, /\bjest\s+for\s+test/i, /\btest\w*\s+with\s+jest\b/i],
       },
       {
         label: 'Vitest',
-        patterns: [/\buse\s+vitest\b/i, /\bvitest\s+for\s+test/i, /\btest.*with\s+vitest\b/i],
+        patterns: [/\buse\s+vitest\b/i, /\bvitest\s+for\s+test/i, /\btest\w*\s+with\s+vitest\b/i],
       },
       {
         label: 'Mocha',
-        patterns: [/\buse\s+mocha\b/i, /\bmocha\s+for\s+test/i, /\btest.*with\s+mocha\b/i],
+        patterns: [/\buse\s+mocha\b/i, /\bmocha\s+for\s+test/i, /\btest\w*\s+with\s+mocha\b/i],
       },
       {
         label: 'pytest',
-        patterns: [/\buse\s+pytest\b/i, /\bpytest\s+for\s+test/i, /\btest.*with\s+pytest\b/i],
+        patterns: [/\buse\s+pytest\b/i, /\bpytest\s+for\s+test/i, /\btest\w*\s+with\s+pytest\b/i],
       },
       {
         label: 'Playwright',
@@ -89,19 +93,11 @@ const DIRECTIVE_CATEGORIES: DirectiveCategory[] = [
       },
       {
         label: '2 spaces',
-        patterns: [
-          /\b2[\s-]?space\s+indent/i,
-          /\bindent\s+with\s+2\s+spaces/i,
-          /\b2[\s-]?space\s+tabs?\b/i,
-        ],
+        patterns: [/\b2[\s-]?space\s+indent/i, /\bindent\s+with\s+2\s+spaces/i],
       },
       {
         label: '4 spaces',
-        patterns: [
-          /\b4[\s-]?space\s+indent/i,
-          /\bindent\s+with\s+4\s+spaces/i,
-          /\b4[\s-]?space\s+tabs?\b/i,
-        ],
+        patterns: [/\b4[\s-]?space\s+indent/i, /\bindent\s+with\s+4\s+spaces/i],
       },
     ],
   },

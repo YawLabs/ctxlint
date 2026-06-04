@@ -142,6 +142,17 @@ export function formatText(result: LintResult, verbose: boolean = false): string
     renderedAnySummary = true;
   }
 
+  // Skill audit, like session, has no real authored files -- it's a synthetic
+  // bucket (SKILL_AUDIT_LABEL from audit.ts, path starting with '~', filtered
+  // out of the real-file summaries above). Without this arm a clean
+  // --skills-only run rendered no group summary and fell through to the
+  // misleading "Found N files" line.
+  if (groups.skill.length > 0) {
+    if (renderedAnySummary) lines.push('');
+    lines.push('Skill audit scanned');
+    renderedAnySummary = true;
+  }
+
   if (!renderedAnySummary) {
     lines.push(`Found ${result.files.length} file${result.files.length !== 1 ? 's' : ''}`);
   }

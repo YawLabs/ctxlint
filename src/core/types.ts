@@ -278,6 +278,12 @@ export interface LintIssue {
   suggestion?: string;
   detail?: string;
   fix?: FixAction;
+  /**
+   * Optional structured estimate of tokens this finding wastes. When set, the
+   * audit summary sums these directly instead of scraping `~N tokens` out of
+   * `suggestion`. Currently emitted by the redundancy check.
+   */
+  wastedTokens?: number;
 }
 
 export interface FileResult {

@@ -35,6 +35,24 @@ function extractNpxPackage(cmd: string): string | null {
   return null;
 }
 
+// Patterns whose validation branch is gated on a parsed package.json. When
+// package.json is missing/unparseable every one of these branches silently
+// no-ops, so we track whether any reference WOULD have been checked and emit a
+// single info diagnostic (asymmetric otherwise with the make-target branch,
+// which has its own no-makefile error).
+const PKG_DEPENDENT_TOOL_PATTERN = /^(vitest|jest|pytest|mocha|eslint|prettier|tsc)\b/;
+const PKG_SHORTHAND_PATTERN =
+  /^(npm|pnpm|yarn|bun)\s+(test|start|build|dev|lint|format|check|typecheck|clean|serve|preview|e2e)\b/;
+
+function wouldNeedPackageJson(cmd: string): boolean {
+  return (
+    NPM_SCRIPT_PATTERN.test(cmd) ||
+    PKG_SHORTHAND_PATTERN.test(cmd) ||
+    /^npx\b/.test(cmd) ||
+    PKG_DEPENDENT_TOOL_PATTERN.test(cmd)
+  );
+}
+
 export async function checkCommands(
   file: ParsedContextFile,
   projectRoot: string,
@@ -42,6 +60,24 @@ export async function checkCommands(
   const issues: LintIssue[] = [];
   const pkgJson = loadPackageJson(projectRoot);
   const makefile = loadMakefile(projectRoot);
+
+  // When package.json can't be loaded, all the script/shorthand/npx/tool
+  // branches below silently skip. Surface that ONCE if any reference would
+  // otherwise have been validated, so the skip isn't invisible.
+  if (!pkgJson) {
+    const skipped = file.references.commands.find((ref) => wouldNeedPackageJson(ref.value));
+    if (skipped) {
+      issues.push({
+        severity: 'info',
+        check: 'commands',
+        ruleId: 'commands/package-json-missing',
+        line: skipped.line,
+        message: 'package.json missing or unparseable — command checks skipped',
+        suggestion:
+          'Add a parseable package.json at the project root so script, npx, and tool references can be validated.',
+      });
+    }
+  }
 
   for (const ref of file.references.commands) {
     const cmd = ref.value;
@@ -65,9 +101,7 @@ export async function checkCommands(
     }
 
     // Check shorthand npm/pnpm/yarn/bun commands that map to scripts
-    const shorthandMatch = cmd.match(
-      /^(npm|pnpm|yarn|bun)\s+(test|start|build|dev|lint|format|check|typecheck|clean|serve|preview|e2e)\b/,
-    );
+    const shorthandMatch = cmd.match(PKG_SHORTHAND_PATTERN);
     if (shorthandMatch && pkgJson) {
       const scriptName = shorthandMatch[2];
       if (pkgJson.scripts && !(scriptName in pkgJson.scripts)) {
@@ -141,7 +175,7 @@ export async function checkCommands(
     }
 
     // Check common tool availability
-    const toolMatch = cmd.match(/^(vitest|jest|pytest|mocha|eslint|prettier|tsc)\b/);
+    const toolMatch = cmd.match(PKG_DEPENDENT_TOOL_PATTERN);
     if (toolMatch && pkgJson) {
       const tool = toolMatch[1];
       const allDeps = {

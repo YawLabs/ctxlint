@@ -99,11 +99,15 @@ function hasUnbalancedBracketsOrQuotes(val: string): boolean {
   }
   if (square !== 0 || curly !== 0) return true;
 
-  // Count unescaped quotes; an odd count means an unmatched quote.
-  const doubleQuotes = (val.match(/"/g) || []).length;
-  const singleQuotes = (val.match(/'/g) || []).length;
-  if (doubleQuotes % 2 !== 0) return true;
-  if (singleQuotes % 2 !== 0) return true;
+  // Quotes only act as YAML quoting when the value STARTS with a quote char.
+  // A quote appearing mid-value is a literal (e.g. `globs: src/don't/**` has a
+  // lone apostrophe that is part of the path, not an unbalanced YAML quote),
+  // so only the leading-quote case can be unbalanced.
+  const quoteChar = val[0];
+  if (quoteChar === '"' || quoteChar === "'") {
+    const count = (val.match(quoteChar === '"' ? /"/g : /'/g) || []).length;
+    if (count % 2 !== 0) return true;
+  }
 
   return false;
 }
