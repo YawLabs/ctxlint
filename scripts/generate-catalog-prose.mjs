@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * Generate-from-catalog (item 3). The count headers in each spec and the counts
  * in the README "Specifications" family table are DERIVED from the
@@ -22,8 +21,12 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-/** catalog -> spec wiring, plus the README label used in the family table. */
-const CATALOGS = [
+/**
+ * catalog -> spec wiring, plus the README label used in the family table.
+ * Exported so the catalog-consistency test can assert these triples stay in
+ * sync with the TS-side `CATALOGS` in src/core/catalog-meta.ts (drift fails CI).
+ */
+export const CATALOGS = [
   {
     catalog: 'context-lint-rules.json',
     spec: 'CONTEXT_LINT_SPEC.md',

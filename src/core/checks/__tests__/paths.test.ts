@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { parseContextFile } from '../../parser.js';
 import { checkPaths, resetPathsCache } from '../paths.js';
 import type { DiscoveredFile } from '../../scanner.js';
+import type { ParsedContextFile } from '../../types.js';
 
 const FIXTURES = path.resolve(__dirname, '../../../../fixtures');
 
@@ -113,6 +114,30 @@ describe('checkPaths', () => {
       'src/app.ts': 'x',
     });
     const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'paths/glob-no-match')).toBeUndefined();
+  });
+
+  // Regression: an absolute glob (e.g. /etc/*.conf, C:/x/*.ts) must be matched
+  // as an absolute pattern, not relativized against cwd. Building the reference
+  // directly avoids the parser regex's handling of Windows drive prefixes.
+  it('does NOT emit glob-no-match for an absolute glob that matches an existing file', async () => {
+    seed({ 'src/app.ts': 'x' });
+    const absGlob = path.join(tmpRoot, 'src', '*.ts').replace(/\\/g, '/');
+    expect(path.isAbsolute(absGlob)).toBe(true);
+    const parsed: ParsedContextFile = {
+      filePath: path.join(tmpRoot, 'CLAUDE.md'),
+      relativePath: 'CLAUDE.md',
+      isSymlink: false,
+      totalTokens: 0,
+      totalLines: 1,
+      content: '',
+      sections: [],
+      references: {
+        paths: [{ value: absGlob, line: 1, column: 1 }],
+        commands: [],
+      },
+    };
     const issues = await checkPaths(parsed, tmpRoot);
     expect(issues.find((i) => i.ruleId === 'paths/glob-no-match')).toBeUndefined();
   });

@@ -137,13 +137,17 @@ export type CheckName =
   | SessionCheckName
   | SkillCheckName;
 
+// Clients whose MCP config is a repo-discoverable file. Cline is intentionally
+// absent: its MCP server list lives in VS Code globalStorage
+// (cline_mcp_settings.json), not a file the scanner surfaces, so detectClient
+// can never classify one. Cline's `.clinerules` context files are handled by
+// the context pillar, not here.
 export type McpClient =
   | 'claude-code'
   | 'claude-desktop'
   | 'vscode'
   | 'cursor'
   | 'windsurf'
-  | 'cline'
   | 'amazonq'
   | 'continue';
 
@@ -284,6 +288,12 @@ export interface LintIssue {
    * `suggestion`. Currently emitted by the redundancy check.
    */
   wastedTokens?: number;
+  /**
+   * Optional structured list of the paths this finding is about. When set,
+   * ignore-rule path-pattern matching reads these directly instead of scraping
+   * them back out of `message`. Currently emitted by the stale-memory check.
+   */
+  affectedPaths?: string[];
 }
 
 export interface FileResult {

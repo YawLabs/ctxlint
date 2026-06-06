@@ -59,6 +59,14 @@ export async function parseMcphConfig(
 
   // Walk top-level properties to capture positions for each known field and
   // flag unknown ones.
+  //
+  // ASSUMPTION: on a duplicate top-level key, this loop records the LAST
+  // occurrence's position (each iteration overwrites `result.positions[name]`),
+  // and for `servers`/`blocked` it APPENDS every occurrence's items into one
+  // list. That is a deliberate agreement with `getNodeValue(tree)` above, which
+  // resolves duplicate keys last-write-wins for `result.raw`. If `getNodeValue`
+  // ever changed its duplicate-key resolution, this loop's position/list
+  // capture would diverge from `result.raw`.
   const rootProps = tree.children ?? [];
   for (const prop of rootProps) {
     if (prop.type !== 'property' || !prop.children || prop.children.length < 2) continue;
@@ -93,6 +101,11 @@ export async function parseMcphConfig(
 }
 
 function detectScope(relativePath: string): McphConfigScope {
+  // LIMITATION: this function ONLY distinguishes project vs project-local (by
+  // the `.mcph.local.json` suffix). It can never return 'global' on its own --
+  // the project/global decision is NOT made here. It relies entirely on the
+  // caller passing scopeOverride='global' for global configs; without that
+  // override a global path would be misclassified as 'project'.
   // Global configs are scanned via scanGlobalMcphConfigs() in audit.ts, which
   // always passes scopeOverride='global'. So this function only sees project
   // and project-local paths -- no '~/'-prefixed input ever reaches here.

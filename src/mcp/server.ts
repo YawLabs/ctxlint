@@ -69,6 +69,17 @@ function validateProjectPath(rawPath: string | undefined): string {
  * tools should not fail the audit if the config file is malformed -- the
  * audit's value is the findings, not the config. CLI surfaces parse errors
  * to the user; MCP returns the un-ignored result instead.
+ *
+ * TRUST BOUNDARY: `projectRoot` derives from the caller's `projectPath`
+ * argument (via validateProjectPath), so the .ctxlintrc.json loaded here is
+ * attacker-influenceable if the caller points at a directory whose config it
+ * does not control. We treat any projectPath-supplied .ctxlintrc.json as
+ * TRUSTED input regardless: its `ignoreRules` regexes are compiled with
+ * `new RegExp(...)` and run with NO step cap (see ignore-rules.ts trust
+ * posture), so a hostile config is a latent ReDoS vector. This matches the
+ * CLI posture (repo-author-trusted, same as .eslintrc.json) -- ctxlint
+ * assumes the project root you audit is one you trust. Do not point an MCP
+ * tool at an untrusted project root.
  */
 function safeLoadConfig(projectRoot: string): ReturnType<typeof loadConfig> {
   try {
@@ -376,7 +387,7 @@ server.tool(
       .boolean()
       .optional()
       .describe(
-        'Upgrade mcph-config/prefer-env-token from warning to error (env-var-only posture).',
+        'Upgrade mcph-token-security/prefer-env-token from warning to error (env-var-only posture).',
       ),
   },
   {

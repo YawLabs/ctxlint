@@ -69,6 +69,15 @@ describe('checkStaleMemory', () => {
     expect(issues[0].message).toContain('3 path(s)');
   });
 
+  it('populates affectedPaths with exactly the broken paths (not the existing ones)', async () => {
+    // existsSync returns true for `src/real.ts`, false for the others.
+    mockExistsSync.mockImplementation((p) => String(p).endsWith('real.ts'));
+    const ctx = makeCtx([makeMemory(['src/real.ts', 'src/ghost.ts', 'src/also-missing.ts'])]);
+    const issues = await checkStaleMemory(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].affectedPaths).toEqual(['src/ghost.ts', 'src/also-missing.ts']);
+  });
+
   it('skips memories from other projects', async () => {
     mockProjectDirMatchesPath.mockReturnValue(false);
     mockExistsSync.mockReturnValue(false);

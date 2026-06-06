@@ -2,6 +2,12 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { CATALOGS, REPO_ROOT, ruleCount } from '../catalog-meta.js';
+// The prose generator (build.mjs's source of truth) keeps its OWN duplicate
+// CATALOGS list. Import it here so drift between the two hand-maintained lists
+// fails CI. It is plain .mjs (no TS) so build.mjs can call it without a compile
+// step; vitest loads the .mjs directly here.
+// @ts-expect-error generate-catalog-prose.mjs is plain JS with no type declarations
+import { CATALOGS as PROSE_CATALOGS } from '../../../scripts/generate-catalog-prose.mjs';
 
 /**
  * Guards against rule-count drift: the prose count headers in each spec and the
@@ -63,4 +69,24 @@ describe('catalog rule-count consistency', () => {
       });
     });
   }
+});
+
+/**
+ * Guards against drift between the two hand-maintained catalog lists: the TS
+ * `CATALOGS` in catalog-meta.ts and the duplicate `CATALOGS` in
+ * scripts/generate-catalog-prose.mjs (which build.mjs reads via computeTargets).
+ * The shared shape is the catalog/spec/label triple; the .mjs list omits the
+ * TS-only `key` / `ruleIdFormat` fields, so only the triples are compared.
+ */
+describe('catalog-meta.ts and generate-catalog-prose.mjs CATALOGS agree', () => {
+  it('declare the same number of catalogs', () => {
+    expect(PROSE_CATALOGS.length).toBe(CATALOGS.length);
+  });
+
+  it('catalog/spec/label triples match element-wise', () => {
+    const triples = (
+      list: ReadonlyArray<{ catalog: string; spec: string | null; label: string }>,
+    ) => list.map(({ catalog, spec, label }) => ({ catalog, spec, label }));
+    expect(triples(PROSE_CATALOGS)).toEqual(triples(CATALOGS));
+  });
 });

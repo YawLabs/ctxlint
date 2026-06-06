@@ -145,6 +145,60 @@ describe('applyIgnoreRules', () => {
     });
   });
 
+  describe('pathPattern prefers structured affectedPaths over message scraping', () => {
+    it('uses affectedPaths when present (ignores the message text entirely)', () => {
+      const issues = [
+        issue({
+          check: 'session-stale-memory',
+          // Message deliberately lists a path that would NOT match the pattern;
+          // if the rule scraped the message it would keep the issue.
+          message: 'Memory "a" references 2 path(s) that no longer exist: ~/.ssh/real_key, /etc',
+          affectedPaths: ['/yaw-review', '/release-yaw'],
+        }),
+      ];
+      const rules: IgnoreRule[] = [
+        { check: 'session-stale-memory', pathPattern: '^/[a-z][a-z0-9-]*$' },
+      ];
+      const result = applyIgnoreRules(issues, rules);
+      // affectedPaths all match the pattern -> dropped, despite the message.
+      expect(result.dropped).toBe(1);
+      expect(result.kept).toHaveLength(0);
+    });
+
+    it('keeps the issue when an affectedPaths entry does not match (all-must-match)', () => {
+      const issues = [
+        issue({
+          check: 'session-stale-memory',
+          message:
+            'Memory "b" references 2 path(s) that no longer exist: /yaw-review, /release-yaw',
+          affectedPaths: ['/yaw-review', '~/.ssh/real_key'],
+        }),
+      ];
+      const rules: IgnoreRule[] = [
+        { check: 'session-stale-memory', pathPattern: '^/[a-z][a-z0-9-]*$' },
+      ];
+      const result = applyIgnoreRules(issues, rules);
+      expect(result.dropped).toBe(0);
+      expect(result.kept).toHaveLength(1);
+    });
+
+    it('falls back to message scraping when affectedPaths is absent', () => {
+      const issues = [
+        issue({
+          check: 'session-stale-memory',
+          message:
+            'Memory "a" references 2 path(s) that no longer exist: /yaw-review, /release-yaw',
+        }),
+      ];
+      const rules: IgnoreRule[] = [
+        { check: 'session-stale-memory', pathPattern: '^/[a-z][a-z0-9-]*$' },
+      ];
+      const result = applyIgnoreRules(issues, rules);
+      expect(result.dropped).toBe(1);
+      expect(result.kept).toHaveLength(0);
+    });
+  });
+
   describe('precedence (first matching rule wins)', () => {
     it('the first matching rule is recorded as fired, later overlapping rules are not', () => {
       const issues = [issue({ check: 'paths', message: 'release.yml not found' })];
@@ -223,7 +277,10 @@ describe('applyIgnoreRules', () => {
     });
 
     it('keepMask is all-true when no rule matches', () => {
-      const issues = [issue({ check: 'paths', message: 'x' }), issue({ check: 'tokens', message: 'y' })];
+      const issues = [
+        issue({ check: 'paths', message: 'x' }),
+        issue({ check: 'tokens', message: 'y' }),
+      ];
       const result = applyIgnoreRules(issues, [{ check: 'commands' }]);
       expect(result.keepMask).toEqual([true, true]);
     });

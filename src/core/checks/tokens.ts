@@ -86,7 +86,7 @@ export function checkAggregateTokens(
   thresholds: TokenThresholds = DEFAULT_TOKEN_THRESHOLDS,
 ): LintIssue | null {
   const total = files.reduce((sum, f) => sum + f.tokens, 0);
-  if (total > thresholds.aggregate && files.length > 1) {
+  if (total >= thresholds.aggregate && files.length > 1) {
     return {
       severity: 'warning',
       check: 'tokens',

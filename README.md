@@ -71,24 +71,24 @@ Useful if you want `ctxlint` available in every project without per-project setu
 
 ## What It Checks
 
-| Check                 | What it finds                                                                                 |
-| --------------------- | --------------------------------------------------------------------------------------------- |
-| **Broken paths**      | File references in context that don't exist in your project                                   |
-| **Wrong commands**    | Build/test commands that don't match your package.json scripts or Makefile targets            |
-| **Stale context**     | Context files not updated after recent code changes                                           |
-| **Token waste**       | How much context window your files consume per session                                        |
-| **Redundancy**        | Content the agent can already infer (e.g. "We use React" when react is in package.json)       |
-| **Contradictions**    | Conflicting directives across context files (e.g. "use Jest" in one, "use Vitest" in another) |
-| **Frontmatter**       | Invalid or missing YAML frontmatter in Cursor .mdc, Copilot instructions, and Windsurf rules  |
-| **CI coverage**       | Release/deploy workflows in `.github/workflows/` not documented in any context file           |
-| **CI secrets**        | Secrets used in CI workflows (`${{ secrets.X }}`) not mentioned in context files              |
+| Check                 | What it finds                                                                                                                                                                                                                                                                    |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Broken paths**      | File references in context that don't exist in your project                                                                                                                                                                                                                      |
+| **Wrong commands**    | Build/test commands that don't match your package.json scripts or Makefile targets                                                                                                                                                                                               |
+| **Stale context**     | Context files not updated after recent code changes                                                                                                                                                                                                                              |
+| **Token waste**       | How much context window your files consume per session                                                                                                                                                                                                                           |
+| **Redundancy**        | Content the agent can already infer (e.g. "We use React" when react is in package.json)                                                                                                                                                                                          |
+| **Contradictions**    | Conflicting directives across context files (e.g. "use Jest" in one, "use Vitest" in another)                                                                                                                                                                                    |
+| **Frontmatter**       | Invalid or missing YAML frontmatter in Cursor .mdc, Copilot instructions, and Windsurf rules                                                                                                                                                                                     |
+| **CI coverage**       | Release/deploy workflows in `.github/workflows/` not documented in any context file                                                                                                                                                                                              |
+| **CI secrets**        | Secrets used in CI workflows (`${{ secrets.X }}`) not mentioned in context files                                                                                                                                                                                                 |
 | **Dead hooks**        | PreToolUse hooks / permissions entries in `.claude/settings.json` pointing at scripts that no longer exist (a dead gate silently no-ops). Scans project `.claude/settings.json[.local]` by default; pass `--hooks-global` to also scan the user-global `~/.claude/settings.json` |
-| **Missing secrets**   | GitHub secrets set on sibling repos but missing from current project                          |
-| **Diverged configs**  | Canonical config files (CI, tsconfig, etc.) drifting across sibling projects                  |
-| **Missing workflows** | GitHub Actions workflows present in 2+ siblings but absent here                               |
-| **Stale memory**      | Claude Code memory entries referencing paths that no longer exist                             |
-| **Duplicate memory**  | Near-duplicate memories across projects (>60% content overlap)                                |
-| **Loop detection**    | Agent stuck in loops — repeated commands or cyclic patterns in session history                |
+| **Missing secrets**   | GitHub secrets set on sibling repos but missing from current project                                                                                                                                                                                                             |
+| **Diverged configs**  | Canonical config files (CI, tsconfig, etc.) drifting across sibling projects                                                                                                                                                                                                     |
+| **Missing workflows** | GitHub Actions workflows present in 2+ siblings but absent here                                                                                                                                                                                                                  |
+| **Stale memory**      | Claude Code memory entries referencing paths that no longer exist                                                                                                                                                                                                                |
+| **Duplicate memory**  | Near-duplicate memories across projects (>60% content overlap)                                                                                                                                                                                                                   |
+| **Loop detection**    | Agent stuck in loops — repeated commands or cyclic patterns in session history                                                                                                                                                                                                   |
 
 ## Supported Context Files
 
@@ -300,7 +300,7 @@ Options:
   --mcph                    Enable .mcph.json (mcp.hosting CLI config) linting
   --mcph-only               Run only mcph config checks
   --mcph-global             Also scan ~/.mcph.json (implies --mcph)
-  --mcph-strict-env-token   Upgrade mcph-config/prefer-env-token from warning to error
+  --mcph-strict-env-token   Upgrade mcph-token-security/prefer-env-token from warning to error
   --session                 Enable session audit checks (cross-project consistency)
   --session-only            Run only session checks, skip context and MCP checks
   --mcp-server              Start the MCP server (alias: `serve` subcommand)
@@ -443,7 +443,7 @@ The `contextFiles` array adds custom file patterns to scan alongside the built-i
 | `mcph`                          | `boolean`  | `false`    | Enable `.mcph.json` (mcp.hosting CLI config) checks (same as `--mcph`).                                                                                                                                   |
 | `mcphOnly`                      | `boolean`  | `false`    | Run only mcph config checks, skip context-file checks (same as `--mcph-only`).                                                                                                                            |
 | `mcphGlobal`                    | `boolean`  | `false`    | Also scan `~/.mcph.json` user-global config (same as `--mcph-global`).                                                                                                                                    |
-| `mcphStrictEnvToken`            | `boolean`  | `false`    | Upgrade `mcph-config/prefer-env-token` from warning to error (same as `--mcph-strict-env-token`).                                                                                                         |
+| `mcphStrictEnvToken`            | `boolean`  | `false`    | Upgrade `mcph-token-security/prefer-env-token` from warning to error (same as `--mcph-strict-env-token`).                                                                                                 |
 | `session`                       | `boolean`  | `false`    | Enable session audit checks (cross-project consistency); same as `--session`.                                                                                                                             |
 | `sessionOnly`                   | `boolean`  | `false`    | Run only session checks, skip context and MCP checks (same as `--session-only`).                                                                                                                          |
 
@@ -541,12 +541,12 @@ Returns structured JSON with all file results, issues, and summary — useful fo
 
 ctxlint is the reference implementation of four open specifications for linting AI agent interfaces. These specs are tool-agnostic — any linter, IDE extension, or CI system can implement them.
 
-| Spec                                                           | What it covers                                                                                                                                                                                                                       |
-| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **[AI Context File Linting Spec](./CONTEXT_LINT_SPEC.md)**     | 28 rules for validating context files (CLAUDE.md, .cursorrules, AGENTS.md, etc.) across 17 clients. Covers file formats, frontmatter schemas, path/command validation, staleness, token budgets, redundancy, and contradictions.     |
-| **[MCP Config Linting Spec](./MCP_CONFIG_LINT_SPEC.md)**       | 27 rules for validating MCP server configs (.mcp.json, .cursor/mcp.json, .vscode/mcp.json, etc.) across 8 clients. Covers schema validation, hardcoded secrets, env var syntax, deprecated transports, and cross-file consistency.   |
-| **mcph Config Linting** (`mcph-config-lint-rules.json`)        | 10 rules for validating `.mcph.json` — the config file read by the `@yawlabs/mcph` CLI. Covers PAT format + leakage, env-var posture, plaintext API endpoints, schema drift, and allow/deny list semantics across the scope cascade. |
-| **[Agent Session Linting Spec](./AGENT_SESSION_LINT_SPEC.md)** | 8 rules for auditing agent session data (history, memory) across 8 agents. Covers cross-project secret consistency, config drift, stale memory, and loop detection.                                                                  |
+| Spec                                                           | What it covers                                                                                                                                                                                                                            |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **[AI Context File Linting Spec](./CONTEXT_LINT_SPEC.md)**     | 28 rules for validating context files (CLAUDE.md, .cursorrules, AGENTS.md, etc.) across 17 clients. Covers file formats, frontmatter schemas, path/command validation, staleness, token budgets, redundancy, and contradictions.          |
+| **[MCP Config Linting Spec](./MCP_CONFIG_LINT_SPEC.md)**       | 27 rules for validating MCP server configs (.mcp.json, .cursor/mcp.json, .vscode/mcp.json, etc.) across 8 clients. Covers schema validation, hardcoded secrets, env var syntax, deprecated transports, and cross-file consistency.        |
+| **mcph Config Linting** (`mcph-config-lint-rules.json`)        | 10 rules for validating `.mcph.json` — the config file read by the `@yawlabs/mcph` CLI. Covers PAT format + leakage, env-var posture, plaintext API endpoints, schema drift, and allow/deny list semantics across the scope cascade.      |
+| **[Agent Session Linting Spec](./AGENT_SESSION_LINT_SPEC.md)** | 8 rules for auditing agent session data (history, memory) across 8 agents. Covers cross-project secret consistency, config drift, stale memory, and loop detection.                                                                       |
 | **[Agent Skill Linting Spec](./AGENT_SKILL_LINT_SPEC.md)**     | 5 rules for auditing Claude Code skill (`SKILL.md`) and agent (`.md`) definitions under `~/.claude`. Covers frontmatter presence, broken refs, trigger-phrase collisions, orphaned skills, and dead tool restrictions. (v1, experimental) |
 
 All specs include machine-readable rule catalogs for programmatic consumption:

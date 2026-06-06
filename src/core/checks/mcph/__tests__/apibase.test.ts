@@ -32,6 +32,20 @@ describe('checkMcphApibase', () => {
     expect(bad!.line).toBe(2);
   });
 
+  it('fires invalid-apibase when scheme is not http(s)', async () => {
+    const config = makeConfig({
+      raw: { apiBase: 'ftp://mcp.hosting' },
+      positions: { apiBase: { line: 2, column: 5, endLine: 2, endColumn: 24 } },
+    });
+    const issues = await checkMcphApibase(config, '/project');
+    const bad = issues.find((i) => i.ruleId === 'mcph-apibase/invalid-apibase');
+    expect(bad).toBeDefined();
+    expect(bad!.severity).toBe('error');
+    expect(bad!.line).toBe(2);
+    expect(bad!.message).toContain('ftp');
+    expect(issues.find((i) => i.ruleId === 'mcph-apibase/insecure-apibase')).toBeUndefined();
+  });
+
   it('fires insecure-apibase on public HTTP host', async () => {
     const config = makeConfig({
       raw: { apiBase: 'http://mcp.hosting' },

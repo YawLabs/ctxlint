@@ -129,6 +129,14 @@ export async function checkMcpEnv(
     // Skip for Continue — its ${{ secrets.VAR }} refs resolve from GitHub
     // Actions secrets, not process.env, so every correct Continue config
     // would false-positive here.
+    //
+    // NOTE (host-state-dependent, intentional): this tests `ref.varName in
+    // process.env` of the machine running the linter, so a project .mcp.json
+    // referencing an unexported var emits this for everyone who hasn't set it
+    // locally — that is the normal state, which is why the finding stays at
+    // `info` severity. It also scans ALL collected string values (env, url,
+    // command, args via collectAllStringValues), so a ${VAR} embedded in a url
+    // or command is treated as an env reference too. Both are deliberate.
     if (config.client !== 'continue') {
       for (const value of allValues) {
         const refs = extractEnvVarRefs(value);

@@ -51,6 +51,7 @@ export async function checkStaleMemory(ctx: SessionContext): Promise<LintIssue[]
         ruleId: 'session-stale-memory/stale-memory',
         line: 0,
         message: `Memory "${name}" references ${brokenPaths.length} path(s) that no longer exist: ${brokenPaths.join(', ')}`,
+        affectedPaths: brokenPaths,
         suggestion: `Update or remove the memory file: ${mem.filePath}`,
         detail: `Memory files with broken path references may cause the AI agent to follow stale instructions`,
       });

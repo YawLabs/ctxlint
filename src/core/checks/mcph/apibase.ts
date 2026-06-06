@@ -46,6 +46,19 @@ export async function checkMcphApibase(
     return issues;
   }
 
+  // --- Rule: mcph-apibase/invalid-apibase (non-http(s) scheme) ---
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    issues.push({
+      severity: 'error',
+      check: 'mcph-apibase',
+      ruleId: 'mcph-apibase/invalid-apibase',
+      line: pos.line,
+      message: `"apiBase" must be an http(s) URL, got ${parsed.protocol.replace(/:$/, '')}`,
+      suggestion: `Use an absolute http(s) URL, e.g. "https://mcp.hosting".`,
+    });
+    return issues;
+  }
+
   // --- Rule: mcph-apibase/insecure-apibase ---
   if (parsed.protocol === 'http:' && !isPrivateHost(parsed.hostname)) {
     issues.push({

@@ -74,10 +74,14 @@ export function compileRules(rules: IgnoreRule[]): CompiledRule[] {
  * We split on ': ' once and then on ', '. If the format ever changes, this
  * is the single place to update.
  *
- * TODO(structured-paths-followup): migrate to a structured
- * `issue.affectedPaths?: string[]` on `LintIssue` once a second check needs
- * the same affordance. Until then, this parser is coupled to the exact
- * message string emitted by checkStaleMemory.
+ * Documented fallback: `applyIgnoreRules` prefers the structured
+ * `issue.affectedPaths` when present (emitted by checkStaleMemory) and only
+ * falls back to this message-scraping parser when it is absent — e.g. an issue
+ * synthesized without the structured field. This parser stays coupled to the
+ * exact message string emitted by checkStaleMemory.
+ *
+ * TODO(structured-paths-followup): once every emitter of session-stale-memory
+ * findings sets `affectedPaths`, this fallback can be retired.
  */
 export function extractPathsFromMessage(msg: string): string[] {
   const idx = msg.lastIndexOf(': ');
@@ -103,7 +107,9 @@ export function applyIgnoreRules(issues: LintIssue[], rules: IgnoreRule[]): Igno
       // pathPattern: only for session-stale-memory; ALL paths must match.
       if (rule.pathPattern) {
         if (issue.check !== 'session-stale-memory') continue;
-        const paths = extractPathsFromMessage(issue.message);
+        // Prefer the structured affectedPaths; fall back to scraping the
+        // message only when the finding didn't set it (see extractPathsFromMessage).
+        const paths = issue.affectedPaths ?? extractPathsFromMessage(issue.message);
         if (paths.length === 0) continue;
         const allMatch = paths.every((p) => rule.pathPattern!.test(p));
         if (!allMatch) continue;

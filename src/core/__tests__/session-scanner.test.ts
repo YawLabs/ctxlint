@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -197,5 +197,64 @@ describe('readJsonlHistory', () => {
     });
 
     expect(entries.map((e) => e.display)).toEqual(['first', 'second']);
+  });
+});
+
+describe('detectProviders goose dir (win32, APPDATA unset)', () => {
+  // AGENT_DIRS is computed at module-load time from process.platform and
+  // process.env, so each case stubs the environment, then re-imports the
+  // module fresh via vi.resetModules() + dynamic import.
+  function stubPlatform(value: string) {
+    const original = process.platform;
+    Object.defineProperty(process, 'platform', { value, configurable: true });
+    return () => {
+      Object.defineProperty(process, 'platform', { value: original, configurable: true });
+    };
+  }
+
+  let scanRoot: string;
+  let prevCwd: string;
+  let prevAppData: string | undefined;
+  let prevUserProfile: string | undefined;
+  let prevHome: string | undefined;
+
+  beforeEach(() => {
+    scanRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-goose-'));
+    prevCwd = process.cwd();
+    prevAppData = process.env.APPDATA;
+    prevUserProfile = process.env.USERPROFILE;
+    prevHome = process.env.HOME;
+  });
+
+  afterEach(() => {
+    process.chdir(prevCwd);
+    if (prevAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = prevAppData;
+    if (prevUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = prevUserProfile;
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    fs.rmSync(scanRoot, { recursive: true, force: true });
+  });
+
+  it('does not match a cwd-relative Block/goose when APPDATA is empty on win32', async () => {
+    // A project that happens to have its own Block/goose under cwd would be
+    // mistaken for the user's goose data if the dir collapsed to the relative
+    // 'Block/goose'. HOME/USERPROFILE stay set so the HOME guard does not fire.
+    fs.mkdirSync(path.join(scanRoot, 'Block', 'goose'), { recursive: true });
+    process.chdir(scanRoot);
+    delete process.env.APPDATA;
+    process.env.USERPROFILE = scanRoot;
+    delete process.env.HOME;
+
+    const restore = stubPlatform('win32');
+    try {
+      vi.resetModules();
+      const mod = await import('../session-scanner.js');
+      expect(mod.detectProviders()).not.toContain('goose');
+    } finally {
+      restore();
+      vi.resetModules();
+    }
   });
 });

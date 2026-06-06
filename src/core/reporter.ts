@@ -279,14 +279,20 @@ export function formatTokenReport(result: LintResult): string {
   );
   lines.push('');
 
-  const maxPathLen = Math.max(...result.files.map((f) => f.path.length), 4);
+  // Drop synthetic cross-file buckets ((project), (mcp), ~/.claude/ (session
+  // audit)) -- they carry 0 tokens / 0 lines, so rendering them as table rows
+  // is noise and their (often long) labels would needlessly widen maxPathLen.
+  // Mirrors the real-file filtering formatText applies to its top summary.
+  const realFiles = result.files.filter((f) => !isSyntheticBucket(f.path));
+
+  const maxPathLen = Math.max(...realFiles.map((f) => f.path.length), 4);
 
   lines.push(
     `  ${chalk.dim('File'.padEnd(maxPathLen))}  ${chalk.dim('Tokens'.padStart(8))}  ${chalk.dim('Lines'.padStart(6))}`,
   );
   lines.push(`  ${'-'.repeat(maxPathLen)}  ${'-'.repeat(8)}  ${'-'.repeat(6)}`);
 
-  for (const file of result.files) {
+  for (const file of realFiles) {
     const tokenStr = file.tokens.toLocaleString().padStart(8);
     const lineStr = file.lines.toString().padStart(6);
     lines.push(`  ${file.path.padEnd(maxPathLen)}  ${tokenStr}  ${lineStr}`);
@@ -322,7 +328,12 @@ export function formatTokenReport(result: LintResult): string {
  * can display the bucket name without pretending it's a file.
  */
 function isSyntheticPath(p: string): boolean {
-  return p.startsWith('(') || p.startsWith('~');
+  // Share the central predicate ('(' prefix + session/skill markers) so a
+  // reskinned label that carries a marker but does NOT start with '~' (e.g.
+  // '$HOME/.claude/ (session audit)') can't leak into a SARIF
+  // physicalLocation.artifactLocation.uri. The extra '~' prefix here covers
+  // any future '~'-rooted bucket label that doesn't match a known marker.
+  return isSyntheticBucket(p) || p.startsWith('~');
 }
 
 /**

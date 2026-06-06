@@ -35,7 +35,7 @@
   ],
   "rules": [
     {
-      "id": "mcph-config/token-in-project-scope",
+      "id": "mcph-token-security/token-in-project-scope",
       "category": "mcph-token-security",
       "severity": "error",
       "description": "A project-scope .mcph.json that is git-tracked contains a \"token\" field. The PAT will leak via git history.",
@@ -46,18 +46,18 @@
       "stability": "stable"
     },
     {
-      "id": "mcph-config/local-file-not-gitignored",
+      "id": "mcph-gitignore/local-file-not-gitignored",
       "category": "mcph-gitignore",
       "severity": "error",
       "description": "A .mcph.local.json file exists but is not covered by .gitignore. The file exists precisely so machine-local overrides stay machine-local.",
       "trigger": "scope === 'project-local' && !isGitignored",
       "message": "{file} is not covered by .gitignore — machine-local overrides can leak via git",
-      "fixable": true,
+      "fixable": false,
       "fixDescription": "Append \".mcph.local.json\" to .gitignore in the project root.",
       "stability": "stable"
     },
     {
-      "id": "mcph-config/invalid-token-format",
+      "id": "mcph-token-security/invalid-token-format",
       "category": "mcph-token-security",
       "severity": "error",
       "description": "The \"token\" value doesn't match the mcp.hosting PAT format (^mcp_pat_[A-Za-z0-9_-]+$).",
@@ -68,7 +68,7 @@
       "stability": "stable"
     },
     {
-      "id": "mcph-config/insecure-apibase",
+      "id": "mcph-apibase/insecure-apibase",
       "category": "mcph-apibase",
       "severity": "warning",
       "description": "The \"apiBase\" URL uses plaintext HTTP to a public (non-localhost, non-private) host. The MCPH_TOKEN would travel in the clear.",
@@ -79,7 +79,7 @@
       "stability": "stable"
     },
     {
-      "id": "mcph-config/invalid-apibase",
+      "id": "mcph-apibase/invalid-apibase",
       "category": "mcph-apibase",
       "severity": "error",
       "description": "The \"apiBase\" field is not a valid absolute URL.",
@@ -90,7 +90,7 @@
       "stability": "stable"
     },
     {
-      "id": "mcph-config/unknown-field",
+      "id": "mcph-schema-conformance/unknown-field",
       "category": "mcph-schema-conformance",
       "severity": "warning",
       "description": "A top-level field appears that is not in the mcph config schema. Usually a typo (tokens vs token, blockList vs blocked).",
@@ -101,7 +101,7 @@
       "stability": "stable"
     },
     {
-      "id": "mcph-config/stale-version",
+      "id": "mcph-schema-conformance/stale-version",
       "category": "mcph-schema-conformance",
       "severity": "info",
       "description": "The \"version\" field is older than the current schema version.",
@@ -112,7 +112,7 @@
       "stability": "stable"
     },
     {
-      "id": "mcph-config/allowlist-denylist-conflict",
+      "id": "mcph-lists/allowlist-denylist-conflict",
       "category": "mcph-lists",
       "severity": "warning",
       "description": "A server namespace appears in both the allow-list (\"servers\") and deny-list (\"blocked\"). Deny wins in practice, so the allow-list entry is dead weight.",
@@ -123,7 +123,7 @@
       "stability": "stable"
     },
     {
-      "id": "mcph-config/duplicate-entries",
+      "id": "mcph-lists/duplicate-entries",
       "category": "mcph-lists",
       "severity": "info",
       "description": "The same value appears more than once in a servers or blocked array.",
@@ -134,7 +134,7 @@
       "stability": "stable"
     },
     {
-      "id": "mcph-config/prefer-env-token",
+      "id": "mcph-token-security/prefer-env-token",
       "category": "mcph-token-security",
       "severity": "warning",
       "configurable": true,

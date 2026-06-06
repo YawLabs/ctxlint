@@ -31,15 +31,22 @@ function loadWebFirstSegments(): Set<string> {
 
 const WEB_FIRST_SEGMENTS: Set<string> = loadWebFirstSegments();
 
-// Two passes:
+// Three passes:
 //   PATH_PATTERN matches paths that start with a leading marker (`.`, `..`,
 //     `~`, `/`). The leading marker lets us be permissive about everything
 //     after it without dragging in arbitrary `Foo/Bar` prose tokens.
 //   BARE_FILE_PATH catches relative paths *without* a leading marker --
 //     `src/api/client.ts` style. We require BOTH a `/` and a recognizable
 //     file extension to keep prose tokens (`I/O`, `n/a`, `Vitest/Jest`) out.
+//   DRIVE_ABS_PATH catches Windows drive-absolute paths in both forms
+//     (`C:/Users/...` and `C:\Users\...`). The other two passes can't reach
+//     these: PATH_PATTERN requires a `[.~/]` leading marker and excludes `:`,
+//     and BARE_FILE_PATH's `[\w-]*` run dies at the drive colon before the
+//     required `/`. We anchor on the strict `<letter>:<sep>` drive shape so
+//     prose colons (`note:`, `n/a`) don't match.
 const PATH_PATTERN = /(?:^|\s|['"`(])([.~/][^\s'"`),;:!?]+)/g;
 const BARE_FILE_PATH = /(?:^|[\s`"'(])([\w][\w-]*(?:\/[\w.-]+)+\.[a-zA-Z0-9]{1,8})\b/g;
+const DRIVE_ABS_PATH = /(?:^|[\s`"'(])([A-Za-z]:[\\/][^\s'"`),;!?]+)/g;
 
 /**
  * Encode a filesystem path the same way Claude Code encodes project directory names.
@@ -132,6 +139,12 @@ export function extractPathsClassified(content: string): ClassifiedPath[] {
   for (const match of content.matchAll(BARE_FILE_PATH)) {
     const p = match[1].replace(/[)}\]]+$/, '');
     if (p.length > 2 && !p.startsWith('http')) {
+      candidates.push(p);
+    }
+  }
+  for (const match of content.matchAll(DRIVE_ABS_PATH)) {
+    const p = match[1].replace(/[)}\]]+$/, '');
+    if (p.length > 2) {
       candidates.push(p);
     }
   }

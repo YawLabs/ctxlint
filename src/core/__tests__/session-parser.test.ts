@@ -117,6 +117,21 @@ describe('extractPaths', () => {
     const paths = extractPaths('See package.json for the scripts.');
     expect(paths).toEqual([]);
   });
+
+  it('extracts Windows drive-absolute forward-slash paths', () => {
+    const paths = extractPaths('The handler is at C:/Users/jeff/foo.ts in the repo.');
+    expect(paths).toContain('C:/Users/jeff/foo.ts');
+  });
+
+  it('extracts Windows drive-absolute backslash paths', () => {
+    const paths = extractPaths('The handler is at C:\\Users\\jeff\\foo.ts in the repo.');
+    expect(paths).toContain('C:\\Users\\jeff\\foo.ts');
+  });
+
+  it('does not match prose colons that are not drive letters', () => {
+    const paths = extractPaths('note: this is fine and n/a otherwise.');
+    expect(paths).toEqual([]);
+  });
 });
 
 describe('classifyPath', () => {

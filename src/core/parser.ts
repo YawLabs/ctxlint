@@ -8,6 +8,20 @@ import type { DiscoveredFile } from './scanner.js';
 // `*` on the final segment; directory refs are routed to the
 // `paths/directory-not-found` rule by the consuming check).
 // Ignore URLs, common false positives.
+//
+// LIMITATION: forward-slash only. Backslash/Windows-style paths
+// (`src\components\foo.ts`) are NOT captured by this pattern -- the segment
+// separator is a literal `/`. Only POSIX-shaped path references are detected.
+//
+// Capture-group note (load-bearing for the column calc at the extract site):
+// group 1 is the path itself, deliberately split from the leading delimiter in
+// the non-capturing `(?:^|[\s`"'(])` prefix. The column is computed as
+// `match.index + match[0].length - match[1].length + 1`, which depends on
+// match[1] being the path (without the delimiter). The `/g` flag makes the
+// regex stateful across `exec` calls, so callers MUST reset
+// `PATH_PATTERN.lastIndex = 0` before scanning each line -- otherwise the first
+// match on a line starts mid-line at the previous line's leftover lastIndex and
+// the column (and even which matches are found) goes wrong.
 const PATH_PATTERN =
   /(?:^|[\s`"'(])((\.{0,2}\/)?(?:[\w@.-]+\/)+[\w.*-]*(?:\.\w+)?)(?=[\s`"'),;:]|$)/gm;
 

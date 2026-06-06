@@ -1,13 +1,19 @@
 /**
- * Single source of truth for the machine-readable rule catalogs that back the
- * ctxlint specifications. Used by:
+ * The TS-side source of truth for the machine-readable rule catalogs that back
+ * the ctxlint specifications. Used by:
  *
  *  - the catalog-consistency test (asserts each spec header + README count
  *    matches the catalog's actual `.rules.length`),
  *  - the catalog-schema validation (validates each catalog against
- *    `schemas/ctxlint-catalog.schema.json`),
- *  - `build.mjs`'s generate-from-catalog step (regenerates the spec count
- *    headers + README tables FROM the catalogs so prose can't drift).
+ *    `schemas/ctxlint-catalog.schema.json`).
+ *
+ * NOTE: this is NOT the only hand-maintained catalog list. `build.mjs`'s
+ * generate-from-catalog step imports `computeTargets` from
+ * `scripts/generate-catalog-prose.mjs`, which keeps its OWN duplicate `CATALOGS`
+ * array (catalog/spec/label triples). That script is plain JS (no TS) so
+ * `build.mjs` can call it without a compile step. The two lists are kept in sync
+ * by the drift test in `catalog-consistency.test.ts`, which imports both arrays
+ * and asserts their catalog/spec/label triples match element-wise.
  *
  * Every consumer resolves repo-root files relative to this module so there is
  * one place that knows the catalog -> spec -> README wiring.
@@ -107,7 +113,11 @@ export function ruleCount(meta: CatalogMeta): number {
   return Array.isArray(c.rules) ? c.rules.length : 0;
 }
 
-/** Number of distinct categories actually used by a catalog's rules. */
+/**
+ * Number of distinct categories actually used by a catalog's rules.
+ * Intentionally retained for API parity with `ruleCount`; not currently
+ * consumed by the TS layer (the .mjs prose generator computes its own).
+ */
 export function categoryCount(meta: CatalogMeta): number {
   const c = readCatalog(meta);
   const used = new Set((c.rules ?? []).map((r) => r.category));

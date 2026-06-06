@@ -26,9 +26,16 @@ const AGENT_DIRS: Array<{ provider: AgentProvider; dir: string; historyFile?: st
   },
   {
     provider: 'goose',
+    // On win32 the goose dir lives under %APPDATA%. If APPDATA is unset,
+    // `join('', 'Block', 'goose')` yields the cwd-relative `Block/goose`,
+    // which the HOME guard in `detectProviders` does NOT catch (HOME/USERPROFILE
+    // may still be set). Leave the dir empty so `existsSync('')` is always false
+    // and we never match a cwd-relative `Block/goose`, mirroring the HOME-guard intent.
     dir:
       process.platform === 'win32'
-        ? join(process.env.APPDATA || '', 'Block', 'goose')
+        ? process.env.APPDATA
+          ? join(process.env.APPDATA, 'Block', 'goose')
+          : ''
         : join(home, '.config', 'goose'),
   },
   { provider: 'continue', dir: join(home, '.continue') },

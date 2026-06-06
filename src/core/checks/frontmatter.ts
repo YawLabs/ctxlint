@@ -21,6 +21,15 @@ interface FrontmatterResult {
   unclosed: boolean;
 }
 
+// LIMITATION: this is a shallow, hand-rolled scanner, NOT a real YAML parser.
+// It only understands top-level `key: value` lines and a single level of
+// `- item` array entries. Consequences callers must keep in mind:
+//   - Duplicate keys silently OVERWRITE (last write wins) -- no error/warning.
+//   - Array values are JOINED into a single ', '-delimited STRING (e.g.
+//     `globs:\n  - a\n  - b` becomes `"a, b"`), not preserved as a list.
+//   - Nested maps, multi-line/block scalars, flow collections, anchors,
+//     comments, and quoting subtleties are all IGNORED.
+// Anything needing true YAML semantics must not rely on this function.
 function parseFrontmatter(content: string): FrontmatterResult {
   const lines = content.split('\n');
   if (lines[0]?.trim() !== '---') {

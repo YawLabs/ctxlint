@@ -144,17 +144,28 @@ interface Settings {
 // a single trailing comma yielded N identical stderr lines. Caching collapses
 // that to one parse + at most one warn per (root, audit run). Mirrors the
 // loadPackageJson cache shape in utils/fs.ts; resettable for tests.
-let settingsCache: { root: string; data: Settings[] } | null = null;
+let settingsCache: { root: string; includeGlobal: boolean; data: Settings[] } | null = null;
 
-function loadSettingsSources(projectRoot: string): Settings[] {
-  if (settingsCache?.root === projectRoot) return settingsCache.data;
+function loadSettingsSources(projectRoot: string, includeGlobal: boolean): Settings[] {
+  if (settingsCache?.root === projectRoot && settingsCache.includeGlobal === includeGlobal) {
+    return settingsCache.data;
+  }
 
   const sources: Settings[] = [];
   const candidates = [
     path.join(projectRoot, '.claude', 'settings.json'),
     path.join(projectRoot, '.claude', 'settings.local.json'),
-    path.join(process.env.HOME || process.env.USERPROFILE || '', '.claude', 'settings.json'),
   ];
+  // The user-global ~/.claude/settings.json is opt-in (includeGlobal), mirroring
+  // hook-coverage's --hooks-global gate. On a default project-scoped run we do
+  // NOT consult personal global settings, so a teammate's private deny/hook
+  // can't silently suppress a hard-enforcement-missing finding that wouldn't
+  // reproduce for anyone else.
+  if (includeGlobal) {
+    candidates.push(
+      path.join(process.env.HOME || process.env.USERPROFILE || '', '.claude', 'settings.json'),
+    );
+  }
   for (const p of candidates) {
     let content: string;
     try {
@@ -172,7 +183,7 @@ function loadSettingsSources(projectRoot: string): Settings[] {
       console.warn(`ctxlint: could not parse ${p}: ${(err as Error).message}`);
     }
   }
-  settingsCache = { root: projectRoot, data: sources };
+  settingsCache = { root: projectRoot, includeGlobal, data: sources };
   return sources;
 }
 
@@ -276,6 +287,7 @@ export async function checkTierTokens(
   file: ParsedContextFile,
   projectRoot: string,
   thresholds: TokenThresholds = DEFAULT_TOKEN_THRESHOLDS,
+  includeGlobal = false,
 ): Promise<LintIssue[]> {
   if (!isAlwaysLoaded(file)) return [];
 
@@ -305,7 +317,7 @@ export async function checkTierTokens(
   }
 
   // Rule 2: hard-enforcement-missing — inviolable framing without a hook.
-  const settings = loadSettingsSources(projectRoot);
+  const settings = loadSettingsSources(projectRoot, includeGlobal);
   issues.push(...checkHardEnforcement(file, settings));
 
   return issues;

@@ -183,6 +183,46 @@ describe('checkTierTokens — hard-enforcement-missing', () => {
     expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
   });
 
+  it('ignores user-global ~/.claude/settings.json unless includeGlobal is set', async () => {
+    // Only a PERSONAL global settings.json denies the command; the project has none.
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-home-'));
+    fs.mkdirSync(path.join(fakeHome, '.claude'), { recursive: true });
+    fs.writeFileSync(
+      path.join(fakeHome, '.claude', 'settings.json'),
+      JSON.stringify({ permissions: { deny: ['Bash(npm login)'] } }),
+    );
+    const origHome = process.env.HOME;
+    const origProfile = process.env.USERPROFILE;
+    process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
+    try {
+      const content = '# CLAUDE.md\n\nNEVER run `npm login` locally.\n';
+      const file = () => makeFile({ content, sections: [], totalTokens: 50 });
+
+      // Default run (includeGlobal=false): personal global deny is NOT consulted,
+      // so the finding still fires — it can't be suppressed by another machine's
+      // private settings.
+      resetSettingsCache();
+      const without = await checkTierTokens(file(), tmpDir);
+      expect(
+        without.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing'),
+      ).toBeDefined();
+
+      // Opt-in (includeGlobal=true): the global deny is consulted and suppresses it.
+      resetSettingsCache();
+      const withGlobal = await checkTierTokens(file(), tmpDir, undefined, true);
+      expect(
+        withGlobal.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing'),
+      ).toBeUndefined();
+    } finally {
+      if (origHome === undefined) delete process.env.HOME;
+      else process.env.HOME = origHome;
+      if (origProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = origProfile;
+      fs.rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
   it('skips when a hyphenated PreToolUse hook script name matches the command', async () => {
     const dotClaude = path.join(tmpDir, '.claude');
     fs.mkdirSync(dotClaude, { recursive: true });
@@ -293,9 +333,7 @@ describe('checkTierTokens — hard-enforcement-missing', () => {
       for (let i = 0; i < 4; i++) {
         await checkTierTokens(makeFile({ content, sections: [], totalTokens: 50 }), tmpDir);
       }
-      const parseWarns = warnSpy.mock.calls.filter((c) =>
-        String(c[0]).includes('could not parse'),
-      );
+      const parseWarns = warnSpy.mock.calls.filter((c) => String(c[0]).includes('could not parse'));
       expect(parseWarns).toHaveLength(1);
     } finally {
       warnSpy.mockRestore();

@@ -81,7 +81,7 @@ export async function runCli() {
     .option('--mcph-global', 'Also scan ~/.mcph.json (implies --mcph)', false)
     .option(
       '--mcph-strict-env-token',
-      'Upgrade mcph-config/prefer-env-token from warning to error (strict env-var-only posture)',
+      'Upgrade mcph-token-security/prefer-env-token from warning to error (strict env-var-only posture)',
       false,
     )
     .option('--session', 'Run session audit checks (cross-project consistency)', false)
@@ -134,7 +134,7 @@ export async function runCli() {
         if (result.files.length === 0) {
           if (!options.quiet) {
             if (options.format === 'json') {
-              console.log(JSON.stringify(result));
+              console.log(formatJson(result));
             } else if (options.format === 'sarif') {
               console.log(formatSarif(result));
             } else {
@@ -294,7 +294,7 @@ export async function runCli() {
             let liveOptions = options;
             let liveActiveChecks = activeChecks;
             try {
-              const resolved = resolveSession(resolvedPath, opts);
+              const resolved = resolveSession(resolvedPath, opts, true);
               liveConfig = resolved.config;
               liveOptions = resolved.options;
               liveActiveChecks = resolved.activeChecks;
@@ -469,11 +469,20 @@ interface ResolvedSession {
  *
  * Throws on invalid check names (process.exit via validateCheckNames) for
  * the initial run; watch mode catches the throw and keeps the previous
- * resolution active.
+ * resolution active. When `throwOnConfigError` is set (watch reruns), a bad
+ * explicit `--config` rethrows instead of process.exit(2), so the rerun
+ * try/catch can survive it; the initial run leaves it false for the clean
+ * console.error + exit(2) path.
  */
-function resolveSession(resolvedPath: string, opts: Record<string, unknown>): ResolvedSession {
+function resolveSession(
+  resolvedPath: string,
+  opts: Record<string, unknown>,
+  throwOnConfigError = false,
+): ResolvedSession {
   const configPath = opts.config ? path.resolve(opts.config as string) : undefined;
-  const config = configPath ? loadConfigFromPath(configPath) : loadConfig(resolvedPath);
+  const config = configPath
+    ? loadConfigFromPath(configPath, throwOnConfigError)
+    : loadConfig(resolvedPath);
 
   // Fold config-sourced booleans into the local vars so everything
   // downstream (effectiveMcp/effectiveMcph/effectiveSession and the final
@@ -575,10 +584,14 @@ function resolveSession(resolvedPath: string, opts: Record<string, unknown>): Re
   return { config, options, activeChecks };
 }
 
-function loadConfigFromPath(configPath: string) {
+function loadConfigFromPath(configPath: string, throwOnError = false) {
   try {
     return loadConfigFromExplicitPath(configPath);
   } catch (err) {
+    // Watch reruns pass throwOnError so a bad mid-watch --config edit
+    // propagates to the rerun try/catch (which keeps the previous
+    // resolution) instead of calling the uncatchable process.exit(2).
+    if (throwOnError) throw err;
     const detail = err instanceof Error ? err.message : String(err);
     console.error(`Error: ${detail}`);
     process.exit(2);

@@ -66,6 +66,9 @@ export function keepEncoderAlive(keep: boolean): void {
   _keepAlive = keep;
 }
 
+// Test-only escape hatch: forcibly tears down the encoder regardless of
+// _keepAlive so tests can reset module state between runs. No production
+// caller — do not remove in a dead-code sweep.
 export function forceFreeEncoder(): void {
   _keepAlive = false;
   if (encoder) {

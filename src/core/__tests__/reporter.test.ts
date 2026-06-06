@@ -209,6 +209,38 @@ describe('formatTokenReport', () => {
     const output = formatTokenReport(result);
     expect(output).toContain('Token Usage Report');
   });
+
+  // Synthetic cross-file buckets ((project), (mcp), ~/.claude/ (session audit))
+  // carry 0 tokens / 0 lines and must not render as table rows -- they are not
+  // files the user authored. They also must not widen the File column.
+  it('omits synthetic cross-file buckets from the token table', () => {
+    const result = makeResult({
+      files: [
+        { path: 'CLAUDE.md', isSymlink: false, tokens: 500, lines: 20, issues: [] },
+        {
+          path: '(project)',
+          isSymlink: false,
+          tokens: 0,
+          lines: 0,
+          issues: [{ severity: 'warning', check: 'contradictions', line: 0, message: 'x' }],
+        },
+        {
+          path: SESSION_AUDIT_LABEL,
+          isSymlink: false,
+          tokens: 0,
+          lines: 0,
+          issues: [{ severity: 'info', check: 'session-stale-memory', line: 0, message: 'y' }],
+        },
+      ],
+      summary: { errors: 0, warnings: 1, info: 1, totalTokens: 500, estimatedWaste: 0 },
+    });
+    const output = formatTokenReport(result);
+    // Real file row still present.
+    expect(output).toContain('CLAUDE.md');
+    // Synthetic buckets are filtered out of the rows.
+    expect(output).not.toContain('(project)');
+    expect(output).not.toContain(SESSION_AUDIT_LABEL);
+  });
 });
 
 describe('formatSarif', () => {
@@ -354,6 +386,33 @@ describe('formatSarif', () => {
     expect(fileResult.locations[0].physicalLocation.artifactLocation.uri).toBe('CLAUDE.md');
     expect(fileResult.locations[0].physicalLocation.region.startLine).toBe(3);
     expect(fileResult.locations[0].logicalLocations).toBeUndefined();
+  });
+
+  // Regression: a reskinned synthetic label that carries the (session audit)
+  // marker but does NOT start with '~' (e.g. '$HOME/.claude/ (session audit)')
+  // must still be treated as synthetic -- otherwise it leaks into a SARIF
+  // physicalLocation.artifactLocation.uri and GitHub Code Scanning files it as
+  // a literal repo-relative path. isSyntheticPath keys off the marker, not the
+  // leading '~'.
+  it('uses logicalLocations for a marker-bearing label that does not start with ~', () => {
+    const reskinned = '$HOME/.claude/ (session audit)';
+    const result = makeResult({
+      files: [
+        {
+          path: reskinned,
+          isSymlink: false,
+          tokens: 0,
+          lines: 0,
+          issues: [
+            { severity: 'info', check: 'session-stale-memory', line: 0, message: 'stale memory' },
+          ],
+        },
+      ],
+    });
+    const parsed = JSON.parse(formatSarif(result));
+    const sessionResult = parsed.runs[0].results[0];
+    expect(sessionResult.locations[0].physicalLocation).toBeUndefined();
+    expect(sessionResult.locations[0].logicalLocations[0].name).toBe(reskinned);
   });
 
   it('exposes rule descriptors in the tool driver for all ctxlint check categories', () => {

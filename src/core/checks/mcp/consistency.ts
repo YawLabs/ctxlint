@@ -112,9 +112,10 @@ function checkMissingFromClient(configs: ParsedMcpConfig[]): LintIssue[] {
  * silently keeps only the last duplicate; also necessary to avoid counting
  * `"env":` keys inside nested server configs when a server is named `env`.
  */
-function collectServerNameKeys(content: string, rootKey: string): string[] {
-  const names: string[] = [];
+function collectServerNameKeys(content: string, rootKey: string): { name: string; line: number }[] {
+  const names: { name: string; line: number }[] = [];
   let i = 0;
+  let keyStart = -1; // index where the current key's opening quote sits
   let depth = 0;
   let inString = false;
   let escape = false;
@@ -141,6 +142,7 @@ function collectServerNameKeys(content: string, rootKey: string): string[] {
         inString = true;
         collectingKey = true;
         pendingKey = '';
+        keyStart = i;
       } else {
         inString = false;
         // Was this a key? A key is a string followed by optional whitespace then `:`.
@@ -151,7 +153,12 @@ function collectServerNameKeys(content: string, rootKey: string): string[] {
           if (pendingKey === rootKey && rootKeyDepth === -1) {
             rootKeyDepth = depth;
           } else if (rootKeyDepth !== -1 && depth === rootKeyDepth + 1) {
-            names.push(pendingKey);
+            // 1-indexed line = number of newlines before the key's opening quote, +1.
+            let line = 1;
+            for (let k = 0; k < keyStart; k++) {
+              if (content[k] === '\n') line++;
+            }
+            names.push({ name: pendingKey, line });
           }
         }
         collectingKey = false;
@@ -180,9 +187,15 @@ function checkSingleFileIssues(configs: ParsedMcpConfig[]): LintIssue[] {
     if (!config.actualRootKey) continue;
     const serverKeys = collectServerNameKeys(config.content, config.actualRootKey);
 
-    // Count occurrences; a duplicate is any name appearing 2+ times.
+    // Count occurrences; a duplicate is any name appearing 2+ times. Track the
+    // line of the SECOND occurrence so the finding points at the redefinition.
     const counts = new Map<string, number>();
-    for (const k of serverKeys) counts.set(k, (counts.get(k) ?? 0) + 1);
+    const secondLines = new Map<string, number>();
+    for (const { name, line } of serverKeys) {
+      const next = (counts.get(name) ?? 0) + 1;
+      counts.set(name, next);
+      if (next === 2) secondLines.set(name, line);
+    }
 
     for (const [name, count] of counts) {
       if (count > 1) {
@@ -190,7 +203,7 @@ function checkSingleFileIssues(configs: ParsedMcpConfig[]): LintIssue[] {
           severity: 'warning',
           check: 'mcp-consistency',
           ruleId: 'mcp-consistency/duplicate-server-name',
-          line: 1,
+          line: secondLines.get(name) ?? 1,
           message: `Duplicate server name "${name}" in ${config.relativePath} — only the last definition is used`,
         });
       }

@@ -63,7 +63,7 @@ describe('checkMemoryIndexOverflow', () => {
     const lineIssue = issues.find((i) => i.message.includes('lines'));
     expect(lineIssue).toBeDefined();
     expect(lineIssue!.severity).toBe('warning');
-    expect(lineIssue!.ruleId).toBe('session-memory-index-overflow/memory-index-overflow');
+    expect(lineIssue!.ruleId).toBe('session-memory-index-overflow/line-overflow');
   });
 
   it('warns when MEMORY.md exceeds 25KB', async () => {
@@ -75,6 +75,21 @@ describe('checkMemoryIndexOverflow', () => {
     const byteIssue = issues.find((i) => i.message.includes('bytes'));
     expect(byteIssue).toBeDefined();
     expect(byteIssue!.severity).toBe('warning');
+    expect(byteIssue!.ruleId).toBe('session-memory-index-overflow/byte-overflow');
+  });
+
+  it('emits distinct ruleIds when a file exceeds both caps', async () => {
+    // A file over both the line and byte caps must not emit two issues sharing
+    // one ruleId (SARIF fingerprint collision). Each long line crosses the
+    // line cap; the sheer volume crosses the byte cap.
+    const longLine = '- [x](x.md) -- ' + 'y'.repeat(200);
+    const lines = Array.from({ length: 250 }, () => longLine);
+    seedMemoryFile(lines.join('\n'));
+    const issues = await checkMemoryIndexOverflow(makeCtx());
+    const ruleIds = issues.map((i) => i.ruleId);
+    expect(ruleIds).toContain('session-memory-index-overflow/line-overflow');
+    expect(ruleIds).toContain('session-memory-index-overflow/byte-overflow');
+    expect(new Set(ruleIds).size).toBe(ruleIds.length);
   });
 
   it('does not flag a file under the cap that only crosses it via BOM', async () => {

@@ -134,6 +134,38 @@ describe('checkMcpSecurity', () => {
     expect(issues.filter((i) => i.message.includes('HTTP without TLS'))).toHaveLength(0);
   });
 
+  it('does not flag HTTP for IPv6 loopback', async () => {
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'local6',
+          transport: 'http',
+          url: 'http://[::1]/mcp',
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    expect(issues.filter((i) => i.message.includes('HTTP without TLS'))).toHaveLength(0);
+  });
+
+  it('does not flag HTTP for 127.0.0.0/8 loopback', async () => {
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'local127',
+          transport: 'http',
+          url: 'http://127.0.0.2/mcp',
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    expect(issues.filter((i) => i.message.includes('HTTP without TLS'))).toHaveLength(0);
+  });
+
   it('skips non-git-tracked files', async () => {
     const config = makeConfig({
       isGitTracked: false,

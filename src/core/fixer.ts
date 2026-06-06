@@ -29,14 +29,6 @@ export function applyFixes(result: LintResult, options: FixOptions = {}): FixSum
   const dryRun = options.dryRun ?? false;
   const skipSymlinks = options.skipSymlinks ?? true;
 
-  // Build a quick lookup: which files in the result are symlinks?
-  const symlinkFiles = new Set<string>();
-  if (skipSymlinks) {
-    for (const f of result.files) {
-      if (f.isSymlink) symlinkFiles.add(f.path);
-    }
-  }
-
   // Collect all fixable issues grouped by file, skipping symlinks. Dedupe on
   // (line, oldText, newText) because an earlier version silently dropped the
   // second of two fixes targeting the same (line, oldText) — line.replace()

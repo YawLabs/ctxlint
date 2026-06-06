@@ -27,21 +27,21 @@ npm test
 2. **Branch from `main`** (or `master` if that's the default branch).
 3. **Run `npm run format && npm run lint`** before committing — formatting drift breaks the local release flow (`release.sh` runs the checks; this repo has no CI).
 4. **Run `npm test`** and confirm all tests pass.
-5. **Write a clear PR title and description** — explain *what* changed and *why*.
+5. **Write a clear PR title and description** — explain _what_ changed and _why_.
 6. **All PRs require approval** from a maintainer before merging.
 
 ## Development Workflow
 
-| Command | What it does |
-|---------|-------------|
-| `npm install` | Install dependencies |
-| `npm run build` | Bundle `src/` → `dist/index.js` via esbuild |
-| `npm run dev` | Same as `build` — one-shot rebuild |
-| `npm test` | Run the test suite (vitest, watch mode) |
-| `npm run test:run` | Run the test suite once (no watch) |
-| `npm run test:coverage` | Run tests with v8 coverage report |
-| `npm run lint` | Check for ESLint errors |
-| `npm run format` | Auto-format via Prettier |
+| Command                 | What it does                                |
+| ----------------------- | ------------------------------------------- |
+| `npm install`           | Install dependencies                        |
+| `npm run build`         | Bundle `src/` → `dist/index.js` via esbuild |
+| `npm run dev`           | Same as `build` — one-shot rebuild          |
+| `npm test`              | Run the test suite (vitest, watch mode)     |
+| `npm run test:run`      | Run the test suite once (no watch)          |
+| `npm run test:coverage` | Run tests with v8 coverage report           |
+| `npm run lint`          | Check for ESLint errors                     |
+| `npm run format`        | Auto-format via Prettier                    |
 
 ## Code Style
 
@@ -66,7 +66,7 @@ A "check" is a single lint category (e.g., `paths`, `tokens`, `tier-tokens`). Ea
 
 ### Rule ID format (canonical)
 
-ctxlint rule IDs use **`category/slug`** — a single forward-slash separating the category from the rule slug, both lowercase kebab-case (e.g. `paths/not-found`, `tier-tokens/hard-enforcement-missing`, `mcph-config/token-in-project-scope`). This is enforced by the catalog schema (`schemas/ctxlint-catalog.schema.json`, the `rule.id` `pattern`) and validated by the `src/core/__tests__/catalog-schema.test.ts` vitest test (run in `release.sh` via `pnpm run test:run`).
+ctxlint rule IDs use **`category/slug`** — a single forward-slash separating the category from the rule slug, both lowercase kebab-case (e.g. `paths/not-found`, `tier-tokens/hard-enforcement-missing`, `mcph-token-security/token-in-project-scope`). This is enforced by the catalog schema (`schemas/ctxlint-catalog.schema.json`, the `rule.id` `pattern`) and validated by the `src/core/__tests__/catalog-schema.test.ts` vitest test (run in `release.sh` via `pnpm run test:run`).
 
 > **Why this differs from mcp-compliance.** The sibling [`mcp-compliance`](https://github.com/YawLabs/mcp-compliance) project uses **`category-suffix`** (a hyphen, no slash) for its rule IDs. The difference is **deliberate, not drift**: ctxlint lints static config/context files on disk, mcp-compliance tests live servers over the wire, and the two rule namespaces are intentionally kept visually distinct so a `category/slug` ID is unambiguously a ctxlint rule and a `category-suffix` ID is unambiguously an mcp-compliance rule. Do not "harmonize" them. This note is the single canonical statement of the difference; other docs link here rather than restating it.
 
@@ -90,10 +90,10 @@ export async function checkYourName(
   const issues: LintIssue[] = [];
   // Detection logic here.
   issues.push({
-    severity: 'warning',             // 'error' | 'warning' | 'info'
+    severity: 'warning', // 'error' | 'warning' | 'info'
     check: 'your-name',
     ruleId: 'your-name/specific-thing',
-    line: 1,                         // 1-indexed source line
+    line: 1, // 1-indexed source line
     message: 'human-readable',
     suggestion: 'what to do instead',
     detail: 'optional extra context',
@@ -122,12 +122,11 @@ import { checkYourName } from './checks/your-name.js';
 
 export const ALL_CHECKS: CheckName[] = [
   ...existing,
-  'your-name',             // add here so it runs by default
+  'your-name', // add here so it runs by default
 ];
 
 // inside runAudit's per-file loop:
-if (activeChecks.includes('your-name'))
-  checkPromises.push(checkYourName(file, projectRoot));
+if (activeChecks.includes('your-name')) checkPromises.push(checkYourName(file, projectRoot));
 ```
 
 For cross-file or session/MCP checks, use the corresponding cross-file block or the `ALL_SESSION_CHECKS` / `ALL_MCP_CHECKS` array.
@@ -167,6 +166,7 @@ Also add a category entry at the top of the same file if you introduced a new ch
 ## Reporting Issues
 
 Open an issue on GitHub. Include:
+
 - What you expected to happen
 - What actually happened
 - Steps to reproduce

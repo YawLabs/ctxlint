@@ -54,4 +54,13 @@ describe('checkAggregateTokens', () => {
     const issue = checkAggregateTokens([{ path: 'CLAUDE.md', tokens: 6000 }]);
     expect(issue).toBeNull();
   });
+
+  it('warns when combined tokens land exactly on the threshold', () => {
+    const issue = checkAggregateTokens([
+      { path: 'CLAUDE.md', tokens: 2500 },
+      { path: 'AGENTS.md', tokens: 2500 },
+    ]);
+    expect(issue).not.toBeNull();
+    expect(issue!.severity).toBe('warning');
+  });
 });

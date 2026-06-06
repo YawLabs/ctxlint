@@ -237,7 +237,9 @@ export async function runAudit(
       if (activeChecks.includes('tokens'))
         checkPromises.push(checkTokens(file, projectRoot, thresholds));
       if (activeChecks.includes('tier-tokens'))
-        checkPromises.push(checkTierTokens(file, projectRoot, thresholds));
+        checkPromises.push(
+          checkTierTokens(file, projectRoot, thresholds, Boolean(options.hooksGlobal)),
+        );
       if (activeChecks.includes('redundancy'))
         checkPromises.push(checkRedundancy(file, projectRoot));
       if (activeChecks.includes('frontmatter'))
@@ -358,6 +360,7 @@ export async function runAudit(
       crossMcpIssues.push(...(await checkMcpConsistency(mcpConfigs)));
     }
     if (mcpChecksToRun.includes('mcp-redundancy')) {
+      // Also carries the per-server disabled-server rule, so it runs even for a single config.
       crossMcpIssues.push(...(await checkMcpRedundancy(mcpConfigs)));
     }
     if (crossMcpIssues.length > 0) {
@@ -579,9 +582,12 @@ export async function runAudit(
         estimatedWaste += issue.wastedTokens;
       } else if (issue.suggestion) {
         // Fallback: scrape `~N tokens` out of the suggestion for findings
-        // that don't set the structured field (no regression).
-        const tokenMatch = issue.suggestion.match(/~(\d+)\s+tokens/);
-        if (tokenMatch) estimatedWaste += parseInt(tokenMatch[1], 10);
+        // that don't set the structured field (no regression). Sum ALL
+        // matches -- a suggestion mentioning tokens twice would otherwise
+        // be under-counted by taking only the first.
+        for (const m of issue.suggestion.matchAll(/~(\d+)\s+tokens/g)) {
+          estimatedWaste += parseInt(m[1], 10);
+        }
       }
     }
   }

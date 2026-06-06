@@ -169,12 +169,11 @@ export async function checkMcpSecurity(
         // Only check if URL doesn't contain env var refs
         if (!isEnvVarRef(server.url)) {
           const parsed = new URL(server.url);
-          if (
-            parsed.protocol === 'http:' &&
-            parsed.hostname !== 'localhost' &&
-            parsed.hostname !== '127.0.0.1' &&
-            parsed.hostname !== '::1'
-          ) {
+          // new URL('http://[::1]/').hostname yields '[::1]' with brackets;
+          // strip them so IPv6 literals compare cleanly.
+          const host = parsed.hostname.replace(/^\[|\]$/g, '');
+          const isLoopback = host === 'localhost' || host === '::1' || host.startsWith('127.'); // 127.0.0.0/8
+          if (parsed.protocol === 'http:' && !isLoopback) {
             issues.push({
               severity: 'warning',
               check: 'mcp-security',
