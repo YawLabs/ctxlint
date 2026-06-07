@@ -8,6 +8,16 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-06-07
+
+### Security
+- Bumped vulnerable transitive dependencies flagged by Dependabot. **`fast-uri`** (pulled via `@modelcontextprotocol/sdk` -> `ajv`) is updated to `>=3.1.2` -- it is the only flagged package bundled into the shipped `dist/index.js` -- closing two high-severity advisories: CVE-2026-6321 (path traversal via percent-encoded dot segments) and CVE-2026-6322 (host confusion via percent-encoded authority delimiters). The vulnerable URI-normalization path is not reachable through ctxlint's usage (ajv uses it for schema validation, and ctxlint makes no URI-based security decisions), but the bundled copy is updated regardless. Dev-only transitive deps `hono`, `postcss`, `qs`, and `ip-address` were also bumped via `pnpm.overrides` (build/test toolchain only -- never shipped). No runtime API change.
+
+## [0.14.0] - 2026-06-07
+
+### Fixed
+- Session memory path extraction dropped Windows drive-absolute paths entirely and (once added) kept trailing sentence punctuation and `:line` suffixes, producing false "stale path" findings; the MCP `http-no-tls` loopback exemption used a `127.`-prefix string match that fail-open-exempted public hosts like `127.evil.com` (now anchored to the `127.0.0.0/8` dotted-quad, with the same fix applied to `mcph` apibase's now-removed `isPrivateHost`); and the `session-missing-secret` check mis-parsed `gh secret set` invocations with flag-first ordering or `-R` / `--repo=` repo forms.
+
 ### Removed
 - **mcph config-linting pillar** (`.mcph.json` / mcp.hosting CLI config). The entire `mcph-*` rule family, the `--mcph` / `--mcph-only` / `--mcph-global` / `--mcph-strict-env-token` flags, the `ctxlint_mcph_audit` MCP tool, the `.mcph.json` / `.mcph.local.json` scanning, and the `mcph-config-lint-rules.json` catalog are removed. mcp.hosting has been decommissioned and replaced by Yaw Labs MCP ("Yaw MCP"), integrated directly into Yaw Terminal, so the config file these rules linted no longer exists.
 
