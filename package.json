@@ -1,6 +1,6 @@
 {
   "name": "@yawlabs/ctxlint",
-  "version": "0.13.2",
+  "version": "0.13.3",
   "mcpName": "io.github.YawLabs/ctxlint",
   "description": "Lint your AI agent context files, MCP server configs, and session data against your actual codebase",
   "bin": {
