@@ -2,12 +2,12 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.YawLabs/ctxlint",
   "description": "Lint AI agent context files (CLAUDE.md, AGENTS.md, etc.) against your actual codebase",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@yawlabs/ctxlint",
-      "version": "0.14.0",
+      "version": "0.14.1",
       "transport": {
         "type": "stdio"
       }
