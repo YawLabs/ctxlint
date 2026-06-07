@@ -85,6 +85,17 @@ describe('checkMcphApibase', () => {
     expect(issues.find((i) => i.ruleId === 'mcph-apibase/insecure-apibase')).toBeUndefined();
   });
 
+  it('fires insecure-apibase on a public host masquerading as loopback (127.evil.com)', async () => {
+    const config = makeConfig({
+      raw: { apiBase: 'http://127.evil.com' },
+      positions: { apiBase: { line: 2, column: 5, endLine: 2, endColumn: 25 } },
+    });
+    const issues = await checkMcphApibase(config, '/project');
+    const insecure = issues.find((i) => i.ruleId === 'mcph-apibase/insecure-apibase');
+    expect(insecure).toBeDefined();
+    expect(insecure!.message).toContain('127.evil.com');
+  });
+
   it('does not fire on RFC1918 10.x', async () => {
     const config = makeConfig({
       raw: { apiBase: 'http://10.0.0.5' },

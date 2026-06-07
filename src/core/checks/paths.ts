@@ -38,8 +38,9 @@ export async function checkPaths(
 
     // Check if it's a glob pattern
     if (normalizedRef.includes('*')) {
-      // Absolute globs (/etc/*.conf, C:/x/*.ts) must not be relativized against
-      // cwd, or glob would treat them as relative and never match.
+      // Absolute globs (/etc/*.conf) must not be relativized against cwd, or
+      // glob would treat them as relative and never match. (path.isAbsolute is
+      // platform-specific: a C:/x/*.ts form only classifies absolute on Windows.)
       const matches = path.isAbsolute(normalizedRef)
         ? await glob(normalizedRef, { absolute: true, nodir: false })
         : await glob(normalizedRef, { cwd: baseDir, nodir: false });

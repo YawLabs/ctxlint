@@ -5,7 +5,7 @@ import type { LintIssue, ParsedMcphConfig } from '../../types.js';
 // for any public host, silent for local.
 const PRIVATE_HOST_PATTERNS = [
   /^localhost$/i,
-  /^127\./,
+  /^127(\.\d{1,3}){3}$/,
   /^::1$/,
   /^10\./,
   /^192\.168\./,

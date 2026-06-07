@@ -12,11 +12,32 @@ function normalizePath(p: string): string {
 // `gh secret set NAME -b "val" --repo org/repo` (body before flag) silently
 // dropped the repo binding.
 const SECRET_SET_PREFIX = /gh\s+secret\s+set\s+/;
-const REPO_FLAG_PATTERN = /--repo\s+(\S+)/;
+// Match `--repo`/`-R` with either a space or `=` separator so `-R org/foo` and
+// `--repo=org/foo` bind the repo too, not just `--repo <space>`.
+const REPO_FLAG_PATTERN = /(?:--repo|-R)(?:\s+|=)(\S+)/;
 // Flags that take a value; their value token must be skipped when hunting for
 // the secret NAME, so a flag-first ordering like `gh secret set --repo org/foo
-// NAME -b x` doesn't capture `--repo` (or `org/foo`) as the name.
-const VALUE_FLAGS = new Set(['--repo', '-R', '-b', '--body', '--app', '--env']);
+// NAME -b x` doesn't capture `--repo` (or `org/foo`) as the name. NOTE: `-u`/
+// `--user` is deliberately absent — it is a BOOLEAN flag, so listing it here
+// would wrongly eat the real NAME in `gh secret set -u NPM_TOKEN`.
+const VALUE_FLAGS = new Set([
+  '--repo',
+  '-R',
+  '-b',
+  '--body',
+  '-a',
+  '--app',
+  '-e',
+  '--env',
+  '-o',
+  '--org',
+  '-r',
+  '--repos',
+  '-f',
+  '--env-file',
+  '-v',
+  '--visibility',
+]);
 
 /**
  * Extract the secret NAME from a `gh secret set ...` command. Returns the first
@@ -90,13 +111,15 @@ export async function checkMissingSecret(ctx: SessionContext): Promise<LintIssue
     const name = extractSecretName(entry.display);
     if (!name) continue;
 
-    // Capture `--repo` independently of where it appears on the line, so a
-    // body-before-flag ordering still binds the repo.
+    // Capture `--repo`/`-R` (space- or `=`-separated) independently of where it
+    // appears on the line, so a body-before-flag ordering still binds the repo.
+    // Strip surrounding quotes from the captured value (e.g. `--repo="org/foo"`).
     const repoMatch = entry.display.match(REPO_FLAG_PATTERN);
+    const repo = repoMatch ? repoMatch[1].replace(/^["']|["']$/g, '') : undefined;
 
     secrets.push({
       name,
-      repo: repoMatch ? repoMatch[1] : undefined,
+      repo,
       project: entry.project,
     });
   }

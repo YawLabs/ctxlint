@@ -166,6 +166,22 @@ describe('checkMcpSecurity', () => {
     expect(issues.filter((i) => i.message.includes('HTTP without TLS'))).toHaveLength(0);
   });
 
+  it('flags HTTP for a public host masquerading as loopback (127.evil.com)', async () => {
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'fakeloop',
+          transport: 'http',
+          url: 'http://127.evil.com/mcp',
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    expect(issues.filter((i) => i.message.includes('HTTP without TLS'))).toHaveLength(1);
+  });
+
   it('skips non-git-tracked files', async () => {
     const config = makeConfig({
       isGitTracked: false,

@@ -80,8 +80,9 @@ describe('checkMemoryIndexOverflow', () => {
 
   it('emits distinct ruleIds when a file exceeds both caps', async () => {
     // A file over both the line and byte caps must not emit two issues sharing
-    // one ruleId (SARIF fingerprint collision). Each long line crosses the
-    // line cap; the sheer volume crosses the byte cap.
+    // one ruleId: distinct ruleIds let each cause be silenced independently via
+    // ignore-rule targeting and keep the two findings disambiguated internally.
+    // Each long line crosses the line cap; the sheer volume crosses the byte cap.
     const longLine = '- [x](x.md) -- ' + 'y'.repeat(200);
     const lines = Array.from({ length: 250 }, () => longLine);
     seedMemoryFile(lines.join('\n'));

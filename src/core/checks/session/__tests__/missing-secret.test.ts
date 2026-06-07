@@ -121,6 +121,68 @@ describe('checkMissingSecret', () => {
     expect(issues[0].message).not.toContain('org/foo');
   });
 
+  it('skips the value of -e/--env when hunting for the NAME', async () => {
+    // `-e prod` precedes NAME. `-e` is a value-taking flag, so `prod` must be
+    // skipped and NPM_TOKEN captured as the name (not `prod`).
+    const ctx = makeCtx(
+      [
+        makeEntry('gh secret set -e prod NPM_TOKEN -b x', '/repos/foo'),
+        makeEntry('gh secret set -e prod NPM_TOKEN -b y', '/repos/bar'),
+      ],
+      [makeSibling('foo'), makeSibling('bar')],
+    );
+    const issues = await checkMissingSecret(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('NPM_TOKEN');
+    expect(issues[0].message).not.toContain('prod');
+  });
+
+  it('does not consume the NAME after the boolean -u flag', async () => {
+    // `-u`/`--user` is a BOOLEAN flag — it takes no value, so NPM_TOKEN
+    // immediately after `-u` is the real NAME and must not be eaten.
+    const ctx = makeCtx(
+      [
+        makeEntry('gh secret set -u NPM_TOKEN -b x', '/repos/foo'),
+        makeEntry('gh secret set -u NPM_TOKEN -b y', '/repos/bar'),
+      ],
+      [makeSibling('foo'), makeSibling('bar')],
+    );
+    const issues = await checkMissingSecret(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('NPM_TOKEN');
+  });
+
+  it('binds repo from the short -R flag (space-separated)', async () => {
+    // `-R org/foo` must bind the repo just like `--repo org/foo`. Siblings are
+    // matched via the -R basename (history project paths are unrelated here).
+    const ctx = makeCtx(
+      [
+        makeEntry('gh secret set NPM_TOKEN -R org/foo -b x', '/unrelated/x'),
+        makeEntry('gh secret set NPM_TOKEN -R org/bar -b y', '/unrelated/y'),
+      ],
+      [makeSibling('foo'), makeSibling('bar')],
+    );
+    const issues = await checkMissingSecret(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('foo');
+    expect(issues[0].message).toContain('bar');
+  });
+
+  it('binds repo from --repo=value (equals-separated)', async () => {
+    // `--repo=org/foo` must bind the repo just like `--repo org/foo`.
+    const ctx = makeCtx(
+      [
+        makeEntry('gh secret set NPM_TOKEN --repo=org/foo', '/unrelated/x'),
+        makeEntry('gh secret set NPM_TOKEN --repo=org/bar', '/unrelated/y'),
+      ],
+      [makeSibling('foo'), makeSibling('bar')],
+    );
+    const issues = await checkMissingSecret(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('foo');
+    expect(issues[0].message).toContain('bar');
+  });
+
   it('does not collide same-basename repos across different orgs', async () => {
     // Two distinct orgs each set NPM_TOKEN on a repo literally named `ci`.
     // Basename-only matching would treat both --repo values as the SAME repo

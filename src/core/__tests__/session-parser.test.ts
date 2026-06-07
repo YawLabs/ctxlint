@@ -132,6 +132,24 @@ describe('extractPaths', () => {
     const paths = extractPaths('note: this is fine and n/a otherwise.');
     expect(paths).toEqual([]);
   });
+
+  it('strips a sentence-final period from a drive-absolute path', () => {
+    const paths = extractPaths('The handler is at C:/Users/jeff/foo.ts.');
+    expect(paths).toContain('C:/Users/jeff/foo.ts');
+    expect(paths).not.toContain('C:/Users/jeff/foo.ts.');
+  });
+
+  it('strips a trailing line-ref from a drive-absolute path', () => {
+    const paths = extractPaths('See C:/Users/jeff/foo.ts:42 for the bug.');
+    expect(paths).toContain('C:/Users/jeff/foo.ts');
+    expect(paths).not.toContain('C:/Users/jeff/foo.ts:42');
+  });
+
+  it('strips a sentence-final period from a leading-marker path', () => {
+    const paths = extractPaths('Look at ./foo.ts.');
+    expect(paths).toContain('./foo.ts');
+    expect(paths).not.toContain('./foo.ts.');
+  });
 });
 
 describe('classifyPath', () => {

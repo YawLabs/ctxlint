@@ -467,12 +467,14 @@ interface ResolvedSession {
  * token thresholds (the caller does, after deciding whether it's the
  * initial run or a watch-mode rerun).
  *
- * Throws on invalid check names (process.exit via validateCheckNames) for
- * the initial run; watch mode catches the throw and keeps the previous
- * resolution active. When `throwOnConfigError` is set (watch reruns), a bad
- * explicit `--config` rethrows instead of process.exit(2), so the rerun
- * try/catch can survive it; the initial run leaves it false for the clean
- * console.error + exit(2) path.
+ * Invalid check names always `process.exit(2)` via validateCheckNames (they
+ * never throw), so they don't need a watch-mode rethrow path — `--checks` is
+ * fixed across a watch session, so a name that validated on the initial run
+ * stays valid for every rerun. The rethrow-on-watch path is for a bad explicit
+ * `--config`: when `throwOnConfigError` is set (watch reruns), loadConfigFromPath
+ * rethrows instead of process.exit(2) so the rerun try/catch can survive it and
+ * keep the previous resolution active; the initial run leaves it false for the
+ * clean console.error + exit(2) path.
  */
 function resolveSession(
   resolvedPath: string,

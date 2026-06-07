@@ -135,8 +135,8 @@ export async function checkMcpEnv(
     // referencing an unexported var emits this for everyone who hasn't set it
     // locally — that is the normal state, which is why the finding stays at
     // `info` severity. It also scans ALL collected string values (env, url,
-    // command, args via collectAllStringValues), so a ${VAR} embedded in a url
-    // or command is treated as an env reference too. Both are deliberate.
+    // command, args, headers via collectAllStringValues), so a ${VAR} embedded
+    // in a url or command is treated as an env reference too. Both are deliberate.
     if (config.client !== 'continue') {
       for (const value of allValues) {
         const refs = extractEnvVarRefs(value);
