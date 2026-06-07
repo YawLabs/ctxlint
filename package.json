@@ -61,7 +61,6 @@
     "AGENT_SKILL_LINT_SPEC.md",
     "context-lint-rules.json",
     "mcp-config-lint-rules.json",
-    "mcph-config-lint-rules.json",
     "agent-session-lint-rules.json",
     "agent-skill-lint-rules.json",
     "schemas/ctxlint-catalog.schema.json",

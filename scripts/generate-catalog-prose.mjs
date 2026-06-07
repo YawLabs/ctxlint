@@ -37,7 +37,6 @@ export const CATALOGS = [
     spec: 'MCP_CONFIG_LINT_SPEC.md',
     label: 'MCP Config Linting Spec',
   },
-  { catalog: 'mcph-config-lint-rules.json', spec: null, label: 'mcph Config Linting' },
   {
     catalog: 'agent-session-lint-rules.json',
     spec: 'AGENT_SESSION_LINT_SPEC.md',

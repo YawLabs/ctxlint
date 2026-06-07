@@ -12,7 +12,6 @@ import {
   runAudit,
   ALL_CHECKS,
   ALL_MCP_CHECKS,
-  ALL_MCPH_CHECKS,
   ALL_SESSION_CHECKS,
   ALL_SKILL_CHECKS,
 } from './core/audit.js';
@@ -23,7 +22,6 @@ import { VERSION } from './version.js';
 const VALID_CHECKS = new Set<string>([
   ...ALL_CHECKS,
   ...ALL_MCP_CHECKS,
-  ...ALL_MCPH_CHECKS,
   ...ALL_SESSION_CHECKS,
   ...ALL_SKILL_CHECKS,
 ]);
@@ -76,14 +74,6 @@ export async function runCli() {
     // never sees this flag; if you refactor index.ts to always route through
     // commander, also wire startServer() into the action handler.
     .option('--mcp-server', 'Start the MCP server (alias: `ctxlint serve`)')
-    .option('--mcph', 'Enable .mcph.json (mcp.hosting CLI config) linting', false)
-    .option('--mcph-only', 'Run only mcph config checks', false)
-    .option('--mcph-global', 'Also scan ~/.mcph.json (implies --mcph)', false)
-    .option(
-      '--mcph-strict-env-token',
-      'Upgrade mcph-token-security/prefer-env-token from warning to error (strict env-var-only posture)',
-      false,
-    )
     .option('--session', 'Run session audit checks (cross-project consistency)', false)
     .option('--session-only', 'Run only session checks, skip context and MCP checks', false)
     .option('--skills', 'Run agent-skill checks (~/.claude/skills + ~/.claude/agents)', false)
@@ -116,10 +106,6 @@ export async function runCli() {
           mcp: options.mcp,
           mcpGlobal: options.mcpGlobal,
           mcpOnly: options.mcpOnly,
-          mcph: options.mcph,
-          mcphGlobal: options.mcphGlobal,
-          mcphOnly: options.mcphOnly,
-          mcphStrictEnvToken: options.mcphStrictEnvToken,
           session: options.session,
           sessionOnly: options.sessionOnly,
           skills: options.skills,
@@ -253,10 +239,6 @@ export async function runCli() {
           path.join(resolvedPath, 'replit.md'),
           path.join(resolvedPath, 'package.json'),
           path.join(resolvedPath, '.mcp.json'),
-          // mcph configs — without these, edits to the .mcph.json the user is
-          // actively iterating on don't trigger a re-lint.
-          path.join(resolvedPath, '.mcph.json'),
-          path.join(resolvedPath, '.mcph.local.json'),
           // ctxlint config — re-resolve on edit so threshold changes,
           // ignore-list edits, and check-list overrides take effect without
           // restarting the watcher.
@@ -311,10 +293,6 @@ export async function runCli() {
                 mcp: liveOptions.mcp,
                 mcpGlobal: liveOptions.mcpGlobal,
                 mcpOnly: liveOptions.mcpOnly,
-                mcph: liveOptions.mcph,
-                mcphGlobal: liveOptions.mcphGlobal,
-                mcphOnly: liveOptions.mcphOnly,
-                mcphStrictEnvToken: liveOptions.mcphStrictEnvToken,
                 session: liveOptions.session,
                 sessionOnly: liveOptions.sessionOnly,
                 skills: liveOptions.skills,
@@ -487,26 +465,21 @@ function resolveSession(
     : loadConfig(resolvedPath);
 
   // Fold config-sourced booleans into the local vars so everything
-  // downstream (effectiveMcp/effectiveMcph/effectiveSession and the final
-  // `checks` array) sees them consistently. Without this, a config-only
-  // `mcpGlobal: true` would run MCP checks via runAudit's fallback while
-  // bypassing the cli-side `ignore` filter.
+  // downstream (effectiveMcp/effectiveSession and the final `checks` array)
+  // sees them consistently. Without this, a config-only `mcpGlobal: true`
+  // would run MCP checks via runAudit's fallback while bypassing the
+  // cli-side `ignore` filter.
   const mcpGlobal = (opts.mcpGlobal as boolean) || config?.mcpGlobal || false;
   const mcpOnly = (opts.mcpOnly as boolean) || config?.mcpOnly || false;
   const mcpFlag = (opts.mcp as boolean) || mcpGlobal || mcpOnly || config?.mcp || false;
-  const mcphGlobal = (opts.mcphGlobal as boolean) || config?.mcphGlobal || false;
-  const mcphOnly = (opts.mcphOnly as boolean) || config?.mcphOnly || false;
-  const mcphFlag = (opts.mcph as boolean) || mcphGlobal || mcphOnly || config?.mcph || false;
-  const mcphStrictEnvToken =
-    (opts.mcphStrictEnvToken as boolean) || config?.mcphStrictEnvToken || false;
   const sessionOnly = (opts.sessionOnly as boolean) || config?.sessionOnly || false;
   const sessionFlag = (opts.session as boolean) || sessionOnly || config?.session || false;
   const skillsOnly = (opts.skillsOnly as boolean) || config?.skillsOnly || false;
   const skillsFlag = (opts.skills as boolean) || skillsOnly || config?.skills || false;
   const hooksGlobal = (opts.hooksGlobal as boolean) || config?.hooksGlobal || false;
 
-  // Build checks list: if explicit --checks includes mcp-* / mcph-* /
-  // session-*, imply the corresponding --<flag>.
+  // Build checks list: if explicit --checks includes mcp-* / session-*,
+  // imply the corresponding --<flag>.
   let explicitChecks = opts.checks
     ? validateCheckNames(
         (opts.checks as string).split(',').map((c: string) => c.trim()),
@@ -515,13 +488,10 @@ function resolveSession(
     : null;
   if (explicitChecks?.length === 0) explicitChecks = null;
 
-  const hasMcpInChecks =
-    explicitChecks?.some((c) => c.startsWith('mcp-') && !c.startsWith('mcph-')) || false;
-  const hasMcphInChecks = explicitChecks?.some((c) => c.startsWith('mcph-')) || false;
+  const hasMcpInChecks = explicitChecks?.some((c) => c.startsWith('mcp-')) || false;
   const hasSessionInChecks = explicitChecks?.some((c) => c.startsWith('session-')) || false;
   const hasSkillInChecks = explicitChecks?.some((c) => c.startsWith('skill-')) || false;
   const effectiveMcp = mcpFlag || hasMcpInChecks;
-  const effectiveMcph = mcphFlag || hasMcphInChecks;
   const effectiveSession = sessionFlag || sessionOnly || hasSessionInChecks;
   const effectiveSkills = skillsFlag || skillsOnly || hasSkillInChecks;
 
@@ -534,14 +504,11 @@ function resolveSession(
     checks = ALL_SKILL_CHECKS;
   } else if (mcpOnly) {
     checks = ALL_MCP_CHECKS;
-  } else if (mcphOnly) {
-    checks = ALL_MCPH_CHECKS;
   } else {
     const base = config?.checks || ALL_CHECKS;
     checks = [
       ...base,
       ...(effectiveMcp ? ALL_MCP_CHECKS : []),
-      ...(effectiveMcph ? ALL_MCPH_CHECKS : []),
       ...(effectiveSession ? ALL_SESSION_CHECKS : []),
       ...(effectiveSkills ? ALL_SKILL_CHECKS : []),
     ];
@@ -566,10 +533,6 @@ function resolveSession(
     mcp: effectiveMcp,
     mcpOnly,
     mcpGlobal,
-    mcph: effectiveMcph,
-    mcphOnly,
-    mcphGlobal,
-    mcphStrictEnvToken,
     session: effectiveSession,
     sessionOnly,
     skills: effectiveSkills,

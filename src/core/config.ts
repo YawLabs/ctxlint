@@ -24,10 +24,6 @@ export interface CtxlintConfig {
   mcp?: boolean;
   mcpOnly?: boolean;
   mcpGlobal?: boolean;
-  mcph?: boolean;
-  mcphOnly?: boolean;
-  mcphGlobal?: boolean;
-  mcphStrictEnvToken?: boolean;
   session?: boolean;
   sessionOnly?: boolean;
   skills?: boolean;
@@ -53,10 +49,6 @@ const KNOWN_CONFIG_KEYS = [
   'mcp',
   'mcpOnly',
   'mcpGlobal',
-  'mcph',
-  'mcphOnly',
-  'mcphGlobal',
-  'mcphStrictEnvToken',
   'session',
   'sessionOnly',
   'skills',
@@ -149,9 +141,9 @@ function suggestKey(unknown: string): string | null {
   // avoids "did you mean checks?" for completely unrelated junk like `license`.
   //
   // Threshold: scale by 1/3 of key length for short keys, but CAP at 4. Without
-  // the cap, a long key like `mcphStrictEnvToken` (18 chars) would accept
-  // distance up to 6, which produces surprising "did you mean ...?" hits on
-  // genuinely unrelated keys.
+  // the cap, a long key like `tokenThresholds` (15 chars) would accept distance
+  // up to 5, which produces surprising "did you mean ...?" hits on genuinely
+  // unrelated keys.
   const threshold = Math.min(4, Math.max(2, Math.floor(unknown.length / 3)));
   if (best && bestDist <= threshold) {
     return best;

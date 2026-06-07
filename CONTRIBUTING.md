@@ -66,7 +66,7 @@ A "check" is a single lint category (e.g., `paths`, `tokens`, `tier-tokens`). Ea
 
 ### Rule ID format (canonical)
 
-ctxlint rule IDs use **`category/slug`** — a single forward-slash separating the category from the rule slug, both lowercase kebab-case (e.g. `paths/not-found`, `tier-tokens/hard-enforcement-missing`, `mcph-token-security/token-in-project-scope`). This is enforced by the catalog schema (`schemas/ctxlint-catalog.schema.json`, the `rule.id` `pattern`) and validated by the `src/core/__tests__/catalog-schema.test.ts` vitest test (run in `release.sh` via `pnpm run test:run`).
+ctxlint rule IDs use **`category/slug`** — a single forward-slash separating the category from the rule slug, both lowercase kebab-case (e.g. `paths/not-found`, `tier-tokens/hard-enforcement-missing`). This is enforced by the catalog schema (`schemas/ctxlint-catalog.schema.json`, the `rule.id` `pattern`) and validated by the `src/core/__tests__/catalog-schema.test.ts` vitest test (run in `release.sh` via `pnpm run test:run`).
 
 > **Why this differs from mcp-compliance.** The sibling [`mcp-compliance`](https://github.com/YawLabs/mcp-compliance) project uses **`category-suffix`** (a hyphen, no slash) for its rule IDs. The difference is **deliberate, not drift**: ctxlint lints static config/context files on disk, mcp-compliance tests live servers over the wire, and the two rule namespaces are intentionally kept visually distinct so a `category/slug` ID is unambiguously a ctxlint rule and a `category-suffix` ID is unambiguously an mcp-compliance rule. Do not "harmonize" them. This note is the single canonical statement of the difference; other docs link here rather than restating it.
 

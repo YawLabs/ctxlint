@@ -3,9 +3,8 @@
 // parser-reported byte offsets into the line/column shape humans (and
 // editors / SARIF consumers) expect.
 //
-// Behavior matches the prior in-file implementations in
-// `core/config.ts` (`posToLineCol`) and `core/mcph-parser.ts`
-// (`offsetToPosition`), which were merged here to avoid drift.
+// Behavior matches the prior in-file implementation in
+// `core/config.ts` (`posToLineCol`), which was merged here to avoid drift.
 export function offsetToPosition(
   content: string,
   offset: number,

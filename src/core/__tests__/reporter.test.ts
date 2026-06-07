@@ -1,12 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { formatText, formatJson, formatTokenReport, formatSarif } from '../reporter.js';
-import {
-  ALL_CHECKS,
-  ALL_MCP_CHECKS,
-  ALL_MCPH_CHECKS,
-  ALL_SESSION_CHECKS,
-  ALL_SKILL_CHECKS,
-} from '../audit.js';
+import { ALL_CHECKS, ALL_MCP_CHECKS, ALL_SESSION_CHECKS, ALL_SKILL_CHECKS } from '../audit.js';
 import { VERSION as PKG_VERSION } from '../../version.js';
 import { SESSION_AUDIT_LABEL, SKILL_AUDIT_LABEL, type LintResult } from '../types.js';
 
@@ -426,12 +420,9 @@ describe('formatSarif', () => {
   // Self-validating guard: SARIF descriptors must cover every active check
   // name. This catches the case where a new check is wired into ALL_*CHECKS
   // but buildRuleDescriptors is forgotten — which happened for `tier-tokens`
-  // and `session-memory-index-overflow` between v0.9.2 and v0.9.5, and
-  // happened again for the entire `ALL_MCPH_CHECKS` family which the earlier
-  // version of THIS test forgot to include in `expected` (so the absence
-  // of mcph descriptors went undetected for several releases). Keep all four
-  // catalogs in sync with the constant lists in audit.ts.
-  it('SARIF descriptors cover every check in ALL_CHECKS / ALL_MCP_CHECKS / ALL_MCPH_CHECKS / ALL_SESSION_CHECKS / ALL_SKILL_CHECKS', () => {
+  // and `session-memory-index-overflow` between v0.9.2 and v0.9.5. Keep all
+  // four catalogs in sync with the constant lists in audit.ts.
+  it('SARIF descriptors cover every check in ALL_CHECKS / ALL_MCP_CHECKS / ALL_SESSION_CHECKS / ALL_SKILL_CHECKS', () => {
     // Imported at module top — `await import()` here used to occasionally
     // time out under parallel test load while waiting for the audit module's
     // tiktoken/zod/etc. import chain to resolve.
@@ -440,7 +431,6 @@ describe('formatSarif', () => {
     const expected = [
       ...ALL_CHECKS,
       ...ALL_MCP_CHECKS,
-      ...ALL_MCPH_CHECKS,
       ...ALL_SESSION_CHECKS,
       ...ALL_SKILL_CHECKS,
     ].map((c: string) => `ctxlint/${c}`);
@@ -450,11 +440,11 @@ describe('formatSarif', () => {
 });
 
 describe('formatText — group classification', () => {
-  // `'mcph-token-security'.startsWith('mcp-')` is FALSE (the 4th char is `h`,
-  // not `-`), and `'session-*'` doesn't start with `mcp-` either. The
-  // pre-fix classifier used a single `mcp-` prefix test as the splitter, so
-  // mcph + session rows ended up under the bold "Context Files" header in
-  // mixed-mode output. This test guards the four-group classifier.
+  // `'session-*'` doesn't start with `mcp-`, so the classifier must not route
+  // session rows into the MCP bucket. The pre-fix classifier used a single
+  // `mcp-` prefix test as the splitter, so session rows ended up under the
+  // bold "Context Files" header in mixed-mode output. This test guards the
+  // multi-group classifier.
   function stripAnsi(s: string): string {
     // eslint-disable-next-line no-control-regex
     return s.replace(/\x1b\[[0-9;]*m/g, '');
@@ -478,20 +468,6 @@ describe('formatText — group classification', () => {
           issues: [{ severity: 'error', check: 'mcp-schema', line: 1, message: 'no servers key' }],
         },
         {
-          path: '.mcph.json',
-          isSymlink: false,
-          tokens: 20,
-          lines: 3,
-          issues: [
-            {
-              severity: 'warning',
-              check: 'mcph-token-security',
-              line: 2,
-              message: 'token in mcph file',
-            },
-          ],
-        },
-        {
           path: SESSION_AUDIT_LABEL,
           isSymlink: false,
           tokens: 0,
@@ -506,37 +482,33 @@ describe('formatText — group classification', () => {
           ],
         },
       ],
-      summary: { errors: 2, warnings: 1, info: 1, totalTokens: 150, estimatedWaste: 0 },
+      summary: { errors: 2, warnings: 0, info: 1, totalTokens: 130, estimatedWaste: 0 },
     });
   }
 
-  it('renders bold group headers for context, MCP, mcph, and session in mixed mode', () => {
+  it('renders bold group headers for context, MCP, and session in mixed mode', () => {
     const plain = stripAnsi(formatText(mixedResult()));
     expect(plain).toContain('Context Files');
     expect(plain).toContain('MCP Configs');
-    expect(plain).toContain('mcph Configs');
     expect(plain).toContain('Session Audit');
   });
 
-  it('places the .mcph.json file under the mcph header (not under Context Files)', () => {
+  it('places the .mcp.json file under the MCP header (not under Context Files)', () => {
     const plain = stripAnsi(formatText(mixedResult()));
     const contextIdx = plain.indexOf('Context Files');
     const mcpIdx = plain.indexOf('MCP Configs');
-    const mcphIdx = plain.indexOf('mcph Configs');
 
-    // `.mcph.json` appears twice in the rendered output: once in the top
+    // `.mcp.json` appears twice in the rendered output: once in the top
     // file-summary, once under its bold group header in the issue section.
     // The bug guard is specifically about the second occurrence — the
     // per-file ISSUE rendering — landing under the right header. Anchor the
-    // search at the mcph header so we're testing the issue-section copy.
-    const underMcphHeader = plain.indexOf('.mcph.json', mcphIdx);
-    expect(underMcphHeader).toBeGreaterThan(mcphIdx);
+    // search at the MCP header so we're testing the issue-section copy.
+    const underMcpHeader = plain.indexOf('.mcp.json', mcpIdx);
+    expect(underMcpHeader).toBeGreaterThan(mcpIdx);
 
-    // Pre-fix, the same row rendered between the "Context Files" header and
-    // the "MCP Configs" header (because the classifier treated mcph as
-    // context). The context issue-section must now be mcph-free.
+    // The context issue-section must be MCP-free.
     const contextSection = plain.slice(contextIdx, mcpIdx);
-    expect(contextSection).not.toContain('.mcph.json');
+    expect(contextSection).not.toContain('.mcp.json');
   });
 
   it('places the session synthetic bucket under the Session Audit header', () => {
@@ -603,16 +575,16 @@ describe('formatText — group classification', () => {
     const result = makeResult({
       files: [
         {
-          path: '.mcph.json',
+          path: '.mcp.json',
           isSymlink: false,
           tokens: 20,
           lines: 3,
           issues: [
             {
               severity: 'warning',
-              check: 'mcph-token-security',
+              check: 'mcp-security',
               line: 2,
-              message: 'token in mcph file',
+              message: 'token in mcp file',
             },
           ],
         },
@@ -620,12 +592,13 @@ describe('formatText — group classification', () => {
       summary: { errors: 0, warnings: 1, info: 0, totalTokens: 20, estimatedWaste: 0 },
     });
     const plain = stripAnsi(formatText(result));
-    // No "Context Files" / "MCP Configs" headers when only one group is present.
+    // No "Context Files" / "MCP Configs" headers when only one group is present
+    // (single-group results render flat without the bold group headers).
     expect(plain).not.toContain('Context Files');
     expect(plain).not.toContain('MCP Configs');
-    // The mcph file's content still renders.
-    expect(plain).toContain('.mcph.json');
-    expect(plain).toContain('token in mcph file');
+    // The mcp file's content still renders.
+    expect(plain).toContain('.mcp.json');
+    expect(plain).toContain('token in mcp file');
   });
 });
 

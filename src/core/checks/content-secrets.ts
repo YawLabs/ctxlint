@@ -3,10 +3,9 @@ import type { ParsedContextFile, LintIssue } from '../types.js';
 /**
  * Content-secret detection for context files (CLAUDE.md / AGENTS.md /
  * .cursorrules / etc.). ctxlint already catches secrets in MCP server configs
- * (`mcp/security.ts`) and mcph token fields (`mcph/token-security.ts`); this
- * check covers the third common leak surface: a user pasting `AKIA...`,
- * `sk-ant-...`, etc. directly into a heading or code block of a file that
- * usually ends up committed to git.
+ * (`mcp/security.ts`); this check covers the other common leak surface: a user
+ * pasting `AKIA...`, `sk-ant-...`, etc. directly into a heading or code block
+ * of a file that usually ends up committed to git.
  *
  * Patterns chosen to be well-defined and low-false-positive. Random
  * high-entropy detection is deliberately omitted -- it bites build IDs,
@@ -100,12 +99,6 @@ const PATTERNS: SecretPattern[] = [
     label: 'Slack token',
     regex: /\bxox[bpoasr]-[A-Za-z0-9\-]{10,}\b/g,
   },
-  // mcp.hosting PAT -- consistent with mcph/token-security.ts.
-  {
-    ruleSlug: 'mcph-pat',
-    label: 'mcp.hosting PAT',
-    regex: /\bmcp_pat_[A-Za-z0-9]{32,}\b/g,
-  },
   // Google API keys.
   {
     ruleSlug: 'google-api-key',
@@ -151,9 +144,9 @@ const COMMENT_PREFIX = /^\s*(?:#|\/\/|--|<!--)/;
  * placeholder token is adjacent to the matched secret (as `isPlaceholderWrapped`
  * already does for `${...}`/`<...>` wrappers) — was considered, but the existing
  * false-positive corpus deliberately relies on line-scoped suppression: lines
- * like `Placeholder token: ghp_...`, `Your-key here: ASIA...`, and
- * `redacted: mcp_pat_...` mention the placeholder word NON-adjacent to the
- * secret and must stay suppressed. Tightening to adjacency would re-flag all of
+ * like `Placeholder token: ghp_...` and `Your-key here: ASIA...` mention the
+ * placeholder word NON-adjacent to the secret and must stay suppressed.
+ * Tightening to adjacency would re-flag all of
  * those, trading the (rare) recall miss for a wave of false positives that
  * trains users to ignore the check — the opposite of this module's
  * precision-over-recall stance (see file header).

@@ -112,13 +112,6 @@ export type McpCheckName =
   | 'mcp-consistency'
   | 'mcp-redundancy';
 
-export type McphCheckName =
-  | 'mcph-token-security'
-  | 'mcph-apibase'
-  | 'mcph-schema-conformance'
-  | 'mcph-lists'
-  | 'mcph-gitignore';
-
 export type CheckName =
   | 'paths'
   | 'commands'
@@ -133,7 +126,6 @@ export type CheckName =
   | 'content-secrets'
   | 'hook-coverage'
   | McpCheckName
-  | McphCheckName
   | SessionCheckName
   | SkillCheckName;
 
@@ -188,46 +180,6 @@ export interface ParsedMcpConfig {
   parseErrors: string[];
   content: string;
   isGitTracked: boolean;
-}
-
-// --- mcph (mcp.hosting CLI) config types ---
-//
-// .mcph.json is the config file for the @yawlabs/mcph CLI. Unlike .mcp.json
-// (a project-level MCP client config), .mcph.json configures the mcph tool
-// itself: auth token, API base, allow/deny lists of hosted servers.
-//
-// Canonical schema: https://raw.githubusercontent.com/YawLabs/mcph/main/schemas/mcph.config.v1.json
-
-export type McphConfigScope = 'global' | 'project' | 'project-local';
-
-export interface McphFieldPosition {
-  line: number;
-  column: number;
-  endLine: number;
-  endColumn: number;
-}
-
-export interface ParsedMcphConfig {
-  filePath: string;
-  relativePath: string;
-  scope: McphConfigScope;
-  content: string;
-  parseErrors: string[];
-  isGitTracked: boolean;
-  isGitignored: boolean;
-  // Raw parsed object; null if parse failed.
-  raw: Record<string, unknown> | null;
-  // Per-field positions for precise diagnostics. Missing entries = field absent.
-  positions: Partial<
-    Record<'$schema' | 'version' | 'token' | 'apiBase' | 'servers' | 'blocked', McphFieldPosition>
-  >;
-  // Positions for individual array entries of `servers` and `blocked`.
-  listEntries: {
-    servers: { value: string; position: McphFieldPosition }[];
-    blocked: { value: string; position: McphFieldPosition }[];
-  };
-  // Unknown fields detected alongside known ones.
-  unknownFields: { name: string; position: McphFieldPosition }[];
 }
 
 export interface Section {
@@ -350,10 +302,6 @@ export interface LintOptions {
   mcp: boolean;
   mcpOnly: boolean;
   mcpGlobal: boolean;
-  mcph: boolean;
-  mcphOnly: boolean;
-  mcphGlobal: boolean;
-  mcphStrictEnvToken: boolean;
   session: boolean;
   sessionOnly: boolean;
   skills: boolean;

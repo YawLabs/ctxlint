@@ -104,13 +104,6 @@ describe('checkContentSecrets - positive matches', () => {
     expectIssue(issues, 'content-secrets/slack-token');
   });
 
-  it('flags an mcp.hosting PAT (mcp_pat_)', async () => {
-    const tail = 'AbCdEfGhIjKlMnOpQrStUvWxYz012345';
-    const file = makeFile(`MCPH: mcp_pat_${tail}\n`);
-    const issues = await checkContentSecrets(file, tmpDir);
-    expectIssue(issues, 'content-secrets/mcph-pat');
-  });
-
   it('flags a Google API key (AIza)', async () => {
     const tail = 'a'.repeat(35);
     const file = makeFile(`Google: AIza${tail}\n`);
@@ -217,13 +210,6 @@ describe('checkContentSecrets - false-positive guards', () => {
     const file = makeFile('example -----BEGIN RSA PRIVATE KEY-----\n');
     const issues = await checkContentSecrets(file, tmpDir);
     expect(issues.find((i) => i.ruleId === 'content-secrets/private-key-header')).toBeUndefined();
-  });
-
-  it('does NOT flag an mcp_pat_ on a line containing "redacted"', async () => {
-    const tail = 'X'.repeat(32);
-    const file = makeFile(`redacted: mcp_pat_${tail}\n`);
-    const issues = await checkContentSecrets(file, tmpDir);
-    expect(issues.find((i) => i.ruleId === 'content-secrets/mcph-pat')).toBeUndefined();
   });
 });
 

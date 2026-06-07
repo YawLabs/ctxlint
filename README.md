@@ -32,7 +32,7 @@ ctxlint is a linter purpose-built for this. It reads your context files, cross-r
 - **Token-aware** — shows how much context window your files consume and flags redundant content
 - **Every AI tool** — supports Claude Code, Cursor, Copilot, Windsurf, Gemini, Cline, Aider, and 9 more
 - **Multiple outputs** — text, JSON, and SARIF (GitHub Code Scanning)
-- **MCP server** — 7 tools for IDE/agent integration with tool annotations for auto-approval
+- **MCP server** — 6 tools for IDE/agent integration with tool annotations for auto-approval
 - **Watch mode** — `--watch` re-lints automatically when context files change
 
 ## Install
@@ -180,36 +180,6 @@ The full specification for MCP config linting rules, the cross-client config lan
 - **[`MCP_CONFIG_LINT_SPEC.md`](./MCP_CONFIG_LINT_SPEC.md)** — the full lint-rule set (rule count in the [Specifications](#specifications) family table), the complete client/format reference, and implementation guidance. Tool-agnostic — any linter can implement it.
 - **[`mcp-config-lint-rules.json`](./mcp-config-lint-rules.json)** — Machine-readable rule catalog for programmatic consumption by AI agents, CI systems, and other tools.
 
-## mcph Config Linting
-
-ctxlint also lints `.mcph.json` — the config file read by the [`@yawlabs/mcph`](https://github.com/YawLabs/mcph) CLI. Distinct from `.mcp.json` (different schema, different threat model). Applies across the user-global (`~/.mcph.json`), per-project (`.mcph.json`), and machine-local (`.mcph.local.json`) scope cascade.
-
-> **Note:** the mcph rule family (and the `ctxlint_mcph_audit` MCP tool) is **under review** — the upstream mcp.hosting platform is archived, so this family's future is being reassessed. The rules and tool still ship and work; only their long-term status is undecided.
-
-```bash
-# Lint context files + .mcph.json
-npx @yawlabs/ctxlint@latest --mcph
-
-# Lint only .mcph.json
-npx @yawlabs/ctxlint@latest --mcph-only
-
-# Include the user-global ~/.mcph.json
-npx @yawlabs/ctxlint@latest --mcph-global
-
-# Treat any token in any .mcph.json as an error (env-var-only posture)
-npx @yawlabs/ctxlint@latest --mcph --mcph-strict-env-token
-```
-
-### What mcph config checks catch
-
-| Check                       | What it finds                                                                                                     |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| **mcph-token-security**     | mcp.hosting PAT (`mcp_pat_*`) leaks, malformed tokens, and prefers env-var (`MCPH_TOKEN`) over file-stored tokens |
-| **mcph-apibase**            | Invalid `apiBase` URLs and plaintext HTTP to public hosts (private hosts like `localhost` / RFC 1918 are exempt)  |
-| **mcph-schema-conformance** | Unknown / typo'd fields and stale `version` numbers vs the current `mcph.config.v1.json` schema                   |
-| **mcph-lists**              | Conflicts (entries in both `servers` allow-list and `blocked` deny-list) and duplicates within either list        |
-| **mcph-gitignore**          | `.mcph.local.json` not covered by `.gitignore` — machine-local overrides exist precisely to stay machine-local    |
-
 ## Session Linting
 
 ctxlint can audit AI agent session data — history files and memory entries — for cross-project consistency. Session checks compare your current project against sibling repos to catch drift and missing setup.
@@ -297,10 +267,6 @@ Options:
   --mcp                     Enable MCP config linting alongside context file checks
   --mcp-only                Run only MCP config checks, skip context file checks
   --mcp-global              Also scan user/global MCP config files (implies --mcp)
-  --mcph                    Enable .mcph.json (mcp.hosting CLI config) linting
-  --mcph-only               Run only mcph config checks
-  --mcph-global             Also scan ~/.mcph.json (implies --mcph)
-  --mcph-strict-env-token   Upgrade mcph-token-security/prefer-env-token from warning to error
   --session                 Enable session audit checks (cross-project consistency)
   --session-only            Run only session checks, skip context and MCP checks
   --mcp-server              Start the MCP server (alias: `serve` subcommand)
@@ -312,9 +278,9 @@ Commands:
   init                 Set up a git pre-commit hook
 ```
 
-**Available checks:** `paths`, `commands`, `staleness`, `tokens`, `tier-tokens`, `redundancy`, `contradictions`, `frontmatter`, `ci-coverage`, `ci-secrets`, `mcp-schema`, `mcp-security`, `mcp-commands`, `mcp-deprecated`, `mcp-env`, `mcp-urls`, `mcp-consistency`, `mcp-redundancy`, `mcph-token-security`, `mcph-apibase`, `mcph-schema-conformance`, `mcph-lists`, `mcph-gitignore`, `session-missing-secret`, `session-diverged-file`, `session-missing-workflow`, `session-stale-memory`, `session-duplicate-memory`, `session-loop-detection`, `session-memory-index-overflow`
+**Available checks:** `paths`, `commands`, `staleness`, `tokens`, `tier-tokens`, `redundancy`, `contradictions`, `frontmatter`, `ci-coverage`, `ci-secrets`, `mcp-schema`, `mcp-security`, `mcp-commands`, `mcp-deprecated`, `mcp-env`, `mcp-urls`, `mcp-consistency`, `mcp-redundancy`, `session-missing-secret`, `session-diverged-file`, `session-missing-workflow`, `session-stale-memory`, `session-duplicate-memory`, `session-loop-detection`, `session-memory-index-overflow`
 
-Passing any `mcp-*` check name implies `--mcp`. Passing any `mcph-*` check name implies `--mcph`. Passing any `session-*` check name implies `--session`.
+Passing any `mcp-*` check name implies `--mcp`. Passing any `session-*` check name implies `--session`.
 
 ## Watch Mode
 
@@ -440,10 +406,6 @@ The `contextFiles` array adds custom file patterns to scan alongside the built-i
 | `mcp`                           | `boolean`  | `false`    | Enable MCP config checks by default (same as `--mcp`).                                                                                                                                                    |
 | `mcpOnly`                       | `boolean`  | `false`    | Run only MCP config checks, skip context-file checks (same as `--mcp-only`).                                                                                                                              |
 | `mcpGlobal`                     | `boolean`  | `false`    | Also scan user/global MCP configs (same as `--mcp-global`).                                                                                                                                               |
-| `mcph`                          | `boolean`  | `false`    | Enable `.mcph.json` (mcp.hosting CLI config) checks (same as `--mcph`).                                                                                                                                   |
-| `mcphOnly`                      | `boolean`  | `false`    | Run only mcph config checks, skip context-file checks (same as `--mcph-only`).                                                                                                                            |
-| `mcphGlobal`                    | `boolean`  | `false`    | Also scan `~/.mcph.json` user-global config (same as `--mcph-global`).                                                                                                                                    |
-| `mcphStrictEnvToken`            | `boolean`  | `false`    | Upgrade `mcph-token-security/prefer-env-token` from warning to error (same as `--mcph-strict-env-token`).                                                                                                 |
 | `session`                       | `boolean`  | `false`    | Enable session audit checks (cross-project consistency); same as `--session`.                                                                                                                             |
 | `sessionOnly`                   | `boolean`  | `false`    | Run only session checks, skip context and MCP checks (same as `--session-only`).                                                                                                                          |
 
@@ -453,7 +415,7 @@ CLI flags override config file settings. Use `--config <path>` to load a config 
 
 ## Use as MCP Server
 
-ctxlint ships with an MCP server that exposes seven tools (`ctxlint_audit`, `ctxlint_mcp_audit`, `ctxlint_mcph_audit`, `ctxlint_session_audit`, `ctxlint_validate_path`, `ctxlint_token_report`, `ctxlint_fix`). All read-only tools declare annotations so MCP clients can skip confirmation dialogs.
+ctxlint ships with an MCP server that exposes six tools (`ctxlint_audit`, `ctxlint_mcp_audit`, `ctxlint_session_audit`, `ctxlint_validate_path`, `ctxlint_token_report`, `ctxlint_fix`). All read-only tools declare annotations so MCP clients can skip confirmation dialogs.
 
 Launch it with the `serve` subcommand (or the equivalent `--mcp-server` flag, kept for back-compat):
 
@@ -545,7 +507,6 @@ ctxlint is the reference implementation of four open specifications for linting 
 | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **[AI Context File Linting Spec](./CONTEXT_LINT_SPEC.md)**     | 28 rules for validating context files (CLAUDE.md, .cursorrules, AGENTS.md, etc.) across 17 clients. Covers file formats, frontmatter schemas, path/command validation, staleness, token budgets, redundancy, and contradictions.          |
 | **[MCP Config Linting Spec](./MCP_CONFIG_LINT_SPEC.md)**       | 27 rules for validating MCP server configs (.mcp.json, .cursor/mcp.json, .vscode/mcp.json, etc.) across 8 clients. Covers schema validation, hardcoded secrets, env var syntax, deprecated transports, and cross-file consistency.        |
-| **mcph Config Linting** (`mcph-config-lint-rules.json`)        | 10 rules for validating `.mcph.json` — the config file read by the `@yawlabs/mcph` CLI. Covers PAT format + leakage, env-var posture, plaintext API endpoints, schema drift, and allow/deny list semantics across the scope cascade.      |
 | **[Agent Session Linting Spec](./AGENT_SESSION_LINT_SPEC.md)** | 8 rules for auditing agent session data (history, memory) across 8 agents. Covers cross-project secret consistency, config drift, stale memory, and loop detection.                                                                       |
 | **[Agent Skill Linting Spec](./AGENT_SKILL_LINT_SPEC.md)**     | 5 rules for auditing Claude Code skill (`SKILL.md`) and agent (`.md`) definitions under `~/.claude`. Covers frontmatter presence, broken refs, trigger-phrase collisions, orphaned skills, and dead tool restrictions. (v1, experimental) |
 
@@ -553,7 +514,6 @@ All specs include machine-readable rule catalogs for programmatic consumption:
 
 - [`context-lint-rules.json`](./context-lint-rules.json) — context file rules and 16 supported format definitions
 - [`mcp-config-lint-rules.json`](./mcp-config-lint-rules.json) — MCP config rules and 8 client definitions
-- [`mcph-config-lint-rules.json`](./mcph-config-lint-rules.json) — mcph CLI config rules (`.mcph.json`)
 - [`agent-session-lint-rules.json`](./agent-session-lint-rules.json) — session lint rules and 8 agent data source definitions
 - [`agent-skill-lint-rules.json`](./agent-skill-lint-rules.json) — agent-skill lint rules (`~/.claude/skills`, `~/.claude/agents`)
 

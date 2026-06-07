@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/YawLabs/ctxlint/main/schemas/ctxlint-catalog.schema.json",
   "title": "ctxlint rule catalog",
-  "description": "Governing schema for the machine-readable rule catalogs that back the ctxlint specifications (context-, mcp-config-, mcph-config-, agent-session-lint-rules.json). Defines the shared metadata block + the rule/category shape every catalog must satisfy. Per-catalog extras (formats, clients, agents, dataSources, target, mcphSchemaReference) are permitted via additionalProperties.",
+  "description": "Governing schema for the machine-readable rule catalogs that back the ctxlint specifications (context-, mcp-config-, agent-session-lint-rules.json). Defines the shared metadata block + the rule/category shape every catalog must satisfy. Per-catalog extras (formats, clients, agents, dataSources, target) are permitted via additionalProperties.",
   "type": "object",
   "required": ["$schema", "specVersion", "specDate", "repository", "categories", "rules"],
   "additionalProperties": true,
@@ -31,7 +31,7 @@
     },
     "mcpSpecCompatibility": {
       "type": "string",
-      "description": "Shared optional field: the Model Context Protocol wire-spec version this catalog tracks (date-stamped, e.g. \"2025-11-25\"). Present only on catalogs whose rules are bound to the MCP protocol version (mcp-config). Absent (meaningfully) on catalogs that are protocol-agnostic (context, agent-session, mcph-config).",
+      "description": "Shared optional field: the Model Context Protocol wire-spec version this catalog tracks (date-stamped, e.g. \"2025-11-25\"). Present only on catalogs whose rules are bound to the MCP protocol version (mcp-config). Absent (meaningfully) on catalogs that are protocol-agnostic (context, agent-session).",
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
     },
     "repository": {

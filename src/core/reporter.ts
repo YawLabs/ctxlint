@@ -9,24 +9,18 @@ import {
 // Marker substring for the skill-audit bucket (mirrors SESSION_AUDIT_PATH_MARKER).
 const SKILL_AUDIT_PATH_MARKER = '(skill audit)';
 
-type FileGroup = 'context' | 'mcp' | 'mcph' | 'session' | 'skill';
+type FileGroup = 'context' | 'mcp' | 'session' | 'skill';
 
 /**
  * Classify a result row into one of the four output families. Issue-prefix is
  * the strongest signal because audit.ts dispatches checks per-domain (one
  * file's issues are always from a single family). Path is a fallback for
  * empty-issue rows surfaced in --verbose mode.
- *
- * Note on the prefix order: `mcph-` shares the first three characters with
- * `mcp-` but the fourth character (`h` vs `-`) makes them distinct prefixes.
- * Test for `mcph-` BEFORE `mcp-` so a future loosening of either side can't
- * silently route mcph rows into the MCP bucket.
  */
 function classifyFile(f: FileResult): FileGroup {
   // Synthetic cross-file buckets (audit.ts emits these with these exact paths).
   // Match explicitly so a future synthetic bucket can't silently fall through
-  // to the context group. Note: there is no '(mcph)' bucket today -- mcph has
-  // no cross-file checks. If one is added, also add a match arm here.
+  // to the context group.
   if (f.path === '(project)') return 'context';
   if (f.path === '(mcp)') return 'mcp';
   if (f.path.includes(SESSION_AUDIT_PATH_MARKER)) return 'session';
@@ -35,13 +29,11 @@ function classifyFile(f: FileResult): FileGroup {
   for (const issue of f.issues) {
     if (issue.check.startsWith('session-')) return 'session';
     if (issue.check.startsWith('skill-')) return 'skill';
-    if (issue.check.startsWith('mcph-')) return 'mcph';
     if (issue.check.startsWith('mcp-')) return 'mcp';
   }
 
   // Empty-issue fallback: classify by path so --verbose still groups correctly.
   const norm = f.path.replace(/\\/g, '/');
-  if (norm.endsWith('.mcph.json') || norm.endsWith('.mcph.local.json')) return 'mcph';
   if (
     norm === '.mcp.json' ||
     norm.endsWith('/.mcp.json') ||
@@ -57,18 +49,16 @@ function classifyFile(f: FileResult): FileGroup {
   return 'context';
 }
 
-const GROUP_ORDER: FileGroup[] = ['context', 'mcp', 'mcph', 'session', 'skill'];
+const GROUP_ORDER: FileGroup[] = ['context', 'mcp', 'session', 'skill'];
 const GROUP_LABELS: Record<FileGroup, string> = {
   context: 'Context Files',
   mcp: 'MCP Configs',
-  mcph: 'mcph Configs',
   session: 'Session Audit',
   skill: 'Skill Audit',
 };
 const GROUP_SUMMARY_NOUNS: Record<FileGroup, string> = {
   context: 'context file',
   mcp: 'MCP config',
-  mcph: 'mcph config',
   session: 'session audit',
   skill: 'skill audit',
 };
@@ -94,7 +84,6 @@ export function formatText(result: LintResult, verbose: boolean = false): string
   const groups: Record<FileGroup, FileResult[]> = {
     context: [],
     mcp: [],
-    mcph: [],
     session: [],
     skill: [],
   };
@@ -124,13 +113,14 @@ export function formatText(result: LintResult, verbose: boolean = false): string
     renderedAnySummary = true;
   }
 
-  for (const g of ['mcp', 'mcph'] as const) {
-    const real = groups[g].filter((f) => !isSyntheticBucket(f.path));
-    if (real.length === 0) continue;
-    if (renderedAnySummary) lines.push('');
-    lines.push(`Found ${real.length} ${GROUP_SUMMARY_NOUNS[g]}${real.length !== 1 ? 's' : ''}`);
-    for (const file of real) lines.push(`  ${file.path}`);
-    renderedAnySummary = true;
+  {
+    const real = groups.mcp.filter((f) => !isSyntheticBucket(f.path));
+    if (real.length > 0) {
+      if (renderedAnySummary) lines.push('');
+      lines.push(`Found ${real.length} ${GROUP_SUMMARY_NOUNS.mcp}${real.length !== 1 ? 's' : ''}`);
+      for (const file of real) lines.push(`  ${file.path}`);
+      renderedAnySummary = true;
+    }
   }
 
   // Session has no real files, only the synthetic audit bucket. Show it as a
@@ -514,31 +504,6 @@ function buildRuleDescriptors(): SarifRule[] {
       id: 'ctxlint/mcp-redundancy',
       shortDescription: { text: 'Redundant MCP config entry' },
       helpUri: 'https://github.com/yawlabs/ctxlint#mcp-config-linting',
-    },
-    {
-      id: 'ctxlint/mcph-token-security',
-      shortDescription: { text: 'mcp.hosting PAT leakage or env-var posture' },
-      helpUri: 'https://github.com/yawlabs/ctxlint#mcph-config-linting',
-    },
-    {
-      id: 'ctxlint/mcph-apibase',
-      shortDescription: { text: 'mcph apiBase URL validation' },
-      helpUri: 'https://github.com/yawlabs/ctxlint#mcph-config-linting',
-    },
-    {
-      id: 'ctxlint/mcph-schema-conformance',
-      shortDescription: { text: 'mcph config unknown field or stale schema version' },
-      helpUri: 'https://github.com/yawlabs/ctxlint#mcph-config-linting',
-    },
-    {
-      id: 'ctxlint/mcph-lists',
-      shortDescription: { text: 'mcph allow/deny list conflict or duplicate entry' },
-      helpUri: 'https://github.com/yawlabs/ctxlint#mcph-config-linting',
-    },
-    {
-      id: 'ctxlint/mcph-gitignore',
-      shortDescription: { text: 'mcph machine-local file not covered by .gitignore' },
-      helpUri: 'https://github.com/yawlabs/ctxlint#mcph-config-linting',
     },
     {
       id: 'ctxlint/session-missing-secret',

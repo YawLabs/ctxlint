@@ -32,7 +32,7 @@ function specRuleCount(specBody: string): number | null {
  * Pull the count from the README "Specifications" family table row, matched by
  * the catalog's label. Rows look like:
  *   | **[AI Context File Linting Spec](...)** | 27 rules for validating ... |
- *   | **mcph Config Linting** (`...`)         | 10 rules for validating ... |
+ *   | **[MCP Config Linting Spec](...)**      | 10 rules for validating ... |
  */
 function readmeTableCount(label: string): number | null {
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

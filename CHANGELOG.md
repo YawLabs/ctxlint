@@ -8,6 +8,9 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+### Removed
+- **mcph config-linting pillar** (`.mcph.json` / mcp.hosting CLI config). The entire `mcph-*` rule family, the `--mcph` / `--mcph-only` / `--mcph-global` / `--mcph-strict-env-token` flags, the `ctxlint_mcph_audit` MCP tool, the `.mcph.json` / `.mcph.local.json` scanning, and the `mcph-config-lint-rules.json` catalog are removed. mcp.hosting has been decommissioned and replaced by Yaw Labs MCP ("Yaw MCP"), integrated directly into Yaw Terminal, so the config file these rules linted no longer exists.
+
 ## [0.13.1] - 2026-06-02
 
 ### Fixed

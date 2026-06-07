@@ -3,13 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { scanForContextFiles } from '../core/scanner.js';
 import { parseContextFile } from '../core/parser.js';
-import {
-  runAudit,
-  ALL_CHECKS,
-  ALL_MCP_CHECKS,
-  ALL_MCPH_CHECKS,
-  ALL_SESSION_CHECKS,
-} from '../core/audit.js';
+import { runAudit, ALL_CHECKS, ALL_MCP_CHECKS, ALL_SESSION_CHECKS } from '../core/audit.js';
 import { applyFixes } from '../core/fixer.js';
 import { loadConfig } from '../core/config.js';
 import { fileExists, isDirectory, resetPackageJsonCache } from '../utils/fs.js';
@@ -17,7 +11,7 @@ import { findRenames } from '../utils/git.js';
 import { freeEncoder, keepEncoderAlive } from '../utils/tokens.js';
 import { resetGit } from '../utils/git.js';
 import { resetPathsCache } from '../core/checks/paths.js';
-import type { CheckName, McpCheckName, McphCheckName, SessionCheckName } from '../core/types.js';
+import type { CheckName, McpCheckName, SessionCheckName } from '../core/types.js';
 import * as path from 'node:path';
 import { VERSION } from '../version.js';
 
@@ -28,7 +22,6 @@ import { VERSION } from '../version.js';
 // domain it actually runs.
 const contextCheckEnum = z.enum(ALL_CHECKS as [CheckName, ...CheckName[]]);
 const mcpCheckEnum = z.enum(ALL_MCP_CHECKS as [McpCheckName, ...McpCheckName[]]);
-const mcphCheckEnum = z.enum(ALL_MCPH_CHECKS as [McphCheckName, ...McphCheckName[]]);
 const sessionCheckEnum = z.enum(ALL_SESSION_CHECKS as [SessionCheckName, ...SessionCheckName[]]);
 
 // Shell metacharacters + control chars that have no legitimate place in a
@@ -352,60 +345,6 @@ server.tool(
         mcp: true,
         mcpOnly: true,
         mcpGlobal: includeGlobal || false,
-        ignoreRules: config?.ignoreRules,
-      });
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ error: msg }) }],
-        isError: true,
-      };
-    } finally {
-      freeEncoder();
-      resetGit();
-      resetPathsCache();
-      resetPackageJsonCache();
-    }
-  },
-);
-
-server.tool(
-  'ctxlint_mcph_audit',
-  'Lint .mcph.json (the @yawlabs/mcph CLI config) files. Checks for PAT (mcp_pat_*) leakage in git-tracked project-scope files, environment-variable posture, plaintext HTTP apiBase to public hosts, schema drift, allow/deny list conflicts and duplicates, and machine-local override files not covered by .gitignore. Distinct from ctxlint_mcp_audit, which lints client-side .mcp.json server lists.',
-  {
-    projectPath: z
-      .string()
-      .optional()
-      .describe('Path to the project root. Defaults to current working directory.'),
-    checks: z
-      .array(mcphCheckEnum)
-      .optional()
-      .describe('Specific mcph checks to run (default: all mcph-* checks).'),
-    includeGlobal: z.boolean().optional().describe('Also scan ~/.mcph.json (user-global config).'),
-    strictEnvToken: z
-      .boolean()
-      .optional()
-      .describe(
-        'Upgrade mcph-token-security/prefer-env-token from warning to error (env-var-only posture).',
-      ),
-  },
-  {
-    readOnlyHint: true,
-    destructiveHint: false,
-    idempotentHint: true,
-    openWorldHint: false,
-  },
-  async ({ projectPath, checks, includeGlobal, strictEnvToken }) => {
-    try {
-      const root = validateProjectPath(projectPath);
-      const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_MCPH_CHECKS;
-      const config = safeLoadConfig(root);
-      const result = await runAudit(root, activeChecks, {
-        mcph: true,
-        mcphOnly: true,
-        mcphGlobal: includeGlobal || false,
-        mcphStrictEnvToken: strictEnvToken || false,
         ignoreRules: config?.ignoreRules,
       });
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };

@@ -32,7 +32,7 @@ export interface CatalogMeta {
   /** Catalog filename, relative to repo root. */
   catalog: string;
   /** Companion spec markdown filename, relative to repo root. Null if the
-   *  catalog ships without a prose spec (mcph is documented inline in README). */
+   *  catalog ships without a prose spec. */
   spec: string | null;
   /** Human label used in README's "Specifications" family table. */
   label: string;
@@ -47,8 +47,8 @@ export interface CatalogMeta {
 }
 
 /**
- * The five published catalogs. Order is the canonical pillar order
- * (context, mcp-config, mcph, agent-session, agent-skill).
+ * The four published catalogs. Order is the canonical pillar order
+ * (context, mcp-config, agent-session, agent-skill).
  */
 export const CATALOGS: readonly CatalogMeta[] = [
   {
@@ -63,13 +63,6 @@ export const CATALOGS: readonly CatalogMeta[] = [
     catalog: 'mcp-config-lint-rules.json',
     spec: 'MCP_CONFIG_LINT_SPEC.md',
     label: 'MCP Config Linting Spec',
-    ruleIdFormat: 'category/slug',
-  },
-  {
-    key: 'mcph-config',
-    catalog: 'mcph-config-lint-rules.json',
-    spec: null,
-    label: 'mcph Config Linting',
     ruleIdFormat: 'category/slug',
   },
   {
