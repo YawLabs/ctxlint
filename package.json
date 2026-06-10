@@ -122,7 +122,8 @@
       "fast-uri": "^3.1.2",
       "postcss": "^8.5.10",
       "qs": "^6.15.2",
-      "ip-address": "^10.1.1"
+      "ip-address": "^10.1.1",
+      "brace-expansion": "^5.0.6"
     }
   }
 }
