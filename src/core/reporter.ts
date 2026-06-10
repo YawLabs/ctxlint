@@ -1,13 +1,11 @@
 import chalk from 'chalk';
 import {
   SESSION_AUDIT_PATH_MARKER,
+  SKILL_AUDIT_PATH_MARKER,
   type FileResult,
   type LintResult,
   type LintIssue,
 } from './types.js';
-
-// Marker substring for the skill-audit bucket (mirrors SESSION_AUDIT_PATH_MARKER).
-const SKILL_AUDIT_PATH_MARKER = '(skill audit)';
 
 type FileGroup = 'context' | 'mcp' | 'session' | 'skill';
 
@@ -38,6 +36,9 @@ function classifyFile(f: FileResult): FileGroup {
     norm === '.mcp.json' ||
     norm.endsWith('/.mcp.json') ||
     norm.endsWith('/mcp.json') ||
+    // Windsurf's global config (~/.codeium/windsurf/mcp_config.json,
+    // surfaced by scanGlobalMcpConfigs) doesn't match the '/mcp.json' suffix.
+    norm.endsWith('/mcp_config.json') ||
     norm.includes('/mcpServers/') ||
     norm.endsWith('/.claude.json') ||
     norm.endsWith('.claude/settings.json') ||
@@ -64,8 +65,13 @@ const GROUP_SUMMARY_NOUNS: Record<FileGroup, string> = {
 };
 
 function isSyntheticBucket(p: string): boolean {
+  // Exact-match the cross-file bucket labels (mirroring classifyFile's
+  // equality checks) rather than a '(' prefix test: a real context file under
+  // a paren-named directory (e.g. a Next.js route group like
+  // '(docs)/CLAUDE.md') must not be silently dropped from the summaries.
   return (
-    p.startsWith('(') ||
+    p === '(project)' ||
+    p === '(mcp)' ||
     p.includes(SESSION_AUDIT_PATH_MARKER) ||
     p.includes(SKILL_AUDIT_PATH_MARKER)
   );
@@ -95,13 +101,16 @@ export function formatText(result: LintResult, verbose: boolean = false): string
   // cross-file buckets ('(project)', '(mcp)', '~/.claude/ (session audit)').
   // Those aren't files the user authored — they appear in the issue listing
   // section below.
-  const totalTokens = result.summary.totalTokens;
   let renderedAnySummary = false;
 
   const contextReal = groups.context.filter((f) => !isSyntheticBucket(f.path));
+  // Context tokens only. summary.totalTokens also counts MCP config files,
+  // which are never loaded into agent context -- using it here (and in the
+  // "per agent session" line below) over-reported on --mcp runs.
+  const contextTokens = contextReal.reduce((sum, f) => sum + f.tokens, 0);
   if (contextReal.length > 0) {
     lines.push(
-      `Found ${contextReal.length} context file${contextReal.length !== 1 ? 's' : ''} (${totalTokens.toLocaleString()} tokens total)`,
+      `Found ${contextReal.length} context file${contextReal.length !== 1 ? 's' : ''} (${contextTokens.toLocaleString()} tokens total)`,
     );
     for (const file of contextReal) {
       let desc = `  ${file.path} (${file.tokens.toLocaleString()} tokens, ${file.lines} lines)`;
@@ -196,7 +205,7 @@ export function formatText(result: LintResult, verbose: boolean = false): string
     lines.push(chalk.green('No issues found!'));
   }
 
-  lines.push(`  Token usage: ${totalTokens.toLocaleString()} tokens per agent session`);
+  lines.push(`  Token usage: ${contextTokens.toLocaleString()} tokens per agent session`);
 
   if (result.summary.estimatedWaste > 0) {
     lines.push(`  Estimated waste: ~${result.summary.estimatedWaste} tokens (redundant content)`);

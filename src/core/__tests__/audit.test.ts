@@ -29,6 +29,19 @@ describe('runAudit estimatedWaste', () => {
   });
 });
 
+describe('runAudit ignoreRules validation', () => {
+  it('rejects with a contextual error (rule index + field + pattern) on an invalid ignoreRules regex', async () => {
+    // The eager compileRules pass at the top of runAudit fails the audit
+    // before any checks run; previously the bare SyntaxError surfaced from
+    // applyIgnoreRules only after the whole audit had completed.
+    await expect(
+      runAudit(path.join(FIXTURES, 'healthy-project'), ['paths'], {
+        ignoreRules: [{ check: 'paths', match: '[' }],
+      }),
+    ).rejects.toThrowError(/Invalid regex in ignoreRules\[0\]\.match \("\["\)/);
+  });
+});
+
 describe('runAudit ignoreRules partitioning', () => {
   beforeEach(() => {
     _resetRedundancyCachesForTesting();

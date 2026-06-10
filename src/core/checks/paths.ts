@@ -30,11 +30,13 @@ export async function checkPaths(
   const contextDir = path.dirname(file.filePath);
 
   for (const ref of file.references.paths) {
-    // Resolve ./foo from context file dir, everything else from project root
-    const baseDir =
-      ref.value.startsWith('./') || ref.value.startsWith('../') ? contextDir : projectRoot;
-    const resolvedPath = path.resolve(baseDir, ref.value);
     const normalizedRef = ref.value.replace(/\\/g, '/');
+    // Resolve explicitly-relative refs (./foo, ../foo, and the Windows-style
+    // .\foo, ..\foo) from the context file's directory, everything else from
+    // the project root. Resolution uses the slash-normalized form so a
+    // Windows-authored ref still validates when the lint host is POSIX.
+    const baseDir = /^\.\.?\//.test(normalizedRef) ? contextDir : projectRoot;
+    const resolvedPath = path.resolve(baseDir, normalizedRef);
 
     // Check if it's a glob pattern
     if (normalizedRef.includes('*')) {
@@ -119,9 +121,11 @@ function findClosestMatch(target: string, files: string[]): string | null {
   const targetBase = path.basename(targetNorm);
 
   // Pass 1: prefer files whose basename matches exactly (different directory).
-  // This pass has its own distance cap so its result isn't bounded by — or
-  // bounding — the fallback pass below. Any basename-equal candidate is a
-  // strong signal regardless of overall path-edit distance.
+  // Deliberately uncapped: basename equality is the signal, so the nearest
+  // basename-equal candidate wins no matter how large the overall path-edit
+  // distance is. Distance is used only to RANK among basename-equal
+  // candidates; the absolute cap below belongs to the full-path fallback
+  // pass alone.
   let basenameMatch: string | null = null;
   let basenameDistance = Infinity;
   for (const file of files) {

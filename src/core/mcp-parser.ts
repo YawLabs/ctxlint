@@ -64,13 +64,22 @@ export async function parseMcpConfig(
   // Parse server entries
   const lines = content.split('\n');
   const rootKeyLine = findRootKeyLine(lines, rootKey);
+  // Authoritative name -> line map from the depth-aware scan. A flat regex
+  // scan mis-attributes a server named after a common field key ("env",
+  // "command", ...) to an earlier server's nested key; the depth-aware scan
+  // only sees keys directly inside the root-key object. Last occurrence wins
+  // because JSON.parse keeps only the last duplicate.
+  const nameLines = new Map<string, number>();
+  for (const { name, line } of collectServerNameKeys(content, rootKey)) {
+    nameLines.set(name, line);
+  }
   for (const [name, value] of Object.entries(serversObj as Record<string, unknown>)) {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) {
       continue;
     }
 
     const raw = value as Record<string, unknown>;
-    const line = findServerLine(lines, name, rootKeyLine);
+    const line = nameLines.get(name) ?? findServerLine(lines, name, rootKeyLine);
     const transport = inferTransport(raw);
 
     const entry: McpServerEntry = {
@@ -82,9 +91,11 @@ export async function parseMcpConfig(
 
     if (typeof raw.command === 'string') entry.command = raw.command;
     if (Array.isArray(raw.args)) entry.args = raw.args.map(String);
-    if (isStringRecord(raw.env)) entry.env = raw.env as Record<string, string>;
+    const env = pickStringEntries(raw.env);
+    if (env) entry.env = env;
     if (typeof raw.url === 'string') entry.url = raw.url;
-    if (isStringRecord(raw.headers)) entry.headers = raw.headers as Record<string, string>;
+    const headers = pickStringEntries(raw.headers);
+    if (headers) entry.headers = headers;
     if (typeof raw.disabled === 'boolean') entry.disabled = raw.disabled;
     if (Array.isArray(raw.autoApprove)) entry.autoApprove = raw.autoApprove.map(String);
     if (typeof raw.timeout === 'number') entry.timeout = raw.timeout;
@@ -154,7 +165,8 @@ function findRootKeyLine(lines: string[], rootKey: string): number {
 }
 
 /**
- * Find the 1-indexed line of a server entry by name. Search starts AFTER the
+ * Flat-scan fallback for when the depth-aware scan didn't surface a name
+ * (e.g. formatting the character scan can't track). Search starts AFTER the
  * root key line so a top-level key colliding with a server name (e.g. a
  * server actually named "version" alongside a top-level "version" field)
  * doesn't get reported at line 1.
@@ -176,9 +188,121 @@ function findServerLine(lines: string[], serverName: string, rootKeyLine: number
   return rootKeyLine >= 0 ? rootKeyLine + 1 : 1;
 }
 
-function isStringRecord(value: unknown): value is Record<string, string> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-  return Object.values(value).every((v) => typeof v === 'string');
+/**
+ * Narrow an env/headers-shaped value to its string entries. All-or-nothing
+ * narrowing would let one stray non-string value (`"PORT": 3000`) silently
+ * drop the whole block -- including a real token sitting next to it -- from
+ * secret scanning. Keep the string values; drop only the non-strings.
+ *
+ * Returns undefined when the value isn't an object, or when a non-empty
+ * block has NO string values left (surfacing `{}` there would false-trigger
+ * mcp-env/empty-env-block). A genuinely empty `{}` passes through so
+ * empty-env-block still fires on it.
+ */
+function pickStringEntries(value: unknown): Record<string, string> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value).filter(
+    (kv): kv is [string, string] => typeof kv[1] === 'string',
+  );
+  if (entries.length === 0 && Object.keys(value).length > 0) return undefined;
+  return Object.fromEntries(entries);
+}
+
+/**
+ * Depth-aware scan for keys defined directly inside the root-key object
+ * (`"mcpServers": {...}` / `"servers": {...}`), in document order with their
+ * 1-indexed lines. Unlike a flat regex scan this cannot confuse a server
+ * named `env` with the `"env":` key nested inside another server's config.
+ * Duplicate names appear once per occurrence (JSON.parse keeps only the last
+ * value, so callers interested in "the" line should take the last entry;
+ * the duplicate-name check counts all of them).
+ *
+ * Only call on content that is known-valid JSON -- brace tracking assumes
+ * balanced syntax.
+ */
+export function collectServerNameKeys(
+  content: string,
+  rootKey: string,
+): { name: string; line: number }[] {
+  const names: { name: string; line: number }[] = [];
+  let i = 0;
+  let keyStart = -1; // index where the current key's opening quote sits
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  let rootKeyDepth = -1; // depth at which we saw the root key; server names are at rootKeyDepth+1
+  let pendingKey = ''; // key being collected
+  let collectingKey = false;
+
+  while (i < content.length) {
+    const c = content[i];
+    if (escape) {
+      escape = false;
+      if (collectingKey) pendingKey += c;
+      i++;
+      continue;
+    }
+    if (c === '\\' && inString) {
+      escape = true;
+      if (collectingKey) pendingKey += c;
+      i++;
+      continue;
+    }
+    if (c === '"') {
+      if (!inString) {
+        inString = true;
+        collectingKey = true;
+        pendingKey = '';
+        keyStart = i;
+      } else {
+        inString = false;
+        // Was this a key? A key is a string followed by optional whitespace then `:`.
+        let j = i + 1;
+        while (j < content.length && /\s/.test(content[j])) j++;
+        if (content[j] === ':') {
+          // This string was a key at current depth.
+          if (pendingKey === rootKey && rootKeyDepth === -1) {
+            rootKeyDepth = depth;
+          } else if (rootKeyDepth !== -1 && depth === rootKeyDepth + 1) {
+            // 1-indexed line = number of newlines before the key's opening quote, +1.
+            let line = 1;
+            for (let k = 0; k < keyStart; k++) {
+              if (content[k] === '\n') line++;
+            }
+            names.push({ name: decodeJsonKey(pendingKey), line });
+          }
+        }
+        collectingKey = false;
+        pendingKey = '';
+      }
+      i++;
+      continue;
+    }
+    if (inString) {
+      if (collectingKey) pendingKey += c;
+      i++;
+      continue;
+    }
+    if (c === '{' || c === '[') depth++;
+    else if (c === '}' || c === ']') depth--;
+    i++;
+  }
+
+  return names;
+}
+
+/**
+ * The scan above collects raw source characters, so an escaped key
+ * (`"a\"b"`) carries its backslashes; decode so names compare equal to the
+ * keys JSON.parse produces.
+ */
+function decodeJsonKey(raw: string): string {
+  if (!raw.includes('\\')) return raw;
+  try {
+    return JSON.parse(`"${raw}"`) as string;
+  } catch {
+    return raw;
+  }
 }
 
 async function checkGitTracked(filePath: string, projectRoot: string): Promise<boolean> {

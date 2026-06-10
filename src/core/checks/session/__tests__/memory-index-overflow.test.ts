@@ -1,10 +1,19 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { checkMemoryIndexOverflow } from '../memory-index-overflow.js';
 import { encodeProjectDir } from '../../../session-parser.js';
 import type { SessionContext } from '../../../types.js';
+
+// The check falls back to os.homedir() when neither HOME nor USERPROFILE is
+// set; mock just that export (tmpdir etc. stay real) so the fallback can be
+// pointed at the per-test tmp home.
+const osMocks = vi.hoisted(() => ({ homedir: vi.fn(() => '') }));
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:os')>();
+  return { ...actual, homedir: osMocks.homedir };
+});
 
 let tmpHome: string;
 let originalHome: string | undefined;
@@ -18,11 +27,16 @@ beforeEach(() => {
   originalUserProfile = process.env.USERPROFILE;
   process.env.HOME = tmpHome;
   process.env.USERPROFILE = tmpHome;
+  osMocks.homedir.mockReturnValue('');
 });
 
 afterEach(() => {
-  process.env.HOME = originalHome;
-  process.env.USERPROFILE = originalUserProfile;
+  // Assigning undefined to a process.env key stores the string 'undefined';
+  // delete instead when the variable was originally unset.
+  if (originalHome === undefined) delete process.env.HOME;
+  else process.env.HOME = originalHome;
+  if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+  else process.env.USERPROFILE = originalUserProfile;
   fs.rmSync(tmpHome, { recursive: true, force: true });
 });
 
@@ -66,6 +80,42 @@ describe('checkMemoryIndexOverflow', () => {
     expect(lineIssue!.ruleId).toBe('session-memory-index-overflow/line-overflow');
   });
 
+  it('does not flag a 200-line file that ends with a trailing newline', async () => {
+    // The normal generated MEMORY.md shape is newline-terminated. split('\n')
+    // yields a trailing empty element, so a naive .length reads 201 and a
+    // file that fits the cap exactly would falsely fire.
+    const lines = Array.from({ length: 200 }, (_, i) => `- [t${i}](t${i}.md) — entry ${i}`);
+    seedMemoryFile(lines.join('\n') + '\n');
+    const issues = await checkMemoryIndexOverflow(makeCtx());
+    expect(
+      issues.find((i) => i.ruleId === 'session-memory-index-overflow/line-overflow'),
+    ).toBeUndefined();
+  });
+
+  it('reports the newline-exclusive line count for an overflowing newline-terminated file', async () => {
+    const lines = Array.from({ length: 201 }, (_, i) => `- [t${i}](t${i}.md) — entry ${i}`);
+    seedMemoryFile(lines.join('\n') + '\n');
+    const issues = await checkMemoryIndexOverflow(makeCtx());
+    const lineIssue = issues.find(
+      (i) => i.ruleId === 'session-memory-index-overflow/line-overflow',
+    );
+    expect(lineIssue).toBeDefined();
+    expect(lineIssue!.message).toContain('201 lines');
+    expect(lineIssue!.message).toContain('1 line(s)');
+  });
+
+  it('falls back to os.homedir() when HOME and USERPROFILE are unset', async () => {
+    delete process.env.HOME;
+    delete process.env.USERPROFILE;
+    osMocks.homedir.mockReturnValue(tmpHome);
+    const lines = Array.from({ length: 250 }, (_, i) => `- [t${i}](t${i}.md) — entry ${i}`);
+    seedMemoryFile(lines.join('\n'));
+    const issues = await checkMemoryIndexOverflow(makeCtx());
+    expect(
+      issues.find((i) => i.ruleId === 'session-memory-index-overflow/line-overflow'),
+    ).toBeDefined();
+  });
+
   it('warns when MEMORY.md exceeds 25KB', async () => {
     // Build a file that's under 200 lines but over 25KB by using very long lines.
     const longLine = '- [x](x.md) -- ' + 'y'.repeat(500);
@@ -80,8 +130,8 @@ describe('checkMemoryIndexOverflow', () => {
 
   it('emits distinct ruleIds when a file exceeds both caps', async () => {
     // A file over both the line and byte caps must not emit two issues sharing
-    // one ruleId: distinct ruleIds let each cause be silenced independently via
-    // ignore-rule targeting and keep the two findings disambiguated internally.
+    // one ruleId: distinct ruleIds keep the two causes disambiguated in output
+    // (suppression itself keys on check + message regex, not ruleId).
     // Each long line crosses the line cap; the sheer volume crosses the byte cap.
     const longLine = '- [x](x.md) -- ' + 'y'.repeat(200);
     const lines = Array.from({ length: 250 }, () => longLine);

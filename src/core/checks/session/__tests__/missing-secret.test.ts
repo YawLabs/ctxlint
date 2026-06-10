@@ -224,6 +224,58 @@ describe('checkMissingSecret', () => {
     expect(issues).toHaveLength(0);
   });
 
+  it('skips a multi-word double-quoted flag value when hunting for the NAME', async () => {
+    // `-b "two words"` splits into two whitespace tokens. Skipping only one
+    // would return `words"` as the secret name -- a garbage name that can
+    // never match across siblings. The whole quoted value must be consumed
+    // so NPM_TOKEN is captured.
+    const ctx = makeCtx(
+      [
+        makeEntry('gh secret set -b "two words" NPM_TOKEN', '/repos/foo'),
+        makeEntry('gh secret set -b "two words" NPM_TOKEN', '/repos/bar'),
+      ],
+      [makeSibling('foo'), makeSibling('bar')],
+    );
+    const issues = await checkMissingSecret(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('NPM_TOKEN');
+    expect(issues[0].message).not.toContain('words');
+  });
+
+  it('skips a multi-word single-quoted flag value when hunting for the NAME', async () => {
+    const ctx = makeCtx(
+      [
+        makeEntry("gh secret set -b 'three quoted words' NPM_TOKEN", '/repos/foo'),
+        makeEntry("gh secret set -b 'three quoted words' NPM_TOKEN", '/repos/bar'),
+      ],
+      [makeSibling('foo'), makeSibling('bar')],
+    );
+    const issues = await checkMissingSecret(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('NPM_TOKEN');
+    expect(issues[0].message).not.toContain('quoted');
+  });
+
+  it('does not let a project-less entry mark the current project as having the secret', async () => {
+    // Codex CLI occasionally writes neither `project` nor `cwd`; the scanner
+    // keeps those entries with project ''. normalizePath('') resolves to the
+    // linter's cwd, so without a guard a project-less `gh secret set` would
+    // count as "current project has the secret" whenever ctxlint lints the
+    // current directory -- suppressing the real missing-secret finding.
+    const ctx = makeCtx(
+      [
+        makeEntry('gh secret set NPM_TOKEN -b xxx', ''),
+        makeEntry('gh secret set NPM_TOKEN -b yyy', '/repos/foo'),
+        makeEntry('gh secret set NPM_TOKEN -b zzz', '/repos/bar'),
+      ],
+      [makeSibling('foo'), makeSibling('bar')],
+      process.cwd(),
+    );
+    const issues = await checkMissingSecret(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('NPM_TOKEN');
+  });
+
   // Regression for the substring-match false-positive: `ctxlint-old` should
   // not count as "current has the secret" when current is `ctxlint`.
   it('does not treat basename-substring sibling as current project', async () => {

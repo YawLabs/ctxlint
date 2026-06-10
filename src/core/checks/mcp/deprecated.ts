@@ -11,7 +11,7 @@ export async function checkMcpDeprecated(
   for (const server of config.servers) {
     // sse-transport: flag deprecated SSE transport
     if (server.transport === 'sse') {
-      const line = findTypeLine(config.content, server.name) || server.line;
+      const line = findTypeLine(config.content, server.line) || server.line;
       issues.push({
         severity: 'warning',
         check: 'mcp-deprecated',
@@ -31,20 +31,17 @@ export async function checkMcpDeprecated(
   return issues;
 }
 
-function findTypeLine(content: string, serverName: string): number | null {
+/**
+ * Locate the `"type": "sse"` line inside one server's object. Anchors at the
+ * parser-attributed server line rather than re-scanning for the name from
+ * line 0 -- a name-based scan anchored on the wrong occurrence (a top-level
+ * key or another server's nested key sharing the name) starts brace-tracking
+ * in the wrong object and returns null or a different server's type line.
+ */
+function findTypeLine(content: string, serverLine: number): number | null {
   const lines = content.split('\n');
-  const escaped = serverName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const namePattern = new RegExp(`"${escaped}"\\s*:`);
-
-  // Find the line where this server's object starts
-  let serverStart = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (namePattern.test(lines[i])) {
-      serverStart = i;
-      break;
-    }
-  }
-  if (serverStart === -1) return null;
+  const serverStart = serverLine - 1; // serverLine is 1-indexed
+  if (serverStart < 0 || serverStart >= lines.length) return null;
 
   // Track brace depth to stay within this server's object
   let depth = 0;

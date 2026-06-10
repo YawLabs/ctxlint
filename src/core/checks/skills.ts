@@ -155,7 +155,11 @@ function checkBrokenRefs(file: SkillFile, fmEndLine: number): LintIssue[] {
     // Only flag refs that look like in-repo paths. Skip code blocks that hold
     // example source in a programming language (same exclusion the context
     // parser uses) -- a `./foo` inside a TS snippet is an import example.
-    if (inCode && isExampleLang(codeLang)) continue;
+    // Unlabeled ``` fences are skipped too: a bare fence is the most common
+    // way authors paste shell snippets, so a `./run.sh 1.2.3` inside one is
+    // an invocation example, not a skill-relative path. Matches the rule's
+    // "prefer a false negative over a false positive" posture.
+    if (inCode && (codeLang === '' || isExampleLang(codeLang))) continue;
 
     BODY_PATH.lastIndex = 0;
     let m: RegExpExecArray | null;
@@ -227,8 +231,13 @@ function extractTriggers(fm: Frontmatter): string[] {
   const phrases = new Set<string>();
   const desc = fm.fields['description'] ?? '';
   // Quoted phrases inside the description ("ship 1.3.X", 'release X.Y.Z').
-  for (const q of desc.matchAll(/["']([^"']{3,})["']/g)) {
-    phrases.add(normalizeTrigger(q[1]));
+  // Double quotes pair freely; single quotes must sit on non-word boundaries
+  // so apostrophes in contractions/possessives ("the user's branch can't
+  // merge") aren't read as phrase delimiters -- a naive [\"'] class extracted
+  // phantom triggers like "s branch can" and could shift the scan past a real
+  // double-quoted trigger that followed a contraction.
+  for (const q of desc.matchAll(/"([^"]{3,})"|(?:^|\W)'([^']{3,})'(?!\w)/g)) {
+    phrases.add(normalizeTrigger(q[1] ?? q[2]));
   }
   for (const key of ['trigger', 'triggers']) {
     const val = fm.fields[key];
@@ -288,8 +297,16 @@ function checkOrphaned(ctx: SkillContext): LintIssue[] {
 // MCP tools are namespaced `mcp__<server>__<tool>` and are NOT validated here
 // (their existence depends on the loaded MCP servers, which we can't see) --
 // only obviously-misspelled BUILT-IN tool names are flagged.
+//
+// Validated against the Claude Code built-in tool list on 2026-06-09. CC's
+// built-ins drift across versions: refresh this set when revalidating, and
+// prefer adding over removing (a tool dropped from CC may still be listed in
+// older agent files, where flagging it would be noise). Names not in this set
+// that still LOOK like built-ins (PascalCase) are reported as info, not
+// warning -- see checkDeadToolRestrictions.
 const KNOWN_TOOLS = new Set([
   'Agent',
+  'AskUserQuestion',
   'Bash',
   'BashOutput',
   'Edit',
@@ -297,13 +314,17 @@ const KNOWN_TOOLS = new Set([
   'Glob',
   'Grep',
   'KillShell',
+  'ListMcpResourcesTool',
   'MultiEdit',
   'NotebookEdit',
   'Read',
+  'ReadMcpResourceTool',
   'Skill',
   'SlashCommand',
+  'StructuredOutput',
   'Task',
   'TodoWrite',
+  'ToolSearch',
   'WebFetch',
   'WebSearch',
   'Write',
@@ -323,8 +344,13 @@ function checkDeadToolRestrictions(file: SkillFile, fm: Frontmatter): LintIssue[
     // A restriction may name a tool with an arg form, e.g. "Bash(git:*)".
     const base = entry.replace(/\(.*\)$/, '').trim();
     if (KNOWN_TOOLS.has(base)) continue;
+    // An unknown PascalCase name may be a built-in newer than KNOWN_TOOLS
+    // (the list drifts stale across CC versions), so it's info; anything
+    // else (lowercase, separators) doesn't match CC's naming and is far more
+    // likely a typo, so it keeps the warning.
+    const looksLikeBuiltin = /^[A-Z][A-Za-z]+$/.test(base);
     issues.push({
-      severity: 'warning',
+      severity: looksLikeBuiltin ? 'info' : 'warning',
       check: 'skill-dead-tool-restriction',
       ruleId: 'skill/dead-tool-restriction',
       line: 1,

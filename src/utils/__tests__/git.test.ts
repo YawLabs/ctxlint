@@ -138,4 +138,41 @@ describe('getCommitsSinceBatch path normalization', { timeout: 30000 }, () => {
     const counts = await getCommitsSinceBatch(realTmpDir, [], new Date(0));
     expect(counts.size).toBe(0);
   });
+
+  it('counts a non-ASCII filename under an ASCII directory ref', async () => {
+    const before = new Date(Date.now() - 60 * 1000);
+    // Under git's default core.quotePath=true the changed line comes back as
+    // "src/f\303\266\303\266.txt" (quoted, octal-escaped) and the leading
+    // quote char breaks the `src/` prefix match. The production call pins
+    // core.quotepath=false, so the raw UTF-8 path must match.
+    await commit('add unicode', [{ rel: 'src/föö.txt', body: 'hi' }]);
+
+    const counts = await getCommitsSinceBatch(realTmpDir, ['src/'], before);
+    expect(counts.get('src/')).toBe(1);
+  });
+
+  it('matches a non-ASCII path requested directly (the MCP validate_path shape)', async () => {
+    const before = new Date(Date.now() - 60 * 1000);
+    await commit('add unicode', [{ rel: 'src/föö.txt', body: 'hi' }]);
+    await commit('touch unicode', [{ rel: 'src/föö.txt', body: 'hi again' }]);
+
+    const counts = await getCommitsSinceBatch(realTmpDir, ['src/föö.txt'], before);
+    expect(counts.has('src/föö.txt')).toBe(true);
+    expect(counts.get('src/föö.txt')).toBe(2);
+  });
+
+  it.runIf(process.platform === 'win32')(
+    'matches a differently-cased ref on win32 (case-insensitive filesystem)',
+    async () => {
+      const before = new Date(Date.now() - 60 * 1000);
+      await commit('add foo', [{ rel: 'src/foo.ts', body: 'export const a = 1;' }]);
+
+      // `SRC/Foo.ts` resolves on a case-insensitive Windows filesystem while
+      // git stores `src/foo.ts`; the normalizer case-folds both sides on
+      // win32 so the ref still counts instead of silently returning 0.
+      const counts = await getCommitsSinceBatch(realTmpDir, ['SRC/Foo.ts'], before);
+      expect(counts.has('SRC/Foo.ts')).toBe(true);
+      expect(counts.get('SRC/Foo.ts')).toBe(1);
+    },
+  );
 });

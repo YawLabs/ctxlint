@@ -5,6 +5,15 @@
 //
 // Behavior matches the prior in-file implementation in
 // `core/config.ts` (`posToLineCol`), which was merged here to avoid drift.
+//
+// Cost: each call rescans `content` from index 0, so mapping M offsets in an
+// N-char file is O(N*M). Current callers map one offset per parse error /
+// hook node; a caller mapping many offsets in a large file should precompute
+// line starts instead of calling this in a loop.
+//
+// Semantics worth knowing: offsets past content.length clamp to the position
+// just after the last character; only '\n' starts a new line, so the '\r' of
+// a CRLF pair counts toward the column of the line it ends.
 export function offsetToPosition(
   content: string,
   offset: number,

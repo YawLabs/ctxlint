@@ -55,11 +55,31 @@ export interface IgnoreApplyResult {
   rulesMissingReason: IgnoreRule[];
 }
 
+/**
+ * Compile one user-supplied pattern, converting V8's bare SyntaxError
+ * ('Invalid regular expression: /[/: ...') into an error that names the
+ * offending rule index and field. The patterns come from `ignoreRules` in
+ * `.ctxlintrc.json`; without this context the throw surfaces from deep
+ * inside runAudit with no pointer back to the config entry that caused it.
+ */
+function compilePattern(pattern: string, index: number, field: 'match' | 'pathPattern'): RegExp {
+  try {
+    return new RegExp(pattern);
+  } catch (err) {
+    throw new Error(
+      `Invalid regex in ignoreRules[${index}].${field} ("${pattern}"): ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+      { cause: err },
+    );
+  }
+}
+
 export function compileRules(rules: IgnoreRule[]): CompiledRule[] {
-  return rules.map((r) => ({
+  return rules.map((r, i) => ({
     check: r.check,
-    match: r.match ? new RegExp(r.match) : undefined,
-    pathPattern: r.pathPattern ? new RegExp(r.pathPattern) : undefined,
+    match: r.match ? compilePattern(r.match, i, 'match') : undefined,
+    pathPattern: r.pathPattern ? compilePattern(r.pathPattern, i, 'pathPattern') : undefined,
     reason: r.reason,
     fired: false,
     matchSource: r.match,

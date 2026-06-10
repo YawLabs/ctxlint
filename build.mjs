@@ -11,19 +11,25 @@
 import { build } from 'esbuild';
 import { readFileSync } from 'node:fs';
 import { computeTargets } from './scripts/generate-catalog-prose.mjs';
-import { writeFileSync } from 'node:fs';
 import { relative } from 'node:path';
 
-// Generate-from-catalog: regenerate the spec count headers + README family-table
-// counts FROM the *-rules.json catalogs before bundling, so the checked-in prose
-// can never drift from the machine-readable source of truth. The catalog-generate
-// vitest test runs the same script in --check mode (see
-// scripts/generate-catalog-prose.mjs) and fails if a count was hand-edited without
-// regen; that test runs in release.sh via `pnpm run test:run`.
-for (const t of computeTargets()) {
-  if (t.current !== t.generated) {
-    writeFileSync(t.file, t.generated, 'utf-8');
-    console.log('regenerated ' + relative(process.cwd(), t.file));
+// Generate-from-catalog drift gate: the spec count headers + README family-table
+// counts are DERIVED from the *-rules.json catalogs. The build deliberately does
+// NOT rewrite drifted prose in place — it used to, and because the build runs
+// before `pnpm run test:run` (release.sh step 2 vs 3, and the `pretest` hooks),
+// the silent rewrite fixed the files on disk before the catalog-generate vitest
+// --check gate could ever see the drift, leaving regenerated-but-uncommitted
+// files behind. Instead: fail loudly and point at the regeneration command, so
+// the drift is fixed AND committed by a human/agent before the build proceeds.
+{
+  const drifted = computeTargets().filter((t) => t.current !== t.generated);
+  if (drifted.length > 0) {
+    console.error('Catalog-derived prose is out of sync with the rule catalogs:');
+    for (const t of drifted) console.error('  ' + relative(process.cwd(), t.file));
+    console.error(
+      'Run `node scripts/generate-catalog-prose.mjs` (pnpm run generate), review, and commit the result.',
+    );
+    process.exit(1);
   }
 }
 

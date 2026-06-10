@@ -2,7 +2,13 @@
 // called. Earlier versions imported at module top-level, which hoisted the
 // import into the CLI's init path and charged every `--version` / `--help`
 // invocation. The first countTokens() call pays the one-time load; until
-// then the char-based fallback is used (Math.ceil(len/4)).
+// then the charset-aware fallback is used (approximateTokens below).
+//
+// Accuracy: counts come from cl100k_base (tiktoken's encoding for 'gpt-4'),
+// a proxy for Claude's unpublished tokenizer -- expect ~10-20% divergence on
+// prose and more on code. Token budgets compared against these counts are
+// soft estimates of Claude-loaded context, not exact costs; thresholds
+// downstream should carry that tolerance, not treat counts as exact.
 
 import { createRequire } from 'node:module';
 
@@ -36,20 +42,42 @@ function getEncoder(): Encoder | null {
   if (encoder) return encoder;
   const loader = loadEncodingForModel();
   if (!loader) return null;
-  encoder = loader('gpt-4');
+  try {
+    encoder = loader('gpt-4');
+  } catch {
+    // Defensive hardening: encoding_for_model has no known throw path once
+    // the require succeeded, but if it ever does throw, disable tiktoken for
+    // the rest of the process rather than re-running a throwing constructor
+    // on every countTokens call.
+    encodingForModel = null;
+    return null;
+  }
   return encoder;
+}
+
+// Fallback estimate for when tiktoken is unavailable. ~4 chars per BPE token
+// holds for English prose and code, but CJK text encodes at roughly one token
+// per codepoint, so a flat length/4 undercounts Japanese/Chinese/Korean text
+// 3-4x -- enough for an all-CJK CLAUDE.md to sail under every token budget.
+// CJK codepoints count as 1 token each; everything else at 1/4.
+const CJK_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu;
+
+export function approximateTokens(text: string): number {
+  if (!text) return 0;
+  const cjk = text.match(CJK_RE)?.length ?? 0;
+  return cjk + Math.ceil((text.length - cjk) / 4);
 }
 
 export function countTokens(text: string): number {
   if (!text) return 0;
   const enc = getEncoder();
   if (!enc) {
-    return Math.ceil(text.length / 4);
+    return approximateTokens(text);
   }
   try {
     return enc.encode(text).length;
   } catch {
-    return Math.ceil(text.length / 4);
+    return approximateTokens(text);
   }
 }
 

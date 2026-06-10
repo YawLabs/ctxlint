@@ -19,7 +19,7 @@
       "category": "skill",
       "severity": "warning",
       "description": "A SKILL.md or agent .md file is missing required YAML frontmatter, or a required field within it. Skills and agents key off `name` + `description`; the description drives selection, so a missing one means the skill/agent is never invoked.",
-      "trigger": "The file has no `---`-delimited frontmatter, has unclosed frontmatter, or is missing a required field (name, description). A missing file body altogether is reported as error; a missing single field as warning.",
+      "trigger": "The file has no `---`-delimited frontmatter, has unclosed frontmatter, or is missing a required field (name, description). Absent or unclosed frontmatter is reported as error; a missing single field as warning.",
       "message": "{file}: missing required frontmatter field \"{field}\"",
       "fixable": false,
       "stability": "experimental"
@@ -58,8 +58,8 @@
       "id": "skill/dead-tool-restriction",
       "category": "skill",
       "severity": "warning",
-      "description": "An agent definition's tool restriction (tools / allowed-tools frontmatter) lists a tool name that is not a known Claude Code built-in tool. A dead restriction silently fails to grant/deny the intended tool. MCP-namespaced tools (mcp__server__tool) and wildcards are not validated (their existence depends on loaded MCP servers).",
-      "trigger": "A non-MCP, non-wildcard entry in an agent's tools/allowed-tools list does not match a known built-in Claude Code tool name (Bash, Read, Edit, Glob, Grep, Write, Task, WebFetch, WebSearch, etc.).",
+      "description": "An agent definition's tool restriction (tools / allowed-tools frontmatter) lists a tool name that is not a known Claude Code built-in tool. A dead restriction silently fails to grant/deny the intended tool. MCP-namespaced tools (mcp__server__tool) and wildcards are not validated (their existence depends on loaded MCP servers). Severity is split by name shape: an unknown PascalCase name is reported as info (it may be a built-in newer than the linter's known-tool list, which drifts across Claude Code versions); anything else (lowercase, separators) doesn't match Claude Code's naming and is reported as warning (far more likely a typo).",
+      "trigger": "A non-MCP, non-wildcard entry in an agent's tools/allowed-tools list does not match a known built-in Claude Code tool name (Bash, Read, Edit, Glob, Grep, Write, Task, WebFetch, WebSearch, etc.). Unknown PascalCase names downgrade to info; other shapes keep the warning.",
       "message": "{file}: tool restriction lists \"{tool}\" which is not a known Claude Code tool",
       "fixable": false,
       "stability": "experimental"

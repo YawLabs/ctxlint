@@ -189,7 +189,23 @@ function isPlaceholderWrapped(line: string, start: number, end: number): boolean
   const angleOpen = line.lastIndexOf('<', start);
   if (angleOpen !== -1) {
     const close = line.indexOf('>', angleOpen);
-    if (close !== -1 && close >= end) return true;
+    if (close !== -1 && close >= end) {
+      // The '<' and '>' must look like a placeholder wrapper, not a stray
+      // comparison-operator pair ("retries < max ... timeout > 30") that
+      // happens to straddle the match. A wrapper is the innermost bracket
+      // pair (no '<' inside the span -- e.g. an unrelated <docs> tag after
+      // the match), hugs its content (comparison operators carry boundary
+      // whitespace, placeholders like <your-key> never do), and is short.
+      const span = line.slice(angleOpen + 1, close);
+      if (
+        span.length > 0 &&
+        !span.includes('<') &&
+        span === span.trim() &&
+        close - angleOpen <= 80
+      ) {
+        return true;
+      }
+    }
   }
   return false;
 }
@@ -197,9 +213,12 @@ function isPlaceholderWrapped(line: string, start: number, end: number): boolean
 /**
  * Fence languages where copy-paste of a secret would actually run / configure
  * something -- those still flag. `text`/`txt`/`example`/`pseudocode`/`none`
- * are illustrative-only.
+ * are illustrative-only. Untagged fences (a bare ```) are NOT illustrative:
+ * a bare fence is the most common way real `.env` contents, export lines, or
+ * whole key files get pasted into a context file, so only an explicit
+ * illustrative tag earns the skip.
  */
-const ILLUSTRATIVE_FENCES = new Set(['text', 'txt', 'example', 'pseudocode', 'none', '']);
+const ILLUSTRATIVE_FENCES = new Set(['text', 'txt', 'example', 'pseudocode', 'none']);
 
 /**
  * Scan content line-by-line, tracking fenced-code-block state so we can apply

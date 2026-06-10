@@ -55,6 +55,15 @@ const DRIVE_ABS_PATH = /(?:^|[\s`"'(])([A-Za-z]:[\\/][^\s'"`),;:!?]+)/g;
  *
  * Note: this encoding is lossy — hyphens, dots, and path separators all map
  * to `-`. We use this for matching (encoded == encoded) rather than decoding.
+ *
+ * Lossiness means DISTINCT paths can collide: `~/x/a-b`, `~/x/a/b`, and
+ * `~/x/a.b` all encode to `~-x-a-b`. Claude Code's own project-dir encoding
+ * has the identical collision, and matching its on-disk layout is the point —
+ * so every consumer inherits it: `projectDirMatchesPath`-based scoping
+ * (stale-memory, duplicate-memory) and direct
+ * `~/.claude/projects/<encoded>/memory` lookups (memory-index-overflow) can
+ * attribute a colliding sibling project's data to this one. Do not "fix" the
+ * encoding here; it would break parity with Claude Code's directories.
  */
 export function encodeProjectDir(fsPath: string): string {
   return fsPath.replace(/[:\\/\.]/g, '-');
@@ -63,6 +72,10 @@ export function encodeProjectDir(fsPath: string): string {
 /**
  * Check whether an encoded Claude project directory name matches a filesystem path.
  * Avoids the ambiguity of trying to decode `-` back to `/`, `-`, or `.`.
+ *
+ * Because the encoding is lossy (see `encodeProjectDir`), `true` means
+ * "encodes identically", not "is the same path" — sibling projects whose
+ * paths differ only in `-` vs `/` vs `.` all match the same encoded dir.
  */
 export function projectDirMatchesPath(encodedDir: string, fsPath: string): boolean {
   const normalized = fsPath.replace(/\\/g, '/');

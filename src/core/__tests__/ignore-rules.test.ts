@@ -50,6 +50,22 @@ describe('compileRules', () => {
     expect(r.match).toBeUndefined();
     expect(r.pathPattern).toBeUndefined();
   });
+
+  // A typo'd pattern in .ctxlintrc.json used to surface as V8's bare
+  // 'Invalid regular expression: /[/: ...' with no pointer back to the
+  // offending ignoreRules entry. The compile error must name the rule index,
+  // the field, and the pattern, and keep the underlying V8 reason.
+  it('throws a contextual error naming rule index, field, and pattern for an invalid match regex', () => {
+    expect(() => compileRules([{ check: 'paths', match: '[' }])).toThrowError(
+      /Invalid regex in ignoreRules\[0\]\.match \("\["\): .*Invalid regular expression/,
+    );
+  });
+
+  it('reports the correct index and field for an invalid pathPattern on a later rule', () => {
+    expect(() =>
+      compileRules([{ check: 'paths' }, { check: 'session-stale-memory', pathPattern: '(' }]),
+    ).toThrowError(/Invalid regex in ignoreRules\[1\]\.pathPattern \("\("\)/);
+  });
 });
 
 describe('applyIgnoreRules', () => {

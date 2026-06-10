@@ -1,3 +1,4 @@
+import { collectServerNameKeys } from '../../mcp-parser.js';
 import type { ParsedMcpConfig, LintIssue } from '../../types.js';
 
 export async function checkMcpConsistency(configs: ParsedMcpConfig[]): Promise<LintIssue[]> {
@@ -9,7 +10,10 @@ export async function checkMcpConsistency(configs: ParsedMcpConfig[]): Promise<L
     return checkSingleFileIssues(configs).concat(checkMissingFromClient(configs));
   }
 
-  // Build a map of server name -> list of (config, server) pairs
+  // Build a map of server name -> list of (config, server) pairs.
+  // Project-scope configs only: a user/global config differing from the
+  // project one is documented client precedence (project overrides user),
+  // not drift, so cross-scope pairs must not enter the comparison.
   const serverMap = new Map<
     string,
     {
@@ -22,6 +26,7 @@ export async function checkMcpConsistency(configs: ParsedMcpConfig[]): Promise<L
   >();
 
   for (const config of configs) {
+    if (config.scope !== 'project') continue;
     for (const server of config.servers) {
       const existing = serverMap.get(server.name) || [];
       existing.push({
@@ -103,81 +108,6 @@ function checkMissingFromClient(configs: ParsedMcpConfig[]): LintIssue[] {
   }
 
   return issues;
-}
-
-/**
- * Depth-aware duplicate-key scan: finds all keys defined at the server-object
- * depth (directly inside `"mcpServers": {...}` or `"servers": {...}`) and
- * reports any name that appears more than once. Necessary because JSON.parse
- * silently keeps only the last duplicate; also necessary to avoid counting
- * `"env":` keys inside nested server configs when a server is named `env`.
- */
-function collectServerNameKeys(content: string, rootKey: string): { name: string; line: number }[] {
-  const names: { name: string; line: number }[] = [];
-  let i = 0;
-  let keyStart = -1; // index where the current key's opening quote sits
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-  let rootKeyDepth = -1; // depth at which we saw the root key; server names are at rootKeyDepth+1
-  let pendingKey = ''; // key being collected
-  let collectingKey = false;
-
-  while (i < content.length) {
-    const c = content[i];
-    if (escape) {
-      escape = false;
-      if (collectingKey) pendingKey += c;
-      i++;
-      continue;
-    }
-    if (c === '\\' && inString) {
-      escape = true;
-      if (collectingKey) pendingKey += c;
-      i++;
-      continue;
-    }
-    if (c === '"') {
-      if (!inString) {
-        inString = true;
-        collectingKey = true;
-        pendingKey = '';
-        keyStart = i;
-      } else {
-        inString = false;
-        // Was this a key? A key is a string followed by optional whitespace then `:`.
-        let j = i + 1;
-        while (j < content.length && /\s/.test(content[j])) j++;
-        if (content[j] === ':') {
-          // This string was a key at current depth.
-          if (pendingKey === rootKey && rootKeyDepth === -1) {
-            rootKeyDepth = depth;
-          } else if (rootKeyDepth !== -1 && depth === rootKeyDepth + 1) {
-            // 1-indexed line = number of newlines before the key's opening quote, +1.
-            let line = 1;
-            for (let k = 0; k < keyStart; k++) {
-              if (content[k] === '\n') line++;
-            }
-            names.push({ name: pendingKey, line });
-          }
-        }
-        collectingKey = false;
-        pendingKey = '';
-      }
-      i++;
-      continue;
-    }
-    if (inString) {
-      if (collectingKey) pendingKey += c;
-      i++;
-      continue;
-    }
-    if (c === '{' || c === '[') depth++;
-    else if (c === '}' || c === ']') depth--;
-    i++;
-  }
-
-  return names;
 }
 
 function checkSingleFileIssues(configs: ParsedMcpConfig[]): LintIssue[] {

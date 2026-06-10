@@ -107,6 +107,73 @@ describe('checkCiSecrets', () => {
     expect(issues.length).toBe(0);
   });
 
+  it('does NOT count lowercase prose as documenting a generic secret name (TOKEN)', async () => {
+    mkdirSync(join(tempDir, '.github', 'workflows'), { recursive: true });
+    writeFileSync(
+      join(tempDir, '.github', 'workflows', 'release.yml'),
+      'env:\n  AUTH: ${{ secrets.TOKEN }}',
+    );
+
+    // The word "token" in ordinary prose says nothing about a workflow
+    // secret literally named TOKEN.
+    const files = [makeFile('CLAUDE.md', 'Request a token from the dashboard to authenticate.')];
+    const issues = await checkCiSecrets(files, tempDir);
+    expect(issues.length).toBe(1);
+    expect(issues[0].message).toContain('TOKEN');
+  });
+
+  it('counts an exact uppercase mention as documenting a generic secret name', async () => {
+    mkdirSync(join(tempDir, '.github', 'workflows'), { recursive: true });
+    writeFileSync(
+      join(tempDir, '.github', 'workflows', 'release.yml'),
+      'env:\n  AUTH: ${{ secrets.TOKEN }}',
+    );
+
+    const files = [makeFile('CLAUDE.md', 'Set TOKEN with `gh secret set TOKEN`.')];
+    const issues = await checkCiSecrets(files, tempDir);
+    expect(issues.length).toBe(0);
+  });
+
+  it('counts a secrets.<name> reference as documenting a generic secret name', async () => {
+    mkdirSync(join(tempDir, '.github', 'workflows'), { recursive: true });
+    writeFileSync(
+      join(tempDir, '.github', 'workflows', 'release.yml'),
+      'env:\n  AUTH: ${{ secrets.TOKEN }}',
+    );
+
+    // Case-insensitive: the explicit secrets. prefix is unambiguous.
+    const files = [
+      makeFile('CLAUDE.md', 'The release workflow reads secrets.token from repo settings.'),
+    ];
+    const issues = await checkCiSecrets(files, tempDir);
+    expect(issues.length).toBe(0);
+  });
+
+  it('does NOT count prose "key" for a short generic secret name (KEY)', async () => {
+    mkdirSync(join(tempDir, '.github', 'workflows'), { recursive: true });
+    writeFileSync(
+      join(tempDir, '.github', 'workflows', 'deploy.yml'),
+      'env:\n  K: ${{ secrets.KEY }}',
+    );
+
+    const files = [makeFile('CLAUDE.md', 'Rotate the signing key every quarter.')];
+    const issues = await checkCiSecrets(files, tempDir);
+    expect(issues.length).toBe(1);
+    expect(issues[0].message).toContain('KEY');
+  });
+
+  it('keeps the loose case-insensitive match for multi-token names (NPM_TOKEN)', async () => {
+    mkdirSync(join(tempDir, '.github', 'workflows'), { recursive: true });
+    writeFileSync(
+      join(tempDir, '.github', 'workflows', 'release.yml'),
+      'env:\n  TOKEN: ${{ secrets.NPM_TOKEN }}',
+    );
+
+    const files = [makeFile('CLAUDE.md', 'CI publishes with the npm token stored as a secret.')];
+    const issues = await checkCiSecrets(files, tempDir);
+    expect(issues.length).toBe(0);
+  });
+
   it('detects secrets across multiple workflow files', async () => {
     mkdirSync(join(tempDir, '.github', 'workflows'), { recursive: true });
     writeFileSync(

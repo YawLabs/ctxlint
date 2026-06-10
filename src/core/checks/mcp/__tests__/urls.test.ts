@@ -72,6 +72,66 @@ describe('checkMcpUrls', () => {
     expect(localhost!.severity).toBe('warning');
   });
 
+  it('flags IPv6 loopback [::1] URL in project config', async () => {
+    // URL.hostname keeps the brackets ('[::1]'); the check must strip them.
+    // Same loopback set as the http-no-tls exemption, so this config can't
+    // lint clean through both rules.
+    const config = makeConfig({
+      scope: 'project',
+      servers: [
+        {
+          name: 'local6',
+          transport: 'http',
+          url: 'http://[::1]:3000/mcp',
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpUrls(config, '/project');
+    const loopback = issues.find((i) => i.ruleId === 'mcp-urls/localhost-in-project-config');
+    expect(loopback).toBeDefined();
+    expect(loopback!.severity).toBe('warning');
+  });
+
+  it('flags non-.1 loopback (127.0.0.2) URL in project config', async () => {
+    const config = makeConfig({
+      scope: 'project',
+      servers: [
+        {
+          name: 'local127',
+          transport: 'http',
+          url: 'http://127.0.0.2:8080/mcp',
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpUrls(config, '/project');
+    expect(issues.filter((i) => i.ruleId === 'mcp-urls/localhost-in-project-config')).toHaveLength(
+      1,
+    );
+  });
+
+  it('does not flag a public host masquerading as loopback (127.evil.com)', async () => {
+    const config = makeConfig({
+      scope: 'project',
+      servers: [
+        {
+          name: 'fakeloop',
+          transport: 'http',
+          url: 'https://127.evil.com/mcp',
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpUrls(config, '/project');
+    expect(issues.filter((i) => i.ruleId === 'mcp-urls/localhost-in-project-config')).toHaveLength(
+      0,
+    );
+  });
+
   it('does not flag localhost in user-scope config', async () => {
     const config = makeConfig({
       scope: 'user',

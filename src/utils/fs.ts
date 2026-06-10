@@ -19,11 +19,14 @@ export function stripBom(content: string): string {
 
 /**
  * Keyed LRU cache of parsed package.json per project root (mirrors the
- * diverged-file lineSet cache). A single-slot {root,data} cache thrashes when a
- * long-running MCP server alternates between sibling roots -- each switch evicts
- * the other root's parse, so a back-and-forth scan re-reads + re-parses on every
- * call. The keyed Map keeps each root's data resident; the 256-entry LRU cap
- * bounds memory (`Map` is insertion-ordered, so delete+set on hit promotes to
+ * diverged-file lineSet cache). The cache amortizes loads WITHIN a single
+ * lint pass: several checks consult package.json for the same root, and a
+ * pass that spans sibling roots (monorepo) would thrash a single-slot
+ * {root,data} cache on every root switch. It deliberately does NOT persist
+ * across MCP tool calls -- the server clears it via resetPackageJsonCache()
+ * after every handler so a long-running server never serves a stale parse
+ * (see src/mcp/server.ts). The 256-entry LRU cap bounds memory within a pass
+ * (`Map` is insertion-ordered, so delete+set on hit promotes to
  * most-recently-used and the oldest key evicts when over the cap).
  *
  * `null` (missing / malformed package.json) is cached too, so repeated misses
@@ -129,9 +132,25 @@ export function getAllProjectFiles(projectRoot: string): string[] {
     try {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       for (const entry of entries) {
-        if (IGNORED_DIRS.has(entry.name)) continue;
         const fullPath = path.join(dir, entry.name);
+        if (entry.isSymbolicLink()) {
+          // Never walk through a directory link -- a symlink cycle would
+          // otherwise burn the whole depth budget. A link to a regular file
+          // is still a project file, so resolve and keep it.
+          try {
+            if (fs.statSync(fullPath).isFile()) {
+              files.push(path.relative(projectRoot, fullPath));
+            }
+          } catch {
+            // broken link -- skip
+          }
+          continue;
+        }
         if (entry.isDirectory()) {
+          // Ignore-by-name applies to directories only: a FILE named `build`
+          // or `dist` (e.g. an extensionless build script) is a real project
+          // file and must stay in the list.
+          if (IGNORED_DIRS.has(entry.name)) continue;
           walk(fullPath, depth + 1);
         } else {
           files.push(path.relative(projectRoot, fullPath));

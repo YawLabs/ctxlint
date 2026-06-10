@@ -80,6 +80,79 @@ describe('checkMcpDeprecated', () => {
     expect(issues[0].line).toBe(5);
   });
 
+  it('anchors at the server line when the name collides with a top-level key', async () => {
+    // A name-based scan from line 0 would anchor on the top-level "settings"
+    // object (line 2), leave it at depth 0, return null, and fall back to the
+    // server line -- where the '"sse"' fix oldText doesn't exist. Anchoring at
+    // the parser-attributed server line finds the real type line.
+    const config = makeConfig({
+      content: [
+        '{',
+        '  "settings": { "theme": "dark" },',
+        '  "mcpServers": {',
+        '    "settings": {',
+        '      "type": "sse",',
+        '      "url": "https://old.example.com/sse"',
+        '    }',
+        '  }',
+        '}',
+      ].join('\n'),
+      servers: [
+        {
+          name: 'settings',
+          transport: 'sse',
+          url: 'https://old.example.com/sse',
+          line: 4,
+          raw: { type: 'sse', url: 'https://old.example.com/sse' },
+        },
+      ],
+    });
+    const issues = await checkMcpDeprecated(config, '/project');
+    expect(issues).toHaveLength(1);
+    expect(issues[0].line).toBe(5);
+  });
+
+  it("does not attribute an earlier server's type line when names collide with a scalar top-level key", async () => {
+    // A scan anchored on the top-level scalar "version" (line 2) would track
+    // braces through the whole mcpServers block and return server a's
+    // "type": "sse" line for server "version".
+    const config = makeConfig({
+      content: [
+        '{',
+        '  "version": "2.0",',
+        '  "mcpServers": {',
+        '    "a": {',
+        '      "type": "sse",',
+        '      "url": "https://a.example.com/sse"',
+        '    },',
+        '    "version": {',
+        '      "type": "sse",',
+        '      "url": "https://v.example.com/sse"',
+        '    }',
+        '  }',
+        '}',
+      ].join('\n'),
+      servers: [
+        {
+          name: 'a',
+          transport: 'sse',
+          url: 'https://a.example.com/sse',
+          line: 4,
+          raw: { type: 'sse', url: 'https://a.example.com/sse' },
+        },
+        {
+          name: 'version',
+          transport: 'sse',
+          url: 'https://v.example.com/sse',
+          line: 8,
+          raw: { type: 'sse', url: 'https://v.example.com/sse' },
+        },
+      ],
+    });
+    const issues = await checkMcpDeprecated(config, '/project');
+    expect(issues.map((i) => i.line)).toEqual([5, 9]);
+  });
+
   it('does not flag stdio transport', async () => {
     const config = makeConfig({
       servers: [

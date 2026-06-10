@@ -365,6 +365,160 @@ describe('applyFixes', () => {
     expect(updated).not.toContain('src/old/');
   });
 
+  // Two differently-stale refs on one line can resolve to the SAME target
+  // (the basename-match pass in checks/paths.ts emits this shape). Chaining
+  // replaceAll on the mutated line let fix B's oldText re-match inside fix
+  // A's newText output, yielding nonexistent content like
+  // `src/src/lib/util.ts`. Replacements must be computed against the
+  // original line text and spliced once.
+  it('does not cascade: a later fix cannot re-match an earlier fix output on the same line', () => {
+    const filePath = writeFixture('CLAUDE.md', 'Edit old/util.ts and lib/util.ts\n');
+    const result = makeResult([
+      {
+        path: 'CLAUDE.md',
+        isSymlink: false,
+        tokens: 10,
+        lines: 1,
+        issues: [
+          {
+            severity: 'error',
+            check: 'paths',
+            line: 1,
+            message: 'old/util.ts does not exist',
+            fix: { file: filePath, line: 1, oldText: 'old/util.ts', newText: 'src/lib/util.ts' },
+          },
+          {
+            severity: 'error',
+            check: 'paths',
+            line: 1,
+            message: 'lib/util.ts does not exist',
+            // Same newText as the fix above -- and its oldText is a substring
+            // of that newText, the exact re-match shape.
+            fix: { file: filePath, line: 1, oldText: 'lib/util.ts', newText: 'src/lib/util.ts' },
+          },
+        ],
+      },
+    ]);
+
+    const summary = applyFixes(result);
+    expect(summary.totalFixes).toBe(2);
+
+    const updated = fs.readFileSync(filePath, 'utf-8');
+    expect(updated).toBe('Edit src/lib/util.ts and src/lib/util.ts\n');
+    expect(updated).not.toContain('src/src/');
+  });
+
+  // The interactive --fix flow has an unbounded confirmation window between
+  // scan and apply, during which a fix-target file can be deleted or turn
+  // read-only. A throw mid-loop would leave earlier writes applied with no
+  // accurate summary; the fixer must skip the broken file and keep going.
+  describe('unreadable / unwritable fix targets', () => {
+    it('skips an unreadable file, continues to later files, keeps the summary accurate', () => {
+      const missingPath = path.join(tmpDir, 'GONE.md'); // never created
+      const goodPath = writeFixture('CLAUDE.md', 'See `src/old.ts`\n');
+      const result = makeResult([
+        {
+          // Broken file FIRST so the loop must survive it to reach the good one.
+          path: 'GONE.md',
+          isSymlink: false,
+          tokens: 10,
+          lines: 1,
+          issues: [
+            {
+              severity: 'error',
+              check: 'paths',
+              line: 1,
+              message: '',
+              fix: { file: missingPath, line: 1, oldText: 'a.ts', newText: 'b.ts' },
+            },
+          ],
+        },
+        {
+          path: 'CLAUDE.md',
+          isSymlink: false,
+          tokens: 10,
+          lines: 1,
+          issues: [
+            {
+              severity: 'error',
+              check: 'paths',
+              line: 1,
+              message: '',
+              fix: { file: goodPath, line: 1, oldText: 'src/old.ts', newText: 'src/new.ts' },
+            },
+          ],
+        },
+      ]);
+
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        const summary = applyFixes(result);
+        expect(summary.totalFixes).toBe(1);
+        expect(summary.filesModified).toEqual([goodPath]);
+        expect(fs.readFileSync(goodPath, 'utf-8')).toContain('src/new.ts');
+        const messages = logSpy.mock.calls.map((args) => args.join(' ')).join('\n');
+        expect(messages).toContain('Skipped');
+        expect(messages).toContain('GONE.md');
+      } finally {
+        logSpy.mockRestore();
+      }
+    });
+
+    it('skips a file whose write fails (read-only), continues, and does not count it', () => {
+      const readonlyPath = writeFixture('LOCKED.md', 'See `src/old.ts`\n');
+      const goodPath = writeFixture('CLAUDE.md', 'See `lib/old.ts`\n');
+      fs.chmodSync(readonlyPath, 0o444);
+      const result = makeResult([
+        {
+          path: 'LOCKED.md',
+          isSymlink: false,
+          tokens: 10,
+          lines: 1,
+          issues: [
+            {
+              severity: 'error',
+              check: 'paths',
+              line: 1,
+              message: '',
+              fix: { file: readonlyPath, line: 1, oldText: 'src/old.ts', newText: 'src/new.ts' },
+            },
+          ],
+        },
+        {
+          path: 'CLAUDE.md',
+          isSymlink: false,
+          tokens: 10,
+          lines: 1,
+          issues: [
+            {
+              severity: 'error',
+              check: 'paths',
+              line: 1,
+              message: '',
+              fix: { file: goodPath, line: 1, oldText: 'lib/old.ts', newText: 'lib/new.ts' },
+            },
+          ],
+        },
+      ]);
+
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        const summary = applyFixes(result);
+        expect(summary.totalFixes).toBe(1);
+        expect(summary.filesModified).toEqual([goodPath]);
+        expect(fs.readFileSync(goodPath, 'utf-8')).toContain('lib/new.ts');
+        expect(fs.readFileSync(readonlyPath, 'utf-8')).toContain('src/old.ts');
+        const messages = logSpy.mock.calls.map((args) => args.join(' ')).join('\n');
+        expect(messages).toContain('Skipped');
+        expect(messages).toContain('LOCKED.md');
+      } finally {
+        logSpy.mockRestore();
+        // Restore write permission so afterEach rmSync can delete the tmp dir.
+        fs.chmodSync(readonlyPath, 0o666);
+      }
+    });
+  });
+
   it('fixes across multiple files', () => {
     const file1 = writeFixture('CLAUDE.md', 'See `src/old.ts`\n');
     const file2 = writeFixture('AGENTS.md', 'Check `lib/old.ts`\n');

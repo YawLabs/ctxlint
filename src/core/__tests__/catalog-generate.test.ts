@@ -4,6 +4,8 @@ import * as path from 'node:path';
 import { describe, it, expect, afterEach } from 'vitest';
 import { CATALOGS, REPO_ROOT, type CatalogMeta } from '../catalog-meta.js';
 import { specCoverageGaps } from '../catalog-generate.js';
+// @ts-expect-error generate-catalog-prose.mjs is plain JS with no type declarations
+import { applyCountsToSpec } from '../../../scripts/generate-catalog-prose.mjs';
 
 /**
  * CI gate (item 3): the catalog-derived prose (spec count headers + README
@@ -76,5 +78,41 @@ describe('specCoverageGaps token-bounded matching', () => {
       'Rules: `tokens/aggregate` and `tier-tokens/aggregate` both apply.\n',
     );
     expect(specCoverageGaps(meta)).toEqual([]);
+  });
+});
+
+describe('applyCountsToSpec per-category guard', () => {
+  it('rewrites the header count for any catalog', () => {
+    const out = applyCountsToSpec('Has 28 lint rules organized into 11 categories.', 39, [
+      'a',
+      'b',
+      'c',
+    ]);
+    expect(out).toBe('Has 39 lint rules organized into 3 categories.');
+  });
+
+  it('does NOT rewrite a per-category subset sentence in a multi-category catalog', () => {
+    // The failure mode this pins: a multi-category spec writing
+    // "4 rules in the `frontmatter` category" must not be corrupted to the
+    // catalog total during a routine build.
+    const body =
+      'There are 4 rules in the `frontmatter` category and 3 rules in the `security` category.';
+    expect(applyCountsToSpec(body, 28, ['frontmatter', 'security', 'paths'])).toBe(body);
+  });
+
+  it('rewrites the per-category sentence for a single-category catalog with a matching name', () => {
+    const out = applyCountsToSpec(
+      '- 8 lint rules in the `session` category\n\n8 rules in 1 category (`session`).',
+      9,
+      ['session'],
+    );
+    expect(out).toBe(
+      '- 9 lint rules in the `session` category\n\n9 rules in 1 category (`session`).',
+    );
+  });
+
+  it('leaves a per-category sentence alone when the named category is not the sole category', () => {
+    const body = '2 rules in the `something-else` category';
+    expect(applyCountsToSpec(body, 9, ['session'])).toBe(body);
   });
 });

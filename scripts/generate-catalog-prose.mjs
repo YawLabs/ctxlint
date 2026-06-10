@@ -57,24 +57,40 @@ function ruleCount(c) {
   return Array.isArray(c.rules) ? c.rules.length : 0;
 }
 
-function categoryCount(c) {
-  return new Set((c.rules ?? []).map((r) => r.category)).size;
+/** Ordered, de-duplicated category ids actually used by a catalog's rules. */
+function usedCategoryIds(c) {
+  return [...new Set((c.rules ?? []).map((r) => r.category))];
 }
 
-/** Rewrite a spec's count headers from the catalog (rules + categories). */
-export function applyCountsToSpec(body, rules, categories) {
+/**
+ * Rewrite a spec's count headers from the catalog (rules + categories).
+ *
+ * `categoryIds` is the catalog's used-category id list. The "N rules in the
+ * `X` category" / "N rules in 1 category" phrasings are rewritten ONLY for
+ * single-category catalogs, and only when the named category IS that
+ * catalog's sole category. Without that guard, a multi-category spec writing
+ * a per-category subset sentence ("4 rules in the `frontmatter` category")
+ * would be silently corrupted to the catalog TOTAL — and the corruption then
+ * passes --check forever because the substitution is idempotent.
+ */
+export function applyCountsToSpec(body, rules, categoryIds) {
+  const categories = categoryIds.length;
   let out = body;
   out = out.replace(/\b\d+(\s+lint)?\s+rules\s+organized into\s+\d+\s+categories\b/gi, (m) =>
     m
       .replace(/^\d+/, String(rules))
       .replace(/organized into\s+\d+/i, `organized into ${categories}`),
   );
-  out = out.replace(/\b\d+(\s+lint)?\s+rules\s+in the\s+`[^`]+`\s+category\b/gi, (m) =>
-    m.replace(/^\d+/, String(rules)),
-  );
-  out = out.replace(/\b\d+\s+rules\s+in\s+\d+\s+category\b/gi, (m) =>
-    m.replace(/^\d+/, String(rules)),
-  );
+  if (categories === 1) {
+    const only = categoryIds[0];
+    out = out.replace(
+      /\b\d+(\s+lint)?\s+rules\s+in the\s+`([^`]+)`\s+category\b/gi,
+      (m, _lint, name) => (name === only ? m.replace(/^\d+/, String(rules)) : m),
+    );
+    out = out.replace(/\b\d+\s+rules\s+in\s+\d+\s+category\b/gi, (m) =>
+      m.replace(/^\d+/, String(rules)),
+    );
+  }
   return out;
 }
 
@@ -101,7 +117,7 @@ export function computeTargets() {
     const c = readCatalog(catalog);
     const file = join(ROOT, spec);
     const current = readFileSync(file, 'utf-8');
-    const generated = applyCountsToSpec(current, ruleCount(c), categoryCount(c));
+    const generated = applyCountsToSpec(current, ruleCount(c), usedCategoryIds(c));
     targets.push({ file, current, generated });
   }
   const readme = join(ROOT, 'README.md');

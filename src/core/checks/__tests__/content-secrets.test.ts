@@ -213,6 +213,38 @@ describe('checkContentSecrets - false-positive guards', () => {
   });
 });
 
+describe('checkContentSecrets - angle-bracket wrapper vs comparison operators', () => {
+  it('DOES flag a key straddled by unrelated < and > comparison operators', async () => {
+    // The stray '<' before and '>' after the match are operators, not a
+    // placeholder wrapper -- the boundary whitespace gives them away.
+    const file = makeFile('if retries < max then key AKIAIOSFODNN7ZZZABCD and timeout > 30\n');
+    const issues = await checkContentSecrets(file, tmpDir);
+    expectIssue(issues, 'content-secrets/aws-access-key');
+  });
+
+  it('DOES flag a key between a stray < and an unrelated <docs> tag', async () => {
+    // The first '>' after the stray '<' belongs to a different bracket pair
+    // (the span contains another '<'), so it is not an enclosing wrapper.
+    const file = makeFile('threshold<5 limits AKIAIOSFODNN7ZZZABCD see <docs>\n');
+    const issues = await checkContentSecrets(file, tmpDir);
+    expectIssue(issues, 'content-secrets/aws-access-key');
+  });
+
+  it('DOES flag a real-shaped key inside HTML tags like <td>...</td>', async () => {
+    const file = makeFile('<td>AKIAIOSFODNN7ZZZABCD</td>\n');
+    const issues = await checkContentSecrets(file, tmpDir);
+    expectIssue(issues, 'content-secrets/aws-access-key');
+  });
+
+  it('does NOT flag a key inside a tight multi-word angle-bracket placeholder', async () => {
+    // Internal spaces are fine for a wrapper -- only boundary whitespace
+    // (operator-shaped) disqualifies the pair.
+    const file = makeFile('Set it to <my AKIAIOSFODNN7ZZZABCD value goes here>\n');
+    const issues = await checkContentSecrets(file, tmpDir);
+    expect(issues.find((i) => i.ruleId === 'content-secrets/aws-access-key')).toBeUndefined();
+  });
+});
+
 describe('checkContentSecrets - never leaks the secret value', () => {
   it('does not include the secret value in message/suggestion/detail', async () => {
     const realLooking = 'AKIAIOSFODNN7QQQABCD';
@@ -282,6 +314,24 @@ describe('checkContentSecrets - fenced code blocks', () => {
     const file = makeFile(content);
     const issues = await checkContentSecrets(file, tmpDir);
     expect(issues.find((i) => i.ruleId === 'content-secrets/github-pat')).toBeUndefined();
+  });
+
+  it('DOES flag inside a bare ``` fence (untagged is not illustrative)', async () => {
+    // A bare fence is the most common way .env contents get pasted into a
+    // CLAUDE.md -- it must be scanned like any executable-language fence.
+    const content = ['My env:', '```', 'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7REALABC', '```', ''].join(
+      '\n',
+    );
+    const file = makeFile(content);
+    const issues = await checkContentSecrets(file, tmpDir);
+    expectIssue(issues, 'content-secrets/aws-access-key');
+  });
+
+  it('DOES flag a private key header inside a bare ``` fence', async () => {
+    const content = ['```', '-----BEGIN RSA PRIVATE KEY-----', 'MIIEpAIB...', '```', ''].join('\n');
+    const file = makeFile(content);
+    const issues = await checkContentSecrets(file, tmpDir);
+    expectIssue(issues, 'content-secrets/private-key-header');
   });
 });
 

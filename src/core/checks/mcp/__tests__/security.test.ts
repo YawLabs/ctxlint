@@ -40,6 +40,72 @@ describe('checkMcpSecurity', () => {
     expect(bearer!.severity).toBe('error');
     expect(bearer!.fix).toBeDefined();
     expect(bearer!.fix!.newText).toContain('${API_API_KEY}');
+    // One finding per header: the token also matches the known-pattern rule,
+    // which must not double-report on top of hardcoded-bearer.
+    expect(issues.filter((i) => i.check === 'mcp-security')).toHaveLength(1);
+  });
+
+  it('flags sk-proj key in a non-Authorization header (known-pattern path)', async () => {
+    // Exercises API_KEY_PATTERNS directly: non-Authorization headers have no
+    // bearer rule and no name+entropy fallback, so only the pattern can fire.
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'api',
+          transport: 'http',
+          url: 'https://api.example.com/mcp',
+          headers: {
+            'X-Api-Key': 'sk-proj-abcdefghijklmnopqrstuvwxyz1234567890',
+          },
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    const apiKey = issues.find((i) => i.ruleId === 'mcp-security/hardcoded-api-key');
+    expect(apiKey).toBeDefined();
+    expect(apiKey!.severity).toBe('error');
+  });
+
+  it('flags sk-ant key in env under a non-secret-suggesting name (known-pattern path)', async () => {
+    // "ANTHROPIC" carries no SECRET_NAME_KEYWORDS hit, so the entropy
+    // fallback can't fire -- only the sk-ant- pattern catches this.
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'anthropic',
+          transport: 'stdio',
+          command: 'npx',
+          env: {
+            ANTHROPIC: 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz12345678',
+          },
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    expect(issues.find((i) => i.ruleId === 'mcp-security/hardcoded-api-key')).toBeDefined();
+  });
+
+  it('does not flag a value merely containing "sk-" mid-word', async () => {
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'service',
+          transport: 'stdio',
+          command: 'npx',
+          env: {
+            PIPELINE: 'whisk-data-pipeline-tools-v2-extra-long-slug',
+          },
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    expect(issues.filter((i) => i.ruleId === 'mcp-security/hardcoded-api-key')).toHaveLength(0);
   });
 
   it('does not flag Bearer with env var reference', async () => {
@@ -182,7 +248,7 @@ describe('checkMcpSecurity', () => {
     expect(issues.filter((i) => i.message.includes('HTTP without TLS'))).toHaveLength(1);
   });
 
-  it('skips non-git-tracked files', async () => {
+  it('skips secret rules for non-git-tracked files', async () => {
     const config = makeConfig({
       isGitTracked: false,
       servers: [
@@ -200,6 +266,29 @@ describe('checkMcpSecurity', () => {
     });
     const issues = await checkMcpSecurity(config, '/project');
     expect(issues).toHaveLength(0);
+  });
+
+  it('still flags HTTP without TLS in non-git-tracked files', async () => {
+    // http-no-tls is a transport concern, not a committed-secret concern --
+    // tracking status gates only the secret rules.
+    const config = makeConfig({
+      isGitTracked: false,
+      servers: [
+        {
+          name: 'insecure',
+          transport: 'http',
+          url: 'http://api.production.example.com/mcp?api_key=mySecret123',
+          headers: {
+            Authorization: 'Bearer sk-proj-abcdefghijklmnopqrstuvwxyz1234567890',
+          },
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    expect(issues).toHaveLength(1);
+    expect(issues[0].ruleId).toBe('mcp-security/http-no-tls');
   });
 
   it('flags high-entropy strings in env values', async () => {

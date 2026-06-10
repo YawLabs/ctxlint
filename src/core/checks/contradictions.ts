@@ -210,6 +210,25 @@ interface DetectedDirective {
   text: string;
 }
 
+// A directive mention preceded by a negation ("never use yarn", "don't use
+// npm") is a prohibition, not an endorsement. Without this guard the banned
+// tool registers as a directive label, which both (a) emits a false conflict
+// against a file that actually agrees, and (b) can suppress a real conflict:
+// the extra label makes another file's labels a subset of this one's, the
+// cluster filter drops that file, and `conflictingFiles` falls below 2.
+//
+// The window is clause-scoped: it looks back NEGATION_WINDOW chars and the
+// negation must not be separated from the match by clause punctuation, so
+// "Never use yarn; use pnpm" still registers the pnpm endorsement. `n['’]t`
+// covers the contraction family (don't / doesn't / won't / shouldn't).
+const NEGATION_BEFORE_MATCH = /(?:\b(?:never|not|avoid|stop|instead\s+of)\b|n['’]t\b)[^.;:,!?]*$/i;
+const NEGATION_WINDOW = 20;
+
+function isNegated(line: string, matchIndex: number): boolean {
+  const windowStart = Math.max(0, matchIndex - NEGATION_WINDOW);
+  return NEGATION_BEFORE_MATCH.test(line.slice(windowStart, matchIndex));
+}
+
 function detectDirectives(file: ParsedContextFile): DetectedDirective[] {
   const directives: DetectedDirective[] = [];
   const lines = file.content.split('\n');
@@ -220,7 +239,8 @@ function detectDirectives(file: ParsedContextFile): DetectedDirective[] {
     for (const category of DIRECTIVE_CATEGORIES) {
       for (const option of category.options) {
         for (const pattern of option.patterns) {
-          if (pattern.test(line)) {
+          const m = pattern.exec(line);
+          if (m !== null && !isNegated(line, m.index)) {
             directives.push({
               file: file.relativePath,
               category: category.name,

@@ -61,6 +61,19 @@ async function findSecretUsages(projectRoot: string): Promise<SecretUsage[]> {
   return [...secretMap.entries()].map(([name, workflows]) => ({ name, workflows }));
 }
 
+// Single-word secret names that double as ordinary English ("TOKEN", "KEY")
+// would be "documented" by any prose containing the word -- exactly the
+// secrets whose names most need real documentation. For these, only an
+// exact-case whole-word mention (the conventional uppercase env-var form) or
+// an explicit `secrets.<NAME>` reference counts. Multi-token names
+// (NPM_TOKEN) keep the loose case-insensitive, separator-flexible match.
+const GENERIC_SECRET_WORDS = new Set(['TOKEN', 'KEY', 'SECRET', 'PAT', 'PASSWORD', 'APIKEY']);
+
+function isGenericSecretName(name: string): boolean {
+  if (name.includes('_')) return false;
+  return name.length <= 5 || GENERIC_SECRET_WORDS.has(name.toUpperCase());
+}
+
 function contextMentionsSecret(files: ParsedContextFile[], secretName: string): boolean {
   // Escape regex-special chars, then allow `_`, space, or hyphen between the
   // tokens of the original name. Notes on the character class:
@@ -76,6 +89,11 @@ function contextMentionsSecret(files: ParsedContextFile[], secretName: string): 
   // The trailing `\b` anchor still rejects substring hits like `npmtoken`
   // (no separator) and prefix hits like `awsaccesskey`.
   const escaped = secretName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (isGenericSecretName(secretName)) {
+    const exactCase = new RegExp(`\\b${escaped}\\b`);
+    const secretsRef = new RegExp(`\\bsecrets\\.${escaped}\\b`, 'i');
+    return files.some((f) => exactCase.test(f.content) || secretsRef.test(f.content));
+  }
   const pattern = new RegExp(`\\b${escaped.replace(/_/g, '[ _-]')}\\b`, 'i');
   return files.some((f) => pattern.test(f.content));
 }

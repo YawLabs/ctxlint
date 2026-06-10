@@ -65,13 +65,13 @@ Severity levels:
 | `skill/broken-ref` | warning | A `./` or `../` path reference in the body (outside example code blocks) does not exist relative to the skill directory | `{file}: references "{path}" which does not exist relative to the skill directory` |
 | `skill/trigger-collision` | warning | A normalized trigger phrase (quoted phrase in the description, or a `trigger`/`triggers` field) is declared by more than one distinct skill/agent | `Trigger phrase "{trigger}" is declared by {count} skills/agents — only one will win` |
 | `skill/orphaned` | warning | A `~/.claude/skills/<name>/` directory contains no `SKILL.md` | `{dir}: skill directory has no SKILL.md — Claude Code has nothing to load` |
-| `skill/dead-tool-restriction` | warning | An agent's `tools` / `allowed-tools` frontmatter lists a non-MCP, non-wildcard tool name that is not a known Claude Code built-in tool | `{file}: tool restriction lists "{tool}" which is not a known Claude Code tool` |
+| `skill/dead-tool-restriction` | warning (info when the unknown name is PascalCase) | An agent's `tools` / `allowed-tools` frontmatter lists a non-MCP, non-wildcard tool name that is not a known Claude Code built-in tool | `{file}: tool restriction lists "{tool}" which is not a known Claude Code tool` |
 
 **Notes:**
 
 - **`skill/broken-ref`** reuses the path-reference detection shape from the context-file pillar. Only explicitly-relative references (`./`, `../`) are verified, resolved against the skill/agent file's own directory; bare `foo/bar` tokens in prose are too ambiguous to resolve without false positives, so they are skipped. References inside example code blocks (`ts`, `py`, `json`, ...) are excluded.
 - **`skill/trigger-collision`** extracts triggers from quoted phrases inside the `description` (e.g. `"ship 1.3.X"`) and from an optional `trigger`/`triggers` field. Phrases are lowercased and whitespace-collapsed before comparison.
-- **`skill/dead-tool-restriction`** validates only against the known built-in tool set. MCP-namespaced tools (`mcp__server__tool`) and wildcard entries are skipped because their validity depends on the loaded MCP servers, which the linter cannot see statically.
+- **`skill/dead-tool-restriction`** validates only against the known built-in tool set. MCP-namespaced tools (`mcp__server__tool`) and wildcard entries are skipped because their validity depends on the loaded MCP servers, which the linter cannot see statically. Severity is split by name shape: an unknown **PascalCase** name is reported as *info* -- it may be a built-in newer than the linter's known-tool list, which drifts across Claude Code versions; anything else (lowercase, separators) doesn't match Claude Code's tool naming and keeps the *warning* (far more likely a typo).
 
 All v1 rules are marked **experimental** in the catalog -- the heuristics are conservative and may broaden as more skill/agent shapes are observed. Experimental rules bump patch; promotion to stable bumps minor (see `CHANGELOG.md` versioning policy).
 

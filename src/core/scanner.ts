@@ -74,8 +74,12 @@ const IGNORED_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'vendor']
 // e.g. `packages/foo/.claude/AGENTS.md` was never found, because the walker
 // stopped at `packages/foo/` and never registered the nested `.claude/` for
 // the bare `AGENTS.md` pattern. Keep this list in sync with the dotted
-// prefixes appearing in CONTEXT_FILE_PATTERNS + MCP_CONFIG_PATTERNS and the
-// CLI's --watch directory list (src/cli.ts).
+// prefixes appearing in CONTEXT_FILE_PATTERNS and the CLI's --watch
+// directory list (src/cli.ts). MCP discovery (scanForMcpConfigs) globs only
+// at the project root by design and never uses this walk, so
+// MCP_CONFIG_PATTERNS does not constrain the list. '.vscode' has no built-in
+// context pattern but stays allowlisted so user-supplied extraPatterns can
+// reach into nested .vscode/ dirs.
 const ALLOWED_DOT_DIRS = new Set([
   '.claude',
   '.cursor',
@@ -214,6 +218,13 @@ export async function scanGlobalMcpConfigs(): Promise<DiscoveredFile[]> {
   const found: DiscoveredFile[] = [];
   const seen = new Set<string>();
   const home = process.env.HOME || process.env.USERPROFILE || '';
+  if (!home) {
+    // Without a resolvable home dir every entry below would degrade to a
+    // RELATIVE path (path.join('', '.claude.json') === '.claude.json') that
+    // accessSync resolves against process.cwd() -- surfacing a project-local
+    // file mislabeled as '~/...'. Nothing global is resolvable here.
+    return [];
+  }
 
   const globalPaths: string[] = [
     path.join(home, '.claude.json'),

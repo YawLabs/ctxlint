@@ -200,6 +200,35 @@ describe('scanGlobalMcpConfigs', () => {
   });
 });
 
+describe('scanGlobalMcpConfigs without a resolvable home dir', () => {
+  let savedHome: string | undefined;
+  let savedUserprofile: string | undefined;
+
+  beforeEach(() => {
+    savedHome = process.env.HOME;
+    savedUserprofile = process.env.USERPROFILE;
+    delete process.env.HOME;
+    delete process.env.USERPROFILE;
+  });
+
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedUserprofile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = savedUserprofile;
+  });
+
+  it('returns [] instead of probing relative paths against cwd', async () => {
+    // With HOME and USERPROFILE both unset, home falls back to '' and
+    // path.join('', '.claude.json') yields the RELATIVE '.claude.json',
+    // which accessSync would resolve against process.cwd() -- picking up a
+    // project-local file and reporting it as '~/.claude.json'. The scan must
+    // bail out early instead.
+    const files = await scanGlobalMcpConfigs();
+    expect(files).toEqual([]);
+  });
+});
+
 describe('nested-dotted dir discovery (fix 1)', () => {
   // The blanket `!entry.name.startsWith('.')` skip in collectDirs prevented
   // the walker from descending INTO `.claude/`, `.cursor/`, `.github/`, etc.

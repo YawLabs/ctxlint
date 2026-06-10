@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { validateCatalogObject } from '../catalog-schema.js';
+import { CATALOGS, readCatalog, type CatalogShape } from '../catalog-meta.js';
+import {
+  validateCatalogObject,
+  checkDuplicateRuleIds,
+  checkUnusedCategories,
+  checkRuleIdPrefixes,
+  loadCatalogSchema,
+} from '../catalog-schema.js';
 
 /**
  * Gap 5: the hand-rolled validator's ERROR classes. The existing
@@ -60,9 +67,7 @@ describe('validateCatalogObject (invalid inputs)', () => {
       properties: { slug: { type: 'string', pattern: '^[a-z-]+$' } },
     };
     const errors = validateCatalogObject({ slug: 'Has_Caps' }, schema);
-    expect(errors).toEqual([
-      { path: 'slug', message: 'string does not match pattern ^[a-z-]+$' },
-    ]);
+    expect(errors).toEqual([{ path: 'slug', message: 'string does not match pattern ^[a-z-]+$' }]);
   });
 
   it('flags a string value outside its enum', () => {
@@ -166,9 +171,7 @@ describe('validateCatalogObject (invalid inputs)', () => {
       },
     };
     const errors = validateCatalogObject({ rules: [{ id: 'ok' }, { id: 'x' }] }, schema);
-    expect(errors).toEqual([
-      { path: 'rules[1].id', message: 'string shorter than minLength 2' },
-    ]);
+    expect(errors).toEqual([{ path: 'rules[1].id', message: 'string shorter than minLength 2' }]);
   });
 
   it('accumulates several independent errors in one pass', () => {
@@ -200,5 +203,124 @@ describe('validateCatalogObject (invalid inputs)', () => {
     };
     const errors = validateCatalogObject({ id: 42 }, schema);
     expect(errors).toEqual([{ path: 'id', message: 'expected type string, got number' }]);
+  });
+});
+
+/**
+ * Real-schema negative tests: mutate a REAL published catalog and validate it
+ * against the actual governing schema (schemas/ctxlint-catalog.schema.json).
+ * The inline-schema suite above proves the validator's branches work; this
+ * suite proves the WIRING — that the governing schema's required/enum/pattern
+ * declarations actually reach those branches. A typo in the schema file
+ * (e.g. "requried") would pass the inline suite but fail here.
+ */
+describe('validateCatalogObject (mutated real catalog vs governing schema)', () => {
+  const contextMeta = CATALOGS.find((m) => m.key === 'context');
+  if (!contextMeta) throw new Error('context catalog meta missing');
+
+  // Arrow assigned after the guard (not a hoisted function declaration) so the
+  // contextMeta narrowing above applies inside the closure.
+  const mutatedCatalog = (mutate: (c: CatalogShape) => void): CatalogShape => {
+    const clone = structuredClone(readCatalog(contextMeta));
+    mutate(clone);
+    return clone;
+  };
+
+  it('control: the unmutated catalog validates clean against the governing schema', () => {
+    const errors = validateCatalogObject(readCatalog(contextMeta), loadCatalogSchema());
+    expect(errors).toEqual([]);
+  });
+
+  it('flags a rule missing the required "stability" field', () => {
+    const c = mutatedCatalog((cat) => {
+      delete (cat.rules?.[0] as Record<string, unknown>).stability;
+    });
+    const errors = validateCatalogObject(c, loadCatalogSchema());
+    expect(errors).toEqual([
+      { path: 'rules[0]', message: 'missing required property "stability"' },
+    ]);
+  });
+
+  it('flags a severity outside the enum', () => {
+    const c = mutatedCatalog((cat) => {
+      (cat.rules?.[0] as Record<string, unknown>).severity = 'critical';
+    });
+    const errors = validateCatalogObject(c, loadCatalogSchema());
+    expect(errors).toEqual([
+      {
+        path: 'rules[0].severity',
+        message: 'value "critical" not in enum ["error","warning","info"]',
+      },
+    ]);
+  });
+
+  it('flags a rule id that breaks the category/slug pattern', () => {
+    const c = mutatedCatalog((cat) => {
+      (cat.rules?.[0] as Record<string, unknown>).id = 'NoSlashHere';
+    });
+    const errors = validateCatalogObject(c, loadCatalogSchema());
+    expect(errors).toHaveLength(1);
+    expect(errors[0].path).toBe('rules[0].id');
+    expect(errors[0].message).toMatch(/does not match pattern/);
+  });
+
+  it('flags a missing top-level required property (specVersion)', () => {
+    const c = mutatedCatalog((cat) => {
+      delete (cat as Record<string, unknown>).specVersion;
+    });
+    const errors = validateCatalogObject(c, loadCatalogSchema());
+    expect(errors).toEqual([{ path: '', message: 'missing required property "specVersion"' }]);
+  });
+
+  it('flags a specDate that breaks the ISO-date pattern', () => {
+    const c = mutatedCatalog((cat) => {
+      (cat as Record<string, unknown>).specDate = '2026/06/10';
+    });
+    const errors = validateCatalogObject(c, loadCatalogSchema());
+    expect(errors).toHaveLength(1);
+    expect(errors[0].path).toBe('specDate');
+    expect(errors[0].message).toMatch(/does not match pattern/);
+  });
+});
+
+/**
+ * Failing-branch coverage for the cross-field checks (the published-catalog
+ * happy paths live in catalog-schema.test.ts).
+ */
+describe('cross-field checks (invalid inputs)', () => {
+  it('checkDuplicateRuleIds flags a copy-pasted rule id once per extra copy', () => {
+    const catalog = {
+      rules: [{ id: 'a/x' }, { id: 'a/y' }, { id: 'a/x' }, { id: 'a/x' }],
+    };
+    const errors = checkDuplicateRuleIds(catalog);
+    expect(errors).toEqual([
+      { path: 'rules[a/x]', message: 'duplicate rule id "a/x"' },
+      { path: 'rules[a/x]', message: 'duplicate rule id "a/x"' },
+    ]);
+  });
+
+  it('checkUnusedCategories flags a declared category no rule uses', () => {
+    const catalog = {
+      categories: [{ id: 'used' }, { id: 'orphan' }],
+      rules: [{ id: 'used/x', category: 'used' }],
+    };
+    expect(checkUnusedCategories(catalog)).toEqual([
+      { path: 'categories[orphan]', message: 'category "orphan" is declared but no rule uses it' },
+    ]);
+  });
+
+  it('checkRuleIdPrefixes flags a prefix/category mismatch', () => {
+    const catalog = { rules: [{ id: 'ci/thing', category: 'ci-coverage' }] };
+    expect(checkRuleIdPrefixes(catalog)).toEqual([
+      {
+        path: 'rules[ci/thing]',
+        message: 'rule id prefix "ci" does not match category "ci-coverage"',
+      },
+    ]);
+  });
+
+  it('checkRuleIdPrefixes suppresses allowlisted legacy ids', () => {
+    const catalog = { rules: [{ id: 'ci/thing', category: 'ci-coverage' }] };
+    expect(checkRuleIdPrefixes(catalog, new Set(['ci/thing']))).toEqual([]);
   });
 });

@@ -7,11 +7,19 @@
     "ctxlint": "dist/index.js"
   },
   "type": "module",
+  "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./package.json": "./package.json"
+  },
   "scripts": {
     "build": "node build.mjs",
     "dev": "node build.mjs",
     "generate": "node scripts/generate-catalog-prose.mjs",
     "generate:check": "node scripts/generate-catalog-prose.mjs --check",
+    "pretest": "node build.mjs",
+    "pretest:run": "node build.mjs",
+    "pretest:coverage": "node build.mjs",
     "test": "vitest",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage --coverage.reporter=text-summary --coverage.reporter=html --coverage.exclude='**/__tests__/**' --coverage.exclude='**/fixtures/**' --coverage.exclude='dist/**' --coverage.exclude='build.mjs' --coverage.exclude='coverage-report.mjs'",

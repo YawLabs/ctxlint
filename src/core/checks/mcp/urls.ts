@@ -1,4 +1,5 @@
 import type { ParsedMcpConfig, LintIssue } from '../../types.js';
+import { isLoopbackHost } from './loopback.js';
 
 const ENV_VAR_REF = /\$\{[^}]+\}/;
 
@@ -31,17 +32,16 @@ export async function checkMcpUrls(
       continue;
     }
 
-    // localhost-in-project-config
-    if (
-      config.scope === 'project' &&
-      (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1')
-    ) {
+    // localhost-in-project-config: the full loopback set (localhost, [::1],
+    // 127.0.0.0/8) -- the same set http-no-tls exempts, so a loopback URL in
+    // a committed config can't slip through both rules.
+    if (config.scope === 'project' && isLoopbackHost(parsed.hostname)) {
       issues.push({
         severity: 'warning',
         check: 'mcp-urls',
         ruleId: 'mcp-urls/localhost-in-project-config',
         line: server.line,
-        message: `Server "${server.name}": localhost URL in project config won't work for teammates`,
+        message: `Server "${server.name}": loopback URL in project config won't work for teammates`,
       });
     }
 

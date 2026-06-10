@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { LintIssue, SessionContext } from '../../types.js';
 import { encodeProjectDir } from '../../session-parser.js';
@@ -17,7 +18,10 @@ const MAX_LINES = 200;
 const MAX_BYTES = 25 * 1024;
 
 export async function checkMemoryIndexOverflow(ctx: SessionContext): Promise<LintIssue[]> {
-  const home = process.env.HOME || process.env.USERPROFILE || '';
+  // Env-first so tests/sandboxes can redirect home, OS fallback so a shell
+  // with neither HOME nor USERPROFILE (e.g. some Windows service contexts)
+  // still resolves instead of silently skipping the check.
+  const home = process.env.HOME || process.env.USERPROFILE || homedir();
   if (!home) return [];
 
   const encoded = encodeProjectDir(ctx.currentProject);
@@ -31,8 +35,11 @@ export async function checkMemoryIndexOverflow(ctx: SessionContext): Promise<Lin
   }
   if (!content) return [];
 
+  // A newline-terminated file (the normal shape for generated MEMORY.md)
+  // splits into a trailing empty element; don't count it as a line, or every
+  // line count inflates by one and an exactly-200-line file falsely fires.
   const lines = content.split('\n');
-  const lineCount = lines.length;
+  const lineCount = content.endsWith('\n') ? lines.length - 1 : lines.length;
   // Use the post-BOM-strip byte length, not stats.size. Claude Code measures
   // the loaded *content*, so a 25600-byte file with a 3-byte BOM would only
   // load 25597 content bytes — using stats.size flags it falsely. UTF-8 byte

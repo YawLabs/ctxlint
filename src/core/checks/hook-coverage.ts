@@ -109,8 +109,17 @@ function expandPath(raw: string, projectRoot: string, homeDir: string): string |
   s = s.replace(/\$\{?([A-Z_][A-Z0-9_]*)\}?/g, (m, name: string) =>
     name in replacements ? replacements[name] : m,
   );
-  // Any remaining $VAR means we can't resolve -> bail (don't false-positive).
+  // Windows-style %VAR% (settings authored on Windows). Expand the same
+  // documented vars (case-insensitively, matching cmd.exe semantics); leave
+  // anything else in place so the bail-out below catches it.
+  s = s.replace(/%([A-Za-z_][A-Za-z0-9_]*)%/g, (m, name: string) => {
+    const upper = name.toUpperCase();
+    return upper in replacements ? replacements[upper] : m;
+  });
+  // Any remaining $VAR or %VAR% means we can't resolve -> bail (don't
+  // false-positive a path we can't actually check).
   if (/\$\{?[A-Za-z_]/.test(s)) return null;
+  if (/%[A-Za-z_][A-Za-z0-9_]*%/.test(s)) return null;
   if (!path.isAbsolute(s)) s = path.resolve(projectRoot, s);
   return s;
 }

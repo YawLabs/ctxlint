@@ -16,7 +16,7 @@ This specification defines a standard set of lint rules for validating MCP serve
 
 The specification includes:
 - A complete reference of MCP config file locations, formats, and client-specific behaviors
-- 27 lint rules organized into 8 categories with defined severities
+- 28 lint rules organized into 8 categories with defined severities
 - A machine-readable rule catalog ([`mcp-config-lint-rules.json`](./mcp-config-lint-rules.json))
 - Auto-fix definitions for rules that support automated correction
 
@@ -199,7 +199,7 @@ Without this wrapper, the subprocess fails to spawn. This is the most common Win
 
 ## 2. Lint Rules
 
-27 rules organized into 8 categories. Each rule has a unique ID, severity level, trigger condition, and message template.
+28 rules organized into 8 categories. Each rule has a unique ID, severity level, trigger condition, and message template.
 
 Severity levels:
 - **error** — the config is broken or has a security issue. Should fail CI.
@@ -215,40 +215,42 @@ Validates that the config file is well-formed JSON with the correct structure fo
 | `mcp-schema/invalid-json` | error | File is not valid JSON | `MCP config is not valid JSON: {parseError}` |
 | `mcp-schema/wrong-root-key` | error | Root key doesn't match expected key for the client | `{file} must use "{expected}" as root key, not "{actual}"` |
 | `mcp-schema/missing-root-key` | error | No recognized root key (`mcpServers` or `servers`) | `MCP config has no "{expected}" key` |
-| `mcp-schema/missing-command` | error | stdio server has no `command` field | `Server "{name}": missing "command" field` |
-| `mcp-schema/missing-url` | error | http/sse server has no `url` field | `Server "{name}": missing "url" field` |
-| `mcp-schema/unknown-transport` | warning | `type` field is not `stdio`, `http`, or `sse` | `Server "{name}": unknown transport type "{type}"` |
-| `mcp-schema/ambiguous-transport` | warning | Server has both `command` and `url` fields | `Server "{name}": has both "command" and "url" — transport is ambiguous` |
+| `mcp-schema/missing-command` | error | stdio server has no `command` field | `Server "{name}" has no "command" field` |
+| `mcp-schema/missing-url` | error | http/sse server has no `url` field | `Server "{name}" has no "url" field` |
+| `mcp-schema/no-name-field` | error | A server entry's key (its name) is the empty string | `Server name cannot be empty` |
+| `mcp-schema/unknown-transport` | warning | Transport cannot be classified: a `type` outside `stdio`/`http`/`sse`, a non-string `type`, or an entry with neither `command` nor `url` | `Server "{name}" has unknown transport type "{type}"` (or, with no classifiable fields at all: `Server "{name}" has no recognizable transport — expected "command", "url", or a valid "type"`) |
+| `mcp-schema/ambiguous-transport` | warning | Server has both `command` and `url` fields | `Server "{name}" has both "command" and "url" — transport is ambiguous` |
 | `mcp-schema/empty-servers` | info | Root key exists but contains no server entries | `MCP config has no server entries` |
 
 **Auto-fixable:** `wrong-root-key` — rename the root key to match the expected key.
 
 ### 2.2 mcp-security — hardcoded secrets
 
-Detects secrets committed to version control in MCP config files. Only flags issues in git-tracked files.
+Detects secrets committed to version control in MCP config files. The three secret rules (`hardcoded-bearer`, `hardcoded-api-key`, `secret-in-url`) only flag issues in git-tracked files — an untracked config leaks nothing to teammates. `mcp-security/http-no-tls` is a transport concern, independent of version control, and fires regardless of git tracking.
 
 | Rule ID | Severity | Trigger | Message |
 |---|---|---|---|
-| `mcp-security/hardcoded-bearer` | error | `Authorization` header contains a literal Bearer token (not an env var reference) in a git-tracked file | `Server "{name}": hardcoded Bearer token in a git-tracked file` |
-| `mcp-security/hardcoded-api-key` | error | Header or env value matches known API key patterns in a git-tracked file | `Server "{name}": possible API key in a git-tracked file` |
-| `mcp-security/secret-in-url` | error | URL contains query params that look like secrets (`?key=`, `?token=`, `?api_key=`) in a git-tracked file | `Server "{name}": possible secret in URL query string` |
-| `mcp-security/http-no-tls` | warning | URL uses `http://` for non-localhost target | `Server "{name}": URL uses HTTP without TLS` |
+| `mcp-security/hardcoded-bearer` | error | `Authorization` header contains a literal Bearer token (not an env var reference) in a git-tracked file | `Server "{name}" has a hardcoded Bearer token in a git-tracked file` |
+| `mcp-security/hardcoded-api-key` | error | Header or env value matches known API key patterns (or the high-entropy heuristic below) in a git-tracked file | `Server "{name}" has a hardcoded API key in a git-tracked file` |
+| `mcp-security/secret-in-url` | error | URL contains query params that look like secrets (`?key=`, `?token=`, `?api_key=`) in a git-tracked file | `Server "{name}" has a secret in the URL query string` |
+| `mcp-security/http-no-tls` | warning | URL uses `http://` for a non-loopback target (loopback = `localhost`, `[::1]`, `127.0.0.0/8`) | `Server "{name}" uses HTTP without TLS` |
 
 **Known API key patterns:**
 ```
-sk-[a-zA-Z0-9]{20,}            # OpenAI / generic
+sk-ant-[A-Za-z0-9_-]{20,}      # Anthropic
+sk-(proj-)?[A-Za-z0-9_-]{20,}  # OpenAI (classic or project-scoped) / generic
 ghp_[a-zA-Z0-9]{36}            # GitHub personal access token
 ghu_[a-zA-Z0-9]{36}            # GitHub user token
 github_pat_[a-zA-Z0-9_]{80,}   # GitHub fine-grained PAT
 xoxb-[0-9]{10,}                # Slack bot token
 xoxp-[0-9]{10,}                # Slack user token
 AKIA[0-9A-Z]{16}               # AWS access key ID
+AGE-SECRET-KEY-1[a-zA-Z0-9]+   # age encryption secret key
 glpat-[a-zA-Z0-9_\-]{20}       # GitLab personal access token
 sq0atp-[a-zA-Z0-9_\-]{22}      # Square access token
-shpat_[a-fA-F0-9]{32}          # Shopify admin API token
 ```
 
-Also flag any string value > 20 characters that is entirely alphanumeric or base64 characters AND is not an env var reference (`${...}`, `${{ ... }}`).
+**High-entropy heuristic:** additionally flag an env value > 20 characters that is entirely alphanumeric/base64 characters, is not an env var reference (`${...}`, `${{ ... }}`), AND whose variable name contains a secret-suggesting keyword (`KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `AUTH`, `CREDENTIAL`, `SIGNING`, `SESSION`, `COOKIE`, ...). The name gate is deliberate: without it, build IDs, commit SHAs, version strings, and feature-flag tokens false-positive.
 
 **Auto-fixable:** `hardcoded-bearer`, `hardcoded-api-key` — replace literal value with an env var reference derived from the server name (e.g., `MY_SERVER_API_KEY`).
 
@@ -260,7 +262,7 @@ Validates that stdio server commands and file-path arguments are viable.
 |---|---|---|---|
 | `mcp-commands/windows-npx-no-wrapper` | error | Platform is Windows and `command` is `npx` without `cmd /c` wrapper | `Server "{name}": npx requires "cmd /c" wrapper on Windows` |
 | `mcp-commands/command-not-found` | warning | `command` is a relative path (`./`, `../`) that doesn't exist | `Server "{name}": command "{command}" not found` |
-| `mcp-commands/args-path-missing` | warning | An arg matches a file path pattern and the file doesn't exist | `Server "{name}": arg "{arg}" references a missing file` |
+| `mcp-commands/args-path-missing` | warning | An arg matches a file path pattern and the file doesn't exist (project-scope configs only) | `Server "{name}": arg "{arg}" looks like a file path but doesn't exist` |
 
 **Notes:**
 - `windows-npx-no-wrapper` should only flag project-level configs, not global configs (the user may be developing cross-platform).
@@ -275,7 +277,7 @@ Flags usage of deprecated MCP transport protocols and patterns.
 
 | Rule ID | Severity | Trigger | Message |
 |---|---|---|---|
-| `mcp-deprecated/sse-transport` | warning | Server uses `"type": "sse"` | `Server "{name}": SSE transport is deprecated — use "http" (Streamable HTTP)` |
+| `mcp-deprecated/sse-transport` | warning | Server uses `"type": "sse"` | `Server "{name}" uses deprecated SSE transport — use "http" (Streamable HTTP) instead` |
 
 **Auto-fixable:** `sse-transport` — replace `"sse"` with `"http"`.
 
@@ -300,6 +302,7 @@ Validates environment variable references for correctness and client compatibili
 
 **Notes:**
 - `unset-variable` is intentionally `info` severity. Many env vars are set only in CI, `.env` files, or shell profiles that aren't available during linting.
+- `unset-variable` is skipped entirely for Continue configs — their `${{ secrets.VAR }}` references resolve from GitHub Actions secrets, not the local environment, so every correct Continue config would false-positive.
 - Scan all string values in `command`, `args`, `url`, `headers`, and `env` for env var references.
 
 **Auto-fixable:** `wrong-syntax` — rewrite to the correct syntax for the target client.
@@ -310,13 +313,13 @@ Validates remote server URLs for correctness and team usability.
 
 | Rule ID | Severity | Trigger | Message |
 |---|---|---|---|
-| `mcp-urls/malformed` | error | URL is not parseable (after skipping env var placeholders) | `Server "{name}": invalid URL` |
-| `mcp-urls/localhost-in-project-config` | warning | `localhost` or `127.0.0.1` URL in a git-tracked project config | `Server "{name}": localhost URL in project config won't work for teammates` |
+| `mcp-urls/malformed-url` | error | URL is not parseable (after skipping env var placeholders) | `Server "{name}": invalid URL "{url}"` |
+| `mcp-urls/localhost-in-project-config` | warning | URL host is a loopback address (`localhost`, `[::1]`, `127.0.0.0/8` — the same set `http-no-tls` exempts) in a project-level config | `Server "{name}": loopback URL in project config won't work for teammates` |
 | `mcp-urls/missing-path` | info | URL has no path or just `/` | `Server "{name}": URL has no path — most MCP servers expect /mcp` |
 
 **Notes:**
-- If the URL contains env var references (`${...}`), skip `malformed` — it cannot be validated statically.
-- `localhost-in-project-config` should only flag project-scoped files, not global configs where localhost is expected.
+- If the URL contains env var references (`${...}`), skip `malformed-url` — it cannot be validated statically.
+- `localhost-in-project-config` should only flag project-scoped files (committed to version control by convention), not global configs where loopback URLs are expected. Strip IPv6 brackets before classifying the host, and treat the whole `127.0.0.0/8` block as loopback — `127.0.0.2` is just as unreachable for a teammate as `127.0.0.1`.
 
 ### 2.7 mcp-consistency — cross-file consistency
 
@@ -340,6 +343,9 @@ Flags configs that may be unnecessary or stale.
 |---|---|---|---|
 | `mcp-redundancy/disabled-server` | info | Server has `"disabled": true` | `Server "{name}" is disabled — consider removing if no longer needed` |
 | `mcp-redundancy/identical-across-scopes` | info | Same server with identical config at both project and global scope | `Server "{name}" is identically configured in {projectFile} and {globalFile}` |
+
+**Notes:**
+- The `disabled` field is Cline-specific (see [Section 1.2](#12-server-entry-fields)), but `disabled-server` fires on any client's config that carries it — a stale `"disabled": true` is dead weight regardless of which client wrote it.
 
 ---
 

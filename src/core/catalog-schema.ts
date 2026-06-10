@@ -77,8 +77,11 @@ function validateNode(
 
   if (node.type) {
     const actual = typeOf(value);
-    // JSON Schema "integer" not used here; treat number broadly.
-    const ok = node.type === actual || (node.type === 'number' && actual === 'number');
+    // JSON Schema "integer" is a distinct type that `typeof` can't produce;
+    // accept any JS number for it. (The catalog schema doesn't currently use
+    // "integer", but the accommodation matches what a schema author would
+    // expect if it ever does.)
+    const ok = node.type === actual || (node.type === 'integer' && actual === 'number');
     if (!ok) {
       errors.push({ path: loc, message: `expected type ${node.type}, got ${actual}` });
       return; // further checks assume the type held
@@ -172,6 +175,84 @@ export function checkCategoryReferences(catalog: Json): ValidationError[] {
       errors.push({
         path: `rules[${r.id ?? '?'}]`,
         message: `category "${r.category}" is not declared in categories[]`,
+      });
+    }
+  }
+  return errors;
+}
+
+/**
+ * Uniqueness check JSON Schema can't express (uniqueItems compares whole
+ * items, not a single field): no two rules may share an `id`. A copy-pasted
+ * rule entry would otherwise pass schema validation, pass category
+ * references, satisfy spec coverage (one spec mention covers both copies),
+ * and self-consistently inflate every generated count.
+ */
+export function checkDuplicateRuleIds(catalog: Json): ValidationError[] {
+  const errors: ValidationError[] = [];
+  if (catalog === null || typeof catalog !== 'object') return errors;
+  const c = catalog as { rules?: Array<{ id?: string }> };
+  const seen = new Set<string>();
+  for (const r of c.rules ?? []) {
+    if (!r.id) continue;
+    if (seen.has(r.id)) {
+      errors.push({ path: `rules[${r.id}]`, message: `duplicate rule id "${r.id}"` });
+    }
+    seen.add(r.id);
+  }
+  return errors;
+}
+
+/**
+ * Inverse of checkCategoryReferences: every declared category must be used by
+ * at least one rule. An orphaned declared category silently desyncs the
+ * generated "organized into M categories" prose, because both categoryCount
+ * implementations (catalog-meta.ts and generate-catalog-prose.mjs) count
+ * categories USED by rules, not categories declared.
+ */
+export function checkUnusedCategories(catalog: Json): ValidationError[] {
+  const errors: ValidationError[] = [];
+  if (catalog === null || typeof catalog !== 'object') return errors;
+  const c = catalog as {
+    categories?: Array<{ id?: string }>;
+    rules?: Array<{ category?: string }>;
+  };
+  const used = new Set((c.rules ?? []).map((r) => r.category));
+  for (const cat of c.categories ?? []) {
+    if (cat.id && !used.has(cat.id)) {
+      errors.push({
+        path: `categories[${cat.id}]`,
+        message: `category "${cat.id}" is declared but no rule uses it`,
+      });
+    }
+  }
+  return errors;
+}
+
+/**
+ * Convention check the schema's `rule.id` pattern can't express: the
+ * `category/slug` prefix must equal the rule's `category`. The schema pattern
+ * only validates the SHAPE (lowercase kebab + one slash); this validates the
+ * cross-field invariant. `allowlist` carries published legacy IDs that
+ * predate the convention and are kept stable (renaming a published rule ID is
+ * breaking): currently `ci/no-release-docs` (category `ci-coverage`) and
+ * `ci/undocumented-secret` (category `ci-secrets`), passed in by the test.
+ */
+export function checkRuleIdPrefixes(
+  catalog: Json,
+  allowlist: ReadonlySet<string> = new Set(),
+): ValidationError[] {
+  const errors: ValidationError[] = [];
+  if (catalog === null || typeof catalog !== 'object') return errors;
+  const c = catalog as { rules?: Array<{ id?: string; category?: string }> };
+  for (const r of c.rules ?? []) {
+    if (!r.id || !r.id.includes('/')) continue;
+    if (allowlist.has(r.id)) continue;
+    const prefix = r.id.slice(0, r.id.indexOf('/'));
+    if (prefix !== r.category) {
+      errors.push({
+        path: `rules[${r.id}]`,
+        message: `rule id prefix "${prefix}" does not match category "${r.category}"`,
       });
     }
   }

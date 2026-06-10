@@ -2,7 +2,13 @@ import { describe, it, expect } from 'vitest';
 import { formatText, formatJson, formatTokenReport, formatSarif } from '../reporter.js';
 import { ALL_CHECKS, ALL_MCP_CHECKS, ALL_SESSION_CHECKS, ALL_SKILL_CHECKS } from '../audit.js';
 import { VERSION as PKG_VERSION } from '../../version.js';
-import { SESSION_AUDIT_LABEL, SKILL_AUDIT_LABEL, type LintResult } from '../types.js';
+import {
+  SESSION_AUDIT_LABEL,
+  SESSION_AUDIT_PATH_MARKER,
+  SKILL_AUDIT_LABEL,
+  SKILL_AUDIT_PATH_MARKER,
+  type LintResult,
+} from '../types.js';
 
 function makeResult(overrides?: Partial<LintResult>): LintResult {
   return {
@@ -571,6 +577,69 @@ describe('formatText — group classification', () => {
     }
   });
 
+  it('routes skill bucket via SKILL_AUDIT_PATH_MARKER, not the full label string', () => {
+    // Mirror of the session reskin test: same '(skill audit)' marker,
+    // different surrounding path. The reporter must import the marker from
+    // types.ts (next to SKILL_AUDIT_LABEL) so a label reskin can't desync
+    // routing. Non-skill check on the row so only the path-marker arm of the
+    // classifier can satisfy the routing.
+    const result = makeResult({
+      files: [
+        {
+          path: 'CLAUDE.md',
+          isSymlink: false,
+          tokens: 100,
+          lines: 5,
+          issues: [{ severity: 'error', check: 'paths', line: 1, message: 'context filler' }],
+        },
+        {
+          path: '$HOME/.claude/ (skill audit)',
+          isSymlink: false,
+          tokens: 0,
+          lines: 0,
+          issues: [
+            { severity: 'info', check: 'paths', line: 0, message: 'reskinned skill-audit label' },
+          ],
+        },
+      ],
+      summary: { errors: 1, warnings: 0, info: 1, totalTokens: 100, estimatedWaste: 0 },
+    });
+    const plain = stripAnsi(formatText(result));
+    const skillIdx = plain.indexOf('Skill Audit');
+    expect(skillIdx).toBeGreaterThan(-1);
+    const rowIdx = plain.indexOf('$HOME/.claude/ (skill audit)', skillIdx);
+    expect(rowIdx).toBeGreaterThan(skillIdx);
+  });
+
+  it('keeps the path markers as substrings of their labels (routing invariant)', () => {
+    // The reporter routes on the markers while audit.ts stamps the labels.
+    // If a label reskin drops its marker, classification silently breaks.
+    expect(SESSION_AUDIT_LABEL).toContain(SESSION_AUDIT_PATH_MARKER);
+    expect(SKILL_AUDIT_LABEL).toContain(SKILL_AUDIT_PATH_MARKER);
+  });
+
+  it('classifies a clean windsurf global mcp_config.json as an MCP config, not a context file', () => {
+    // scanGlobalMcpConfigs surfaces ~/.codeium/windsurf/mcp_config.json,
+    // which matches none of the other path-fallback suffixes. With zero
+    // issues the issue-prefix arm can't route it either, so the fallback must
+    // recognize '/mcp_config.json'.
+    const result = makeResult({
+      files: [
+        {
+          path: '~/.codeium/windsurf/mcp_config.json',
+          isSymlink: false,
+          tokens: 40,
+          lines: 6,
+          issues: [],
+        },
+      ],
+      summary: { errors: 0, warnings: 0, info: 0, totalTokens: 40, estimatedWaste: 0 },
+    });
+    const plain = stripAnsi(formatText(result));
+    expect(plain).toContain('Found 1 MCP config');
+    expect(plain).not.toContain('context file');
+  });
+
   it('renders flat (no bold headers) when only one group has issues', () => {
     const result = makeResult({
       files: [
@@ -660,5 +729,95 @@ describe('formatText — top-summary for synthetic audit buckets', () => {
     expect(plain).not.toContain('Found 1 file');
     // The finding still renders in the issue section.
     expect(plain).toContain('two skills share a trigger');
+  });
+});
+
+describe('formatText — context token accounting excludes MCP configs', () => {
+  function stripAnsi(s: string): string {
+    // eslint-disable-next-line no-control-regex
+    return s.replace(/\x1b\[[0-9;]*m/g, '');
+  }
+
+  // summary.totalTokens sums ALL FileResults, including MCP configs (audit.ts
+  // assigns countTokens(config.content) to each). MCP configs are never
+  // loaded into agent context, so both the "Found N context files (X tokens
+  // total)" header and the "Token usage: N tokens per agent session" line
+  // must count context files only.
+  it('context summary and per-session lines count context tokens only on a mixed run', () => {
+    const result = makeResult({
+      files: [
+        { path: 'CLAUDE.md', isSymlink: false, tokens: 500, lines: 20, issues: [] },
+        { path: '.mcp.json', isSymlink: false, tokens: 300, lines: 10, issues: [] },
+      ],
+      summary: { errors: 0, warnings: 0, info: 0, totalTokens: 800, estimatedWaste: 0 },
+    });
+    const plain = stripAnsi(formatText(result));
+    expect(plain).toContain('Found 1 context file (500 tokens total)');
+    expect(plain).toContain('Token usage: 500 tokens per agent session');
+    expect(plain).not.toContain('800');
+  });
+});
+
+describe('paren-prefixed real paths are not synthetic buckets', () => {
+  function stripAnsi(s: string): string {
+    // eslint-disable-next-line no-control-regex
+    return s.replace(/\x1b\[[0-9;]*m/g, '');
+  }
+
+  // isSyntheticBucket used to treat ANY path starting with '(' as a synthetic
+  // cross-file bucket, so a real context file under a paren-named directory
+  // (e.g. a Next.js route group '(docs)/') was dropped from the summary, the
+  // token table, and demoted to SARIF logicalLocations. Only the exact
+  // '(project)' / '(mcp)' labels are synthetic.
+  function parenResult(): LintResult {
+    return makeResult({
+      files: [
+        {
+          path: '(docs)/CLAUDE.md',
+          isSymlink: false,
+          tokens: 120,
+          lines: 8,
+          issues: [{ severity: 'error', check: 'paths', line: 3, message: 'missing path' }],
+        },
+      ],
+      summary: { errors: 1, warnings: 0, info: 0, totalTokens: 120, estimatedWaste: 0 },
+    });
+  }
+
+  it('lists the file in the "Found N context files" summary', () => {
+    const plain = stripAnsi(formatText(parenResult()));
+    expect(plain).toContain('Found 1 context file (120 tokens total)');
+    expect(plain).toContain('(docs)/CLAUDE.md');
+  });
+
+  it('renders the file as a token-table row', () => {
+    const output = formatTokenReport(parenResult());
+    expect(output).toContain('(docs)/CLAUDE.md');
+  });
+
+  it('emits a SARIF physicalLocation (not logicalLocations) for its findings', () => {
+    const parsed = JSON.parse(formatSarif(parenResult()));
+    const r = parsed.runs[0].results[0];
+    expect(r.locations[0].physicalLocation.artifactLocation.uri).toBe('(docs)/CLAUDE.md');
+    expect(r.locations[0].physicalLocation.region.startLine).toBe(3);
+    expect(r.locations[0].logicalLocations).toBeUndefined();
+  });
+
+  it('still treats the exact (project) and (mcp) labels as synthetic in the token table', () => {
+    const result = makeResult({
+      files: [
+        { path: 'CLAUDE.md', isSymlink: false, tokens: 500, lines: 20, issues: [] },
+        {
+          path: '(mcp)',
+          isSymlink: false,
+          tokens: 0,
+          lines: 0,
+          issues: [{ severity: 'warning', check: 'mcp-consistency', line: 0, message: 'x' }],
+        },
+      ],
+      summary: { errors: 0, warnings: 1, info: 0, totalTokens: 500, estimatedWaste: 0 },
+    });
+    const output = formatTokenReport(result);
+    expect(output).not.toContain('(mcp)');
   });
 });

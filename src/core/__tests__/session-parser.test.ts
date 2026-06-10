@@ -37,6 +37,14 @@ describe('encodeProjectDir', () => {
   it('encodes dots in project names', () => {
     expect(encodeProjectDir('/home/jeff/repo.js')).toBe('-home-jeff-repo-js');
   });
+
+  it('collides for distinct paths differing only in - vs / vs . (deliberate Claude Code parity)', () => {
+    // The lossy encoding is intentional — Claude Code's project dirs collide
+    // the same way, and consumers match against those on-disk names.
+    const encoded = encodeProjectDir('/home/jeff/a/b');
+    expect(encodeProjectDir('/home/jeff/a-b')).toBe(encoded);
+    expect(encodeProjectDir('/home/jeff/a.b')).toBe(encoded);
+  });
 });
 
 describe('projectDirMatchesPath', () => {
@@ -54,6 +62,12 @@ describe('projectDirMatchesPath', () => {
     expect(
       projectDirMatchesPath('C--Users-jeff-yaw-ctxlint', 'C:\\Users\\jeff\\yaw\\ctxlint'),
     ).toBe(true);
+  });
+
+  it('matches colliding sibling paths — "encodes identically", not "is the same path"', () => {
+    const encoded = encodeProjectDir('/home/jeff/a/b');
+    expect(projectDirMatchesPath(encoded, '/home/jeff/a-b')).toBe(true);
+    expect(projectDirMatchesPath(encoded, '/home/jeff/a.b')).toBe(true);
   });
 });
 

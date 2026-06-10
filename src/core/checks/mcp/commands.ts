@@ -54,8 +54,11 @@ export async function checkMcpCommands(
       }
     }
 
-    // args-path-missing: check args that look like file paths
-    if (server.args) {
+    // args-path-missing: check args that look like file paths. Project scope
+    // only -- a user/global config's relative paths resolve against that
+    // client's own working directory, not this project's root, so resolving
+    // them here produces spurious misses.
+    if (server.args && config.scope === 'project') {
       for (const arg of server.args) {
         // Skip URLs — they match FILE_PATH_PATTERN but aren't local refs.
         if (URL_PREFIX.test(arg)) continue;

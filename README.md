@@ -32,7 +32,7 @@ ctxlint is a linter purpose-built for this. It reads your context files, cross-r
 - **Token-aware** — shows how much context window your files consume and flags redundant content
 - **Every AI tool** — supports Claude Code, Cursor, Copilot, Windsurf, Gemini, Cline, Aider, and 9 more
 - **Multiple outputs** — text, JSON, and SARIF (GitHub Code Scanning)
-- **MCP server** — 6 tools for IDE/agent integration with tool annotations for auto-approval
+- **MCP server** — 7 tools for IDE/agent integration with tool annotations for auto-approval
 - **Watch mode** — `--watch` re-lints automatically when context files change
 
 ## Install
@@ -82,6 +82,7 @@ Useful if you want `ctxlint` available in every project without per-project setu
 | **Frontmatter**       | Invalid or missing YAML frontmatter in Cursor .mdc, Copilot instructions, and Windsurf rules                                                                                                                                                                                     |
 | **CI coverage**       | Release/deploy workflows in `.github/workflows/` not documented in any context file                                                                                                                                                                                              |
 | **CI secrets**        | Secrets used in CI workflows (`${{ secrets.X }}`) not mentioned in context files                                                                                                                                                                                                 |
+| **Inline secrets**    | Real secrets pasted into context files — private-key headers, AWS/GitHub/Anthropic/OpenAI/npm/Slack/Google/Stripe token shapes. Messages never echo the secret (6-char redacted prefix only)                                                                                     |
 | **Dead hooks**        | PreToolUse hooks / permissions entries in `.claude/settings.json` pointing at scripts that no longer exist (a dead gate silently no-ops). Scans project `.claude/settings.json[.local]` by default; pass `--hooks-global` to also scan the user-global `~/.claude/settings.json` |
 | **Missing secrets**   | GitHub secrets set on sibling repos but missing from current project                                                                                                                                                                                                             |
 | **Diverged configs**  | Canonical config files (CI, tsconfig, etc.) drifting across sibling projects                                                                                                                                                                                                     |
@@ -89,6 +90,7 @@ Useful if you want `ctxlint` available in every project without per-project setu
 | **Stale memory**      | Claude Code memory entries referencing paths that no longer exist                                                                                                                                                                                                                |
 | **Duplicate memory**  | Near-duplicate memories across projects (>60% content overlap)                                                                                                                                                                                                                   |
 | **Loop detection**    | Agent stuck in loops — repeated commands or cyclic patterns in session history                                                                                                                                                                                                   |
+| **Memory overflow**   | `MEMORY.md` past Claude Code's 200-line / 25KB session-load cap — entries beyond it are invisible to the agent                                                                                                                                                                   |
 
 ## Supported Context Files
 
@@ -215,7 +217,7 @@ Session checks are **opt-in** because they access files outside the project dire
 
 ### Session Linting Specification
 
-- **[`AGENT_SESSION_LINT_SPEC.md`](./AGENT_SESSION_LINT_SPEC.md)** — 8 lint rules, the agent session data landscape across 8 agents, sibling detection strategy, and implementation guidance.
+- **[`AGENT_SESSION_LINT_SPEC.md`](./AGENT_SESSION_LINT_SPEC.md)** — the full lint-rule set (rule count in the [Specifications](#specifications) family table), the agent session data landscape across 8 agents, sibling detection strategy, and implementation guidance.
 - **[`agent-session-lint-rules.json`](./agent-session-lint-rules.json)** — Machine-readable rule catalog.
 
 ## Example Output
@@ -269,6 +271,10 @@ Options:
   --mcp-global              Also scan user/global MCP config files (implies --mcp)
   --session                 Enable session audit checks (cross-project consistency)
   --session-only            Run only session checks, skip context and MCP checks
+  --skills                  Run agent-skill checks (~/.claude/skills + ~/.claude/agents)
+  --skills-only             Run only agent-skill checks, skip everything else
+  --hooks-global            Also scan the user-global ~/.claude/settings.json in the
+                            dead-hook check (default scans project .claude/ only)
   --mcp-server              Start the MCP server (alias: `serve` subcommand)
   --watch                   Re-lint on context file changes
   -V, --version             Output the version number
@@ -278,9 +284,9 @@ Commands:
   init                 Set up a git pre-commit hook
 ```
 
-**Available checks:** `paths`, `commands`, `staleness`, `tokens`, `tier-tokens`, `redundancy`, `contradictions`, `frontmatter`, `ci-coverage`, `ci-secrets`, `mcp-schema`, `mcp-security`, `mcp-commands`, `mcp-deprecated`, `mcp-env`, `mcp-urls`, `mcp-consistency`, `mcp-redundancy`, `session-missing-secret`, `session-diverged-file`, `session-missing-workflow`, `session-stale-memory`, `session-duplicate-memory`, `session-loop-detection`, `session-memory-index-overflow`
+**Available checks:** `paths`, `commands`, `staleness`, `tokens`, `tier-tokens`, `redundancy`, `contradictions`, `frontmatter`, `ci-coverage`, `ci-secrets`, `content-secrets`, `hook-coverage`, `mcp-schema`, `mcp-security`, `mcp-commands`, `mcp-deprecated`, `mcp-env`, `mcp-urls`, `mcp-consistency`, `mcp-redundancy`, `session-missing-secret`, `session-diverged-file`, `session-missing-workflow`, `session-stale-memory`, `session-duplicate-memory`, `session-loop-detection`, `session-memory-index-overflow`, `skill-frontmatter`, `skill-broken-ref`, `skill-trigger-collision`, `skill-orphaned`, `skill-dead-tool-restriction`
 
-Passing any `mcp-*` check name implies `--mcp`. Passing any `session-*` check name implies `--session`.
+Passing any `mcp-*` check name implies `--mcp`. Passing any `session-*` check name implies `--session`. Passing any `skill-*` check name implies `--skills`.
 
 ## Watch Mode
 
@@ -392,7 +398,7 @@ The `contextFiles` array adds custom file patterns to scan alongside the built-i
 
 | Field                           | Type       | Default    | Meaning                                                                                                                                                                                                   |
 | ------------------------------- | ---------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `checks`                        | `string[]` | all checks | Checks to run. Check names include `paths`, `commands`, `tokens`, `tier-tokens`, `redundancy`, `contradictions`, `frontmatter`, `staleness`, `ci-coverage`, `ci-secrets`, plus any `mcp-*` / `session-*`. |
+| `checks`                        | `string[]` | all checks | Checks to run. Check names include `paths`, `commands`, `tokens`, `tier-tokens`, `redundancy`, `contradictions`, `frontmatter`, `staleness`, `ci-coverage`, `ci-secrets`, `content-secrets`, `hook-coverage`, plus any `mcp-*` / `session-*` / `skill-*`. |
 | `ignore`                        | `string[]` | `[]`       | Checks to skip, evaluated after `checks`.                                                                                                                                                                 |
 | `strict`                        | `boolean`  | `false`    | Exit non-zero on any warning or error.                                                                                                                                                                    |
 | `tokenThresholds`               | `object`   | see below  | Per-file and cross-file token thresholds.                                                                                                                                                                 |
@@ -408,6 +414,8 @@ The `contextFiles` array adds custom file patterns to scan alongside the built-i
 | `mcpGlobal`                     | `boolean`  | `false`    | Also scan user/global MCP configs (same as `--mcp-global`).                                                                                                                                               |
 | `session`                       | `boolean`  | `false`    | Enable session audit checks (cross-project consistency); same as `--session`.                                                                                                                             |
 | `sessionOnly`                   | `boolean`  | `false`    | Run only session checks, skip context and MCP checks (same as `--session-only`).                                                                                                                          |
+| `skills`                        | `boolean`  | `false`    | Enable agent-skill checks (`~/.claude/skills` + `~/.claude/agents`); same as `--skills`.                                                                                                                  |
+| `skillsOnly`                    | `boolean`  | `false`    | Run only agent-skill checks, skip everything else (same as `--skills-only`).                                                                                                                              |
 
 Config file resolution order: `.ctxlintrc` → `.ctxlintrc.json` in the project root. Use `--config <path>` to point elsewhere. CLI flags override config fields.
 
@@ -415,7 +423,7 @@ CLI flags override config file settings. Use `--config <path>` to load a config 
 
 ## Use as MCP Server
 
-ctxlint ships with an MCP server that exposes six tools (`ctxlint_audit`, `ctxlint_mcp_audit`, `ctxlint_session_audit`, `ctxlint_validate_path`, `ctxlint_token_report`, `ctxlint_fix`). All read-only tools declare annotations so MCP clients can skip confirmation dialogs.
+ctxlint ships with an MCP server that exposes seven tools (`ctxlint_audit`, `ctxlint_mcp_audit`, `ctxlint_session_audit`, `ctxlint_skill_audit`, `ctxlint_validate_path`, `ctxlint_token_report`, `ctxlint_fix`). All read-only tools declare annotations so MCP clients can skip confirmation dialogs.
 
 Launch it with the `serve` subcommand (or the equivalent `--mcp-server` flag, kept for back-compat):
 
@@ -505,8 +513,8 @@ ctxlint is the reference implementation of four open specifications for linting 
 
 | Spec                                                           | What it covers                                                                                                                                                                                                                            |
 | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **[AI Context File Linting Spec](./CONTEXT_LINT_SPEC.md)**     | 28 rules for validating context files (CLAUDE.md, .cursorrules, AGENTS.md, etc.) across 17 clients. Covers file formats, frontmatter schemas, path/command validation, staleness, token budgets, redundancy, and contradictions.          |
-| **[MCP Config Linting Spec](./MCP_CONFIG_LINT_SPEC.md)**       | 27 rules for validating MCP server configs (.mcp.json, .cursor/mcp.json, .vscode/mcp.json, etc.) across 8 clients. Covers schema validation, hardcoded secrets, env var syntax, deprecated transports, and cross-file consistency.        |
+| **[AI Context File Linting Spec](./CONTEXT_LINT_SPEC.md)**     | 39 rules for validating context files (CLAUDE.md, .cursorrules, AGENTS.md, etc.) across 16 clients. Covers file formats, frontmatter schemas, path/command validation, staleness, token budgets, redundancy, and contradictions.          |
+| **[MCP Config Linting Spec](./MCP_CONFIG_LINT_SPEC.md)**       | 28 rules for validating MCP server configs (.mcp.json, .cursor/mcp.json, .vscode/mcp.json, etc.) across 8 clients. Covers schema validation, hardcoded secrets, env var syntax, deprecated transports, and cross-file consistency.        |
 | **[Agent Session Linting Spec](./AGENT_SESSION_LINT_SPEC.md)** | 8 rules for auditing agent session data (history, memory) across 8 agents. Covers cross-project secret consistency, config drift, stale memory, and loop detection.                                                                       |
 | **[Agent Skill Linting Spec](./AGENT_SKILL_LINT_SPEC.md)**     | 5 rules for auditing Claude Code skill (`SKILL.md`) and agent (`.md`) definitions under `~/.claude`. Covers frontmatter presence, broken refs, trigger-phrase collisions, orphaned skills, and dead tool restrictions. (v1, experimental) |
 

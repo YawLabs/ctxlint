@@ -100,7 +100,9 @@ export async function runCli() {
       try {
         if (spinner) spinner.text = 'Running checks...';
 
-        const result = await runAudit(resolvedPath, activeChecks, {
+        // Shared by the initial audit and the post-`--fix` re-audit below,
+        // so both runs see identical scope/threshold/ignore settings.
+        const auditOptions = {
           depth: options.depth,
           extraPatterns: config?.contextFiles,
           mcp: options.mcp,
@@ -113,7 +115,8 @@ export async function runCli() {
           hooksGlobal: options.hooksGlobal,
           tokenThresholds: config?.tokenThresholds,
           ignoreRules: config?.ignoreRules,
-        });
+        };
+        let result = await runAudit(resolvedPath, activeChecks, auditOptions);
 
         spinner?.stop();
 
@@ -137,17 +140,27 @@ export async function runCli() {
         const yes = (opts.yes as boolean) || false;
         const followSymlinks = (opts.followSymlinks as boolean) || false;
         const isInteractive = !!process.stdout.isTTY && !options.quiet;
+        // In json/sarif mode stdout must carry ONLY the payload: fix-progress
+        // text goes to stderr, and applyFixes' own per-fix stdout lines are
+        // silenced via quiet. Otherwise `--fix --format json | jq` breaks on
+        // "Fixed N issues..." interleaved before the JSON document.
+        const machineFormat = options.format !== 'text';
+        const progress = machineFormat ? console.error : console.log;
 
+        let fixesApplied = false;
         if (dryRunFlag || options.fix) {
-          const commonOpts = { quiet: options.quiet, skipSymlinks: !followSymlinks };
+          const commonOpts = {
+            quiet: options.quiet || machineFormat,
+            skipSymlinks: !followSymlinks,
+          };
 
           if (dryRunFlag) {
             const preview = applyFixes(result, { ...commonOpts, dryRun: true });
             if (!options.quiet) {
               if (preview.totalFixes === 0) {
-                console.log('\nNo auto-fixable issues.\n');
+                progress('\nNo auto-fixable issues.\n');
               } else {
-                console.log(
+                progress(
                   `\nWould fix ${preview.totalFixes} issue${preview.totalFixes !== 1 ? 's' : ''} in ${preview.filesModified.length} file${preview.filesModified.length !== 1 ? 's' : ''}. (dry-run — no files modified)\n`,
                 );
               }
@@ -157,33 +170,47 @@ export async function runCli() {
               // Show a preview, then ask for confirmation before writing.
               const preview = applyFixes(result, { ...commonOpts, dryRun: true });
               if (preview.totalFixes === 0) {
-                console.log('\nNo auto-fixable issues.\n');
+                progress('\nNo auto-fixable issues.\n');
               } else {
-                console.log(
+                progress(
                   `\n${preview.totalFixes} fix${preview.totalFixes !== 1 ? 'es' : ''} proposed across ${preview.filesModified.length} file${preview.filesModified.length !== 1 ? 's' : ''}.`,
                 );
                 const confirmed = await promptYesNo(
                   'Apply these fixes? Re-run with --yes to skip this prompt. [y/N] ',
                 );
                 if (!confirmed) {
-                  console.log('Aborted. No files modified.\n');
+                  progress('Aborted. No files modified.\n');
                 } else {
                   const applied = applyFixes(result, commonOpts);
-                  console.log(
+                  progress(
                     `\nFixed ${applied.totalFixes} issue${applied.totalFixes !== 1 ? 's' : ''} in ${applied.filesModified.length} file${applied.filesModified.length !== 1 ? 's' : ''}.\n`,
                   );
+                  fixesApplied = applied.totalFixes > 0;
                 }
               }
             } else {
               // Non-interactive (CI) or --yes: apply directly.
               const applied = applyFixes(result, commonOpts);
               if (applied.totalFixes > 0 && !options.quiet) {
-                console.log(
+                progress(
                   `\nFixed ${applied.totalFixes} issue${applied.totalFixes !== 1 ? 's' : ''} in ${applied.filesModified.length} file${applied.filesModified.length !== 1 ? 's' : ''}.\n`,
                 );
               }
+              fixesApplied = applied.totalFixes > 0;
             }
           }
+        }
+
+        // --fix rewrote files on disk, so the pre-fix audit no longer
+        // describes the project. Re-run it so the printed report and the
+        // --strict exit code reflect post-fix state -- otherwise issues that
+        // were just repaired are still reported as present and still fail
+        // --strict.
+        if (fixesApplied) {
+          resetGit();
+          resetPathsCache();
+          resetPackageJsonCache();
+          result = await runAudit(resolvedPath, activeChecks, auditOptions);
         }
 
         // Output
@@ -399,8 +426,25 @@ npx @yawlabs/ctxlint@${VERSION} --strict
 
       if (fs.existsSync(hookPath)) {
         const existing = fs.readFileSync(hookPath, 'utf-8');
-        if (existing.includes('ctxlint')) {
-          console.log('Pre-commit hook already includes ctxlint.');
+        // Detect the actual hook command (a non-comment `npx @yawlabs/ctxlint`
+        // invocation), not any 'ctxlint' substring -- a hook that merely
+        // mentions ctxlint in a comment or an unrelated tool name still needs
+        // the real command appended.
+        const installed = existing.match(
+          /^[^#\r\n]*\bnpx\s+(?:-y\s+|--yes\s+)?@yawlabs\/ctxlint(?:@(\d+\.\d+\.\d+))?/m,
+        );
+        if (installed) {
+          const pinned = installed[1];
+          if (pinned && pinned !== VERSION) {
+            // Re-running init is the documented way to bump the pin.
+            fs.writeFileSync(
+              hookPath,
+              existing.replace(/(@yawlabs\/ctxlint@)\d+\.\d+\.\d+/g, `$1${VERSION}`),
+            );
+            console.log(`Updated ctxlint pre-commit hook pin from ${pinned} to ${VERSION}.`);
+          } else {
+            console.log('Pre-commit hook already includes ctxlint.');
+          }
           return;
         }
         // Append to existing hook (without shebang — the existing hook already has one)
@@ -431,6 +475,16 @@ async function promptYesNo(question: string): Promise<boolean> {
   } finally {
     rl.close();
   }
+}
+
+/**
+ * Parse `--depth`. 0 is a valid value (root-only scan), so the fallback test
+ * is NaN, not falsiness -- `parseInt('0') || 2` used to silently coerce a
+ * requested 0 back to the default. Clamped to [0, 10].
+ */
+function resolveDepth(raw: string): number {
+  const parsed = parseInt(raw, 10);
+  return Number.isNaN(parsed) ? 2 : Math.max(0, Math.min(parsed, 10));
 }
 
 interface ResolvedSession {
@@ -529,7 +583,7 @@ function resolveSession(
       : config?.ignore || [],
     tokensOnly: opts.tokens as boolean,
     quiet: opts.quiet as boolean,
-    depth: Math.max(0, Math.min(parseInt(opts.depth as string, 10) || 2, 10)),
+    depth: resolveDepth(opts.depth as string),
     mcp: effectiveMcp,
     mcpOnly,
     mcpGlobal,

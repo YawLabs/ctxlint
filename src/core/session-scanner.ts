@@ -1,5 +1,6 @@
 import { readdir, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
+import { homedir } from 'node:os';
 import { createInterface } from 'node:readline';
 import { dirname, join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
@@ -12,8 +13,13 @@ import type {
   SiblingRepo,
 } from './types.js';
 import { parseMemoryFile } from './session-parser.js';
+import { stripBom } from '../utils/fs.js';
 
-const home = process.env.HOME || process.env.USERPROFILE || '';
+// Env-first so HOME/USERPROFILE overrides in tests/CI apply, with an
+// os.homedir() fallback so the pillar still resolves the real home when
+// neither is set. skill-scanner's defaultHome() resolves identically —
+// the home-scoped pillars must agree on what "home" means.
+const home = process.env.HOME || process.env.USERPROFILE || homedir();
 
 /** Known agent data directories and their providers */
 const AGENT_DIRS: Array<{ provider: AgentProvider; dir: string; historyFile?: string }> = [
@@ -49,7 +55,8 @@ const AGENT_DIRS: Array<{ provider: AgentProvider; dir: string; historyFile?: st
  * Detect which agent providers are installed on this machine.
  */
 export function detectProviders(): AgentProvider[] {
-  // If neither HOME nor USERPROFILE is set, `home` is empty and
+  // `home` is empty only when HOME/USERPROFILE are unset AND os.homedir()
+  // resolves to nothing (stripped-down containers). In that case
   // `join('', '.claude')` produces the relative path `.claude`. `existsSync`
   // on that resolves against cwd, so a project that happens to have its
   // own `.claude/` would get mistaken for the user's global agent data.
@@ -74,15 +81,27 @@ async function parseJsonlFiltered<T>(
     input: createReadStream(filePath, { encoding: 'utf-8' }),
     crlfDelay: Infinity,
   });
-  for await (const line of rl) {
-    if (!line.trim()) continue;
-    try {
-      const parsed = JSON.parse(line);
-      const result = filter(parsed);
-      if (result) results.push(result);
-    } catch {
-      // skip malformed lines
+  try {
+    for await (const rawLine of rl) {
+      // A BOM-prefixed first line would fail JSON.parse and silently drop the
+      // entry. stripBom is a single charCode check, so apply it per line
+      // rather than tracking a first-line flag.
+      const line = stripBom(rawLine);
+      if (!line.trim()) continue;
+      try {
+        const parsed = JSON.parse(line);
+        const result = filter(parsed);
+        if (result) results.push(result);
+      } catch {
+        // skip malformed lines
+      }
     }
+  } catch {
+    // Stream-level errors — the file locked by a live agent appending to
+    // history.jsonl (EBUSY/EPERM on Windows) or deleted between the
+    // existsSync check and the open — degrade to the entries read so far.
+    // Without this, the rejection propagates through scanSessionData's
+    // Promise.all and discards the entire audit instead of just history.
   }
   return results;
 }
@@ -144,11 +163,21 @@ export async function readJsonlHistory(opts: JsonlHistoryReaderOptions): Promise
 }
 
 /**
+ * Resolve a provider's history.jsonl path from AGENT_DIRS so the layout is
+ * declared in one place. Providers without a `historyFile` resolve to `''`,
+ * which `parseJsonlFiltered` treats as a missing file.
+ */
+function agentHistoryPath(provider: AgentProvider): string {
+  const agent = AGENT_DIRS.find((a) => a.provider === provider);
+  return agent?.historyFile ? join(agent.dir, agent.historyFile) : '';
+}
+
+/**
  * Read Claude Code history.jsonl — filter to command entries only.
  */
 async function readClaudeHistory(): Promise<HistoryEntry[]> {
   return readJsonlHistory({
-    historyPath: join(home, '.claude', 'history.jsonl'),
+    historyPath: agentHistoryPath('claude-code'),
     provider: 'claude-code',
     displayFields: ['display'],
     projectFields: ['project'],
@@ -161,7 +190,7 @@ async function readClaudeHistory(): Promise<HistoryEntry[]> {
  */
 async function readCodexHistory(): Promise<HistoryEntry[]> {
   return readJsonlHistory({
-    historyPath: join(home, '.codex', 'history.jsonl'),
+    historyPath: agentHistoryPath('codex-cli'),
     provider: 'codex-cli',
     displayFields: ['display', 'command'],
     projectFields: ['project', 'cwd'],
@@ -215,6 +244,36 @@ function detectAiderInSiblings(siblings: SiblingRepo[]): AgentProvider | null {
 }
 
 /**
+ * Cap on simultaneous sibling resolutions. Each `resolveSibling` call creates
+ * a FRESH simple-git instance, and simple-git's maxConcurrentProcesses
+ * scheduler is per-instance — it never throttles across instances. Without
+ * this cap, a parent dir with 200+ repos spawns 200+ simultaneous
+ * `git remote` child processes (EMFILE/EAGAIN risk, worst on Windows).
+ */
+const SIBLING_RESOLVE_CONCURRENCY = 8;
+
+/**
+ * Map `items` through `fn` with at most `limit` calls in flight, preserving
+ * input order in the results.
+ */
+export async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+/**
  * Detect sibling repositories.
  * Default: same parent directory. Falls back to git org matching if too many.
  */
@@ -265,8 +324,8 @@ export async function detectSiblings(projectRoot: string): Promise<SiblingRepo[]
   // workspace next door, a Python-only repo without `.git/`) — the normal
   // <=50 branch keeps them, so this branch must too.
   //
-  // Strategy: run the same parallel resolve over ALL candidates. For non-git
-  // entries the `simpleGit` call short-circuits with no remotes and we
+  // Strategy: run the same bounded-parallel resolve over ALL candidates. For
+  // non-git entries the `simpleGit` call short-circuits with no remotes and we
   // still emit a SiblingRepo with name+path (no `gitOrg`). Then if we have
   // a currentOrg we keep org-matched git repos AND every non-git sibling
   // (the org filter doesn't apply to repos that don't have an org). This
@@ -283,7 +342,11 @@ export async function detectSiblings(projectRoot: string): Promise<SiblingRepo[]
       // no git
     }
 
-    const results = await Promise.all(candidates.map((c) => resolveSibling(c)));
+    const results = await mapWithConcurrency(
+      candidates,
+      SIBLING_RESOLVE_CONCURRENCY,
+      resolveSibling,
+    );
 
     if (currentOrg) {
       return results.filter((s) => !s.gitOrg || s.gitOrg === currentOrg);
@@ -291,8 +354,9 @@ export async function detectSiblings(projectRoot: string): Promise<SiblingRepo[]
     return results;
   }
 
-  // Normal path: resolve git remotes in parallel
-  return Promise.all(candidates.map((c) => resolveSibling(c)));
+  // Normal path: resolve git remotes in parallel (bounded — see the
+  // SIBLING_RESOLVE_CONCURRENCY note)
+  return mapWithConcurrency(candidates, SIBLING_RESOLVE_CONCURRENCY, resolveSibling);
 }
 
 /**

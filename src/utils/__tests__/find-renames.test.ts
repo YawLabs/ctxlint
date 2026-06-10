@@ -11,11 +11,13 @@ import { findRenames, parseRenameLog, resetGit, type RenameInfo } from '../git.j
 // hand-typed string. Keeping the flags in lockstep with the production call
 // is what makes the parser tests an integration test at the git boundary.
 const RENAME_LOG_ARGS = [
+  '-c',
+  'core.quotepath=false',
   'log',
   '--diff-filter=R',
   '--find-renames',
   '--name-status',
-  '--format=%H %ai',
+  '--format=%H %aI',
   '-50',
 ];
 
@@ -144,6 +146,45 @@ describe('findRenames (real git mv, unscoped rename match)', { timeout: 30000 },
     // Rename committed just now -> 0 whole days ago.
     expect(r.daysAgo).toBe(0);
   });
+
+  it('finds a rename of a non-ASCII filename (raw UTF-8 paths, not quotePath octal escapes)', async () => {
+    // Without `-c core.quotepath=false` git emits
+    // R100\t"src/f\303\266\303\266.txt"\t"src/b\303\244r.txt" and neither
+    // the exact match nor the basename fallback ever unquotes it.
+    await commit('add unicode', [{ rel: 'src/föö.txt', body: 'a\nb\nc\nd\ne\n' }]);
+    const git = simpleGit(realTmpDir);
+    await git.mv('src/föö.txt', 'src/bär.txt');
+    await git.commit('rename unicode');
+
+    const result = await findRenames(realTmpDir, 'src/föö.txt');
+    expect(result).not.toBeNull();
+    const r = result as RenameInfo;
+    expect(r.oldPath).toBe('src/föö.txt');
+    expect(r.newPath).toBe('src/bär.txt');
+  });
+
+  it('detects a rename with content modification (sub-100 similarity score)', async () => {
+    // Enough lines that an edit in the same commit keeps similarity above
+    // git's 50% rename-detection threshold while dropping it below 100.
+    const body = `${Array.from({ length: 10 }, (_, i) => `line ${i}`).join('\n')}\n`;
+    await commit('add', [{ rel: 'src/old.ts', body }]);
+    const git = simpleGit(realTmpDir);
+    await git.mv('src/old.ts', 'src/new.ts');
+    fs.writeFileSync(path.join(realTmpDir, 'src/new.ts'), body.replace('line 9', 'line nine'));
+    await git.add('src/new.ts');
+    await git.commit('rename + edit');
+
+    // Prove the fixture actually produced a sub-100 R row at the git
+    // boundary (otherwise this would silently re-test the R100 path).
+    const raw = await simpleGit(realTmpDir).raw(RENAME_LOG_ARGS);
+    const scoreMatch = raw.match(/^R(\d+)\t/m);
+    expect(scoreMatch).not.toBeNull();
+    expect(Number(scoreMatch?.[1])).toBeGreaterThanOrEqual(50);
+    expect(Number(scoreMatch?.[1])).toBeLessThan(100);
+
+    const result = await findRenames(realTmpDir, 'src/old.ts');
+    expect(result).toMatchObject({ oldPath: 'src/old.ts', newPath: 'src/new.ts' });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -163,7 +204,7 @@ describe('parseRenameLog', () => {
   });
 
   it('parses a single rename block into the first matching RenameInfo', () => {
-    const raw = `${HASH} 2026-06-02 18:54:28 -0700\n\nR100\tsrc/old.ts\tsrc/new.ts\n`;
+    const raw = `${HASH} 2026-06-02T18:54:28-07:00\n\nR100\tsrc/old.ts\tsrc/new.ts\n`;
     const info = parseRenameLog(raw);
     expect(info).toEqual({
       oldPath: 'src/old.ts',
@@ -177,11 +218,12 @@ describe('parseRenameLog', () => {
 
   it('returns the FIRST R-entry when a single commit contains multiple renames', () => {
     // A real "git mv a a2 && git mv b b2 && commit" lands two R rows under one
-    // header. The function returns on the first R row it can parse; the comment
-    // at git.ts:213-216 documents that currentHash must survive past the first
-    // R row -- this asserts the first row wins and carries the right hash.
+    // header. The function returns on the first R row it can parse; the
+    // commit-header tracking comment in parseRenameLog documents that
+    // currentHash must survive past the first R row -- this asserts the first
+    // row wins and carries the right hash.
     const raw =
-      `${HASH} 2026-06-02 18:54:28 -0700\n\n` +
+      `${HASH} 2026-06-02T18:54:28-07:00\n\n` +
       `R100\tsrc/a.ts\tsrc/a2.ts\n` +
       `R100\tsrc/b.ts\tsrc/b2.ts\n`;
     const info = parseRenameLog(raw);
@@ -193,11 +235,12 @@ describe('parseRenameLog', () => {
   });
 
   it('keeps the correct commit hash on the SECOND R row when the first R row is malformed', () => {
-    // Regression guard for git.ts:213-216: the header hash must persist across
-    // R rows. A malformed (sub-3-part) first R row is skipped; the second,
-    // valid R row must still report the header's hash, not "unknown".
+    // Regression guard for parseRenameLog's header tracking: the header hash
+    // must persist across R rows. A malformed (sub-3-part) first R row is
+    // skipped; the second, valid R row must still report the header's hash,
+    // not "unknown".
     const raw =
-      `${HASH} 2026-06-02 18:54:28 -0700\n\n` +
+      `${HASH} 2026-06-02T18:54:28-07:00\n\n` +
       `Rbroken\n` + // malformed: split('\t') -> length 1, guarded out
       `R100\tsrc/b.ts\tsrc/b2.ts\n`;
     const info = parseRenameLog(raw);
@@ -210,8 +253,8 @@ describe('parseRenameLog', () => {
 
   it('uses daysAgo = 0 when an R row appears before any commit header (currentDateStr undefined)', () => {
     // No header line precedes the R row, so currentDateStr stays undefined and
-    // the branch at git.ts:231-233 takes the `: 0` fallback. commitHash falls
-    // back to the literal "unknown" for the same reason.
+    // the daysAgo ternary in parseRenameLog takes the `: 0` fallback.
+    // commitHash falls back to the literal "unknown" for the same reason.
     const raw = `R100\tsrc/old.ts\tsrc/new.ts\n`;
     const info = parseRenameLog(raw);
     expect(info).toEqual({
@@ -224,23 +267,32 @@ describe('parseRenameLog', () => {
 
   it('computes daysAgo from the header date when present', () => {
     // Header dated 10 days before "now"; floor of the whole-day delta is 10.
+    // Mirror git's %aI shape: seconds precision, numeric offset, no millis.
     const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
-    const iso = tenDaysAgo.toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' +0000');
+    const iso = tenDaysAgo.toISOString().replace(/\.\d+Z$/, '+00:00');
     const raw = `${HASH} ${iso}\n\nR100\tsrc/old.ts\tsrc/new.ts\n`;
     const info = parseRenameLog(raw);
     expect((info as RenameInfo).daysAgo).toBe(10);
   });
 
+  it('still parses the older space-separated %ai header shape', () => {
+    // The header regex accepts `[T ]` after the date so a parser fed %ai
+    // output (the pre-%aI format) keeps working.
+    const raw = `${HASH} 2026-06-02 18:54:28 -0700\n\nR100\tsrc/old.ts\tsrc/new.ts\n`;
+    const info = parseRenameLog(raw);
+    expect(info).toMatchObject({ commitHash: '6912509' });
+    expect(Number.isFinite((info as RenameInfo).daysAgo)).toBe(true);
+    expect((info as RenameInfo).daysAgo).toBeGreaterThanOrEqual(0);
+  });
+
   it('skips a malformed R line (fewer than 3 tab-parts) and returns null when no valid R follows', () => {
-    const raw =
-      `${HASH} 2026-06-02 18:54:28 -0700\n\n` +
-      `R100\tsrc/only-one-path.ts\n`; // 2 parts -> length < 3 -> guarded out
+    const raw = `${HASH} 2026-06-02T18:54:28-07:00\n\n` + `R100\tsrc/only-one-path.ts\n`; // 2 parts -> length < 3 -> guarded out
     expect(parseRenameLog(raw)).toBeNull();
   });
 
   it('ignores lines that are neither a commit header nor an R row', () => {
     const raw =
-      `${HASH} 2026-06-02 18:54:28 -0700\n\n` +
+      `${HASH} 2026-06-02T18:54:28-07:00\n\n` +
       `M\tsrc/modified.ts\n` + // not a rename
       `A\tsrc/added.ts\n` +
       `R100\tsrc/old.ts\tsrc/new.ts\n`;
@@ -255,7 +307,7 @@ describe('parseRenameLog', () => {
     // with `deadbee` and currentDateStr with `somefile.ts` (then NaN daysAgo).
     // The tightened regex must skip it so the real header's hash + date win.
     const raw =
-      `${HASH} 2026-06-02 18:54:28 -0700\n\n` +
+      `${HASH} 2026-06-02T18:54:28-07:00\n\n` +
       `deadbee somefile.ts\n` + // hex + space + non-date -> must NOT be a header
       `R100\tsrc/old.ts\tsrc/new.ts\n`;
     const info = parseRenameLog(raw);
@@ -273,7 +325,7 @@ describe('parseRenameLog', () => {
   // to return the rename whose SOURCE path equals the queried ref.
   it('with a targetPath, returns the rename whose old path matches (not just the first)', () => {
     const raw =
-      `${HASH} 2026-06-02 18:54:28 -0700\n\n` +
+      `${HASH} 2026-06-02T18:54:28-07:00\n\n` +
       `R100\tsrc/a.ts\tsrc/a2.ts\n` +
       `R100\tsrc/b.ts\tsrc/b2.ts\n`;
     expect(parseRenameLog(raw, 'src/b.ts')).toMatchObject({
@@ -283,19 +335,52 @@ describe('parseRenameLog', () => {
   });
 
   it('normalizes ./ and backslashes when matching the targetPath', () => {
-    const raw = `${HASH} 2026-06-02 18:54:28 -0700\n\nR100\tsrc/old.ts\tsrc/new.ts\n`;
+    const raw = `${HASH} 2026-06-02T18:54:28-07:00\n\nR100\tsrc/old.ts\tsrc/new.ts\n`;
     expect(parseRenameLog(raw, './src/old.ts')).toMatchObject({ newPath: 'src/new.ts' });
     expect(parseRenameLog(raw, 'src\\old.ts')).toMatchObject({ newPath: 'src/new.ts' });
   });
 
   it('falls back to a basename match when no source path matches exactly', () => {
-    const raw = `${HASH} 2026-06-02 18:54:28 -0700\n\nR100\tsrc/lib/old.ts\tsrc/lib/new.ts\n`;
+    const raw = `${HASH} 2026-06-02T18:54:28-07:00\n\nR100\tsrc/lib/old.ts\tsrc/lib/new.ts\n`;
     // doc referenced a bare filename; repo tracks a nested path
     expect(parseRenameLog(raw, 'old.ts')).toMatchObject({ newPath: 'src/lib/new.ts' });
   });
 
   it('returns null with a targetPath that matches no rename source or basename', () => {
-    const raw = `${HASH} 2026-06-02 18:54:28 -0700\n\nR100\tsrc/old.ts\tsrc/new.ts\n`;
+    const raw = `${HASH} 2026-06-02T18:54:28-07:00\n\nR100\tsrc/old.ts\tsrc/new.ts\n`;
     expect(parseRenameLog(raw, 'src/unrelated.ts')).toBeNull();
+  });
+
+  // The basename fallback feeds an autofix (paths.ts turns newPath into a
+  // fix the fixer writes into the user's doc), so the next three pin its
+  // conservative contract: bare-filename targets only, unique source only.
+  it('returns null for an ambiguous bare-filename target (two renames with different sources share the basename)', () => {
+    const raw =
+      `${HASH} 2026-06-02T18:54:28-07:00\n\n` +
+      `R100\tpackages/web/index.md\tpackages/site/index.md\n` +
+      `R100\tdocs/setup/index.md\tdocs/install/index.md\n`;
+    expect(parseRenameLog(raw, 'index.md')).toBeNull();
+  });
+
+  it('keeps the newest row when the SAME source matches multiple fallback rows', () => {
+    // A file renamed away, recreated, and renamed away again produces two R
+    // rows with the same source; the first row in the log (newest commit)
+    // is the rename the doc's stale ref points at.
+    const raw =
+      `${HASH} 2026-06-02T18:54:28-07:00\n\n` +
+      `R100\tsrc/lib/old.ts\tsrc/lib/newer.ts\n` +
+      `R100\tsrc/lib/old.ts\tsrc/lib/earlier.ts\n`;
+    expect(parseRenameLog(raw, 'old.ts')).toMatchObject({ newPath: 'src/lib/newer.ts' });
+  });
+
+  it('does not basename-fall-back for a pathed target that matches no source exactly', () => {
+    // `docs/index.md` referencing a never-renamed file must not match an
+    // unrelated `packages/web/index.md` rename. Same for a `../` ref, which
+    // can never exact-match git's repo-relative output.
+    const raw =
+      `${HASH} 2026-06-02T18:54:28-07:00\n\n` +
+      `R100\tpackages/web/index.md\tpackages/site/index.md\n`;
+    expect(parseRenameLog(raw, 'docs/index.md')).toBeNull();
+    expect(parseRenameLog(raw, '../packages/web/index.md')).toBeNull();
   });
 });

@@ -1,8 +1,14 @@
 import type { ParsedMcpConfig, LintIssue } from '../../types.js';
+import { isLoopbackHost } from './loopback.js';
 
 // Known API key patterns (high-entropy + known prefixes)
 const API_KEY_PATTERNS = [
-  /sk-[a-zA-Z0-9]{20,}/, // OpenAI / generic
+  // sk- keys need [_-] in the class: modern OpenAI (sk-proj-...) and Anthropic
+  // (sk-ant-api03-...) keys carry interior hyphens that would otherwise stop
+  // the match short of the length floor. The leading \b keeps the run from
+  // starting mid-word ("whisk-", "desk-").
+  /\bsk-ant-[A-Za-z0-9_-]{20,}/, // Anthropic
+  /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}/, // OpenAI (classic or project-scoped) / generic
   /ghp_[a-zA-Z0-9]{36}/, // GitHub PAT
   /ghu_[a-zA-Z0-9]{36}/, // GitHub user token
   /github_pat_[a-zA-Z0-9_]{80,}/, // GitHub fine-grained PAT
@@ -79,16 +85,23 @@ export async function checkMcpSecurity(
 ): Promise<LintIssue[]> {
   const issues: LintIssue[] = [];
 
-  // Only flag in git-tracked files
-  if (!config.isGitTracked) return issues;
-
   // Skip if there were parse errors
   if (config.parseErrors.length > 0) return issues;
 
+  // The three secret rules (hardcoded-bearer / hardcoded-api-key /
+  // secret-in-url) only fire in git-tracked files: an untracked config leaks
+  // nothing to teammates. http-no-tls is a transport concern, independent of
+  // tracking, and runs unconditionally below.
+  const checkSecrets = config.isGitTracked;
+
   for (const server of config.servers) {
     // Check headers for hardcoded bearer tokens
-    if (server.headers) {
+    if (checkSecrets && server.headers) {
       for (const [headerName, headerValue] of Object.entries(server.headers)) {
+        // One finding per header: a Bearer token that already got the
+        // hardcoded-bearer error (with its fix) must not double-report
+        // through the known-pattern rule.
+        let flaggedBearer = false;
         if (headerName.toLowerCase() === 'authorization') {
           const bearerMatch = headerValue.match(/^Bearer\s+(.+)$/i);
           if (bearerMatch) {
@@ -108,12 +121,13 @@ export async function checkMcpSecurity(
                   newText: `Bearer \${${envVar}}`,
                 },
               });
+              flaggedBearer = true;
             }
           }
         }
 
         // Check for known API key patterns in any header value
-        if (!isEnvVarRef(headerValue) && isKnownApiKey(headerValue)) {
+        if (!flaggedBearer && !isEnvVarRef(headerValue) && isKnownApiKey(headerValue)) {
           issues.push({
             severity: 'error',
             check: 'mcp-security',
@@ -126,7 +140,7 @@ export async function checkMcpSecurity(
     }
 
     // Check env values for hardcoded secrets
-    if (server.env) {
+    if (checkSecrets && server.env) {
       for (const [envName, envValue] of Object.entries(server.env)) {
         // Known API key patterns (sk-, ghp_, AKIA, etc.) always flag.
         // High-entropy heuristic only fires when the variable name suggests a
@@ -153,7 +167,12 @@ export async function checkMcpSecurity(
     }
 
     // Check URL for secrets in query params
-    if (server.url && !isEnvVarRef(server.url) && URL_SECRET_PARAMS.test(server.url)) {
+    if (
+      checkSecrets &&
+      server.url &&
+      !isEnvVarRef(server.url) &&
+      URL_SECRET_PARAMS.test(server.url)
+    ) {
       issues.push({
         severity: 'error',
         check: 'mcp-security',
@@ -169,12 +188,7 @@ export async function checkMcpSecurity(
         // Only check if URL doesn't contain env var refs
         if (!isEnvVarRef(server.url)) {
           const parsed = new URL(server.url);
-          // new URL('http://[::1]/').hostname yields a bracketed IPv6 literal
-          // (e.g. '[::1]'); strip the brackets so IPv6 literals compare cleanly.
-          const host = parsed.hostname.replace(/^\[|\]$/g, '');
-          const isLoopback =
-            host === 'localhost' || host === '::1' || /^127(\.\d{1,3}){3}$/.test(host); // 127.0.0.0/8
-          if (parsed.protocol === 'http:' && !isLoopback) {
+          if (parsed.protocol === 'http:' && !isLoopbackHost(parsed.hostname)) {
             issues.push({
               severity: 'warning',
               check: 'mcp-security',

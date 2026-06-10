@@ -142,6 +142,28 @@ describe('checkPaths', () => {
     expect(issues.find((i) => i.ruleId === 'paths/glob-no-match')).toBeUndefined();
   });
 
+  // Windows-style .\foo refs must resolve from the context file's directory
+  // (like ./foo), not the project root. Built directly because the reference
+  // shape, not the parser, is under test.
+  it("resolves a Windows-style .\\ ref against the context file's directory", async () => {
+    seed({ 'docs/helpers/util.ts': 'x' });
+    const parsed: ParsedContextFile = {
+      filePath: path.join(tmpRoot, 'docs', 'CLAUDE.md'),
+      relativePath: 'docs/CLAUDE.md',
+      isSymlink: false,
+      totalTokens: 0,
+      totalLines: 1,
+      content: '',
+      sections: [],
+      references: {
+        paths: [{ value: '.\\helpers\\util.ts', line: 1, column: 1 }],
+        commands: [],
+      },
+    };
+    const issues = await checkPaths(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'paths/not-found')).toBeUndefined();
+  });
+
   it('emits paths/not-found with a fuzzy-match suggestion for a typo', async () => {
     seed({
       'CLAUDE.md': 'See src/authMidleware.ts\n',
@@ -181,11 +203,12 @@ describe('checkPaths', () => {
     expect(notFound!.suggestion).toBeUndefined();
   });
 
-  // Regression: the basename pass and the full-path fallback pass each have
-  // their own distance cap. A basename-equal candidate at some non-trivial
-  // edit distance should still win over a full-path candidate that happens to
-  // have a smaller raw Levenshtein distance — basename equality is the
-  // stronger signal, and pass-scoped caps make this explicit.
+  // Regression: the basename pass is deliberately uncapped — basename
+  // equality is the signal, and edit distance only ranks among basename-equal
+  // candidates (the absolute cap applies solely to the full-path fallback
+  // pass). So a basename-equal candidate at a large path-edit distance must
+  // still win over a full-path candidate with a smaller raw Levenshtein
+  // distance.
   it('prefers a basename match even when a full-path candidate has smaller raw distance', async () => {
     seed({
       'CLAUDE.md': 'See src/very/deeply/nested/dir/utils.ts\n',

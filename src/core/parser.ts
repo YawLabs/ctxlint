@@ -6,7 +6,10 @@ import type { DiscoveredFile } from './scanner.js';
 // Match paths with at least one / that look like project file references
 // (trailing-slash directory refs like `src/components/` also match via the
 // `*` on the final segment; directory refs are routed to the
-// `paths/directory-not-found` rule by the consuming check).
+// `paths/directory-not-found` rule by the consuming check). Middle segments
+// allow `*` so glob patterns with double-star segments (`src/**/*.test.ts`,
+// spec 2.1's own example) are captured; the consuming check routes anything
+// containing `*` to `paths/glob-no-match`.
 // Ignore URLs, common false positives.
 //
 // LIMITATION: forward-slash only. Backslash/Windows-style paths
@@ -23,16 +26,19 @@ import type { DiscoveredFile } from './scanner.js';
 // match on a line starts mid-line at the previous line's leftover lastIndex and
 // the column (and even which matches are found) goes wrong.
 const PATH_PATTERN =
-  /(?:^|[\s`"'(])((\.{0,2}\/)?(?:[\w@.-]+\/)+[\w.*-]*(?:\.\w+)?)(?=[\s`"'),;:]|$)/gm;
+  /(?:^|[\s`"'(])((\.{0,2}\/)?(?:[\w@.*-]+\/)+[\w.*-]*(?:\.\w+)?)(?=[\s`"'),;:]|$)/gm;
 
 // False positive patterns to skip
 const PATH_EXCLUDE =
   /^(https?:\/\/|ftp:\/\/|mailto:|n\/a|w\/o|I\/O|i\/o|e\.g\.|N\/A|\.deb\/|\.rpm[.\/]|\.tar[.\/]|\.zip[.\/])/i;
 
-// Command patterns
+// Command patterns. The tool list mirrors spec 2.2's "common command
+// patterns to recognize" and the validator's PKG_DEPENDENT_TOOL_PATTERN in
+// checks/commands.ts -- a tool listed there but missing here is never
+// extracted, so it would silently never be validated.
 const COMMAND_PREFIXES = /^\s*[\$>]\s+(.+)$/;
 const COMMON_COMMANDS =
-  /^(npm|npx|pnpm|yarn|make|cargo|go\s+(run|build|test)|python|pytest|vitest|jest|bun|deno)\b/;
+  /^(npm|npx|pnpm|yarn|make|cargo|go\s+(run|build|test)|python|pytest|vitest|jest|mocha|tsc|eslint|prettier|bun|deno)\b/;
 
 export function parseContextFile(file: DiscoveredFile): ParsedContextFile {
   const content = readFileContent(file.absolutePath);
@@ -59,37 +65,45 @@ export function parseContextFile(file: DiscoveredFile): ParsedContextFile {
 
 function parseSections(lines: string[]): Section[] {
   const sections: Section[] = [];
+  // Sections whose endLine is still open: an ancestor chain ordered by
+  // strictly increasing heading level, innermost last.
+  const openStack: Section[] = [];
 
   for (let i = 0; i < lines.length; i++) {
     const match = lines[i].match(/^(#{1,6})\s+(.+)/);
     if (match) {
-      // Close previous section at same or higher level. `endLine` is the
-      // 1-indexed last content line of that section — i.e. the line right
-      // before this heading. `i` is 0-indexed here, so the line before the
-      // current heading (1-indexed) is `i`, not `i - 1`. (Callers use
-      // `lines.slice(startLine - 1, endLine)` — an exclusive-end slice into
-      // 0-indexed `lines` — which lines up with this convention.)
-      if (sections.length > 0) {
-        const prev = sections[sections.length - 1];
-        if (prev.endLine === -1) {
-          prev.endLine = i;
-        }
+      const level = match[1].length;
+      // Close every open section at the same or a deeper level; SHALLOWER
+      // open sections (ancestors) stay open so a parent's range spans its
+      // subsections -- per-section token attribution (tier-tokens
+      // section-breakdown slices `lines.slice(startLine - 1, endLine)` per
+      // top-level section) relies on the parent range including child
+      // content. `endLine` is the 1-indexed last content line of the closed
+      // section, i.e. the line right before this heading. `i` is 0-indexed
+      // here, so the line before the current heading (1-indexed) is `i`,
+      // not `i - 1`. (Callers use `lines.slice(startLine - 1, endLine)` --
+      // an exclusive-end slice into 0-indexed `lines` -- which lines up
+      // with this convention.)
+      while (openStack.length > 0) {
+        const innermost = openStack[openStack.length - 1];
+        if (innermost.level < level) break;
+        innermost.endLine = i;
+        openStack.pop();
       }
-      sections.push({
+      const section: Section = {
         title: match[2].trim(),
         startLine: i + 1, // 1-indexed
         endLine: -1,
-        level: match[1].length,
-      });
+        level,
+      };
+      sections.push(section);
+      openStack.push(section);
     }
   }
 
-  // Close last section
-  if (sections.length > 0) {
-    const last = sections[sections.length - 1];
-    if (last.endLine === -1) {
-      last.endLine = lines.length;
-    }
+  // Close all still-open sections at EOF.
+  for (const open of openStack) {
+    open.endLine = lines.length;
   }
 
   return sections;
@@ -228,7 +242,11 @@ function extractCommandReferences(lines: string[], sections: Section[]): Command
       continue;
     }
 
-    const isShellBlock = inCodeBlock && ['bash', 'sh', 'shell', 'zsh'].includes(codeBlockLang);
+    // Spec 2.2: command references include content in bash/sh/shell/zsh
+    // blocks AND blocks with no language tag (commonly shell snippets). The
+    // COMMON_COMMANDS / $-prefix gates below keep non-command lines in bare
+    // blocks (sample output, directory trees) from being extracted.
+    const isShellBlock = inCodeBlock && ['bash', 'sh', 'shell', 'zsh', ''].includes(codeBlockLang);
 
     // Check for $ or > prefixed commands (only outside code blocks, or inside shell blocks)
     // Skip markdown blockquotes (lines starting with "> " outside code blocks)

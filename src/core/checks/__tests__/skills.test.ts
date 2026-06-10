@@ -114,6 +114,17 @@ describe('skill/broken-ref', () => {
     const issues = run({ ...ALL, frontmatter: false });
     expect(issues.filter((i) => i.ruleId === 'skill/broken-ref')).toEqual([]);
   });
+
+  it('does not flag a ./script.sh inside an unlabeled code fence', () => {
+    // A bare ``` fence is the most common way authors paste shell snippets;
+    // an invocation example inside one must not resolve against the skill dir.
+    writeSkill(
+      'barefence',
+      '---\nname: barefence\ndescription: x\n---\nRun it:\n\n```\n./run.sh 1.2.3\n```\n',
+    );
+    const issues = run({ ...ALL, frontmatter: false });
+    expect(issues.filter((i) => i.ruleId === 'skill/broken-ref')).toEqual([]);
+  });
 });
 
 describe('skill/trigger-collision', () => {
@@ -135,6 +146,45 @@ describe('skill/trigger-collision', () => {
     const issues = run({ ...ALL, brokenRef: false, frontmatter: false });
     expect(issues.filter((i) => i.ruleId === 'skill/trigger-collision')).toEqual([]);
   });
+
+  it('does not extract phantom triggers from apostrophes in prose', () => {
+    // A naive ["'] class pairs the apostrophes in "user's ... can't" and
+    // extracts "s branch can" as a trigger; two skills sharing such
+    // boilerplate then collide on a prose fragment.
+    writeSkill(
+      'a',
+      "---\nname: a\ndescription: Use when the user's branch can't merge cleanly.\n---\nbody",
+    );
+    writeSkill(
+      'b',
+      "---\nname: b\ndescription: Use when the user's branch can't merge cleanly.\n---\nbody",
+    );
+    const issues = run({ ...ALL, brokenRef: false, frontmatter: false });
+    expect(issues.filter((i) => i.ruleId === 'skill/trigger-collision')).toEqual([]);
+  });
+
+  it('still detects single-quoted trigger collisions', () => {
+    writeSkill('a', "---\nname: a\ndescription: Use when 'ship it' is requested.\n---\nbody");
+    writeSkill('b', "---\nname: b\ndescription: Trigger on 'ship it' for releases.\n---\nbody");
+    const issues = run({ ...ALL, brokenRef: false, frontmatter: false });
+    const tc = issues.filter((i) => i.ruleId === 'skill/trigger-collision');
+    expect(tc).toHaveLength(1);
+    expect(tc[0].message.toLowerCase()).toContain('ship it');
+  });
+
+  it('extracts a double-quoted trigger that follows a contraction', () => {
+    // The naive class paired the contraction's apostrophe with the opening
+    // double quote ('s wrong. Use on ") and swallowed the real trigger.
+    writeSkill(
+      'a',
+      '---\nname: a\ndescription: Reviews what\'s wrong. Use on "review my changes".\n---\nbody',
+    );
+    writeSkill('b', '---\nname: b\ndescription: Use on "review my changes" please.\n---\nbody');
+    const issues = run({ ...ALL, brokenRef: false, frontmatter: false });
+    const tc = issues.filter((i) => i.ruleId === 'skill/trigger-collision');
+    expect(tc).toHaveLength(1);
+    expect(tc[0].message).toContain('review my changes');
+  });
 });
 
 describe('skill/orphaned', () => {
@@ -154,6 +204,26 @@ describe('skill/dead-tool-restriction', () => {
     const dead = issues.filter((i) => i.ruleId === 'skill/dead-tool-restriction');
     expect(dead).toHaveLength(1);
     expect(dead[0].message).toContain('Frobnicate');
+    // A PascalCase unknown may be a built-in newer than KNOWN_TOOLS (the
+    // list drifts stale across CC versions), so it reports as info.
+    expect(dead[0].severity).toBe('info');
+  });
+
+  it('keeps warning severity for non-PascalCase unknown tools (likely typos)', () => {
+    writeAgent('r3', '---\nname: r3\ndescription: x\ntools: bash, Web_Fetch\n---\nbody');
+    const issues = run({ ...ALL, frontmatter: false });
+    const dead = issues.filter((i) => i.ruleId === 'skill/dead-tool-restriction');
+    expect(dead).toHaveLength(2);
+    for (const d of dead) expect(d.severity).toBe('warning');
+  });
+
+  it('accepts current built-ins like AskUserQuestion and StructuredOutput', () => {
+    writeAgent(
+      'r4',
+      '---\nname: r4\ndescription: x\ntools: AskUserQuestion, StructuredOutput, ToolSearch\n---\nbody',
+    );
+    const issues = run({ ...ALL, frontmatter: false });
+    expect(issues.filter((i) => i.ruleId === 'skill/dead-tool-restriction')).toEqual([]);
   });
 
   it('does not flag known tools or MCP-namespaced tools', () => {

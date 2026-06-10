@@ -263,6 +263,107 @@ describe('checkCommands', () => {
     expect(byRule!.message).toContain('test');
   });
 
+  // Package-manager builtins invoked without `run` (`pnpm install`,
+  // `yarn add zod`, ...) are not script names and must never produce
+  // commands/script-not-found, no matter what package.json's scripts say.
+  it.each(['pnpm install', 'yarn add zod', 'bun install', 'pnpm dlx foo', 'pnpm exec tsc'])(
+    'does NOT flag the builtin subcommand in "%s" as a missing script',
+    async (cmd) => {
+      seed(
+        {
+          'CLAUDE.md': `# Commands\n\n\`\`\`bash\n${cmd}\n\`\`\`\n`,
+        },
+        { scripts: { build: 'tsc' } },
+      );
+      const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+      const issues = await checkCommands(parsed, tmpRoot);
+      expect(issues.find((i) => i.ruleId === 'commands/script-not-found')).toBeUndefined();
+    },
+  );
+
+  it('still validates an explicit `pnpm run <name>` even when <name> collides with a builtin', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\npnpm run install\n```\n',
+      },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    const byRule = issues.find((i) => i.ruleId === 'commands/script-not-found');
+    expect(byRule).toBeDefined();
+    expect(byRule!.message).toContain('"install"');
+  });
+
+  it('skips script validation when a flag precedes the name (pnpm -r build)', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\npnpm -r build\n```\n',
+      },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/script-not-found')).toBeUndefined();
+  });
+
+  it('does NOT emit package-json-missing for a builtin-only command (pnpm install)', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\npnpm install\n```\n',
+      },
+      null, // no package.json — but `pnpm install` would never be validated anyway
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/package-json-missing')).toBeUndefined();
+  });
+
+  it('flags a target that only exists as a := variable assignment', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nmake build\n```\n',
+        Makefile: 'build := dist\n\ntest:\n\techo test\n',
+      },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    const byRule = issues.find((i) => i.ruleId === 'commands/make-target-not-found');
+    expect(byRule).toBeDefined();
+    expect(byRule!.message).toContain('"build"');
+  });
+
+  it('does not treat a make flag as the target (make -j4 build)', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nmake -j4 build\n```\n',
+        Makefile: 'build:\n\techo b\n',
+      },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    // A leading flag bails out of target extraction entirely — the token
+    // after it may be a flag value, not a target.
+    expect(issues.find((i) => i.ruleId === 'commands/make-target-not-found')).toBeUndefined();
+  });
+
+  it('skips NAME=value overrides when extracting the make target', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nmake FOO=1 missing\n```\n',
+        Makefile: 'build:\n\techo b\n',
+      },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    const byRule = issues.find((i) => i.ruleId === 'commands/make-target-not-found');
+    expect(byRule).toBeDefined();
+    expect(byRule!.message).toContain('"missing"');
+  });
+
   // Cover the full set of shorthand package managers (the regex matches
   // npm|pnpm|yarn|bun followed by test|start|build|dev|lint|…) so a future
   // edit to the pattern can't silently drop one.

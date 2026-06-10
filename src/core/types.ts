@@ -17,6 +17,12 @@ export const SESSION_AUDIT_PATH_MARKER = '(session audit)';
 // (~/.claude/skills, ~/.claude/agents).
 export const SKILL_AUDIT_LABEL = '~/.claude/ (skill audit)';
 
+// Tighter substring the reporter uses for path-based classification of the
+// skill bucket (mirrors SESSION_AUDIT_PATH_MARKER). Lives next to
+// SKILL_AUDIT_LABEL so a reskin of the label can't silently desync the
+// reporter's routing.
+export const SKILL_AUDIT_PATH_MARKER = '(skill audit)';
+
 // --- Session check types ---
 
 export type SessionCheckName =

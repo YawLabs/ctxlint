@@ -108,7 +108,10 @@ describe('checkCiCoverage', () => {
 
   it('detects an indented (leading-whitespace) YAML name field', async () => {
     mkdirSync(join(tempDir, '.github', 'workflows'), { recursive: true });
-    writeFileSync(join(tempDir, '.github', 'workflows', 'indented.yml'), '  name: Release\non: push');
+    writeFileSync(
+      join(tempDir, '.github', 'workflows', 'indented.yml'),
+      '  name: Release\non: push',
+    );
 
     const files = [makeFile('CLAUDE.md', 'No release info here.')];
     const issues = await checkCiCoverage(files, tempDir);

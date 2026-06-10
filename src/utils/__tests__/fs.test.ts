@@ -73,9 +73,11 @@ describe('loadPackageJson', () => {
   });
 
   it('keeps both sibling roots cached when alternating between them (no single-slot thrash)', () => {
-    // The single-slot {root,data} cache evicted the other root on every switch,
-    // so a long-running server alternating between sibling roots re-read +
-    // re-parsed on each call. The keyed LRU keeps both resident.
+    // Within one lint pass spanning sibling roots (monorepo), a single-slot
+    // {root,data} cache evicts the other root on every switch and re-reads +
+    // re-parses on each call. The keyed LRU keeps both resident. (The MCP
+    // server still clears the whole cache between tool calls -- this test
+    // pins the within-pass behavior only.)
     const rootA = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-fs-a-'));
     const rootB = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-fs-b-'));
     try {
@@ -181,16 +183,20 @@ describe('readFileContent', () => {
     expect(() => readFileContent(path.join(tmpDir, 'nope'))).toThrow('File not found');
   });
 
+  // BOM fixtures spell the BOM as the visible \uFEFF escape, never a literal
+  // U+FEFF: the literal is invisible in editors, so a retype or "fix
+  // encoding" pass could delete it silently and flip these tests into
+  // tautologies.
   it('strips a leading UTF-8 BOM', () => {
     const p = path.join(tmpDir, 'bom.txt');
-    fs.writeFileSync(p, '﻿# heading\n');
+    fs.writeFileSync(p, '\uFEFF# heading\n');
     expect(readFileContent(p)).toBe('# heading\n');
   });
 });
 
 describe('stripBom', () => {
   it('removes a leading U+FEFF', () => {
-    expect(stripBom('﻿hello')).toBe('hello');
+    expect(stripBom('\uFEFFhello')).toBe('hello');
   });
 
   it('leaves content without a BOM untouched', () => {
@@ -198,7 +204,7 @@ describe('stripBom', () => {
   });
 
   it('only strips at the start, not mid-string', () => {
-    expect(stripBom('hello﻿world')).toBe('hello﻿world');
+    expect(stripBom('hello\uFEFFworld')).toBe('hello\uFEFFworld');
   });
 
   it('handles empty input', () => {
@@ -210,7 +216,7 @@ describe('loadPackageJson with BOM', () => {
   it('parses a BOM-prefixed package.json', () => {
     fs.writeFileSync(
       path.join(tmpDir, 'package.json'),
-      '﻿' + JSON.stringify({ scripts: { test: 'vitest' } }),
+      '\uFEFF' + JSON.stringify({ scripts: { test: 'vitest' } }),
     );
     const pkg = loadPackageJson(tmpDir);
     expect(pkg?.scripts?.test).toBe('vitest');
@@ -249,6 +255,64 @@ describe('getAllProjectFiles', () => {
 
   it('returns empty array for non-existent root', () => {
     expect(getAllProjectFiles(path.join(tmpDir, 'does-not-exist'))).toEqual([]);
+  });
+
+  it('keeps regular FILES named like ignored dirs (build, dist) in the list', () => {
+    fs.writeFileSync(path.join(tmpDir, 'build'), '#!/bin/sh\necho build');
+    fs.writeFileSync(path.join(tmpDir, 'dist'), 'x');
+    fs.mkdirSync(path.join(tmpDir, 'vendor'));
+    fs.writeFileSync(path.join(tmpDir, 'vendor', 'junk.txt'), 'x');
+
+    const files = getAllProjectFiles(tmpDir).map((p) => p.replace(/\\/g, '/'));
+    expect(files).toContain('build');
+    expect(files).toContain('dist');
+    // The DIRECTORY of the same ignored name is still skipped.
+    expect(files.some((f) => f.startsWith('vendor/'))).toBe(false);
+  });
+
+  it('includes a symlink-to-file as a project file (when OS permits creation)', () => {
+    const target = path.join(tmpDir, 'target.txt');
+    fs.writeFileSync(target, 'x');
+    const link = path.join(tmpDir, 'alias.txt');
+    try {
+      fs.symlinkSync(target, link);
+    } catch {
+      return; // symlink not supported in this test environment
+    }
+    const files = getAllProjectFiles(tmpDir).map((p) => p.replace(/\\/g, '/'));
+    expect(files).toContain('alias.txt');
+    expect(files).toContain('target.txt');
+  });
+
+  it('neither lists nor walks through a symlink-to-directory (when OS permits creation)', () => {
+    const realDir = path.join(tmpDir, 'real');
+    fs.mkdirSync(realDir);
+    fs.writeFileSync(path.join(realDir, 'inside.txt'), 'x');
+    const link = path.join(tmpDir, 'linkdir');
+    try {
+      // 'junction' works without admin rights on Windows; the type argument
+      // is ignored on POSIX.
+      fs.symlinkSync(realDir, link, 'junction');
+    } catch {
+      return; // symlink not supported in this test environment
+    }
+    const files = getAllProjectFiles(tmpDir).map((p) => p.replace(/\\/g, '/'));
+    expect(files).toContain('real/inside.txt');
+    // Not listed as a bogus file entry, and not walked (no duplicate of
+    // inside.txt under the link path -- symlink cycles must not recurse).
+    expect(files).not.toContain('linkdir');
+    expect(files.some((f) => f.startsWith('linkdir/'))).toBe(false);
+  });
+
+  it('skips a broken symlink without throwing (when OS permits creation)', () => {
+    const link = path.join(tmpDir, 'dangling');
+    try {
+      fs.symlinkSync(path.join(tmpDir, 'missing-target'), link);
+    } catch {
+      return; // symlink not supported in this test environment
+    }
+    const files = getAllProjectFiles(tmpDir).map((p) => p.replace(/\\/g, '/'));
+    expect(files).not.toContain('dangling');
   });
 
   it('honors the depth cap (>10 levels silently truncated)', () => {

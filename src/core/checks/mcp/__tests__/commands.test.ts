@@ -56,6 +56,28 @@ describe('checkMcpCommands', () => {
     expect(argIssue!.severity).toBe('warning');
   });
 
+  it('does not flag path-shaped args in user-scope configs', async () => {
+    // A user/global config's relative paths resolve against that client's own
+    // cwd, not this project root -- resolving them here is a spurious miss.
+    const config = makeConfig({
+      filePath: '/home/user/.claude.json',
+      relativePath: '.claude.json',
+      scope: 'user',
+      servers: [
+        {
+          name: 'server',
+          transport: 'stdio',
+          command: 'node',
+          args: ['./scripts/nonexistent.js'],
+          line: 3,
+          raw: { command: 'node', args: ['./scripts/nonexistent.js'] },
+        },
+      ],
+    });
+    const issues = await checkMcpCommands(config, '/project');
+    expect(issues.filter((i) => i.ruleId === 'mcp-commands/args-path-missing')).toHaveLength(0);
+  });
+
   it('does not flag non-path args like flags and packages', async () => {
     const config = makeConfig({
       servers: [

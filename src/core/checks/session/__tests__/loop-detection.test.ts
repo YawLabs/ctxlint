@@ -2,12 +2,17 @@ import { describe, it, expect } from 'vitest';
 import { checkLoopDetection } from '../loop-detection.js';
 import type { SessionContext, HistoryEntry } from '../../../types.js';
 
-function makeEntry(display: string, timestamp: number, project = '/project/foo'): HistoryEntry {
+function makeEntry(
+  display: string,
+  timestamp: number,
+  project = '/project/foo',
+  sessionId = 'test-session',
+): HistoryEntry {
   return {
     display,
     timestamp,
     project,
-    sessionId: 'test-session',
+    sessionId,
     provider: 'claude-code',
   };
 }
@@ -146,6 +151,89 @@ describe('checkLoopDetection', () => {
       expect(issue.message).toContain('cmd A');
       expect(issue.message).toContain('cmd B');
     }
+  });
+
+  it('does not attribute project-less entries to the current project', async () => {
+    // Codex CLI occasionally writes neither `project` nor `cwd`; the scanner
+    // keeps those entries with project ''. path.resolve('') is the linter's
+    // cwd, so without an explicit guard every project-less entry would match
+    // whenever ctxlint lints the current directory (the dominant usage).
+    const entries = [
+      makeEntry('npm test', 1, ''),
+      makeEntry('npm test', 2, ''),
+      makeEntry('npm test', 3, ''),
+    ];
+
+    const issues = await checkLoopDetection(makeCtx(entries, process.cwd()));
+    expect(issues).toHaveLength(0);
+  });
+
+  it('does not flag the same command repeated across separate sessions', async () => {
+    // Routine reuse: a one-shot `claude "/release"` run on three different
+    // days is three sessions, not a loop.
+    const entries = [
+      makeEntry('/release', 1, '/project/foo', 's1'),
+      makeEntry('/release', 2, '/project/foo', 's2'),
+      makeEntry('/release', 3, '/project/foo', 's3'),
+    ];
+
+    const issues = await checkLoopDetection(makeCtx(entries));
+    expect(issues).toHaveLength(0);
+  });
+
+  it('does not synthesize a cycle from two interleaved sessions', async () => {
+    // Session s1 runs A,A and session s2 runs B,B, interleaved in time.
+    // Pooled they'd read A,B,A,B -- a phantom cycle neither session executed.
+    const entries = [
+      makeEntry('cmd A', 1, '/project/foo', 's1'),
+      makeEntry('cmd B', 2, '/project/foo', 's2'),
+      makeEntry('cmd A', 3, '/project/foo', 's1'),
+      makeEntry('cmd B', 4, '/project/foo', 's2'),
+    ];
+
+    const issues = await checkLoopDetection(makeCtx(entries));
+    expect(issues).toHaveLength(0);
+  });
+
+  it('still detects a loop inside one session when another session interleaves', async () => {
+    const entries = [
+      makeEntry('npm test', 1, '/project/foo', 's1'),
+      makeEntry('git status', 2, '/project/foo', 's2'),
+      makeEntry('npm test', 3, '/project/foo', 's1'),
+      makeEntry('git log', 4, '/project/foo', 's2'),
+      makeEntry('npm test', 5, '/project/foo', 's1'),
+    ];
+
+    const issues = await checkLoopDetection(makeCtx(entries));
+    expect(issues).toHaveLength(1);
+    expect(issues[0].ruleId).toBe('session-loop-detection/consecutive-repeat');
+    expect(issues[0].message).toContain('npm test');
+  });
+
+  it('breaks a sessionId-less sequence at large time gaps', async () => {
+    // Providers that omit sessionId pool into one '' pseudo-session; a 30+
+    // minute gap between repeats means separate working stints, not a loop.
+    const HOUR = 60 * 60 * 1000;
+    const entries = [
+      makeEntry('/release', 1 * HOUR, '/project/foo', ''),
+      makeEntry('/release', 25 * HOUR, '/project/foo', ''),
+      makeEntry('/release', 49 * HOUR, '/project/foo', ''),
+    ];
+
+    const issues = await checkLoopDetection(makeCtx(entries));
+    expect(issues).toHaveLength(0);
+  });
+
+  it('still detects a contiguous loop in a sessionId-less sequence', async () => {
+    const entries = [
+      makeEntry('npm test', 1_000, '/project/foo', ''),
+      makeEntry('npm test', 2_000, '/project/foo', ''),
+      makeEntry('npm test', 3_000, '/project/foo', ''),
+    ];
+
+    const issues = await checkLoopDetection(makeCtx(entries));
+    expect(issues).toHaveLength(1);
+    expect(issues[0].ruleId).toBe('session-loop-detection/consecutive-repeat');
   });
 
   it('truncates long command names in messages', async () => {

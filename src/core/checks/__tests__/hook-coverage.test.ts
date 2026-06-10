@@ -105,6 +105,30 @@ describe('hook-coverage/dead-hook', () => {
     expect(issues).toEqual([]);
   });
 
+  it('resolves Windows-style %USERPROFILE% and does not flag an existing script', async () => {
+    fs.mkdirSync(path.join(homeDir, '.claude', 'hooks'), { recursive: true });
+    fs.writeFileSync(path.join(homeDir, '.claude', 'hooks', 'gate.ps1'), 'Write-Host hi');
+    writeSettings({
+      hooks: {
+        PreToolUse: [
+          { matcher: 'Bash', hooks: [{ command: 'pwsh "%USERPROFILE%/.claude/hooks/gate.ps1"' }] },
+        ],
+      },
+    });
+    const issues = await checkHookCoverage(tmpDir, homeDir);
+    expect(issues).toEqual([]);
+  });
+
+  it('skips a path with an unresolvable %VAR% (cannot verify -> no false positive)', async () => {
+    writeSettings({
+      hooks: {
+        PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'pwsh "%CUSTOM_TOOLS%\\gate.ps1"' }] }],
+      },
+    });
+    const issues = await checkHookCoverage(tmpDir, homeDir);
+    expect(issues).toEqual([]);
+  });
+
   it('reports the correct line number for a project settings file', async () => {
     // command is on a known line of the pretty-printed JSON.
     writeSettings({

@@ -328,7 +328,7 @@ else
     fi
     if ! grep -qE 'EOTP|EAUTH|one-time password|OTP' "$PUBLISH_LOG"; then
       rm -f "$PUBLISH_LOG"
-      fail "npm publish failed (non-OTP error -- see output above). If E401/E404, your ~/.npmrc session is stale: run 'npm login --auth-type=web' and retry."
+      fail "npm publish failed (non-OTP error -- see output above). If E401/E404, the automation token in ~/.npmrc is missing or stale: restore/verify it (check the //registry.npmjs.org/:_authToken line; 'npm whoami' should answer). Do NOT re-auth via the web login flow -- it overwrites the automation token with a 2FA-bound session."
     fi
     rm -f "$PUBLISH_LOG"
     if [ $ATTEMPT -ge $MAX_ATTEMPTS ]; then

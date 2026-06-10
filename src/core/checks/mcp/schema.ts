@@ -76,18 +76,22 @@ export async function checkMcpSchema(
       continue;
     }
 
-    // unknown-transport
+    // unknown-transport: fires for ANY server the parser couldn't classify,
+    // not just a string "type" it didn't recognize. missing-command /
+    // missing-url are transport-conditional, so without this branch an empty
+    // `{}` server (or one with a non-string "type") lints completely clean.
     if (server.transport === 'unknown') {
       const typeVal = server.raw.type;
-      if (typeof typeVal === 'string') {
-        issues.push({
-          severity: 'warning',
-          check: 'mcp-schema',
-          ruleId: 'mcp-schema/unknown-transport',
-          line: server.line,
-          message: `Server "${server.name}" has unknown transport type "${typeVal}"`,
-        });
-      }
+      issues.push({
+        severity: 'warning',
+        check: 'mcp-schema',
+        ruleId: 'mcp-schema/unknown-transport',
+        line: server.line,
+        message:
+          typeof typeVal === 'string'
+            ? `Server "${server.name}" has unknown transport type "${typeVal}"`
+            : `Server "${server.name}" has no recognizable transport — expected "command", "url", or a valid "type"`,
+      });
     }
 
     // ambiguous-transport: has both command and url

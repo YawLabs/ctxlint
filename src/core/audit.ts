@@ -37,7 +37,7 @@ import { checkContentSecrets } from './checks/content-secrets.js';
 import { checkHookCoverage } from './checks/hook-coverage.js';
 import { scanSkillFiles } from './skill-scanner.js';
 import { checkSkills } from './checks/skills.js';
-import { applyIgnoreRules, type IgnoreRule } from './ignore-rules.js';
+import { applyIgnoreRules, compileRules, type IgnoreRule } from './ignore-rules.js';
 import {
   SESSION_AUDIT_LABEL,
   SKILL_AUDIT_LABEL,
@@ -148,8 +148,8 @@ function hasSkillChecks(checks: CheckName[]): boolean {
 }
 
 /**
- * Derive the list of checks to actually run for a given subsystem (mcp,
- * session, ...). Two paths share a single rule:
+ * Derive the list of checks to actually run for a given subsystem. All
+ * subsystem arms (mcp, session, skill) share this single rule:
  *
  *  - If the user passed `--checks` and any of them target this subsystem
  *    (matched by prefix), run exactly those.
@@ -179,6 +179,14 @@ export async function runAudit(
 ): Promise<LintResult> {
   const fileResults: FileResult[] = [];
   const thresholds = resolveTokenThresholds(options.tokenThresholds);
+
+  // Fail fast on a malformed ignoreRules regex BEFORE any checks run.
+  // compileRules throws with the rule index + field + pattern; deferring to
+  // the applyIgnoreRules call at the end would surface the same error only
+  // after the entire audit had completed.
+  if (options.ignoreRules && options.ignoreRules.length > 0) {
+    compileRules(options.ignoreRules);
+  }
 
   const shouldRunContextChecks = !options.mcpOnly && !options.sessionOnly && !options.skillsOnly;
   const shouldRunMcpChecks =
@@ -343,15 +351,12 @@ export async function runAudit(
 
   // --- Session checks ---
   if (shouldRunSessionChecks) {
-    const activeSessionChecks = activeChecks.filter((c) =>
-      c.startsWith('session-'),
-    ) as SessionCheckName[];
-    const sessionChecksToRun =
-      activeSessionChecks.length > 0
-        ? activeSessionChecks
-        : options.session || options.sessionOnly
-          ? ALL_SESSION_CHECKS
-          : [];
+    const sessionChecksToRun = deriveChecksToRun<SessionCheckName>(
+      activeChecks,
+      'session-',
+      Boolean(options.session || options.sessionOnly),
+      ALL_SESSION_CHECKS,
+    );
 
     if (sessionChecksToRun.length > 0) {
       const sessionCtx = await scanSessionData(projectRoot);

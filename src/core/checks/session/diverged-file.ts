@@ -135,6 +135,9 @@ export async function checkDivergedFile(ctx: SessionContext): Promise<LintIssue[
     }
 
     if (diverged.length > 0) {
+      // Lowest overlap first (per the spec's 2.2 Notes): the sibling that has
+      // drifted furthest is the one worth reading first.
+      diverged.sort((a, b) => a.overlap - b.overlap);
       const details = diverged.map((d) => `${d.sibling} (${d.overlap}% overlap)`).join(', ');
       // Lead the detail with navigable absolute paths (mirroring
       // memory-index-overflow's `File: ...` detail) since the message is

@@ -10,6 +10,9 @@ import simpleGit, { type SimpleGit } from 'simple-git';
  *   - swap backslashes for forward slashes
  *   - collapse `./` segments and resolve interior `../` where syntactically
  *     possible
+ *   - on win32, case-fold (Windows filesystems are case-insensitive, so a
+ *     doc ref `SRC/Foo.ts` resolves on disk for a file git stores as
+ *     `src/foo.ts` and must still match it)
  *
  * Both the caller's referenced paths AND each line of git output get run
  * through this before being compared. Git emits paths relative to the repo
@@ -24,11 +27,13 @@ import simpleGit, { type SimpleGit } from 'simple-git';
 function normalizePath(p: string, projectRoot?: string): string {
   let cleaned = p.replace(/\\/g, '/');
   if (projectRoot && path.isAbsolute(p)) {
-    // Use node's path.relative so case-insensitive Windows matches and
-    // mixed-separator project roots both fall out naturally. Fall back to
-    // the raw input if the absolute path is OUTSIDE the project root --
-    // path.relative would emit `../../...` in that case, which is correct
-    // but unlikely to match anything git logs from inside this repo.
+    // Use node's path.relative so mixed-separator project roots and (on
+    // Windows) a differently-cased projectRoot PREFIX fall out naturally;
+    // the relative segment keeps the caller's casing and is handled by the
+    // win32 case-fold below. Fall back to the raw input if the absolute
+    // path is OUTSIDE the project root -- path.relative would emit
+    // `../../...` in that case, which is correct but unlikely to match
+    // anything git logs from inside this repo.
     const rel = path.relative(projectRoot, p).replace(/\\/g, '/');
     if (rel && !rel.startsWith('..')) {
       cleaned = rel;
@@ -40,7 +45,14 @@ function normalizePath(p: string, projectRoot?: string): string {
   }
   // Preserve trailing `/` (path.posix.normalize keeps it; we don't strip
   // it on purpose -- the match loop relies on it as a directory boundary).
-  return path.posix.normalize(cleaned);
+  const normalized = path.posix.normalize(cleaned);
+  // Windows filesystems are case-insensitive: a doc ref with the "wrong"
+  // casing resolves on disk yet would fail the exact-equality comparison
+  // against git's stored casing and silently count 0. Both comparison sides
+  // (caller refs and git output lines) run through this function, so folding
+  // here keeps them consistent. win32 only -- POSIX filesystems are
+  // case-sensitive, where folding would invent matches.
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
 let gitInstance: SimpleGit | null = null;
@@ -90,6 +102,12 @@ export async function getFileLastModified(
  * {path -> commit count since <date>} for all requested paths. Batched so
  * one subprocess handles N paths (fork+exec is 20-80ms on Windows, so the
  * savings matter on files with many referenced paths).
+ *
+ * Matching is exact-string or trailing-slash directory-prefix ONLY. Glob
+ * metacharacters are compared literally (`src/*.ts` never equals anything
+ * git emits), so a raw glob ref silently counts 0 -- callers holding glob
+ * refs must convert or drop them first (see the glob handling in
+ * staleness.ts).
  */
 export async function getCommitsSinceBatch(
   projectRoot: string,
@@ -99,7 +117,7 @@ export async function getCommitsSinceBatch(
   // Caller-facing output map -- always keyed by the ORIGINAL strings the
   // caller passed in, regardless of how normalization mangled them
   // internally. Preserving the original keys is the function's contract;
-  // staleness.ts:52 iterates this map expecting its own ref strings back.
+  // staleness.ts iterates this map expecting its own ref strings back.
   const out = new Map<string, number>();
   for (const p of paths) out.set(p, 0);
   if (paths.length === 0) return out;
@@ -120,6 +138,12 @@ export async function getCommitsSinceBatch(
     const git = getGit(projectRoot);
     const SENTINEL = '___CTXLINT_COMMIT___';
     const raw = await git.raw([
+      // Git's default core.quotePath=true wraps non-ASCII paths in quotes
+      // with octal escapes ("src/f\303\266\303\266.txt"); nothing below
+      // unquotes, so the leading `"` would break both the exact and the
+      // directory-prefix comparison. Emit raw UTF-8 instead.
+      '-c',
+      'core.quotepath=false',
       'log',
       `--since=${since.toISOString()}`,
       '--name-only',
@@ -197,7 +221,7 @@ function normalizeRenamePath(p: string): string {
 
 /**
  * Pure parser for the output of
- *   `git log --diff-filter=R --find-renames --name-status --format=%H %ai`.
+ *   `git log --diff-filter=R --find-renames --name-status --format=%H %aI`.
  *
  * Extracted from `findRenames` so the line-by-line parsing (commit-header
  * tracking, multi-rename-per-commit handling, the `daysAgo` fallback when no
@@ -205,16 +229,29 @@ function normalizeRenamePath(p: string): string {
  * tested against representative raw git output.
  *
  * When `targetPath` is given, return the rename whose SOURCE (old) path matches
- * it -- exact first, then a most-recent basename fallback. This is what lets
- * `findRenames` scan an UN-scoped rename log (the only query that surfaces a
- * renamed-away path; see `findRenames`) and still pick the right entry. With no
- * `targetPath` the first parsable rename wins (the original parser contract).
+ * it -- exact first; for a BARE filename target (no `/`) fall back to the
+ * rename whose source basename matches, provided that basename identifies a
+ * single source. This is what lets `findRenames` scan an UN-scoped rename log
+ * (the only query that surfaces a renamed-away path; see `findRenames`) and
+ * still pick the right entry. With no `targetPath` the first parsable rename
+ * wins (the original parser contract).
+ *
+ * The fallback stays conservative because the result feeds an autofix
+ * (paths.ts turns `newPath` into a fix the fixer writes into the user's doc):
+ * a pathed target with no exact match returns null rather than guessing, and
+ * an ambiguous basename (matching renames with DIFFERENT sources) also
+ * returns null.
  */
 export function parseRenameLog(result: string, targetPath?: string): RenameInfo | null {
   if (!result.trim()) return null;
 
   const want = targetPath ? normalizeRenamePath(targetPath) : undefined;
-  const wantBase = want ? (want.split('/').pop() ?? want) : undefined;
+  // Basename fallback applies to bare-filename targets only (a doc may
+  // reference `old.ts` while git tracks `src/lib/old.ts`). A pathed ref like
+  // `docs/index.md` must NOT basename-match an unrelated
+  // `packages/web/index.md` rename -- that would autofix the doc to point at
+  // the wrong file.
+  const wantBase = want && !want.includes('/') ? want : undefined;
 
   // Track the most recent commit header as we scan. A single commit can
   // contain multiple rename entries; peeking at `lines[i - 1]` broke when
@@ -222,19 +259,21 @@ export function parseRenameLog(result: string, targetPath?: string): RenameInfo 
   // commitHash to fall back to 'unknown'.
   let currentHash = 'unknown';
   let currentDateStr: string | undefined;
-  // Most-recent rename whose source basename matches, used only when no row
-  // matches the target path exactly (a doc may reference a bare filename while
-  // git tracks a repo-relative path).
+  // Newest rename whose source basename matches a bare-filename target, used
+  // only when no row matches the target path exactly. Cleared (via the
+  // ambiguity flag) when a second matching row has a DIFFERENT source.
   let basenameFallback: RenameInfo | null = null;
+  let fallbackAmbiguous = false;
 
   const lines = result.trim().split('\n');
   for (const line of lines) {
-    // Require the shipped `--format=%H %ai` shape: a 7-40 char hex hash, a
-    // space, then a year-leading ISO date (`2026-06-02 ...`). The looser
-    // `\s+(.+)` form would misdetect any non-rename line that merely starts
-    // with 7-40 hex chars + whitespace as a commit header, overwriting
-    // currentHash/currentDateStr mid-parse.
-    const headerMatch = line.match(/^([a-f0-9]{7,40})\s+(\d{4}-\d\d-\d\d\b.*)$/);
+    // Require the shipped `--format=%H %aI` shape: a 7-40 char hex hash, a
+    // space, then a year-leading date. `[T ]` after the date accepts both
+    // strict-ISO `%aI` (`2026-06-02T18:54:28-07:00`) and the older
+    // space-separated `%ai` shape. The looser `\s+(.+)` form would misdetect
+    // any non-rename line that merely starts with 7-40 hex chars + whitespace
+    // as a commit header, overwriting currentHash/currentDateStr mid-parse.
+    const headerMatch = line.match(/^([a-f0-9]{7,40})\s+(\d{4}-\d\d-\d\d[T ].*)$/);
     if (headerMatch) {
       currentHash = headerMatch[1].substring(0, 7);
       currentDateStr = headerMatch[2];
@@ -255,14 +294,23 @@ export function parseRenameLog(result: string, targetPath?: string): RenameInfo 
         if (!want) return info;
         const oldNorm = normalizeRenamePath(info.oldPath);
         if (oldNorm === want) return info;
-        if (!basenameFallback && wantBase && (oldNorm.split('/').pop() ?? oldNorm) === wantBase) {
-          basenameFallback = info;
+        if (wantBase && (oldNorm.split('/').pop() ?? oldNorm) === wantBase) {
+          if (!basenameFallback) {
+            // First (= newest; the log walks commits newest-first) match wins.
+            basenameFallback = info;
+          } else if (normalizeRenamePath(basenameFallback.oldPath) !== oldNorm) {
+            // A second match with a different source means the bare filename
+            // doesn't identify a single file -- don't guess. (The same source
+            // matching again is just an older rename of that file; the newest
+            // row already held is the right one.)
+            fallbackAmbiguous = true;
+          }
         }
       }
     }
   }
 
-  return basenameFallback;
+  return fallbackAmbiguous ? null : basenameFallback;
 }
 
 export async function findRenames(
@@ -277,11 +325,18 @@ export async function findRenames(
     // (unscoped) and let parseRenameLog match the entry whose SOURCE path is
     // filePath. `-50` bounds the walk to the 50 most recent rename commits.
     const result = await git.raw([
+      // Raw UTF-8 paths instead of quotePath's quoted octal escapes, which
+      // parseRenameLog's matching would never unquote (same rationale as
+      // getCommitsSinceBatch).
+      '-c',
+      'core.quotepath=false',
       'log',
       '--diff-filter=R',
       '--find-renames',
       '--name-status',
-      '--format=%H %ai',
+      // %aI (strict ISO 8601) parses via the ECMAScript Date spec; %ai's
+      // space-separated shape only parses through engine-specific leniency.
+      '--format=%H %aI',
       '-50',
     ]);
 

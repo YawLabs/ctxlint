@@ -14,8 +14,8 @@ AI coding agents are guided by context files — markdown documents like `CLAUDE
 This specification defines a standard set of lint rules for validating AI agent context files across all major AI coding clients. It is tool-agnostic: any linter, IDE extension, CI check, or AI agent can implement these rules.
 
 The specification includes:
-- A complete reference of context file formats across 17 AI coding clients (21+ file patterns)
-- 28 lint rules organized into 11 categories with defined severities
+- A complete reference of context file formats across 16 AI coding clients (21+ file patterns)
+- 39 lint rules organized into 12 categories with defined severities
 - A machine-readable rule and format catalog ([`context-lint-rules.json`](./context-lint-rules.json))
 - Auto-fix definitions for rules that support automated correction
 - Frontmatter schema requirements per client
@@ -42,12 +42,14 @@ The specification includes:
   - [3.2 commands — build/script validation](#32-commands--buildscript-validation)
   - [3.3 staleness — freshness detection](#33-staleness--freshness-detection)
   - [3.4 tokens — context window budget](#34-tokens--context-window-budget)
-  - [3.5 redundancy — inferable content](#35-redundancy--inferable-content)
-  - [3.6 contradictions — cross-file conflicts](#36-contradictions--cross-file-conflicts)
-  - [3.7 frontmatter — client metadata validation](#37-frontmatter--client-metadata-validation)
-  - [3.8 ci-coverage — CI workflow documentation](#38-ci-coverage--ci-workflow-documentation)
-  - [3.9 ci-secrets — CI secrets documentation](#39-ci-secrets--ci-secrets-documentation)
+  - [3.5 tier-tokens — tier-aware token accounting](#35-tier-tokens--tier-aware-token-accounting)
+  - [3.6 redundancy — inferable content](#36-redundancy--inferable-content)
+  - [3.7 contradictions — cross-file conflicts](#37-contradictions--cross-file-conflicts)
+  - [3.8 frontmatter — client metadata validation](#38-frontmatter--client-metadata-validation)
+  - [3.9 ci-coverage — CI workflow documentation](#39-ci-coverage--ci-workflow-documentation)
+  - [3.10 ci-secrets — CI secrets documentation](#310-ci-secrets--ci-secrets-documentation)
   - [3.11 hook-coverage — hook enforcement coverage](#311-hook-coverage--hook-enforcement-coverage)
+  - [3.12 content-secrets — inline secret detection](#312-content-secrets--inline-secret-detection)
 - [4. Rule Catalog (machine-readable)](#4-rule-catalog-machine-readable)
 - [5. Implementing This Specification](#5-implementing-this-specification)
 - [6. Contributing](#6-contributing)
@@ -115,7 +117,7 @@ Every major AI coding client reads one or more context file formats. Some client
 | `.windsurfrules` | Project root | Legacy format. Plain text. |
 | `.windsurf/rules/*.md` | Rule-based | Markdown rules with frontmatter. |
 
-**Frontmatter fields:** `trigger` (required, one of: `always_on`, `glob`, `manual`, `model`).
+**Frontmatter fields:** `trigger` (required, one of: `always_on`, `glob`, `manual`, `model`, `model_decision`).
 
 #### Gemini CLI
 
@@ -245,7 +247,7 @@ trigger: always_on
 
 | Field | Required | Type | Description |
 |---|---|---|---|
-| `trigger` | Yes | enum | When the rule activates. One of: `always_on`, `glob`, `manual`, `model`. |
+| `trigger` | Yes | enum | When the rule activates. One of: `always_on`, `glob`, `manual`, `model`, `model_decision`. |
 
 ---
 
@@ -293,7 +295,9 @@ Context files reference build and test commands (e.g., `npm run build`, `make te
 
 Context files consume an agent's context window. Counting tokens helps teams understand and optimize their context budget.
 
-**Recommended approach:** Use the `cl100k_base` tokenizer (GPT-4 family). If unavailable, estimate at ~4 characters per token.
+**Recommended approach:** Use the `cl100k_base` tokenizer (GPT-4 family). If unavailable, estimate with a charset-aware fallback: count CJK codepoints (Han, Hiragana, Katakana, Hangul) at ~1 token each and everything else at ~4 characters per token — a flat characters/4 estimate undercounts CJK content by roughly 4x.
+
+**Accuracy:** all counts are soft estimates. `cl100k_base` diverges from Claude's (unpublished) tokenizer by roughly 10-20% on prose and more on code- or whitespace-heavy content, and the character-based fallback is coarser still. Thresholds built on these counts ([Section 3.4](#34-tokens--context-window-budget) / [3.5](#35-tier-tokens--tier-aware-token-accounting)) should be treated as budget guidance with tolerance, not exact accounting.
 
 **Track per file:** total token count and total line count.
 
@@ -301,7 +305,7 @@ Context files consume an agent's context window. Counting tokens helps teams und
 
 ## 3. Lint Rules
 
-28 rules organized into 11 categories.
+39 rules organized into 12 categories.
 
 Severity levels:
 - **error** — the context file has a verifiably incorrect reference or invalid metadata. Should fail CI.
@@ -335,11 +339,13 @@ Validates that commands referenced in context files are actually available in th
 | `commands/no-makefile` | error | `make` command used but no Makefile exists | `"{cmd}" — no Makefile found in project` |
 | `commands/npx-not-in-deps` | warning | `npx` package is not in dependencies or `node_modules/.bin` | `"{cmd}" — "{pkg}" not found in dependencies` |
 | `commands/tool-not-found` | warning | Common tool (`vitest`, `jest`, `eslint`, etc.) is not in dependencies or `node_modules/.bin` | `"{cmd}" — "{tool}" not found in dependencies or node_modules/.bin` |
+| `commands/package-json-missing` | info | `package.json` is missing or unparseable AND the file references at least one command that would otherwise have been validated | `package.json missing or unparseable — command checks skipped` |
 
 **Notes:**
 - For `script-not-found`, include available scripts in the suggestion when possible.
 - For `npx-not-in-deps`, suggest adding to `devDependencies`.
 - Shorthand commands (`npm test`, `pnpm build`) should be validated against scripts as well.
+- When `package.json` can't be loaded, all script/shorthand/npx/tool validation silently skips. Surface that once per file via `package-json-missing` so the skip isn't invisible.
 
 ### 3.3 staleness — freshness detection
 
@@ -384,6 +390,11 @@ Monitors context file size to help teams manage context window consumption.
 | `tierBreakdown` | 1000 | Triggers `tier-tokens/section-breakdown` on an always-loaded file |
 | `tierAggregate` | 4000 | Triggers `tier-tokens/aggregate` across always-loaded files |
 
+**Suggestions:**
+- For `excessive`: `Consider splitting into focused sections or removing redundant content.`
+- For `large`: `Consider trimming — research shows diminishing returns past ~300 lines.`
+- For `aggregate`: `Consider consolidating or trimming to reduce per-session context cost.`
+
 ### 3.5 tier-tokens — tier-aware token accounting
 
 Reports token cost attributable to the **always-loaded** tier: files Claude Code (and similar agents) load into every session regardless of request. Complements `tokens` by surfacing which sections / files are costing budget every turn — and which inviolable rules need hook-based enforcement to actually bind.
@@ -392,18 +403,13 @@ Reports token cost attributable to the **always-loaded** tier: files Claude Code
 
 | Rule ID | Severity | Trigger | Message |
 |---|---|---|---|
-| `tier-tokens/section-breakdown` | info | Always-loaded file exceeds `tierBreakdown` tokens AND has H1/H2 sections | `{N} tokens loaded every session — heaviest top-level section(s): ...` |
-| `tier-tokens/aggregate` | warning | Two or more always-loaded files combined exceed `tierAggregate` tokens | `{count} always-loaded files total {N} tokens — loaded every session` |
-| `tier-tokens/hard-enforcement-missing` | info | Line in an always-loaded file uses inviolable framing (NEVER/ALWAYS/DO NOT/MUST NOT) with a backticked command, and no matching PreToolUse hook or `permissions.deny` entry exists in `.claude/settings.json` or `~/.claude/settings.json` | `Inviolable framing ("{line}") without a hook to back it up` |
+| `tier-tokens/section-breakdown` | info | Always-loaded file reaches or exceeds `tierBreakdown` tokens (inclusive — a file at exactly the threshold fires) AND has H1/H2 sections | `{N} tokens loaded every session — heaviest top-level section(s): ...` |
+| `tier-tokens/aggregate` | warning | Two or more always-loaded files total `tierAggregate` tokens or more (inclusive boundary) | `{count} always-loaded files total {N} tokens — loaded every session` |
+| `tier-tokens/hard-enforcement-missing` | info | Line in an always-loaded file uses inviolable framing (NEVER/ALWAYS/DO NOT/MUST NOT) with a backticked command, and no matching PreToolUse hook or `permissions.deny` entry exists in the project's `.claude/settings.json` / `.claude/settings.local.json` (the user-global `~/.claude/settings.json` is consulted only on explicit opt-in) | `Inviolable framing ("{line}") without a hook to back it up` |
 
 **Note on overlap with `tokens`:** `tokens/info` and `tier-tokens/section-breakdown` both fire on a large CLAUDE.md. They're complementary — `tokens` is tier-agnostic ("this file is large"), `tier-tokens` adds the always-loaded attribution and demotion guidance. Use `--ignore tokens` or `--ignore tier-tokens` to pick one.
 
 **Source:** [Claude Code memory docs](https://code.claude.com/docs/en/memory). Rule behavior is grounded in the documented loading model ("there's no guarantee of strict compliance" → hard-enforcement-missing; section-demotion-to-skills → structurally reduces per-session cost).
-
-**Suggestions:**
-- For `excessive`: `Consider splitting into focused sections or removing redundant content.`
-- For `large`: `Consider trimming — research shows diminishing returns past ~300 lines.`
-- For `aggregate`: `Consider consolidating or trimming to reduce per-session context cost.`
 
 ### 3.6 redundancy — inferable content
 
@@ -543,9 +549,10 @@ Validates YAML frontmatter required by specific clients. Only applies to file fo
 
 | Rule ID | Severity | Trigger | Message |
 |---|---|---|---|
-| `frontmatter/missing` | warning | File format requires frontmatter but none is present | `{format} file is missing frontmatter` |
+| `frontmatter/missing` | warning (Cursor `.mdc`); info (Copilot, Windsurf) | File format requires or recommends frontmatter but none is present | `{format} file is missing frontmatter` |
+| `frontmatter/unclosed` | error | Frontmatter opens with `---` but is never closed (every parsed field is suspect; the host loads the file with no frontmatter at all) | ``Frontmatter opens with `---` but is never closed`` |
 | `frontmatter/missing-field` | warning | A required or recommended field is absent | `Missing "{field}" field in {format} frontmatter` |
-| `frontmatter/invalid-value` | error | A field has an invalid value | `Invalid {field} value: "{value}"` |
+| `frontmatter/invalid-value` | error (invalid `alwaysApply` / Windsurf `trigger`); warning (malformed `globs`) | A field has an invalid value | `Invalid {field} value: "{value}"` |
 | `frontmatter/no-activation` | info | File has frontmatter but no activation mechanism (no globs/alwaysApply/trigger) | `No activation field — rule may not be applied automatically` |
 
 **Validation per format:**
@@ -554,7 +561,11 @@ Validates YAML frontmatter required by specific clients. Only applies to file fo
 |---|---|---|
 | Cursor `.mdc` | `description` (required), `alwaysApply` (boolean), `globs` (pattern) | `alwaysApply`: `true` or `false` |
 | Copilot `instructions/*.md` | `applyTo` (recommended) | Any glob pattern |
-| Windsurf `rules/*.md` | `trigger` (required) | `always_on`, `glob`, `manual`, `model` |
+| Windsurf `rules/*.md` | `trigger` (required) | `always_on`, `glob`, `manual`, `model`, `model_decision` |
+
+**Notes:**
+- `frontmatter/missing` severity is per-format: warning for Cursor `.mdc` (frontmatter is required there), info for Copilot instructions and Windsurf rules (frontmatter is optional/recommended).
+- The `globs` branch of `frontmatter/invalid-value` only flags unmistakably malformed YAML (unbalanced brackets or quotes), at warning severity — Cursor accepts bare directory names (`globs: src`) and bare extensions, so a value isn't flagged merely for lacking `*` or `/`.
 
 ---
 
@@ -565,6 +576,8 @@ Checks that release/deploy CI workflows are documented in context files. When ag
 | Rule ID | Severity | Trigger | Message |
 |---|---|---|---|
 | `ci/no-release-docs` | info | `.github/workflows/` contains release/deploy/publish workflow(s) but no context file mentions the release process | `Release workflow(s) found but no context file documents the release process` |
+
+> **Rule-ID note:** `ci/no-release-docs` is the published catalog ID — a legacy shared `ci/` prefix that predates the prefix-equals-category convention (see CONTRIBUTING.md "Rule ID format"). The reference implementation emits this finding with ruleId `ci-coverage/no-release-docs` in JSON output.
 
 **Detection algorithm:**
 
@@ -585,6 +598,8 @@ Checks that secrets referenced in CI workflow files are mentioned in context fil
 |---|---|---|---|
 | `ci/undocumented-secret` | info | `${{ secrets.NAME }}` found in workflow YAML but `NAME` not mentioned in any context file | `CI secret "{name}" is used in {workflow} but not mentioned in any context file` |
 
+> **Rule-ID note:** `ci/undocumented-secret` is the published catalog ID — the same legacy shared `ci/` prefix as `ci/no-release-docs`. The reference implementation emits this finding with ruleId `ci-secrets/undocumented-secret` in JSON output.
+
 **Detection algorithm:**
 
 1. Check if `.github/workflows/` exists. If not, skip.
@@ -603,12 +618,45 @@ The inverse of `tier-tokens/hard-enforcement-missing`. Where `tier-tokens` flags
 
 **Detection algorithm:**
 
-1. Load settings from project `.claude/settings.json`, project `.claude/settings.local.json`, and user `~/.claude/settings.json` (parsed as JSONC; missing files are skipped).
+1. Load settings from project `.claude/settings.json` and project `.claude/settings.local.json` (parsed as JSONC; missing files are skipped). The user-global `~/.claude/settings.json` is loaded only on explicit opt-in (`--hooks-global` in the reference implementation) so a default run never reads files outside the project directory.
 2. For each hook command and each `permissions` list entry, tokenize on whitespace (respecting quotes) and keep tokens that look like script paths (a path separator + a script extension such as `.sh`/`.js`/`.py`/`.ps1`, or an explicit `./` `~/` `/` `$VAR/` `C:\` prefix). Inline tool matchers like `Bash(npm login)` yield no path tokens.
 3. Resolve each path token: expand a leading `~` and the env vars Claude Code documents for settings paths — `$CLAUDE_PROJECT_DIR`, `$CLAUDE_CONFIG_DIR`, `$HOME`, `$USERPROFILE`. A token that still contains an unresolvable `$VAR` is skipped (it cannot be verified, and a false "dead hook" is worse than a missed one).
 4. Emit one warning per resolved path that does not exist on disk, with the source file's line number for project files (the user-global file is noted inline).
 
 **Stability:** experimental — the path-extraction heuristic is conservative by design (it prefers a missed dead hook over a false positive) and may broaden as more hook-command shapes are observed.
+
+### 3.12 content-secrets — inline secret detection
+
+Detects secrets pasted directly into context files. Context files usually end up committed to git, so an inline `AKIA...` or `sk-ant-...` in a heading or code block is a leak. This is the context-file counterpart of the MCP-config secret rules (`mcp-security/*` in the [MCP Config Linting Spec](./MCP_CONFIG_LINT_SPEC.md)) — same threat, different paste surface.
+
+| Rule ID | Severity | Trigger | Message |
+|---|---|---|---|
+| `content-secrets/private-key-header` | error | Line contains `-----BEGIN [RSA \| EC \| DSA \| OPENSSH \| PGP ]PRIVATE KEY-----` | `Private key header detected in {file}` |
+| `content-secrets/aws-access-key` | error | `AKIA` or `ASIA` (STS) prefix + 16 uppercase alphanumeric chars | `AWS access key detected in {file} ({prefix}...)` |
+| `content-secrets/github-pat` | error | `ghp_`, `github_pat_`, or `ghs_`/`gho_`/`ghu_`/`ghr_` token shapes | `GitHub personal access token detected in {file} ({prefix}...)` |
+| `content-secrets/anthropic-key` | error | `sk-ant-` + 20+ key chars | `Anthropic API key detected in {file} ({prefix}...)` |
+| `content-secrets/openai-key` | error | `sk-` or `sk-proj-` + 20+ key chars | `OpenAI API key detected in {file} ({prefix}...)` |
+| `content-secrets/npm-token` | error | `npm_` + 36+ alphanumeric chars | `npm token detected in {file} ({prefix}...)` |
+| `content-secrets/slack-token` | error | `xox[bpoasr]-` + 10+ token chars | `Slack token detected in {file} ({prefix}...)` |
+| `content-secrets/google-api-key` | error | `AIza` + exactly 35 key chars | `Google API key detected in {file} ({prefix}...)` |
+| `content-secrets/stripe-secret` | error | `sk_live_` + 24+ alphanumeric chars | `Stripe live secret key detected in {file} ({prefix}...)` |
+
+**Design principles:**
+
+- **Precision over recall.** Patterns are well-defined vendor prefixes only; random high-entropy detection is deliberately omitted — it bites build IDs, commit SHAs, and version strings. A missed exotic format is fine; a noisy false positive that trains users to ignore the check is not.
+- **Never leak the secret in output.** Emitted messages contain at most a 6-character redacted prefix plus an ellipsis — never the full matched value (the value landing in linter stderr/SARIF would itself be a leak vector).
+- **Anthropic before OpenAI.** `sk-ant-` must be checked before the generic `sk-` pattern so the same substring isn't flagged twice (implementations may use per-line dedup keyed by match offset).
+
+**Suppression rules (all reduce false positives):**
+
+1. **Placeholder lines** — any line containing a placeholder token (`example`, `placeholder`, `your-key`, `<replace`, `redacted`, `xxxx`, `****`) is skipped entirely (line-scoped on purpose; see the implementation notes in `content-secrets.ts` for the recall trade-off).
+2. **Placeholder wrappers** — a match wrapped in `${...}` or a hugging `<...>` placeholder is skipped.
+3. **Commented examples** — a comment line (`#`, `//`, `--`, `<!--`) containing `fake` or `example` is skipped.
+4. **Illustrative code fences** — content inside fences explicitly tagged `text`, `txt`, `example`, `pseudocode`, or `none` is skipped. Untagged fences are still scanned: a bare ``` fence is the most common way real `.env` contents get pasted into a context file.
+
+**Suggestion:** `Move the secret to a .env or secret manager and reference it by name. If this token is real, rotate it immediately.`
+
+**Stability:** experimental — the suppression heuristics (placeholder tokens, fence tags) may broaden as more paste shapes are observed; the vendor prefix patterns themselves are stable.
 
 ---
 
@@ -645,9 +693,9 @@ For each discovered file:
 
 ### Checking
 
-Run per-file checks (paths, commands, staleness, tokens, redundancy, frontmatter) independently per file. These can be parallelized.
+Run per-file checks (paths, commands, staleness, tokens, tier-tokens, redundancy, frontmatter, content-secrets) independently per file. These can be parallelized.
 
-Run cross-file checks (aggregate tokens, duplicate content, contradictions, ci-coverage, ci-secrets) after all per-file parsing is complete. These need the full set of parsed files.
+Run cross-file checks (aggregate tokens, duplicate content, contradictions, ci-coverage, ci-secrets, hook-coverage) after all per-file parsing is complete. These need the full set of parsed files.
 
 ### Reporting
 

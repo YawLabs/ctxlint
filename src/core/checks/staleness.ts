@@ -33,6 +33,27 @@ export async function checkStaleness(
   // commits since git log on a directory includes all files within it.
   const referencedPaths = new Set<string>();
   for (const ref of file.references.paths) {
+    const normalized = ref.value.replace(/\\/g, '/');
+    if (normalized.includes('*')) {
+      // getCommitsSinceBatch matches exact paths and trailing-slash directory
+      // prefixes only — glob metacharacters compare literally, so a raw glob
+      // ref silently counts 0 and a file whose only refs are globs would
+      // never go stale. Substitute the glob's static directory prefix
+      // (src/**/*.ts -> src/). The dir ref can over-count relative to the
+      // glob's exact match set (and to the no-parent-dirs rule above) —
+      // acceptable for a staleness heuristic. A glob with no static prefix
+      // has nothing to correlate against, so it's skipped.
+      const staticSegments: string[] = [];
+      for (const segment of normalized.split('/')) {
+        if (segment.includes('*')) break;
+        staticSegments.push(segment);
+      }
+      const prefix = staticSegments.join('/');
+      if (prefix) {
+        referencedPaths.add(`${prefix}/`);
+      }
+      continue;
+    }
     referencedPaths.add(ref.value);
   }
 

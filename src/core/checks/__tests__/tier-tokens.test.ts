@@ -92,6 +92,31 @@ describe('isAlwaysLoaded', () => {
     expect(isAlwaysLoaded(makeFile({ relativePath: 'notes.md' }))).toBe(false);
   });
 
+  it('treats Windsurf glob-trigger rules as on-demand', () => {
+    const content = '---\ntrigger: glob\nglobs: "**/*.ts"\n---\n\nbody';
+    expect(isAlwaysLoaded(makeFile({ relativePath: '.windsurf/rules/r.md', content }))).toBe(false);
+  });
+
+  it('treats Windsurf manual-trigger rules (no globs) as on-demand', () => {
+    const content = '---\ntrigger: manual\n---\n\nbody';
+    expect(isAlwaysLoaded(makeFile({ relativePath: '.windsurf/rules/r.md', content }))).toBe(false);
+  });
+
+  it('treats Windsurf always_on rules as always-loaded', () => {
+    const content = '---\ntrigger: always_on\n---\n\nbody';
+    expect(isAlwaysLoaded(makeFile({ relativePath: '.windsurf/rules/r.md', content }))).toBe(true);
+  });
+
+  it('treats Cursor .md rules with globs frontmatter as on-demand', () => {
+    const content = '---\nglobs: "src/**/*.ts"\n---\n\nbody';
+    expect(isAlwaysLoaded(makeFile({ relativePath: '.cursor/rules/r.md', content }))).toBe(false);
+  });
+
+  it('treats Cursor .md rules without scoping frontmatter as always-loaded', () => {
+    const content = '---\ndescription: general rule\n---\n\nbody';
+    expect(isAlwaysLoaded(makeFile({ relativePath: '.cursor/rules/r.md', content }))).toBe(true);
+  });
+
   it('matches .junie/guidelines.md but not docs/api/guidelines.md', () => {
     expect(isAlwaysLoaded(makeFile({ relativePath: '.junie/guidelines.md' }))).toBe(true);
     expect(isAlwaysLoaded(makeFile({ relativePath: 'docs/api/guidelines.md' }))).toBe(false);
@@ -318,13 +343,92 @@ describe('checkTierTokens — hard-enforcement-missing', () => {
     expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
   });
 
-  it('warns only ONCE for a malformed settings.json across many always-loaded files', async () => {
+  it('treats a permissions.ask entry as enforcement (human prompt is a hard gate)', async () => {
     const dotClaude = path.join(tmpDir, '.claude');
     fs.mkdirSync(dotClaude, { recursive: true });
-    // Trailing comma — JSON.parse throws.
+    fs.writeFileSync(
+      path.join(dotClaude, 'settings.json'),
+      JSON.stringify({ permissions: { ask: ['Bash(npm login)'] } }),
+    );
+    const content = '# CLAUDE.md\n\nNEVER run `npm login` locally.\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
+  });
+
+  it('suggests an enforcing hook (not a deny/block) for ALWAYS-framed rules', async () => {
+    const content = '# CLAUDE.md\n\nALWAYS run `npm test` before pushing.\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    const hard = issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing');
+    expect(hard).toBeDefined();
+    expect(hard!.suggestion).toContain('npm test');
+    // "Block the command" is inverted polarity for an ALWAYS rule — the fix
+    // is a hook that runs/verifies it, not one that denies it.
+    expect(hard!.suggestion).not.toContain('physically blocked');
+  });
+
+  it('reads a settings.json with a trailing comma (same leniency as hook-coverage)', async () => {
+    const dotClaude = path.join(tmpDir, '.claude');
+    fs.mkdirSync(dotClaude, { recursive: true });
+    // jsonc with allowTrailingComma — the identical file hook-coverage can
+    // read must not be treated as absent here.
     fs.writeFileSync(
       path.join(dotClaude, 'settings.json'),
       '{ "permissions": { "deny": ["Bash(npm login)"], } }',
+    );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const content = '# CLAUDE.md\n\nNEVER run `npm login` locally.\n';
+      const issues = await checkTierTokens(
+        makeFile({ content, sections: [], totalTokens: 50 }),
+        tmpDir,
+      );
+      expect(
+        issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing'),
+      ).toBeUndefined();
+      const parseWarns = warnSpy.mock.calls.filter((c) => String(c[0]).includes('could not parse'));
+      expect(parseWarns).toHaveLength(0);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('picks up a settings.json edit between runs without a manual cache reset', async () => {
+    const content = '# CLAUDE.md\n\nNEVER run `npm login` locally.\n';
+    // First run: no settings — the finding fires (and the empty state is cached).
+    const first = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    expect(first.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeDefined();
+
+    // The user adds the suggested deny entry and re-audits in the SAME
+    // process (MCP server / --watch shape) with NO resetSettingsCache().
+    const dotClaude = path.join(tmpDir, '.claude');
+    fs.mkdirSync(dotClaude, { recursive: true });
+    fs.writeFileSync(
+      path.join(dotClaude, 'settings.json'),
+      JSON.stringify({ permissions: { deny: ['Bash(npm login)'] } }),
+    );
+    const second = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    expect(second.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
+  });
+
+  it('warns only ONCE for a malformed settings.json across many always-loaded files', async () => {
+    const dotClaude = path.join(tmpDir, '.claude');
+    fs.mkdirSync(dotClaude, { recursive: true });
+    // Genuinely malformed (unterminated) — even the lenient jsonc parse errors.
+    fs.writeFileSync(
+      path.join(dotClaude, 'settings.json'),
+      '{ "permissions": { "deny": ["Bash(npm login)"',
     );
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {

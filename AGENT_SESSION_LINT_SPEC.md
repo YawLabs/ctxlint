@@ -190,8 +190,8 @@ Detects canonical configuration files that have drifted between the current proj
    - **Above 90%** -- close enough. No flag. Minor differences are expected (e.g., different project names).
 
 **Notes:**
-- Blank lines and comment-only lines should be excluded from the overlap calculation.
-- Compare each sibling independently. Report the sibling with the lowest overlap percentage first.
+- Lines are trimmed before comparison; blank lines and very short lines (3 characters or fewer after trimming) are excluded from the overlap calculation. Comment lines count toward overlap -- drift in the comments of a canonical file is still drift.
+- Compare each sibling independently. Report the sibling with the lowest overlap percentage first (the furthest-drifted sibling is the one worth reading first).
 
 ### 2.3 session/missing-workflow
 
@@ -226,7 +226,7 @@ Detects Claude Code memory entries that reference file paths which no longer exi
 | **Trigger** | A memory file references file paths that no longer exist in the project |
 | **Message** | `Memory "<name>" references <N> path(s) that no longer exist: <paths>` |
 
-**Scope:** This rule only checks memory files for the current project. Claude Code stores per-project memories in `~/.claude/projects/<encoded-path>/memory/`, where `<encoded-path>` encodes the project's absolute path using `--` as the directory separator.
+**Scope:** This rule only checks memory files for the current project. Claude Code stores per-project memories in `~/.claude/projects/<encoded-path>/memory/`, where `<encoded-path>` encodes the project's absolute path (each of `:`, `/`, `\`, and `.` becomes a single `-` -- see [Section 4](#4-implementing-this-specification)).
 
 **Detection algorithm:**
 
@@ -256,8 +256,8 @@ Detects memory entries from different projects that have significant content ove
 1. Enumerate all memory files across all projects in `~/.claude/projects/*/memory/*.md`.
 2. Exclude `MEMORY.md` index files (these are auto-generated summaries, not authored memories).
 3. Exclude very short entries (fewer than 50 characters after stripping whitespace) -- too short for meaningful overlap comparison.
-4. Perform pairwise comparison of all remaining memory entries. Skip pairs from the same project.
-5. Compute line-level overlap percentage (same algorithm as `session/diverged-file`).
+4. Perform pairwise comparison of all remaining memory entries. Skip pairs from the same project, and skip pairs where neither side belongs to the current project -- without that scoping, every lint run from any repo would resurface the same unrelated cross-project duplicates.
+5. Compute line-level overlap percentage (same algorithm as `session/diverged-file`, with a slightly higher trivial-line floor: lines of 5 characters or fewer after trimming are excluded).
 6. Flag pairs with >60% overlap.
 
 **Notes:**
@@ -274,16 +274,18 @@ Detects when an agent runs the same command 3 or more times consecutively, indic
 |---|---|
 | **Rule ID** | `session/consecutive-repeat` |
 | **Severity** | warning |
-| **Trigger** | 3+ consecutive history entries with identical `display` values for the current project |
+| **Trigger** | 3+ consecutive history entries with identical `display` values within a single session segment for the current project |
 | **Message** | `Command run <N> times consecutively: "<command>"` |
 
 **Detection algorithm:**
 
-1. Filter history entries to the current project path (normalized).
-2. Sort entries by timestamp.
-3. Slide a window over the sorted entries. For each run of 3+ entries with identical `display` values, emit a warning.
+1. Filter history entries to the current project path (normalized). Drop entries with no associated project path.
+2. Sort entries by timestamp. Implementations may bound the scan to the most recent entries (the reference implementation keeps the latest 5,000) -- a live loop is always captured in the tail, and the cycle scan in `session/cyclic-pattern` is O(N²).
+3. Group entries into sessions keyed by provider + session ID (session IDs are only unique within a provider). Split each session's sequence wherever the gap between consecutive timestamps exceeds 30 minutes -- providers that omit session IDs would otherwise pool unrelated working stints into one pseudo-session, and a routine daily one-shot command would read as a 3+ repeat.
+4. Within each session segment, slide a window over the entries. For each run of 3+ entries with identical `display` values, emit a warning.
 
 **Notes:**
+- Looping is an intra-session pathology. Pooling sessions would flag routine reuse across days, and concurrently interleaved sessions (including cross-provider ones, since multiple providers' histories are merged) would produce phantom patterns no session actually ran.
 - Truncates long command strings to 80 characters in the message for readability.
 - This rule helps surface cases where an agent is stuck retrying a failing command instead of changing approach.
 
@@ -297,15 +299,16 @@ Detects short repeating cycles of commands, indicating an agent stuck in a loop.
 |---|---|
 | **Rule ID** | `session/cyclic-pattern` |
 | **Severity** | warning |
-| **Trigger** | A sequence of 2-3 distinct commands repeating 2+ times consecutively (e.g. A,B,A,B) |
+| **Trigger** | A sequence of 2-3 distinct commands repeating 2+ times consecutively (e.g. A,B,A,B) within a single session segment |
 | **Message** | `Cyclic pattern repeated <N> times: <cycle>` |
 
 **Detection algorithm:**
 
-1. Filter history entries to the current project, sorted by timestamp.
-2. For cycle lengths 2 and 3, slide a window checking if the next `cycleLen` entries match the current cycle.
+1. Build per-session segments exactly as in `session/consecutive-repeat` steps 1-3 (current project only, sorted by timestamp, grouped by provider + session ID, split at >30-minute gaps).
+2. Within each segment, for cycle lengths 2 and 3, slide a window checking if the next `cycleLen` entries match the current cycle.
 3. Cycles where every element is the same are excluded (already caught by `session/consecutive-repeat`).
-4. Subsumption: if a shorter cycle is fully contained within an already-reported longer cycle at the same position, skip it.
+4. A cycle whose span overlaps a run already reported by `session/consecutive-repeat` is suppressed -- those commands were already reported once.
+5. Subsumption: if a shorter cycle is fully contained within an already-reported longer cycle at the same position, skip it.
 
 **Notes:**
 - A cycle like "edit file → run tests → edit file → run tests" is a common pattern when an agent is making iterative fixes. This rule flags when the cycle repeats enough times to suggest the agent isn't making progress.
@@ -341,20 +344,26 @@ Detects when `MEMORY.md` exceeds Claude Code's session-load cap. Claude Code loa
 
 ## 3. Rule Catalog (machine-readable)
 
-A machine-readable JSON catalog of all rules is available at [`agent-session-lint-rules.json`](./agent-session-lint-rules.json).
-
-The catalog schema follows the same structure as the sibling specs' catalogs (`context-lint-rules.json`, `mcp-config-lint-rules.json`). Each rule entry includes:
-
-| Field | Type | Description |
-|---|---|---|
-| `id` | string | Rule ID in `category/rule-name` format |
-| `severity` | `"error"` \| `"warning"` \| `"info"` | Default severity level |
-| `description` | string | One-line description of what the rule checks |
-| `messageTemplate` | string | Message template with `<placeholder>` variables |
-| `category` | string | Rule category (`session`) |
-| `crossProject` | boolean | Whether the rule compares across sibling repos |
+A machine-readable JSON catalog of all rules is available at [`agent-session-lint-rules.json`](./agent-session-lint-rules.json). It conforms to the shared catalog schema ([`schemas/ctxlint-catalog.schema.json`](./schemas/ctxlint-catalog.schema.json)) used by all four pillars: each rule entry carries `id`, `category`, `severity`, `description`, `trigger`, `message`, `fixable`, and `stability`, plus rule-specific extras (e.g. `canonicalFiles` on `session/diverged-file`).
 
 See the JSON file for the full catalog.
+
+### Catalog rule IDs vs. reference-implementation ruleIds
+
+Catalog rule IDs use the pillar-stable `session/<slug>` form -- these are the cross-tool names to use in documentation, configuration, and issue reports. The reference implementation namespaces the `ruleId` it emits (in `--format json` output) by check module instead -- `<check>/<slug>` -- and splits `session/memory-index-overflow` into one emitted slug per cap dimension. The full correspondence (pinned by a consistency test in the reference implementation):
+
+| Catalog rule ID | Emitted `ruleId` (reference implementation) |
+|---|---|
+| `session/missing-secret` | `session-missing-secret/missing-secret` |
+| `session/diverged-file` | `session-diverged-file/diverged-file` |
+| `session/missing-workflow` | `session-missing-workflow/missing-workflow` |
+| `session/stale-memory` | `session-stale-memory/stale-memory` |
+| `session/duplicate-memory` | `session-duplicate-memory/duplicate-memory` |
+| `session/consecutive-repeat` | `session-loop-detection/consecutive-repeat` |
+| `session/cyclic-pattern` | `session-loop-detection/cyclic-pattern` |
+| `session/memory-index-overflow` | `session-memory-index-overflow/line-overflow`, `session-memory-index-overflow/byte-overflow` |
+
+Other implementations of this specification may emit either form; when interoperating, treat the catalog IDs as canonical and map implementation-specific ruleIds onto them as above.
 
 ---
 
@@ -388,7 +397,7 @@ For each line:
 
 ### Claude Code project directory encoding
 
-Claude Code encodes project paths in its directory structure using `--` as the path separator. The encoding replaces each directory separator with `--` and strips the leading separator.
+Claude Code encodes a project's absolute path into a directory name under `~/.claude/projects/` by replacing **each of `:`, `/`, `\`, and `.` with a single `-`**. Nothing is stripped: a leading `/` on Unix paths is preserved as a leading `-`. The familiar `--` run in Windows-derived names like `C--Users-...` is not a separator of its own -- it is the drive letter's `:` and the adjacent `/` each becoming `-`. Hyphens already present in a path component are preserved as-is.
 
 **Examples:**
 
@@ -397,10 +406,9 @@ Claude Code encodes project paths in its directory structure using `--` as the p
 | `C:/Users/jeff/yaw/ctxlint` | `C--Users-jeff-yaw-ctxlint` |
 | `/home/dev/projects/my-app` | `-home-dev-projects-my-app` |
 | `/Users/dev/work/api-server` | `-Users-dev-work-api-server` |
+| `/home/dev/repo.js` | `-home-dev-repo-js` |
 
-Note: each `/` or `\` in the path becomes a single `-` in the encoded name, except when the path component itself contains a hyphen (which is preserved). The `--` separator replaces `:/` on Windows drive letters.
-
-To decode: implementors should reverse the encoding by reading the actual directory names from `~/.claude/projects/` and matching against the current project's absolute path.
+The encoding is **lossy**: `-`, `.`, `/`, `\`, and `:` all collapse to the same output character, so distinct paths can encode to the same directory name (`/home/dev/my-app` and `/home/dev/my.app` collide). There is no decode step. Implementors must compare encoded-to-encoded: encode the current project's absolute path with the same substitution rules and match the result against the directory names actually present in `~/.claude/projects/` -- never attempt to reconstruct a path from an encoded name.
 
 ### Scope of v1
 

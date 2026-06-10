@@ -37,6 +37,9 @@ export async function checkDuplicateMemory(ctx: SessionContext): Promise<LintIss
     return ls;
   };
 
+  // Trimmed length, computed once per memory rather than per O(N^2) pair.
+  const trimmedLengths = ctx.memories.map((m) => m.content.trim().length);
+
   for (let i = 0; i < ctx.memories.length; i++) {
     for (let j = i + 1; j < ctx.memories.length; j++) {
       const a = ctx.memories[i];
@@ -50,8 +53,10 @@ export async function checkDuplicateMemory(ctx: SessionContext): Promise<LintIss
       const bIsCurrent = projectDirMatchesPath(b.projectDir, ctx.currentProject);
       if (!aIsCurrent && !bIsCurrent) continue;
 
-      // Skip very short memories (not meaningful to compare)
-      if (a.content.length < 50 || b.content.length < 50) continue;
+      // Skip very short memories (not meaningful to compare). Length is
+      // measured after trimming (per spec 2.5 step 3) so leading/trailing
+      // blank lines don't promote a trivially short memory into the scan.
+      if (trimmedLengths[i] < 50 || trimmedLengths[j] < 50) continue;
 
       const overlap = jaccardSimilarityFromSets(getLineSet(i), getLineSet(j));
       if (overlap < 0.6) continue;

@@ -1,6 +1,9 @@
 node_modules/
 dist/
 coverage/
+# Written by catalog-generate.test.ts; afterEach cleans up, but a hard-killed
+# run leaves it behind where a broad `git add` would sweep it into a commit.
+src/core/__tests__/.coverage-fixtures/
 *.tsbuildinfo
 *.log
 .DS_Store

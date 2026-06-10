@@ -129,4 +129,59 @@ describe('checkStaleness', () => {
     const issues = await checkStaleness(makeParsedFile(), '/project');
     expect(issues).toHaveLength(0);
   });
+
+  // getCommitsSinceBatch matches exact paths / dir prefixes only (no glob
+  // support), so staleness must convert glob refs before the batch call --
+  // otherwise a file whose only refs are globs can never go stale.
+  it('converts a glob ref to its static directory prefix for the batch call', async () => {
+    mockedIsGitRepo.mockResolvedValue(true);
+    mockedGetFileLastModified.mockResolvedValue(new Date(Date.now() - 45 * 24 * 60 * 60 * 1000));
+    mockedGetCommitsSinceBatch.mockImplementation(async (_root, paths) =>
+      batchMap(paths, { 'src/': 4 }),
+    );
+    const file = makeParsedFile({
+      references: { paths: [{ value: 'src/**/*.ts', line: 3, column: 1 }], commands: [] },
+    });
+    const issues = await checkStaleness(file, '/project');
+
+    expect(mockedGetCommitsSinceBatch).toHaveBeenCalledWith('/project', ['src/'], expect.any(Date));
+    expect(issues).toHaveLength(1);
+    expect(issues[0].severity).toBe('warning');
+    expect(issues[0].message).toContain('src/');
+  });
+
+  it('skips a glob with no static directory prefix', async () => {
+    mockedIsGitRepo.mockResolvedValue(true);
+    mockedGetFileLastModified.mockResolvedValue(new Date(Date.now() - 45 * 24 * 60 * 60 * 1000));
+    const file = makeParsedFile({
+      references: { paths: [{ value: '*.md', line: 3, column: 1 }], commands: [] },
+    });
+    const issues = await checkStaleness(file, '/project');
+
+    // The only ref produced nothing to correlate against, so the batch call
+    // is never made and no staleness issue can fire.
+    expect(mockedGetCommitsSinceBatch).not.toHaveBeenCalled();
+    expect(issues).toHaveLength(0);
+  });
+
+  it('mixes glob-derived dir prefixes with plain refs (deduped)', async () => {
+    mockedIsGitRepo.mockResolvedValue(true);
+    mockedGetFileLastModified.mockResolvedValue(new Date(Date.now() - 45 * 24 * 60 * 60 * 1000));
+    mockedGetCommitsSinceBatch.mockImplementation(async (_root, paths) => batchMap(paths));
+    const file = makeParsedFile({
+      references: {
+        paths: [
+          { value: 'src/*.ts', line: 3, column: 1 },
+          { value: 'src/lib/*.ts', line: 4, column: 1 },
+          { value: 'src/lib/*.test.ts', line: 5, column: 1 },
+          { value: 'docs/readme.md', line: 6, column: 1 },
+        ],
+        commands: [],
+      },
+    });
+    await checkStaleness(file, '/project');
+
+    const callPaths = mockedGetCommitsSinceBatch.mock.calls[0][1];
+    expect([...callPaths].sort()).toEqual(['docs/readme.md', 'src/', 'src/lib/']);
+  });
 });

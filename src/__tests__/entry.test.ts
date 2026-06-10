@@ -107,8 +107,28 @@ describe('CLI help and version', () => {
 });
 
 describe('package.json consistency', () => {
-  it('version matches VERSION constant', () => {
-    expect(PKG.version).toBe(VERSION);
+  // NOT `PKG.version === VERSION`: under vitest (unbundled) VERSION is read
+  // from the same package.json PKG was parsed from, so that comparison can
+  // never fail. server.json's two version fields are independently written
+  // (release.sh step 4 syncs them), so drift there is a real failure mode --
+  // a mismatched manifest publishes an MCP Registry entry pointing at the
+  // wrong npm version.
+  it('server.json versions match package.json', () => {
+    const serverJson = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '../../server.json'), 'utf-8'),
+    );
+    expect(serverJson.version).toBe(PKG.version);
+    expect(serverJson.packages[0].version).toBe(PKG.version);
+  });
+
+  it('main/exports point at the built bundle', () => {
+    expect(PKG.main).toBe('dist/index.js');
+    expect(PKG.exports['.']).toBe('./dist/index.js');
+  });
+
+  it('test scripts build first (CLI tests run against dist)', () => {
+    expect(PKG.scripts.pretest).toBe('node build.mjs');
+    expect(PKG.scripts['pretest:run']).toBe('node build.mjs');
   });
 
   it('engines requires Node >=20', () => {
@@ -141,5 +161,80 @@ describe('package.json consistency', () => {
   it('tiktoken is a dev dependency (bundled at build time)', () => {
     expect(PKG.devDependencies?.tiktoken).toBeDefined();
     expect(PKG.dependencies?.tiktoken).toBeUndefined();
+  });
+});
+
+describe('CLI --depth flag', () => {
+  // nested-context's only context file sits at sub/CLAUDE.md (depth 1), so a
+  // true root-only scan finds nothing while the default depth finds it. The
+  // old `parseInt(...) || 2` coerced --depth 0 to 2, making both runs equal.
+  it('--depth 0 scans only the project root (not coerced to the default)', () => {
+    const rootOnly = run([
+      path.join(FIXTURES, 'nested-context'),
+      '--format',
+      'json',
+      '--depth',
+      '0',
+    ]);
+    expect(rootOnly.exitCode).toBe(0);
+    expect(JSON.parse(rootOnly.stdout).files).toEqual([]);
+
+    const defaultDepth = run([path.join(FIXTURES, 'nested-context'), '--format', 'json']);
+    expect(JSON.parse(defaultDepth.stdout).files.length).toBeGreaterThan(0);
+  });
+
+  it('non-numeric --depth falls back to the default instead of crashing', () => {
+    const result = run([
+      path.join(FIXTURES, 'nested-context'),
+      '--format',
+      'json',
+      '--depth',
+      'abc',
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout).files.length).toBeGreaterThan(0);
+  });
+});
+
+describe('repo policy', () => {
+  const ROOT = path.resolve(__dirname, '../..');
+
+  // Org policy: never suggest the web login flow -- it overwrites the
+  // automation token in ~/.npmrc with a 2FA-bound session and the next
+  // publish EOTPs. The failure-path guidance must point at restoring the
+  // automation token instead.
+  it('release.sh never suggests npm login', () => {
+    const releaseSh = fs.readFileSync(path.join(ROOT, 'release.sh'), 'utf-8');
+    expect(releaseSh).not.toMatch(/npm login/);
+  });
+
+  // GH Actions script-injection guard: `${{ inputs.* }}` interpolated into a
+  // `run:` body becomes part of the shell script verbatim. Inputs must flow
+  // through env vars; the only lines allowed to interpolate are the
+  // CTXLINT_* env assignments.
+  it('action.yml does not interpolate expressions into run scripts', () => {
+    const action = fs.readFileSync(path.join(ROOT, 'action.yml'), 'utf-8');
+    const interpolatingLines = action.split('\n').filter((l) => l.includes('${{'));
+    expect(interpolatingLines.length).toBeGreaterThan(0);
+    for (const line of interpolatingLines) {
+      expect(line).toMatch(/^\s+CTXLINT_[A-Z_]+: \$\{\{ inputs\./);
+    }
+  });
+
+  // release.sh step 6 path 2 (workstation hands publish off to CI) activates
+  // on this file existing + containing npm publish/NODE_AUTH_TOKEN, and looks
+  // the run up via `gh run list --workflow=Release`.
+  it('CI and Release workflows exist with the shape release.sh hands off to', () => {
+    const release = fs.readFileSync(
+      path.join(ROOT, '.github', 'workflows', 'release.yml'),
+      'utf-8',
+    );
+    expect(release).toMatch(/^name: Release$/m);
+    expect(release).toContain('NODE_AUTH_TOKEN');
+    expect(release).toContain('npm publish');
+
+    const ci = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf-8');
+    expect(ci).toContain('pull_request');
+    expect(ci).toContain('tsc --noEmit');
   });
 });

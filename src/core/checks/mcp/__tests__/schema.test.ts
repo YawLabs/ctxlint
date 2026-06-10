@@ -146,6 +146,41 @@ describe('checkMcpSchema', () => {
     expect(unknown!.message).toContain('websocket');
   });
 
+  it('reports a server with no transport signal at all', async () => {
+    // `{}` is the most broken possible entry; missing-command/missing-url are
+    // transport-conditional, so without this rule it would lint clean.
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'empty',
+          transport: 'unknown',
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSchema(config, '/project');
+    const unknown = issues.find((i) => i.ruleId === 'mcp-schema/unknown-transport');
+    expect(unknown).toBeDefined();
+    expect(unknown!.severity).toBe('warning');
+    expect(unknown!.message).toContain('no recognizable transport');
+  });
+
+  it('reports a non-string "type" value as unknown transport', async () => {
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'mangled',
+          transport: 'unknown',
+          line: 3,
+          raw: { type: 42 },
+        },
+      ],
+    });
+    const issues = await checkMcpSchema(config, '/project');
+    expect(issues.find((i) => i.ruleId === 'mcp-schema/unknown-transport')).toBeDefined();
+  });
+
   it('reports ambiguous transport (both command and url)', async () => {
     const config = makeConfig({
       servers: [

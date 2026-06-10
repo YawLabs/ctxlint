@@ -3,9 +3,93 @@ import * as path from 'node:path';
 import { loadPackageJson, stripBom } from '../../utils/fs.js';
 import type { ParsedContextFile, LintIssue } from '../types.js';
 
-// Match npm/pnpm/yarn/bun run/script commands
-const NPM_SCRIPT_PATTERN = /^(?:npm\s+run|pnpm(?:\s+run)?|yarn(?:\s+run)?|bun(?:\s+run)?)\s+(\S+)/;
-const MAKE_PATTERN = /^make\s+(\S+)/;
+// Match npm/pnpm/yarn/bun script invocations. `run` is required for npm
+// (bare `npm install` is never a script reference), optional for
+// pnpm/yarn/bun. Groups: [1] the non-npm manager, [2] an explicit `run`,
+// [3] the candidate script name — [1] and [2] let scriptNameFromMatch
+// exempt builtin subcommands (`pnpm install`, `yarn add`, ...) from
+// script-name validation.
+const NPM_SCRIPT_PATTERN = /^(?:npm\s+run|(pnpm|yarn|bun)(?:\s+(run))?)\s+(\S+)/;
+const MAKE_PATTERN = /^make\s+\S/;
+
+// Subcommands that are package-manager builtins when invoked WITHOUT an
+// explicit `run` (e.g. `pnpm install`, `yarn dlx foo`, `bun add zod`).
+// These are not package.json script names and must not produce
+// commands/script-not-found. Script-mapped shorthands (`pnpm test`,
+// `yarn build`, ...) are deliberately absent — those DO resolve to
+// scripts and stay validated.
+const PM_BUILTIN_SUBCOMMANDS = new Set([
+  'add',
+  'approve-builds',
+  'audit',
+  'bin',
+  'cache',
+  'ci',
+  'config',
+  'create',
+  'dedupe',
+  'dlx',
+  'doctor',
+  'env',
+  'exec',
+  'fetch',
+  'global',
+  'help',
+  'i',
+  'import',
+  'info',
+  'init',
+  'install',
+  'licenses',
+  'link',
+  'list',
+  'login',
+  'logout',
+  'ls',
+  'node',
+  'npm',
+  'outdated',
+  'pack',
+  'patch',
+  'patch-commit',
+  'prune',
+  'publish',
+  'rebuild',
+  'remove',
+  'rm',
+  'root',
+  'run',
+  'self-update',
+  'set',
+  'setup',
+  'store',
+  'team',
+  'un',
+  'uninstall',
+  'unlink',
+  'up',
+  'update',
+  'upgrade',
+  'version',
+  'whoami',
+  'why',
+  'workspace',
+  'workspaces',
+  'x',
+]);
+
+/**
+ * Resolve the script name from an NPM_SCRIPT_PATTERN match, or null when the
+ * captured token is not actually a script name: a flag (`pnpm -r build` —
+ * the real script is unknowable without parsing pnpm's flag table), or a
+ * package-manager builtin invoked without an explicit `run`.
+ */
+function scriptNameFromMatch(match: RegExpMatchArray): string | null {
+  const [, manager, explicitRun, name] = match;
+  if (name.startsWith('-')) return null;
+  if (manager && !explicitRun && PM_BUILTIN_SUBCOMMANDS.has(name)) return null;
+  return name;
+}
 
 /**
  * Extract the package name from an `npx` command. Walks past leading flags
@@ -45,11 +129,12 @@ const PKG_SHORTHAND_PATTERN =
   /^(npm|pnpm|yarn|bun)\s+(test|start|build|dev|lint|format|check|typecheck|clean|serve|preview|e2e)\b/;
 
 function wouldNeedPackageJson(cmd: string): boolean {
+  // Builtin subcommands / flag-first invocations are never validated, so
+  // they must not trigger the package-json-missing info either.
+  const scriptMatch = cmd.match(NPM_SCRIPT_PATTERN);
+  if (scriptMatch && scriptNameFromMatch(scriptMatch) !== null) return true;
   return (
-    NPM_SCRIPT_PATTERN.test(cmd) ||
-    PKG_SHORTHAND_PATTERN.test(cmd) ||
-    /^npx\b/.test(cmd) ||
-    PKG_DEPENDENT_TOOL_PATTERN.test(cmd)
+    PKG_SHORTHAND_PATTERN.test(cmd) || /^npx\b/.test(cmd) || PKG_DEPENDENT_TOOL_PATTERN.test(cmd)
   );
 }
 
@@ -85,8 +170,8 @@ export async function checkCommands(
     // Check npm/pnpm/yarn script references
     const scriptMatch = cmd.match(NPM_SCRIPT_PATTERN);
     if (scriptMatch && pkgJson) {
-      const scriptName = scriptMatch[1];
-      if (pkgJson.scripts && !(scriptName in pkgJson.scripts)) {
+      const scriptName = scriptNameFromMatch(scriptMatch);
+      if (scriptName && pkgJson.scripts && !(scriptName in pkgJson.scripts)) {
         const available = Object.keys(pkgJson.scripts).join(', ');
         issues.push({
           severity: 'error',
@@ -151,18 +236,8 @@ export async function checkCommands(
     }
 
     // Check Makefile targets
-    const makeMatch = cmd.match(MAKE_PATTERN);
-    if (makeMatch) {
-      const target = makeMatch[1];
-      if (makefile && !hasMakeTarget(makefile, target)) {
-        issues.push({
-          severity: 'error',
-          check: 'commands',
-          ruleId: 'commands/make-target-not-found',
-          line: ref.line,
-          message: `"${cmd}" — target "${target}" not found in Makefile`,
-        });
-      } else if (!makefile) {
+    if (MAKE_PATTERN.test(cmd)) {
+      if (!makefile) {
         issues.push({
           severity: 'error',
           check: 'commands',
@@ -170,6 +245,17 @@ export async function checkCommands(
           line: ref.line,
           message: `"${cmd}" — no Makefile found in project`,
         });
+      } else {
+        const target = extractMakeTarget(cmd);
+        if (target && !hasMakeTarget(makefile, target)) {
+          issues.push({
+            severity: 'error',
+            check: 'commands',
+            ruleId: 'commands/make-target-not-found',
+            line: ref.line,
+            message: `"${cmd}" — target "${target}" not found in Makefile`,
+          });
+        }
       }
       continue;
     }
@@ -213,9 +299,29 @@ function loadMakefile(projectRoot: string): string | null {
   }
 }
 
+/**
+ * Extract the target of a `make` invocation. `NAME=value` overrides are
+ * skipped (they don't consume the next token). Any flag token bails out
+ * entirely: flags like `-C dir` / `-f file` take a value, so the first
+ * non-flag token may be a flag's argument rather than a target — a skipped
+ * validation is safer than reporting a flag (or its value) as missing.
+ */
+function extractMakeTarget(cmd: string): string | null {
+  for (const token of cmd.split(/\s+/).slice(1)) {
+    if (token.startsWith('-')) return null;
+    if (token.includes('=')) continue;
+    return token;
+  }
+  return null;
+}
+
 function hasMakeTarget(makefile: string, target: string): boolean {
-  // Match "target:" at the start of a line (standard Makefile target syntax)
-  // Also matches .PHONY declarations
-  const pattern = new RegExp(`^${target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*:`, 'm');
+  // Match "target:" at the start of a line (standard rule syntax, including
+  // double-colon rules). The (?!:?=) lookahead keeps `target := value` /
+  // `target ::= value` variable assignments from counting as rules. `.PHONY:
+  // target` lines deliberately do NOT count — .PHONY only marks phony-ness;
+  // without its own rule line the target is still unrunnable.
+  const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`^${escaped}\\s*:(?!:?=)`, 'm');
   return pattern.test(makefile);
 }

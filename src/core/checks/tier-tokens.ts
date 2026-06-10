@@ -1,5 +1,7 @@
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
+import { parse as parseJsonc, printParseErrorCode, type ParseError } from 'jsonc-parser';
 import { countTokens } from '../../utils/tokens.js';
 import { stripBom } from '../../utils/fs.js';
 import { DEFAULT_TOKEN_THRESHOLDS, type TokenThresholds } from './tokens.js';
@@ -41,18 +43,20 @@ const TOP_SECTIONS_TO_REPORT = 3;
 
 /**
  * Quick frontmatter probe — returns true if the file has YAML frontmatter
- * containing a non-empty `paths:` field. Path-scoped rules files are
- * on-demand (loaded only when a path matches), so should be excluded from
- * always-loaded accounting.
+ * containing a non-empty list-valued field. `paths:` is the .claude/rules
+ * scoping convention; `globs:` is the Cursor/Windsurf one. Scoped rules
+ * files are on-demand (loaded only when a path matches), so should be
+ * excluded from always-loaded accounting.
  */
-function hasPathsFrontmatter(content: string): boolean {
+function hasFrontmatterList(content: string, field: string): boolean {
   const lines = content.split('\n');
   if (lines[0]?.trim() !== '---') return false;
+  const fieldPattern = new RegExp(`^${field}\\s*:\\s*(.*)$`);
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
     if (line.trim() === '---') return false;
-    // `paths:` can be inline ("paths: '**/*.ts'") or lead a YAML array.
-    const match = line.match(/^paths\s*:\s*(.*)$/);
+    // The field can be inline ("paths: '**/*.ts'") or lead a YAML array.
+    const match = line.match(fieldPattern);
     if (match) {
       const val = match[1].trim();
       if (val && val !== '[]') return true;
@@ -69,6 +73,23 @@ function hasPathsFrontmatter(content: string): boolean {
   return false;
 }
 
+/**
+ * Inline scalar frontmatter field value (e.g. `trigger: glob` -> "glob"),
+ * stripped of surrounding quotes. Null when the frontmatter or field is
+ * absent or the value is empty.
+ */
+function frontmatterScalar(content: string, field: string): string | null {
+  const lines = content.split('\n');
+  if (lines[0]?.trim() !== '---') return null;
+  const fieldPattern = new RegExp(`^${field}\\s*:\\s*(.*)$`);
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === '---') return null;
+    const match = lines[i].match(fieldPattern);
+    if (match) return match[1].trim().replace(/^['"]|['"]$/g, '') || null;
+  }
+  return null;
+}
+
 export function isAlwaysLoaded(file: ParsedContextFile): boolean {
   const rel = file.relativePath.replace(/\\/g, '/');
 
@@ -76,10 +97,20 @@ export function isAlwaysLoaded(file: ParsedContextFile): boolean {
   if (rel.endsWith('.mdc')) return false;
   if (rel.startsWith('.github/instructions/')) return false;
 
-  // Rules directories — check frontmatter. Rules *without* a `paths` field
-  // are always-loaded (per Anthropic docs). With `paths`, they're scoped.
+  // Rules directories — check frontmatter. Rules *without* a scoping field
+  // are always-loaded (per Anthropic docs). Path/glob-scoped rules load on
+  // demand whatever the host: `paths:` is the .claude/rules convention,
+  // `globs:` the Cursor/Windsurf one.
   if (rel.includes('/rules/')) {
-    return !hasPathsFrontmatter(file.content);
+    if (hasFrontmatterList(file.content, 'paths')) return false;
+    if (hasFrontmatterList(file.content, 'globs')) return false;
+    // Windsurf rules carry an explicit activation mode; only always_on loads
+    // every session (glob / manual / model_decision are on-demand).
+    if (rel.includes('.windsurf/rules/')) {
+      const trigger = frontmatterScalar(file.content, 'trigger');
+      if (trigger && trigger.toLowerCase() !== 'always_on') return false;
+    }
+    return true;
   }
 
   const basename = rel.split('/').pop() ?? '';
@@ -140,32 +171,58 @@ interface Settings {
 
 // Cache parsed settings per projectRoot. checkTierTokens runs once PER
 // always-loaded file, so without this the read+parse (and, crucially, the
-// malformed-settings console.warn) would fire N times for one settings.json —
-// a single trailing comma yielded N identical stderr lines. Caching collapses
-// that to one parse + at most one warn per (root, audit run). Mirrors the
-// loadPackageJson cache shape in utils/fs.ts; resettable for tests.
-let settingsCache: { root: string; includeGlobal: boolean; data: Settings[] } | null = null;
+// malformed-settings console.warn) would fire N times for one settings.json.
+// Caching collapses that to one parse + at most one warn per (root, audit
+// run). The cache key includes a stat fingerprint of the candidate files so
+// a long-running process (MCP server, --watch) that edits settings.json
+// between audits is never served pre-edit results — without it, adding the
+// suggested deny entry and re-auditing in the same session would still
+// report hard-enforcement-missing. Resettable for tests.
+let settingsCache: {
+  root: string;
+  includeGlobal: boolean;
+  fingerprint: string;
+  data: Settings[];
+} | null = null;
+
+function fingerprintFiles(paths: string[]): string {
+  return paths
+    .map((p) => {
+      try {
+        const st = fs.statSync(p);
+        return `${st.mtimeMs}:${st.size}`;
+      } catch {
+        return 'absent';
+      }
+    })
+    .join('|');
+}
 
 function loadSettingsSources(projectRoot: string, includeGlobal: boolean): Settings[] {
-  if (settingsCache?.root === projectRoot && settingsCache.includeGlobal === includeGlobal) {
-    return settingsCache.data;
-  }
-
-  const sources: Settings[] = [];
   const candidates = [
     path.join(projectRoot, '.claude', 'settings.json'),
     path.join(projectRoot, '.claude', 'settings.local.json'),
   ];
   // The user-global ~/.claude/settings.json is opt-in (includeGlobal), mirroring
-  // hook-coverage's --hooks-global gate. On a default project-scoped run we do
-  // NOT consult personal global settings, so a teammate's private deny/hook
-  // can't silently suppress a hard-enforcement-missing finding that wouldn't
-  // reproduce for anyone else.
+  // hook-coverage's --hooks-global gate and its os.homedir() resolution (the
+  // two checks must agree on which file "the user-global settings" means). On
+  // a default project-scoped run we do NOT consult personal global settings,
+  // so a teammate's private deny/hook can't silently suppress a
+  // hard-enforcement-missing finding that wouldn't reproduce for anyone else.
   if (includeGlobal) {
-    candidates.push(
-      path.join(process.env.HOME || process.env.USERPROFILE || '', '.claude', 'settings.json'),
-    );
+    candidates.push(path.join(os.homedir(), '.claude', 'settings.json'));
   }
+
+  const fingerprint = fingerprintFiles(candidates);
+  if (
+    settingsCache?.root === projectRoot &&
+    settingsCache.includeGlobal === includeGlobal &&
+    settingsCache.fingerprint === fingerprint
+  ) {
+    return settingsCache.data;
+  }
+
+  const sources: Settings[] = [];
   for (const p of candidates) {
     let content: string;
     try {
@@ -174,16 +231,23 @@ function loadSettingsSources(projectRoot: string, includeGlobal: boolean): Setti
       // Missing file is expected — not every repo has .claude/settings.json.
       continue;
     }
-    try {
-      sources.push(JSON.parse(content) as Settings);
-    } catch (err) {
-      // Malformed settings silently skipped would mean tier-tokens reports
-      // "no hook enforcement" even when there is one — user just has a
-      // trailing comma. Surface the parse failure on stderr so it's fixable.
-      console.warn(`ctxlint: could not parse ${p}: ${(err as Error).message}`);
+    // Parse with the same leniency hook-coverage uses (jsonc, trailing commas
+    // allowed) so the two settings consumers never disagree about whether the
+    // same file is readable. Genuinely malformed settings silently skipped
+    // would mean tier-tokens reports "no hook enforcement" even when there is
+    // one — surface the parse failure on stderr so it's fixable.
+    const errors: ParseError[] = [];
+    const data = parseJsonc(content, errors, { allowTrailingComma: true }) as Settings | undefined;
+    if (errors.length > 0) {
+      console.warn(
+        `ctxlint: could not parse ${p}: ${printParseErrorCode(errors[0].error)} at offset ${errors[0].offset}`,
+      );
+      continue;
     }
+    if (!data || typeof data !== 'object') continue;
+    sources.push(data);
   }
-  settingsCache = { root: projectRoot, includeGlobal, data: sources };
+  settingsCache = { root: projectRoot, includeGlobal, fingerprint, data: sources };
   return sources;
 }
 
@@ -245,7 +309,10 @@ function buildCommandPattern(cmd: string): RegExp {
 function commandIsEnforced(cmd: string, settings: Settings[]): boolean {
   const pattern = buildCommandPattern(cmd);
   for (const s of settings) {
-    for (const entry of s.permissions?.deny ?? []) {
+    // deny physically blocks; ask gates behind a human prompt. Both are
+    // non-advisory (the agent can't just proceed), so both count as
+    // enforcement — ask is the weaker form but still a hard gate.
+    for (const entry of [...(s.permissions?.deny ?? []), ...(s.permissions?.ask ?? [])]) {
       if (pattern.test(entry)) return true;
     }
     for (const h of s.hooks?.PreToolUse ?? []) {
@@ -271,13 +338,20 @@ function checkHardEnforcement(file: ParsedContextFile, settings: Settings[]): Li
     const cmd = canonicalizeCommand(match[2]);
     if (!cmd) continue;
     if (commandIsEnforced(cmd, settings)) continue;
+    // Blocking only makes sense for prohibitive framing (NEVER / DO NOT /
+    // MUST NOT). An ALWAYS rule wants the inverse: a hook that runs or
+    // verifies the command, not one that denies it.
+    const suggestion =
+      match[1].toUpperCase() === 'ALWAYS'
+        ? `Rules in always-loaded files are advisory. For \`${cmd}\`, add a hook in .claude/settings.json (e.g. a PreToolUse or Stop hook that runs or verifies \`${cmd}\`) so the requirement doesn't depend on the agent remembering.`
+        : `Rules in always-loaded files are advisory. For \`${cmd}\`, add a PreToolUse hook (or permissions.deny entry) in .claude/settings.json so the command is physically blocked.`;
     issues.push({
       severity: 'info',
       check: 'tier-tokens',
       ruleId: 'tier-tokens/hard-enforcement-missing',
       line: i + 1,
       message: `Inviolable framing ("${line.trim().slice(0, 80)}") without a hook to back it up`,
-      suggestion: `Rules in always-loaded files are advisory. For \`${cmd}\`, add a PreToolUse hook (or permissions.deny entry) in .claude/settings.json so the command is physically blocked.`,
+      suggestion,
     });
   }
   return issues;

@@ -54,7 +54,18 @@ function extractSecretName(display: string): string | undefined {
     if (!tok.startsWith('-')) return tok;
     // A flag: if it carries a value (and isn't written as `--flag=value`),
     // skip the following token too.
-    if (VALUE_FLAGS.has(tok) && !tok.includes('=')) i++;
+    if (VALUE_FLAGS.has(tok) && !tok.includes('=')) {
+      i++;
+      // A quoted value may span multiple whitespace-split tokens
+      // (`-b "two words" NAME`). Consume through the token carrying the
+      // closing quote so the NAME hunt resumes after the full value instead
+      // of returning a fragment like `words"` as the secret name.
+      const val = tokens[i];
+      const quote = val && (val[0] === '"' || val[0] === "'") ? val[0] : undefined;
+      if (quote && !(val.length > 1 && val.endsWith(quote))) {
+        while (i + 1 < tokens.length && !tokens[i].endsWith(quote)) i++;
+      }
+    }
   }
   return undefined;
 }
@@ -134,7 +145,13 @@ export async function checkMissingSecret(ctx: SessionContext): Promise<LintIssue
   for (const s of secrets) {
     if (!byName.has(s.name)) byName.set(s.name, { projects: new Set(), repos: new Set() });
     const bucket = byName.get(s.name)!;
-    bucket.projects.add(s.project);
+    // A project-less history entry (Codex CLI occasionally writes neither
+    // `project` nor `cwd`; the scanner keeps those with project '') must not
+    // be path-matched: normalizePath('') resolves to the linter's cwd, which
+    // IS the current project in the dominant `ctxlint .` usage, so a
+    // project-less `gh secret set` would read as "current project has the
+    // secret" and suppress a real finding. Its --repo spec still binds.
+    if (s.project) bucket.projects.add(s.project);
     if (s.repo) bucket.repos.add(s.repo);
   }
 

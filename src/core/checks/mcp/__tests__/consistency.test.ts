@@ -73,6 +73,28 @@ describe('checkMcpConsistency', () => {
     expect(issues.filter((i) => i.message.includes('configured differently'))).toHaveLength(0);
   });
 
+  it('does not flag a cross-scope difference (project overrides user is precedence, not drift)', async () => {
+    const configs = [
+      makeConfig({
+        relativePath: '.mcp.json',
+        scope: 'project',
+        servers: [
+          { name: 'api', transport: 'http', url: 'https://v1.example.com/mcp', line: 3, raw: {} },
+        ],
+      }),
+      makeConfig({
+        filePath: '/home/user/.claude.json',
+        relativePath: '.claude.json',
+        scope: 'user',
+        servers: [
+          { name: 'api', transport: 'http', url: 'https://v2.example.com/mcp', line: 3, raw: {} },
+        ],
+      }),
+    ];
+    const issues = await checkMcpConsistency(configs);
+    expect(issues.filter((i) => i.message.includes('configured differently'))).toHaveLength(0);
+  });
+
   it('flags server in .mcp.json but missing from .cursor/mcp.json', async () => {
     const configs = [
       makeConfig({
