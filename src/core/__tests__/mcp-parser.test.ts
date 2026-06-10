@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { parseMcpConfig } from '../mcp-parser.js';
+import { classifyGitTrackedError, parseMcpConfig } from '../mcp-parser.js';
 import type { DiscoveredFile } from '../scanner.js';
 
 const FIXTURES = path.resolve(__dirname, '../../../fixtures/mcp-configs');
@@ -272,5 +272,32 @@ describe('parseMcpConfig', () => {
     const config = await parseMcpConfig(file, tmpDir, 'project');
     expect(config.servers).toHaveLength(1);
     expect(config.servers[0].oauth).toBeUndefined();
+  });
+
+  it('marks a non-repo config untracked without the unknown flag', async () => {
+    // No .git in tmpDir: tracking is DETERMINED absent, not unanswerable.
+    const file = writeTmp(JSON.stringify({ mcpServers: {} }));
+    const config = await parseMcpConfig(file, tmpDir, 'project');
+    expect(config.isGitTracked).toBe(false);
+    expect(config.gitTrackedUnknown).toBeUndefined();
+  });
+});
+
+describe('classifyGitTrackedError', () => {
+  it('classifies the two determined-untracked shapes', () => {
+    expect(
+      classifyGitTrackedError("error: pathspec '.mcp.json' did not match any file(s) known to git"),
+    ).toBe('untracked');
+    expect(
+      classifyGitTrackedError('fatal: not a git repository (or any of the parent directories)'),
+    ).toBe('untracked');
+  });
+
+  it('classifies everything else as unknown', () => {
+    expect(classifyGitTrackedError('spawn git ENOENT')).toBe('unknown');
+    expect(classifyGitTrackedError('fatal: detected dubious ownership in repository')).toBe(
+      'unknown',
+    );
+    expect(classifyGitTrackedError('')).toBe('unknown');
   });
 });

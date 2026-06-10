@@ -17,7 +17,7 @@ export async function parseMcpConfig(
   const content = readFileContent(file.absolutePath);
   const client = detectClient(file.relativePath);
   const expectedRootKey = client === 'vscode' ? 'servers' : 'mcpServers';
-  const isGitTracked = await checkGitTracked(file.absolutePath, projectRoot);
+  const gitTracked = await checkGitTracked(file.absolutePath, projectRoot);
 
   const result: ParsedMcpConfig = {
     filePath: file.absolutePath,
@@ -29,7 +29,8 @@ export async function parseMcpConfig(
     servers: [],
     parseErrors: [],
     content,
-    isGitTracked,
+    isGitTracked: gitTracked === 'tracked',
+    ...(gitTracked === 'unknown' ? { gitTrackedUnknown: true } : {}),
   };
 
   // Parse JSON
@@ -305,12 +306,28 @@ function decodeJsonKey(raw: string): string {
   }
 }
 
-async function checkGitTracked(filePath: string, projectRoot: string): Promise<boolean> {
+export type GitTrackedStatus = 'tracked' | 'untracked' | 'unknown';
+
+/**
+ * Distinguishes "git answered: not tracked" from "git could not answer".
+ * `ls-files --error-unmatch` exits 1 with a pathspec message for untracked
+ * files, and a repo-less directory has no tracking at all -- both are
+ * DETERMINED untracked. Anything else (git binary missing, permissions,
+ * timeouts) is 'unknown': the secret rules still skip, but the caller can
+ * surface that the gate was skipped blind rather than answered.
+ */
+export function classifyGitTrackedError(message: string): 'untracked' | 'unknown' {
+  if (/did not match any file/i.test(message)) return 'untracked';
+  if (/not a git repository/i.test(message)) return 'untracked';
+  return 'unknown';
+}
+
+async function checkGitTracked(filePath: string, projectRoot: string): Promise<GitTrackedStatus> {
   try {
     const git = getGit(projectRoot);
     const result = await git.raw(['ls-files', '--error-unmatch', filePath]);
-    return result.trim().length > 0;
-  } catch {
-    return false;
+    return result.trim().length > 0 ? 'tracked' : 'untracked';
+  } catch (err) {
+    return classifyGitTrackedError(err instanceof Error ? err.message : String(err));
   }
 }

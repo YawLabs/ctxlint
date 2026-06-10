@@ -289,7 +289,7 @@ function validateWindsurfRule(file: ParsedContextFile): LintIssue[] {
       ruleId: 'frontmatter/missing',
       line: 1,
       message: 'Windsurf rule file has no frontmatter',
-      suggestion: 'Add YAML frontmatter with a trigger field (always_on, glob, manual, model)',
+      suggestion: `Add YAML frontmatter with a trigger field (${VALID_WINDSURF_TRIGGERS.join(', ')})`,
     });
     return issues;
   }

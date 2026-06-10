@@ -201,7 +201,13 @@ function extractPathReferences(lines: string[], sections: Section[]): PathRefere
 }
 
 function isExampleCodeBlock(lang: string): boolean {
-  // These languages likely contain example code, not file path references
+  // These languages likely contain example code, not file path references.
+  // Unlabeled ('') fences are deliberately NOT in this list: bare fences in
+  // context files commonly hold file trees and config layouts whose paths
+  // users want validated. This diverges from the skills pillar
+  // (checks/skills.ts checkBrokenRefs), which SKIPS bare fences -- there a
+  // bare fence is usually a usage example, and a broken-ref error on
+  // illustrative text is noise. Same primitive, different base rates.
   return [
     'javascript',
     'js',

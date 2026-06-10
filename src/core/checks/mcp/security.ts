@@ -98,6 +98,20 @@ export async function checkMcpSecurity(
   // tracking, and runs unconditionally below.
   const checkSecrets = config.isGitTracked;
 
+  // When tracking could not be DETERMINED (git unavailable/failing, distinct
+  // from a determined "untracked"), the gate above skipped blind -- say so at
+  // info severity instead of silently passing a possibly-tracked file.
+  if (!checkSecrets && config.gitTrackedUnknown) {
+    issues.push({
+      severity: 'info',
+      check: 'mcp-security',
+      ruleId: 'mcp-security/secret-scan-skipped',
+      line: 1,
+      message: `Could not determine git-tracked status of ${config.relativePath}; hardcoded-secret rules were skipped`,
+      suggestion: 'Verify git is available and the file is not tracked, or re-run inside the repository',
+    });
+  }
+
   for (const server of config.servers) {
     // Check headers for hardcoded bearer tokens
     if (checkSecrets && server.headers) {

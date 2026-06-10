@@ -16,7 +16,7 @@ This specification defines a standard set of lint rules for validating MCP serve
 
 The specification includes:
 - A complete reference of MCP config file locations, formats, and client-specific behaviors
-- 28 lint rules organized into 8 categories with defined severities
+- 29 lint rules organized into 8 categories with defined severities
 - A machine-readable rule catalog ([`mcp-config-lint-rules.json`](./mcp-config-lint-rules.json))
 - Auto-fix definitions for rules that support automated correction
 
@@ -199,7 +199,7 @@ Without this wrapper, the subprocess fails to spawn. This is the most common Win
 
 ## 2. Lint Rules
 
-28 rules organized into 8 categories. Each rule has a unique ID, severity level, trigger condition, and message template.
+29 rules organized into 8 categories. Each rule has a unique ID, severity level, trigger condition, and message template.
 
 Severity levels:
 - **error** — the config is broken or has a security issue. Should fail CI.
@@ -226,19 +226,22 @@ Validates that the config file is well-formed JSON with the correct structure fo
 
 ### 2.2 mcp-security — hardcoded secrets
 
-Detects secrets committed to version control in MCP config files. The three secret rules (`hardcoded-bearer`, `hardcoded-api-key`, `secret-in-url`) only flag issues in git-tracked files — an untracked config leaks nothing to teammates. `mcp-security/http-no-tls` is a transport concern, independent of version control, and fires regardless of git tracking.
+Detects secrets committed to version control in MCP config files. The three secret rules (`hardcoded-bearer`, `hardcoded-api-key`, `secret-in-url`) only flag issues in git-tracked files — an untracked config leaks nothing to teammates. `mcp-security/http-no-tls` is a transport concern, independent of version control, and fires regardless of git tracking. When the tracked status cannot be determined at all (git unavailable or failing, as opposed to a determined "untracked"), the linter says so via `mcp-security/secret-scan-skipped` instead of silently passing a possibly-tracked file.
 
 | Rule ID | Severity | Trigger | Message |
 |---|---|---|---|
 | `mcp-security/hardcoded-bearer` | error | `Authorization` header contains a literal Bearer token (not an env var reference) in a git-tracked file | `Server "{name}" has a hardcoded Bearer token in a git-tracked file` |
 | `mcp-security/hardcoded-api-key` | error | Header or env value matches known API key patterns (or the high-entropy heuristic below) in a git-tracked file | `Server "{name}" has a hardcoded API key in a git-tracked file` |
 | `mcp-security/secret-in-url` | error | URL contains query params that look like secrets (`?key=`, `?token=`, `?api_key=`) in a git-tracked file | `Server "{name}" has a secret in the URL query string` |
+| `mcp-security/secret-scan-skipped` | info | Git-tracked status could not be determined (git unavailable/failing — not merely untracked), so the three git-gated secret rules were skipped | `Could not determine git-tracked status of {file}; hardcoded-secret rules were skipped` |
 | `mcp-security/http-no-tls` | warning | URL uses `http://` for a non-loopback target (loopback = `localhost`, `[::1]`, `127.0.0.0/8`) | `Server "{name}" uses HTTP without TLS` |
 
 **Known API key patterns:**
 ```
 sk-ant-[A-Za-z0-9_-]{20,}      # Anthropic
-sk-(proj-)?[A-Za-z0-9_-]{20,}  # OpenAI (classic or project-scoped) / generic
+sk-proj-[A-Za-z0-9_-]{20,}     # OpenAI project-scoped
+sk-[a-zA-Z0-9]{20,}            # OpenAI classic / generic (alphanumeric-only:
+                               # [-_] would swallow kebab-case identifiers)
 ghp_[a-zA-Z0-9]{36}            # GitHub personal access token
 ghu_[a-zA-Z0-9]{36}            # GitHub user token
 github_pat_[a-zA-Z0-9_]{80,}   # GitHub fine-grained PAT

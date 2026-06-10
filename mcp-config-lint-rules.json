@@ -207,6 +207,19 @@
       "stability": "stable"
     },
     {
+      "id": "mcp-security/secret-scan-skipped",
+      "category": "mcp-security",
+      "severity": "info",
+      "description": "Git-tracked status of the config file could not be determined, so the git-gated secret rules were skipped without an answer.",
+      "trigger": "git ls-files fails for a reason other than \"untracked\" or \"not a repository\" (git unavailable, permissions, timeout). A determined \"untracked\" does not fire this rule.",
+      "message": "Could not determine git-tracked status of {file}; hardcoded-secret rules were skipped",
+      "fixable": false,
+      "clients": [
+        "all"
+      ],
+      "stability": "experimental"
+    },
+    {
       "id": "mcp-security/http-no-tls",
       "category": "mcp-security",
       "severity": "warning",

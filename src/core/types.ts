@@ -186,6 +186,13 @@ export interface ParsedMcpConfig {
   parseErrors: string[];
   content: string;
   isGitTracked: boolean;
+  /**
+   * True when git-tracked status could not be determined (git unavailable or
+   * failing -- NOT merely untracked). isGitTracked is false in that case, so
+   * the git-gated secret rules skip; this flag lets mcp-security surface that
+   * the gate was skipped blind. Optional so test fixtures stay unchanged.
+   */
+  gitTrackedUnknown?: boolean;
 }
 
 export interface Section {

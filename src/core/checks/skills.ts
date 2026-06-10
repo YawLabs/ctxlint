@@ -158,7 +158,9 @@ function checkBrokenRefs(file: SkillFile, fmEndLine: number): LintIssue[] {
     // Unlabeled ``` fences are skipped too: a bare fence is the most common
     // way authors paste shell snippets, so a `./run.sh 1.2.3` inside one is
     // an invocation example, not a skill-relative path. Matches the rule's
-    // "prefer a false negative over a false positive" posture.
+    // "prefer a false negative over a false positive" posture. The context
+    // parser (parser.ts isExampleCodeBlock) deliberately diverges -- it DOES
+    // extract from bare fences, where file trees and config layouts dominate.
     if (inCode && (codeLang === '' || isExampleLang(codeLang))) continue;
 
     BODY_PATH.lastIndex = 0;

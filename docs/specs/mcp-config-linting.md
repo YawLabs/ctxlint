@@ -358,12 +358,15 @@ This is the highest-value check. People routinely commit API keys in MCP configs
 | `hardcoded-bearer` | error | `headers` contains `Authorization: Bearer <literal>` (not `${...}`) in a git-tracked file | `Server "{name}" has a hardcoded Bearer token in a git-tracked file` |
 | `hardcoded-api-key` | error | `headers` or `env` values match known API key patterns in a git-tracked file | `Server "{name}" has a hardcoded API key in a git-tracked file` |
 | `secret-in-url` | error | URL contains query params that look like keys (`?key=`, `?token=`, `?api_key=`) in a git-tracked file | `Server "{name}" has a secret in the URL query string` |
+| `secret-scan-skipped` | info | Git-tracked status could not be determined (git unavailable/failing — not merely untracked), so the three git-gated secret rules were skipped | `Could not determine git-tracked status of {file}; hardcoded-secret rules were skipped` |
 | `http-no-tls` | warning | URL uses `http://` for non-loopback targets (loopback = `localhost`, `[::1]`, `127.0.0.0/8` — see `loopback.ts`) | `Server "{name}" uses HTTP without TLS` |
 
 **API key detection patterns** (known prefixes + name-gated high entropy):
 ```
 sk-ant-[A-Za-z0-9_-]{20,}    # Anthropic
-sk-(proj-)?[A-Za-z0-9_-]{20,} # OpenAI (classic or project-scoped) / generic
+sk-proj-[A-Za-z0-9_-]{20,}   # OpenAI project-scoped
+sk-[a-zA-Z0-9]{20,}          # OpenAI classic / generic (alphanumeric-only:
+                             # [-_] would swallow kebab-case identifiers)
 ghp_[a-zA-Z0-9]{36}          # GitHub PAT
 ghu_[a-zA-Z0-9]{36}          # GitHub user token
 github_pat_[a-zA-Z0-9_]{80,} # GitHub fine-grained PAT

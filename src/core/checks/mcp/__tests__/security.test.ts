@@ -314,6 +314,38 @@ describe('checkMcpSecurity', () => {
     expect(issues).toHaveLength(0);
   });
 
+  it('reports secret-scan-skipped at info when tracking is unknown', async () => {
+    // gitTrackedUnknown means git could not ANSWER (unavailable/failing),
+    // distinct from the determined-untracked case above, which stays silent.
+    const config = makeConfig({
+      isGitTracked: false,
+      gitTrackedUnknown: true,
+      servers: [
+        {
+          name: 'api',
+          transport: 'http',
+          url: 'https://api.example.com/mcp',
+          headers: {
+            Authorization: 'Bearer sk-proj-abcdefghijklmnopqrstuvwxyz1234567890',
+          },
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    expect(issues).toHaveLength(1);
+    expect(issues[0].ruleId).toBe('mcp-security/secret-scan-skipped');
+    expect(issues[0].severity).toBe('info');
+    expect(issues[0].message).toContain('.mcp.json');
+  });
+
+  it('does not report secret-scan-skipped for determined-untracked or tracked files', async () => {
+    const untracked = await checkMcpSecurity(makeConfig({ isGitTracked: false }), '/project');
+    const tracked = await checkMcpSecurity(makeConfig({ isGitTracked: true }), '/project');
+    expect([...untracked, ...tracked]).toHaveLength(0);
+  });
+
   it('still flags HTTP without TLS in non-git-tracked files', async () => {
     // http-no-tls is a transport concern, not a committed-secret concern --
     // tracking status gates only the secret rules.
