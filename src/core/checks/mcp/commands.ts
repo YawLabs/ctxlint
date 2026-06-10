@@ -40,8 +40,12 @@ export async function checkMcpCommands(
       });
     }
 
-    // command-not-found: local path commands
-    if (LOCAL_PATH_PATTERN.test(server.command)) {
+    // command-not-found: local path commands. Project scope only -- the
+    // command is always relative here (LOCAL_PATH_PATTERN), and a user/global
+    // config's relative paths resolve against that client's own working
+    // directory, not this project's root, so resolving them here produces
+    // spurious misses (same rationale as args-path-missing below).
+    if (config.scope === 'project' && LOCAL_PATH_PATTERN.test(server.command)) {
       const resolved = path.resolve(projectRoot, server.command);
       if (!fileExistsSafe(resolved)) {
         issues.push({
@@ -54,25 +58,26 @@ export async function checkMcpCommands(
       }
     }
 
-    // args-path-missing: check args that look like file paths. Project scope
-    // only -- a user/global config's relative paths resolve against that
-    // client's own working directory, not this project's root, so resolving
-    // them here produces spurious misses.
-    if (server.args && config.scope === 'project') {
+    // args-path-missing: check args that look like file paths. Relative paths
+    // are project scope only -- a user/global config's relative paths resolve
+    // against that client's own working directory, not this project's root,
+    // so resolving them here produces spurious misses. Absolute paths are
+    // cwd-independent, so they get the existence check at every scope.
+    if (server.args) {
       for (const arg of server.args) {
         // Skip URLs — they match FILE_PATH_PATTERN but aren't local refs.
         if (URL_PREFIX.test(arg)) continue;
-        if (LOCAL_PATH_PATTERN.test(arg) || FILE_PATH_PATTERN.test(arg)) {
-          const resolved = path.resolve(projectRoot, arg);
-          if (!fileExistsSafe(resolved)) {
-            issues.push({
-              severity: 'warning',
-              check: 'mcp-commands',
-              ruleId: 'mcp-commands/args-path-missing',
-              line: server.line,
-              message: `Server "${server.name}": arg "${arg}" looks like a file path but doesn't exist`,
-            });
-          }
+        if (!LOCAL_PATH_PATTERN.test(arg) && !FILE_PATH_PATTERN.test(arg)) continue;
+        if (config.scope !== 'project' && !path.isAbsolute(arg)) continue;
+        const resolved = path.resolve(projectRoot, arg);
+        if (!fileExistsSafe(resolved)) {
+          issues.push({
+            severity: 'warning',
+            check: 'mcp-commands',
+            ruleId: 'mcp-commands/args-path-missing',
+            line: server.line,
+            message: `Server "${server.name}": arg "${arg}" looks like a file path but doesn't exist`,
+          });
         }
       }
     }

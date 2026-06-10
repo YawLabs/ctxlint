@@ -465,10 +465,15 @@ npx @yawlabs/ctxlint@${VERSION} --strict
  * Prompt the user for a yes/no answer on a TTY. Defaults to no if the response
  * is anything other than an affirmative ('y' / 'yes', case-insensitive). Only
  * called when process.stdout.isTTY is true.
+ *
+ * The prompt is written to stderr: in json/sarif mode stdout must carry ONLY
+ * the payload (the invariant the `machineFormat` routing above enforces), and
+ * a TTY renders stderr inline so text mode loses nothing. Exported because
+ * the prompt path needs a TTY stdout that spawned e2e tests can't fake.
  */
-async function promptYesNo(question: string): Promise<boolean> {
+export async function promptYesNo(question: string): Promise<boolean> {
   const { createInterface } = await import('node:readline/promises');
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
   try {
     const answer = await rl.question(question);
     return /^\s*y(es)?\s*$/i.test(answer);

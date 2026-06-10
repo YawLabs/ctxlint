@@ -89,6 +89,52 @@ describe('checkMcpSecurity', () => {
     expect(issues.find((i) => i.ruleId === 'mcp-security/hardcoded-api-key')).toBeDefined();
   });
 
+  it('does not flag kebab-case identifiers starting with sk-', async () => {
+    // Neither value is a secret, and neither name carries a
+    // SECRET_NAME_KEYWORDS hit, so only the generic sk- pattern could fire --
+    // and a false positive here triggers the destructive env-var autofix.
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'service',
+          transport: 'stdio',
+          command: 'npx',
+          env: {
+            DEPLOY_CHANNEL: 'sk-canary-deployment-2026',
+            DOCS_URL: 'https://example.com/sk-some-long-path-name-here',
+          },
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    expect(issues.filter((i) => i.ruleId === 'mcp-security/hardcoded-api-key')).toHaveLength(0);
+  });
+
+  it('flags classic alphanumeric sk- key in env (known-pattern path)', async () => {
+    // "OPENAI" carries no SECRET_NAME_KEYWORDS hit, so only the generic
+    // sk-[a-zA-Z0-9]{20,} pattern can catch this.
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'openai',
+          transport: 'stdio',
+          command: 'npx',
+          env: {
+            OPENAI: 'sk-abcdefghijklmnopqrstuvwxyz123456',
+          },
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    const apiKey = issues.find((i) => i.ruleId === 'mcp-security/hardcoded-api-key');
+    expect(apiKey).toBeDefined();
+    expect(apiKey!.severity).toBe('error');
+  });
+
   it('does not flag a value merely containing "sk-" mid-word', async () => {
     const config = makeConfig({
       servers: [

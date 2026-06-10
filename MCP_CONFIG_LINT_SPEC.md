@@ -261,8 +261,8 @@ Validates that stdio server commands and file-path arguments are viable.
 | Rule ID | Severity | Trigger | Message |
 |---|---|---|---|
 | `mcp-commands/windows-npx-no-wrapper` | error | Platform is Windows and `command` is `npx` without `cmd /c` wrapper | `Server "{name}": npx requires "cmd /c" wrapper on Windows` |
-| `mcp-commands/command-not-found` | warning | `command` is a relative path (`./`, `../`) that doesn't exist | `Server "{name}": command "{command}" not found` |
-| `mcp-commands/args-path-missing` | warning | An arg matches a file path pattern and the file doesn't exist (project-scope configs only) | `Server "{name}": arg "{arg}" looks like a file path but doesn't exist` |
+| `mcp-commands/command-not-found` | warning | `command` is a relative path (`./`, `../`) that doesn't exist (project-scope configs only) | `Server "{name}": command "{command}" not found` |
+| `mcp-commands/args-path-missing` | warning | An arg matches a file path pattern and the file doesn't exist (relative paths: project-scope configs only; absolute paths: every scope) | `Server "{name}": arg "{arg}" looks like a file path but doesn't exist` |
 
 **Notes:**
 - `windows-npx-no-wrapper` should only flag project-level configs, not global configs (the user may be developing cross-platform).
@@ -327,7 +327,7 @@ Compares MCP configs across multiple files in the same project. This is a cross-
 
 | Rule ID | Severity | Trigger | Message |
 |---|---|---|---|
-| `mcp-consistency/same-server-different-config` | warning | Server with the same name exists in 2+ config files with different URLs or commands | `Server "{name}" is configured differently in {file1} and {file2}` |
+| `mcp-consistency/same-server-different-config` | warning | Server with the same name exists in 2+ same-scope config files (project-project or user-user) with different URLs or commands — cross-scope pairs are client precedence, not drift | `Server "{name}" is configured differently in {file1} and {file2}` |
 | `mcp-consistency/duplicate-server-name` | warning | Same server name appears more than once in a single file | `Duplicate server name "{name}" in {file} — only the last definition is used` |
 | `mcp-consistency/missing-from-client` | info | Server exists in `.mcp.json` but is absent from another client's project config that also exists | `Server "{name}" is in .mcp.json but missing from {file}` |
 

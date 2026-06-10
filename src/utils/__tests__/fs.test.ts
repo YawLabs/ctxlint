@@ -270,6 +270,22 @@ describe('getAllProjectFiles', () => {
     expect(files.some((f) => f.startsWith('vendor/'))).toBe(false);
   });
 
+  it('skips a .git FILE (worktree / submodule gitlink) at any walk depth', () => {
+    // `.git` is a plain file -- not a directory -- at the root of git-worktree
+    // checkouts and at `<submodule>/.git` inside any repo with submodules.
+    fs.writeFileSync(path.join(tmpDir, '.git'), 'gitdir: ../repo/.git/worktrees/wt');
+    fs.mkdirSync(path.join(tmpDir, 'sub'));
+    fs.writeFileSync(path.join(tmpDir, 'sub', '.git'), 'gitdir: ../../.git/modules/sub');
+    fs.writeFileSync(path.join(tmpDir, 'real.txt'), 'x');
+    fs.writeFileSync(path.join(tmpDir, 'sub', 'inside.txt'), 'x');
+
+    const files = getAllProjectFiles(tmpDir).map((p) => p.replace(/\\/g, '/'));
+    expect(files).toContain('real.txt');
+    expect(files).toContain('sub/inside.txt');
+    expect(files).not.toContain('.git');
+    expect(files).not.toContain('sub/.git');
+  });
+
   it('includes a symlink-to-file as a project file (when OS permits creation)', () => {
     const target = path.join(tmpDir, 'target.txt');
     fs.writeFileSync(target, 'x');

@@ -163,6 +163,63 @@ describe('findRenames (real git mv, unscoped rename match)', { timeout: 30000 },
     expect(r.newPath).toBe('src/bär.txt');
   });
 
+  // git log --name-status emits repo-ROOT-relative paths no matter where it
+  // runs from, so findRenames must relativize its target into that
+  // coordinate space; these pin the caller shapes that used to silently
+  // return null (projectRoot below the repo root, absolute targets) and the
+  // bare-filename fallback that relativization must not drop.
+  it('finds a rename when projectRoot is a subdirectory of the git repo', async () => {
+    await commit('add', [{ rel: 'pkg/src/old.ts', body: 'a\nb\nc\nd\ne\n' }]);
+    const git = simpleGit(realTmpDir);
+    await git.mv('pkg/src/old.ts', 'pkg/src/new.ts');
+    await git.commit('rename old -> new');
+
+    resetGit();
+    const result = await findRenames(path.join(realTmpDir, 'pkg'), 'src/old.ts');
+    expect(result).toMatchObject({
+      oldPath: 'pkg/src/old.ts',
+      newPath: 'pkg/src/new.ts',
+    });
+  });
+
+  it('finds a rename for an absolute target inside the root (the validate_path input shape)', async () => {
+    await commit('add', [{ rel: 'src/old.ts', body: 'a\nb\nc\nd\ne\n' }]);
+    const git = simpleGit(realTmpDir);
+    await git.mv('src/old.ts', 'src/new.ts');
+    await git.commit('rename old -> new');
+
+    const absolute = path.join(realTmpDir, 'src', 'old.ts');
+    const result = await findRenames(realTmpDir, absolute);
+    expect(result).toMatchObject({ oldPath: 'src/old.ts', newPath: 'src/new.ts' });
+  });
+
+  it('keeps the bare-filename basename fallback through findRenames', async () => {
+    await commit('add', [{ rel: 'src/lib/old.ts', body: 'a\nb\nc\nd\ne\n' }]);
+    const git = simpleGit(realTmpDir);
+    await git.mv('src/lib/old.ts', 'src/lib/new.ts');
+    await git.commit('rename old -> new');
+
+    const result = await findRenames(realTmpDir, 'old.ts');
+    expect(result).toMatchObject({ oldPath: 'src/lib/old.ts', newPath: 'src/lib/new.ts' });
+  });
+
+  it('keeps the bare-filename fallback when projectRoot is a repo subdirectory', async () => {
+    // Relativization turns the bare `old.ts` into the pathed `pkg/old.ts`,
+    // which matches nothing exactly; the retry with the caller's bare form
+    // must still rescue it via the basename fallback.
+    await commit('add', [{ rel: 'pkg/src/lib/old.ts', body: 'a\nb\nc\nd\ne\n' }]);
+    const git = simpleGit(realTmpDir);
+    await git.mv('pkg/src/lib/old.ts', 'pkg/src/lib/new.ts');
+    await git.commit('rename old -> new');
+
+    resetGit();
+    const result = await findRenames(path.join(realTmpDir, 'pkg'), 'old.ts');
+    expect(result).toMatchObject({
+      oldPath: 'pkg/src/lib/old.ts',
+      newPath: 'pkg/src/lib/new.ts',
+    });
+  });
+
   it('detects a rename with content modification (sub-100 similarity score)', async () => {
     // Enough lines that an edit in the same commit keeps similarity above
     // git's 50% rename-detection threshold while dropping it below 100.
@@ -372,6 +429,29 @@ describe('parseRenameLog', () => {
       `R100\tsrc/lib/old.ts\tsrc/lib/earlier.ts\n`;
     expect(parseRenameLog(raw, 'old.ts')).toMatchObject({ newPath: 'src/lib/newer.ts' });
   });
+
+  // Windows filesystems are case-insensitive: a dir-case-mismatched doc ref
+  // (SRC/old.ts for git's src/old.ts) resolves on disk, counts commits in
+  // staleness (normalizePath folds), and must match the rename source too --
+  // the comparison folds on win32 while RenameInfo keeps git's raw casing.
+  it.runIf(process.platform === 'win32')(
+    'matches a dir-case-mismatched target on win32, returning git raw casing',
+    () => {
+      const raw = `${HASH} 2026-06-02T18:54:28-07:00\n\nR100\tsrc/old.ts\tsrc/new.ts\n`;
+      expect(parseRenameLog(raw, 'SRC/old.ts')).toMatchObject({
+        oldPath: 'src/old.ts',
+        newPath: 'src/new.ts',
+      });
+    },
+  );
+
+  it.runIf(process.platform !== 'win32')(
+    'does not fold case on POSIX (case-sensitive filesystems; folding would invent matches)',
+    () => {
+      const raw = `${HASH} 2026-06-02T18:54:28-07:00\n\nR100\tsrc/old.ts\tsrc/new.ts\n`;
+      expect(parseRenameLog(raw, 'SRC/old.ts')).toBeNull();
+    },
+  );
 
   it('does not basename-fall-back for a pathed target that matches no source exactly', () => {
     // `docs/index.md` referencing a never-renamed file must not match an

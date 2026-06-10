@@ -185,7 +185,10 @@ server.tool(
       };
 
       if (!result.exists) {
-        const rename = await findRenames(root, filePath);
+        // findRenames matches in git's repo-relative coordinate space; the
+        // raw input may be absolute (resolveWithinRoot permits that), which
+        // could never exact-match, so pass the root-relative resolved form.
+        const rename = await findRenames(root, path.relative(root, resolved));
         if (rename) {
           result.renamed = true;
           result.newPath = rename.newPath;

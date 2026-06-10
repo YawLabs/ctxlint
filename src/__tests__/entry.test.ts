@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { VERSION } from '../version.js';
@@ -121,9 +122,34 @@ describe('package.json consistency', () => {
     expect(serverJson.packages[0].version).toBe(PKG.version);
   });
 
-  it('main/exports point at the built bundle', () => {
-    expect(PKG.main).toBe('dist/index.js');
-    expect(PKG.exports['.']).toBe('./dist/index.js');
+  // dist/index.js is a self-executing CLI dispatcher: it reads process.argv
+  // at module top level and runs the linter (or MCP server) unconditionally,
+  // exporting nothing. A "main" or "." export would make
+  // `import '@yawlabs/ctxlint'` lint the host's argv/cwd and process.exit()
+  // the importer. This is a CLI-only package -- bin is the public surface,
+  // and a bare import must fail to RESOLVE (loud) rather than execute.
+  it('does not expose an importable "." entry (CLI-only package)', () => {
+    expect(PKG.main).toBeUndefined();
+    expect(PKG.types).toBeUndefined();
+    expect(PKG.exports['.']).toBeUndefined();
+    expect(PKG.exports['./package.json']).toBe('./package.json');
+    expect(PKG.bin.ctxlint).toBe('dist/index.js');
+  });
+
+  it('bare-specifier import fails to resolve instead of executing the CLI', () => {
+    const req = createRequire(__filename);
+    // Positive control: self-reference resolution is active (the "exports"
+    // field enables it), so the failure below is the missing "." entry, not
+    // a missing-node_modules artifact.
+    expect(() => req.resolve('@yawlabs/ctxlint/package.json')).not.toThrow();
+
+    let code: string | undefined;
+    try {
+      req.resolve('@yawlabs/ctxlint');
+    } catch (err: any) {
+      code = err.code;
+    }
+    expect(code).toBe('ERR_PACKAGE_PATH_NOT_EXPORTED');
   });
 
   it('test scripts build first (CLI tests run against dist)', () => {
@@ -236,5 +262,22 @@ describe('repo policy', () => {
     const ci = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf-8');
     expect(ci).toContain('pull_request');
     expect(ci).toContain('tsc --noEmit');
+  });
+
+  // The pretest:run hook (pinned in the package.json consistency suite)
+  // already builds dist before vitest, so a dedicated Build step in a test
+  // job runs the full build.mjs (catalog drift gate + esbuild bundle) twice
+  // per matrix leg.
+  it('workflow test jobs rely on pretest:run, not a duplicate Build step', () => {
+    const ci = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf-8');
+    expect(ci).not.toContain('name: Build');
+
+    // release.yml keeps exactly ONE Build step: the publish job's, where no
+    // pre-hook fires before `npm publish` and dist must exist in the tarball.
+    const release = fs.readFileSync(
+      path.join(ROOT, '.github', 'workflows', 'release.yml'),
+      'utf-8',
+    );
+    expect(release.match(/name: Build/g)).toHaveLength(1);
   });
 });

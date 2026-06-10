@@ -132,6 +132,13 @@ export function getAllProjectFiles(projectRoot: string): string[] {
     try {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       for (const entry of entries) {
+        // `.git` is skipped regardless of type: a directory in a normal
+        // checkout, but a FILE (gitlink) at the root of git-worktree
+        // checkouts and at `<submodule>/.git` in any repo with submodules.
+        // Letting the file form through would make `.git` a fuzzy-match /
+        // autofix candidate in paths.ts. Checked before the symlink and
+        // directory branches so every shape is caught at every walk depth.
+        if (entry.name === '.git') continue;
         const fullPath = path.join(dir, entry.name);
         if (entry.isSymbolicLink()) {
           // Never walk through a directory link -- a symlink cycle would

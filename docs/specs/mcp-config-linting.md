@@ -392,8 +392,8 @@ Also flag any env value > 20 chars that is all alphanumeric/base64, is not an en
 | Rule ID | Severity | Condition | Message |
 |---|---|---|---|
 | `windows-npx-no-wrapper` | error | Platform is Windows, `command` is `npx` (not wrapped in `cmd /c`) | `Server "{name}": npx requires "cmd /c" wrapper on Windows` |
-| `command-not-found` | warning | `command` is a local path (starts with `./` or `../`) that doesn't exist | `Server "{name}": command "{command}" not found` |
-| `args-path-missing` | warning | An arg looks like a local file path and doesn't exist | `Server "{name}": arg "{arg}" looks like a file path but doesn't exist` |
+| `command-not-found` | warning | `command` is a local path (starts with `./` or `../`) that doesn't exist — project-scope configs only | `Server "{name}": command "{command}" not found` |
+| `args-path-missing` | warning | An arg looks like a local file path and doesn't exist (relative paths: project scope only; absolute paths: every scope) | `Server "{name}": arg "{arg}" looks like a file path but doesn't exist` |
 
 **Notes:**
 - For `windows-npx-no-wrapper`: detect Windows by `process.platform === 'win32'` or by presence of Windows-style paths in the config. Only flag project-level configs (global configs on Windows should already have the wrapper, and the user might be on macOS developing for Windows or vice versa). Consider a `--platform` flag override.
@@ -478,7 +478,7 @@ export async function checkMcpConsistency(
 
 | Rule ID | Severity | Condition | Message |
 |---|---|---|---|
-| `same-server-different-config` | warning | Server with same name exists in 2+ files with different URLs/commands/args | `Server "{name}" is configured differently in {file1} and {file2}` |
+| `same-server-different-config` | warning | Server with same name exists in 2+ same-scope files (project-project or user-user) with different URLs/commands/args — cross-scope pairs are client precedence, not drift | `Server "{name}" is configured differently in {file1} and {file2}` |
 | `duplicate-server-name` | warning | Same server name appears twice in one file (JSON last-write-wins) | `Duplicate server name "{name}" in {file} — only the last definition is used` |
 | `missing-from-client` | info | Server in `.mcp.json` not present in `.cursor/mcp.json`, `.vscode/mcp.json`, or `.amazonq/mcp.json` (when those files exist) | `Server "{name}" is in .mcp.json but missing from {file}` |
 

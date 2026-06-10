@@ -147,7 +147,73 @@ describe('checkStaleness', () => {
     expect(mockedGetCommitsSinceBatch).toHaveBeenCalledWith('/project', ['src/'], expect.any(Date));
     expect(issues).toHaveLength(1);
     expect(issues[0].severity).toBe('warning');
-    expect(issues[0].message).toContain('src/');
+    // The message must cite the glob the user wrote, not the synthesized
+    // `src/` counting key (a string that appears nowhere in the doc).
+    expect(issues[0].message).toContain('src/**/*.ts');
+  });
+
+  it('names the original glob in the message when several globs collapse to one prefix', async () => {
+    mockedIsGitRepo.mockResolvedValue(true);
+    mockedGetFileLastModified.mockResolvedValue(new Date(Date.now() - 45 * 24 * 60 * 60 * 1000));
+    mockedGetCommitsSinceBatch.mockImplementation(async (_root, paths) =>
+      batchMap(paths, { 'src/': 7 }),
+    );
+    const file = makeParsedFile({
+      references: {
+        paths: [
+          { value: 'src/**/*.ts', line: 3, column: 1 },
+          { value: 'src/**/*.test.ts', line: 4, column: 1 },
+        ],
+        commands: [],
+      },
+    });
+    const issues = await checkStaleness(file, '/project');
+
+    // Both globs share the `src/` counting key; the first one encountered
+    // labels the message.
+    expect(mockedGetCommitsSinceBatch).toHaveBeenCalledWith('/project', ['src/'], expect.any(Date));
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('src/**/*.ts has 7 commits since');
+  });
+
+  // A glob whose only static segment is `.` (./**, ./**/*.ts) would
+  // synthesize the key `./`, which git's root-relative output never matches
+  // -- the silent zero the glob-prefix branch exists to fix. It carries no
+  // directory information, so it is skipped like a prefix-less `**`.
+  it('skips a ./-prefixed glob with no further static segment', async () => {
+    mockedIsGitRepo.mockResolvedValue(true);
+    mockedGetFileLastModified.mockResolvedValue(new Date(Date.now() - 45 * 24 * 60 * 60 * 1000));
+    const file = makeParsedFile({
+      references: {
+        paths: [
+          { value: './**/*.ts', line: 3, column: 1 },
+          { value: './**', line: 4, column: 1 },
+        ],
+        commands: [],
+      },
+    });
+    const issues = await checkStaleness(file, '/project');
+
+    expect(mockedGetCommitsSinceBatch).not.toHaveBeenCalled();
+    expect(issues).toHaveLength(0);
+  });
+
+  it('drops the leading ./ from a ./-prefixed glob with a real static prefix', async () => {
+    mockedIsGitRepo.mockResolvedValue(true);
+    mockedGetFileLastModified.mockResolvedValue(new Date(Date.now() - 45 * 24 * 60 * 60 * 1000));
+    mockedGetCommitsSinceBatch.mockImplementation(async (_root, paths) =>
+      batchMap(paths, { 'src/': 4 }),
+    );
+    const file = makeParsedFile({
+      references: { paths: [{ value: './src/**/*.ts', line: 3, column: 1 }], commands: [] },
+    });
+    const issues = await checkStaleness(file, '/project');
+
+    // Counting key is the bare `src/` (not `./src/`); the message still
+    // cites the ref as written.
+    expect(mockedGetCommitsSinceBatch).toHaveBeenCalledWith('/project', ['src/'], expect.any(Date));
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('./src/**/*.ts');
   });
 
   it('skips a glob with no static directory prefix', async () => {

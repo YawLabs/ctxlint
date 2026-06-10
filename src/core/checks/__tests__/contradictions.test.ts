@@ -208,6 +208,31 @@ describe('checkContradictions', () => {
     expect(pkgMgrIssues[0].message).toContain('pnpm');
   });
 
+  it('registers an endorsement when an earlier same-pattern occurrence is negated', () => {
+    // "Don't use pnpm in CI, use pnpm locally." — the first "use pnpm" is
+    // negated, but the comma ends the negation's clause, so the second is a
+    // live endorsement. A first-match-only scan stopped at the negated
+    // occurrence and suppressed this real cross-file conflict.
+    const files = [
+      makeFile('CLAUDE.md', "Don't use pnpm in CI, use pnpm locally."),
+      makeFile('AGENTS.md', 'Always use yarn as the package manager.'),
+    ];
+    const issues = checkContradictions(files);
+    const pkgMgrIssues = issues.filter((i) => i.message.includes('package manager'));
+    expect(pkgMgrIssues.length).toBeGreaterThan(0);
+    expect(pkgMgrIssues[0].message).toContain('pnpm');
+    expect(pkgMgrIssues[0].message).toContain('yarn');
+  });
+
+  it('does not register when every same-line occurrence is negated', () => {
+    const files = [
+      makeFile('CLAUDE.md', "Don't use pnpm in CI and don't use pnpm locally."),
+      makeFile('AGENTS.md', 'Always use yarn as the package manager.'),
+    ];
+    const issues = checkContradictions(files);
+    expect(issues.filter((i) => i.message.includes('package manager'))).toHaveLength(0);
+  });
+
   it('emits a single cluster issue for 3+ file conflict', () => {
     const files = [
       makeFile('CLAUDE.md', 'Always use pnpm as the package manager.'),

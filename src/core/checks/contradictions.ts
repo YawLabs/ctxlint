@@ -229,6 +229,22 @@ function isNegated(line: string, matchIndex: number): boolean {
   return NEGATION_BEFORE_MATCH.test(line.slice(windowStart, matchIndex));
 }
 
+// Negation is per-occurrence, not per-line: in "Don't use pnpm in CI, use
+// pnpm locally." only the first mention is negated (the comma ends the
+// negation's clause), so the second is a live endorsement. A single
+// non-global exec stops at the first occurrence — if that one happens to be
+// negated, the endorsement is dropped and a real cross-file conflict is
+// suppressed. Scan every occurrence; ANY non-negated one registers.
+function hasUnnegatedMatch(pattern: RegExp, line: string): boolean {
+  const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
+  const global = new RegExp(pattern.source, flags);
+  let m: RegExpExecArray | null;
+  while ((m = global.exec(line)) !== null) {
+    if (!isNegated(line, m.index)) return true;
+  }
+  return false;
+}
+
 function detectDirectives(file: ParsedContextFile): DetectedDirective[] {
   const directives: DetectedDirective[] = [];
   const lines = file.content.split('\n');
@@ -239,8 +255,7 @@ function detectDirectives(file: ParsedContextFile): DetectedDirective[] {
     for (const category of DIRECTIVE_CATEGORIES) {
       for (const option of category.options) {
         for (const pattern of option.patterns) {
-          const m = pattern.exec(line);
-          if (m !== null && !isNegated(line, m.index)) {
+          if (hasUnnegatedMatch(pattern, line)) {
             directives.push({
               file: file.relativePath,
               category: category.name,

@@ -192,6 +192,51 @@ describe('checkCommands', () => {
     expect(byRule!.message).toContain('vitest');
   });
 
+  // The `tsc` bin ships in the `typescript` package; the tool branch must
+  // consult the bin->package map before the deps lookup so a fresh checkout
+  // (no node_modules) with typescript in devDependencies stays clean.
+  it('does NOT flag `tsc` when typescript is in devDependencies (bin->package map)', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\nRun `tsc --noEmit` before committing.\n',
+      },
+      { devDependencies: { typescript: '^5' } },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/tool-not-found')).toBeUndefined();
+  });
+
+  it('still flags `tsc` when typescript is absent from deps and node_modules/.bin', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\ntsc --noEmit\n```\n',
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    const byRule = issues.find((i) => i.ruleId === 'commands/tool-not-found');
+    expect(byRule).toBeDefined();
+    expect(byRule!.message).toContain('tsc');
+  });
+
+  // >-quoted prose inside a bare fence must not surface as a make command —
+  // with no Makefile in the project it would otherwise be a false
+  // commands/no-makefile error.
+  it('does not flag >-quoted prose in a bare fence as a make command', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# PR template\n\n```\n> make sure tests pass before merging\n```\n',
+      },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/no-makefile')).toBeUndefined();
+    expect(issues.find((i) => i.ruleId === 'commands/make-target-not-found')).toBeUndefined();
+  });
+
   it('does NOT flag common tool present in devDependencies', async () => {
     seed(
       {

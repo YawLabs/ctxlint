@@ -1,4 +1,5 @@
 import * as fs from 'node:fs';
+import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { glob } from 'glob';
 import { isSymlink, readSymlinkTarget } from '../utils/fs.js';
@@ -217,7 +218,12 @@ export async function scanForMcpConfigs(projectRoot: string): Promise<Discovered
 export async function scanGlobalMcpConfigs(): Promise<DiscoveredFile[]> {
   const found: DiscoveredFile[] = [];
   const seen = new Set<string>();
-  const home = process.env.HOME || process.env.USERPROFILE || '';
+  // Env-first so HOME/USERPROFILE overrides in tests/CI apply, with an
+  // os.homedir() fallback so env-stripped contexts (systemd services, minimal
+  // containers) still resolve the real home. session-scanner and skill-scanner
+  // resolve identically -- the home-scoped pillars must agree on what "home"
+  // means.
+  const home = process.env.HOME || process.env.USERPROFILE || homedir();
   if (!home) {
     // Without a resolvable home dir every entry below would degrade to a
     // RELATIVE path (path.join('', '.claude.json') === '.claude.json') that

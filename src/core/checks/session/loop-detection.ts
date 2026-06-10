@@ -101,6 +101,20 @@ function findCyclicPatterns(
   return results;
 }
 
+function splitAtGaps(group: HistoryEntry[]): string[][] {
+  const segments: string[][] = [];
+  let seg: string[] = [];
+  for (let k = 0; k < group.length; k++) {
+    if (k > 0 && group[k].timestamp - group[k - 1].timestamp > SESSION_GAP_MS) {
+      segments.push(seg);
+      seg = [];
+    }
+    seg.push(group[k].display);
+  }
+  segments.push(seg);
+  return segments;
+}
+
 /**
  * Split the project's history into per-session command sequences. A loop is an
  * intra-session pathology: pooling sessions would flag routine reuse (a daily
@@ -111,8 +125,19 @@ function findCyclicPatterns(
  * are only unique within a provider), and a session's sequence is further
  * split at SESSION_GAP_MS timestamp gaps so providers that omit sessionId
  * don't pool unrelated days into one pseudo-session.
+ *
+ * Single-command sessions get a second, merged pass: a headless respawn loop
+ * (`claude -p "cmd"` re-spawned every few seconds) produces N one-command
+ * sessions, each a below-threshold segment on its own. Merging them per
+ * provider -- still split at SESSION_GAP_MS, so daily one-shots stay separate
+ * -- keeps that pathology detectable. The merged stream feeds only the
+ * consecutive-repeat scan: unrelated one-shots interleaved in time could
+ * still synthesize phantom A,B,A,B cycles no session actually ran.
  */
-function toSessionSegments(entries: HistoryEntry[]): string[][] {
+function toSessionSegments(entries: HistoryEntry[]): {
+  sessionSegments: string[][];
+  mergedOneShotSegments: string[][];
+} {
   const byGroup = new Map<string, HistoryEntry[]>();
   for (const e of entries) {
     const key = `${e.provider}::${e.sessionId}`;
@@ -121,19 +146,40 @@ function toSessionSegments(entries: HistoryEntry[]): string[][] {
     else byGroup.set(key, [e]);
   }
 
-  const segments: string[][] = [];
+  const sessionSegments: string[][] = [];
+  // `entries` arrives timestamp-sorted, so per-provider insertion order keeps
+  // each one-shot list chronological without a re-sort.
+  const oneShotsByProvider = new Map<string, HistoryEntry[]>();
   for (const group of byGroup.values()) {
-    let seg: string[] = [];
-    for (let k = 0; k < group.length; k++) {
-      if (k > 0 && group[k].timestamp - group[k - 1].timestamp > SESSION_GAP_MS) {
-        segments.push(seg);
-        seg = [];
-      }
-      seg.push(group[k].display);
+    if (group.length === 1) {
+      const e = group[0];
+      const list = oneShotsByProvider.get(e.provider);
+      if (list) list.push(e);
+      else oneShotsByProvider.set(e.provider, [e]);
+      continue;
     }
-    segments.push(seg);
+    sessionSegments.push(...splitAtGaps(group));
   }
-  return segments;
+
+  const mergedOneShotSegments: string[][] = [];
+  for (const list of oneShotsByProvider.values()) {
+    mergedOneShotSegments.push(...splitAtGaps(list));
+  }
+
+  return { sessionSegments, mergedOneShotSegments };
+}
+
+function toConsecutiveRepeatIssue(command: string, count: number): LintIssue {
+  const truncated = command.length > 80 ? command.slice(0, 77) + '...' : command;
+  return {
+    severity: 'warning',
+    check: 'session-loop-detection',
+    ruleId: 'session-loop-detection/consecutive-repeat',
+    line: 0,
+    message: `Command run ${count} times consecutively: "${truncated}"`,
+    suggestion:
+      'An agent may be looping on this command. Check history.jsonl for context on what went wrong',
+  };
 }
 
 /**
@@ -149,33 +195,32 @@ export async function checkLoopDetection(ctx: SessionContext): Promise<LintIssue
   // project at all are dropped (Codex CLI occasionally writes neither
   // `project` nor `cwd`; the scanner keeps those with project '') --
   // path.resolve('') is the linter's cwd, so they would otherwise attach to
-  // whichever project is being linted. Cap to the most recent
-  // MAX_HISTORY_ENTRIES before running the O(N^2) cycle scan -- a fresh
-  // loop is captured in the tail, so older entries don't add signal.
+  // whichever project is being linted. Entries without a timestamp are also
+  // dropped (the scanner defaults them to 0): the SESSION_GAP_MS split and
+  // the one-shot merge key off real timestamps, and an all-zero
+  // pseudo-session never splits, so a routine daily one-shot would read as a
+  // 3+ repeat. Cap to the most recent MAX_HISTORY_ENTRIES before running the
+  // O(N^2) cycle scan -- a fresh loop is captured in the tail, so older
+  // entries don't add signal.
   const filtered = ctx.history
-    .filter((e) => e.project !== '' && normalizeProject(e.project) === currentNorm)
+    .filter(
+      (e) => e.project !== '' && e.timestamp > 0 && normalizeProject(e.project) === currentNorm,
+    )
     .sort((a, b) => a.timestamp - b.timestamp);
   const entries =
     filtered.length > MAX_HISTORY_ENTRIES ? filtered.slice(-MAX_HISTORY_ENTRIES) : filtered;
 
   if (entries.length < CONSECUTIVE_THRESHOLD) return issues;
 
-  for (const displays of toSessionSegments(entries)) {
+  const { sessionSegments, mergedOneShotSegments } = toSessionSegments(entries);
+
+  for (const displays of sessionSegments) {
     if (displays.length < CONSECUTIVE_THRESHOLD) continue;
 
     // Check for consecutive repeats
     const repeats = findConsecutiveRepeats(displays);
     for (const { command, count } of repeats) {
-      const truncated = command.length > 80 ? command.slice(0, 77) + '...' : command;
-      issues.push({
-        severity: 'warning',
-        check: 'session-loop-detection',
-        ruleId: 'session-loop-detection/consecutive-repeat',
-        line: 0,
-        message: `Command run ${count} times consecutively: "${truncated}"`,
-        suggestion:
-          'An agent may be looping on this command. Check history.jsonl for context on what went wrong',
-      });
+      issues.push(toConsecutiveRepeatIssue(command, count));
     }
 
     // Check for cyclic patterns, skipping any whose span a consecutive-repeat
@@ -193,6 +238,15 @@ export async function checkLoopDetection(ctx: SessionContext): Promise<LintIssue
         suggestion:
           'An agent may be stuck in a loop. Check if a context file is missing instructions for this workflow',
       });
+    }
+  }
+
+  // Consecutive-repeat only on the merged one-shot stream (see
+  // toSessionSegments for why cycles are excluded from it).
+  for (const displays of mergedOneShotSegments) {
+    if (displays.length < CONSECUTIVE_THRESHOLD) continue;
+    for (const { command, count } of findConsecutiveRepeats(displays)) {
+      issues.push(toConsecutiveRepeatIssue(command, count));
     }
   }
 

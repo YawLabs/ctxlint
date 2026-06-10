@@ -149,6 +149,50 @@ describe('checkCiSecrets', () => {
     expect(issues.length).toBe(0);
   });
 
+  it('does NOT count lowercase prose for a lowercase-written generic reference', async () => {
+    // GitHub secret lookups are case-insensitive, so `${{ secrets.token }}`
+    // is a valid reference and the captured name arrives lowercase. The
+    // exact-case probe must still demand the conventional uppercase form —
+    // an as-written probe would let any prose "token" count as docs.
+    mkdirSync(join(tempDir, '.github', 'workflows'), { recursive: true });
+    writeFileSync(
+      join(tempDir, '.github', 'workflows', 'release.yml'),
+      'env:\n  AUTH: ${{ secrets.token }}',
+    );
+
+    const files = [makeFile('CLAUDE.md', 'Request a token from the dashboard to authenticate.')];
+    const issues = await checkCiSecrets(files, tempDir);
+    expect(issues.length).toBe(1);
+    expect(issues[0].message).toContain('token');
+  });
+
+  it('counts an uppercase doc mention for a lowercase-written generic reference', async () => {
+    mkdirSync(join(tempDir, '.github', 'workflows'), { recursive: true });
+    writeFileSync(
+      join(tempDir, '.github', 'workflows', 'release.yml'),
+      'env:\n  AUTH: ${{ secrets.token }}',
+    );
+
+    const files = [makeFile('CLAUDE.md', 'Set TOKEN with `gh secret set TOKEN`.')];
+    const issues = await checkCiSecrets(files, tempDir);
+    expect(issues.length).toBe(0);
+  });
+
+  it('counts a secrets.<name> doc reference for a lowercase-written generic reference', async () => {
+    mkdirSync(join(tempDir, '.github', 'workflows'), { recursive: true });
+    writeFileSync(
+      join(tempDir, '.github', 'workflows', 'release.yml'),
+      'env:\n  AUTH: ${{ secrets.token }}',
+    );
+
+    // secretsRef stays case-insensitive so the as-written form still counts.
+    const files = [
+      makeFile('CLAUDE.md', 'The release workflow reads secrets.token from repo settings.'),
+    ];
+    const issues = await checkCiSecrets(files, tempDir);
+    expect(issues.length).toBe(0);
+  });
+
   it('does NOT count prose "key" for a short generic secret name (KEY)', async () => {
     mkdirSync(join(tempDir, '.github', 'workflows'), { recursive: true });
     writeFileSync(

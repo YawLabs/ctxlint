@@ -162,10 +162,16 @@ function computeSectionCosts(file: ParsedContextFile): SectionCost[] {
  */
 const INVIOLABLE_WITH_COMMAND = /\b(NEVER|ALWAYS|DON'?T|DO NOT|MUST NOT)\b[^.!?`]{0,80}`([^`]+)`/i;
 
+interface HookEntry {
+  matcher?: string;
+  hooks?: Array<{ command?: string }>;
+}
+
 interface Settings {
   permissions?: { deny?: string[]; ask?: string[] };
   hooks?: {
-    PreToolUse?: Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>;
+    PreToolUse?: HookEntry[];
+    Stop?: HookEntry[];
   };
 }
 
@@ -315,7 +321,11 @@ function commandIsEnforced(cmd: string, settings: Settings[]): boolean {
     for (const entry of [...(s.permissions?.deny ?? []), ...(s.permissions?.ask ?? [])]) {
       if (pattern.test(entry)) return true;
     }
-    for (const h of s.hooks?.PreToolUse ?? []) {
+    // PreToolUse gates the command before it runs; Stop verifies it after
+    // the turn. Both are shapes the ALWAYS-branch suggestion explicitly
+    // offers ("a PreToolUse or Stop hook"), so both must be credited —
+    // otherwise following the suggestion leaves the finding firing forever.
+    for (const h of [...(s.hooks?.PreToolUse ?? []), ...(s.hooks?.Stop ?? [])]) {
       if (pattern.test(h.matcher || '')) return true;
       for (const sub of h.hooks ?? []) {
         if (pattern.test(sub.command || '')) return true;

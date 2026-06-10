@@ -95,6 +95,35 @@ describe('checkMcpConsistency', () => {
     expect(issues.filter((i) => i.message.includes('configured differently'))).toHaveLength(0);
   });
 
+  it('flags user-user drift between two global client configs', async () => {
+    // Two different clients' per-user files (e.g. under --mcp-global) have no
+    // precedence relationship -- each client reads only its own file -- so a
+    // shared server name with divergent values is drift, same as at project
+    // scope.
+    const configs = [
+      makeConfig({
+        filePath: '/home/user/.cursor/mcp.json',
+        relativePath: '.cursor/mcp.json',
+        client: 'cursor',
+        scope: 'user',
+        servers: [
+          { name: 'api', transport: 'http', url: 'https://v1.example.com/mcp', line: 3, raw: {} },
+        ],
+      }),
+      makeConfig({
+        filePath: '/home/user/claude_desktop_config.json',
+        relativePath: 'claude_desktop_config.json',
+        client: 'claude-desktop',
+        scope: 'user',
+        servers: [
+          { name: 'api', transport: 'http', url: 'https://v2.example.com/mcp', line: 3, raw: {} },
+        ],
+      }),
+    ];
+    const issues = await checkMcpConsistency(configs);
+    expect(issues.filter((i) => i.message.includes('configured differently'))).toHaveLength(1);
+  });
+
   it('flags server in .mcp.json but missing from .cursor/mcp.json', async () => {
     const configs = [
       makeConfig({

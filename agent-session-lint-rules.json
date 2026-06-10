@@ -79,7 +79,7 @@
       "category": "session",
       "severity": "warning",
       "description": "Same command run 3+ times consecutively in agent history.",
-      "trigger": "Agent history for the current project, grouped into sessions (by provider + session ID, split at >30-minute timestamp gaps), shows the same display string 3+ times in a row within a single session segment.",
+      "trigger": "Agent history for the current project (entries lacking a project path or timestamp are excluded), grouped into sessions (by provider + session ID, split at >30-minute timestamp gaps), shows the same display string 3+ times in a row within a single session segment. Single-command sessions are additionally merged per provider into one stream (split at the same gaps) so rapid one-shot respawn loops are caught.",
       "message": "Command run {count} times consecutively: \"{command}\"",
       "fixable": false,
       "stability": "experimental"
@@ -89,7 +89,7 @@
       "category": "session",
       "severity": "warning",
       "description": "Cyclic command pattern detected in agent history.",
-      "trigger": "Within a single session segment (same provider + session ID, split at >30-minute gaps), agent history shows a repeating sequence of 2-3 commands (e.g. A,B,A,B) repeated 2+ times. Spans already reported by session/consecutive-repeat are not re-reported.",
+      "trigger": "Within a single session segment (same provider + session ID, split at >30-minute gaps; entries lacking a project path or timestamp are excluded), agent history shows a repeating sequence of 2-3 commands (e.g. A,B,A,B) repeated 2+ times. Spans already reported by session/consecutive-repeat are not re-reported. The merged one-shot stream is not scanned for cycles.",
       "message": "Cyclic pattern repeated {count} times: {cycle}",
       "fixable": false,
       "stability": "experimental"

@@ -214,6 +214,23 @@ Shared types are in \`../shared/types.ts\`.
     expect(paths).toContain('config/*.yaml');
   });
 
+  // Markdown emphasis wrappers around slash-joined prose must not be captured
+  // as paths: a middle segment may be a whole-star glob (`*`/`**`) but may
+  // not START with `*` followed by text, and the leading `*` is not a valid
+  // delimiter — so the emphasis kills the whole match instead of routing
+  // bold/italic prose to paths/glob-no-match.
+  it('does not capture markdown emphasis-wrapped prose as paths', () => {
+    const result = parseContent(
+      [
+        'The **docs/missing** section is bold.',
+        'Measure **I/O** carefully.',
+        'Pick *either/or* style.',
+        'Rule **paths/not-found** fires on dead refs.',
+      ].join('\n'),
+    );
+    expect(result.references.paths).toHaveLength(0);
+  });
+
   // Spec 2.2: command references include content in code blocks with no
   // language tag, gated on COMMON_COMMANDS / $-prefix so non-command lines
   // (sample output) are not extracted.
@@ -225,6 +242,24 @@ Shared types are in \`../shared/types.ts\`.
     expect(commands).toContain('npm run build');
     expect(commands).toContain('make deploy');
     expect(commands).not.toContain('compiled 14 files in 1.2s');
+  });
+
+  // In untagged fences `>` marks blockquote/redirect/REPL output far more
+  // often than a prompt (PR templates quote prose like "> make sure tests
+  // pass before merging"); only `$`-prefixed lines are honored there.
+  it('does not extract >-quoted prose inside a bare fence as a command', () => {
+    const result = parseContent(
+      ['```', '> make sure tests pass before merging', '$ make deploy', '```'].join('\n'),
+    );
+    const commands = result.references.commands.map((c) => c.value);
+    expect(commands).not.toContain('make sure tests pass before merging');
+    expect(commands).toContain('make deploy');
+  });
+
+  it('still honors the > prompt inside tagged shell fences', () => {
+    const result = parseContent(['```bash', '> make deploy', '```'].join('\n'));
+    const commands = result.references.commands.map((c) => c.value);
+    expect(commands).toContain('make deploy');
   });
 
   it('recognizes mocha/tsc/eslint/prettier as commands (spec 2.2 tool list)', () => {

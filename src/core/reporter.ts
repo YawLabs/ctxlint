@@ -327,11 +327,14 @@ export function formatTokenReport(result: LintResult): string {
  * can display the bucket name without pretending it's a file.
  */
 function isSyntheticPath(p: string): boolean {
-  // Share the central predicate ('(' prefix + session/skill markers) so a
-  // reskinned label that carries a marker but does NOT start with '~' (e.g.
-  // '$HOME/.claude/ (session audit)') can't leak into a SARIF
-  // physicalLocation.artifactLocation.uri. The extra '~' prefix here covers
-  // any future '~'-rooted bucket label that doesn't match a known marker.
+  // Share the central predicate (exact '(project)' / '(mcp)' labels +
+  // session/skill markers) so a reskinned label that carries a marker but
+  // does NOT start with '~' (e.g. '$HOME/.claude/ (session audit)') can't
+  // leak into a SARIF physicalLocation.artifactLocation.uri. The extra '~'
+  // prefix here covers any future '~'-rooted bucket label that doesn't match
+  // a known marker. Real paths under paren-named dirs (e.g. a Next.js route
+  // group like '(docs)/CLAUDE.md') intentionally fail the predicate and get
+  // a normal physicalLocation.
   return isSyntheticBucket(p) || p.startsWith('~');
 }
 

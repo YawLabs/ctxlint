@@ -279,13 +279,14 @@ Detects when an agent runs the same command 3 or more times consecutively, indic
 
 **Detection algorithm:**
 
-1. Filter history entries to the current project path (normalized). Drop entries with no associated project path.
+1. Filter history entries to the current project path (normalized). Drop entries with no associated project path, and entries with no timestamp (readers default a missing timestamp to 0; the gap split in step 3 keys off real timestamps, and an all-zero pseudo-session would never split, so a routine daily one-shot command would read as a 3+ repeat).
 2. Sort entries by timestamp. Implementations may bound the scan to the most recent entries (the reference implementation keeps the latest 5,000) -- a live loop is always captured in the tail, and the cycle scan in `session/cyclic-pattern` is O(N²).
 3. Group entries into sessions keyed by provider + session ID (session IDs are only unique within a provider). Split each session's sequence wherever the gap between consecutive timestamps exceeds 30 minutes -- providers that omit session IDs would otherwise pool unrelated working stints into one pseudo-session, and a routine daily one-shot command would read as a 3+ repeat.
-4. Within each session segment, slide a window over the entries. For each run of 3+ entries with identical `display` values, emit a warning.
+4. Merge single-command sessions (sessions whose entire history is one entry) per provider into one chronological stream, split at the same >30-minute gaps. A rapid respawn loop (a headless one-shot command re-spawned every few seconds) produces N one-command sessions that are each below the threshold on their own; the merge keeps that pathology detectable, while runs more than 30 minutes apart (daily routine reuse) still split into separate below-threshold segments. The merged stream feeds only this rule, not `session/cyclic-pattern`.
+5. Within each segment (per-session and merged one-shot), slide a window over the entries. For each run of 3+ entries with identical `display` values, emit a warning.
 
 **Notes:**
-- Looping is an intra-session pathology. Pooling sessions would flag routine reuse across days, and concurrently interleaved sessions (including cross-provider ones, since multiple providers' histories are merged) would produce phantom patterns no session actually ran.
+- Looping is an intra-session pathology. Pooling full sessions would flag routine reuse across days, and concurrently interleaved sessions (including cross-provider ones, since multiple providers' histories are merged) would produce phantom patterns no session actually ran. The single-command-session merge in step 4 is the deliberate exception: N identical one-shots inside a 30-minute window are a respawn loop, not reuse.
 - Truncates long command strings to 80 characters in the message for readability.
 - This rule helps surface cases where an agent is stuck retrying a failing command instead of changing approach.
 

@@ -358,6 +358,24 @@ describe('checkTierTokens — hard-enforcement-missing', () => {
     expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
   });
 
+  it('credits a Stop hook as enforcement (the shape the ALWAYS suggestion offers)', async () => {
+    // The ALWAYS-branch suggestion says "add a PreToolUse or Stop hook" —
+    // adding exactly that Stop hook must suppress the finding, otherwise
+    // following the suggestion leaves it firing forever.
+    const dotClaude = path.join(tmpDir, '.claude');
+    fs.mkdirSync(dotClaude, { recursive: true });
+    fs.writeFileSync(
+      path.join(dotClaude, 'settings.json'),
+      JSON.stringify({ hooks: { Stop: [{ hooks: [{ command: 'npm test' }] }] } }),
+    );
+    const content = '# CLAUDE.md\n\nALWAYS run `npm test` before declaring done.\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
+  });
+
   it('suggests an enforcing hook (not a deny/block) for ALWAYS-framed rules', async () => {
     const content = '# CLAUDE.md\n\nALWAYS run `npm test` before pushing.\n';
     const issues = await checkTierTokens(

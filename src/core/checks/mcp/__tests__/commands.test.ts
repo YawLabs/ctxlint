@@ -78,6 +78,50 @@ describe('checkMcpCommands', () => {
     expect(issues.filter((i) => i.ruleId === 'mcp-commands/args-path-missing')).toHaveLength(0);
   });
 
+  it('flags missing absolute-path args in user-scope configs', async () => {
+    // Absolute paths are cwd-independent, so the relative-path rationale for
+    // the user-scope skip doesn't apply -- and user/global configs are where
+    // absolute paths are most common.
+    const config = makeConfig({
+      filePath: '/home/user/.claude.json',
+      relativePath: '.claude.json',
+      scope: 'user',
+      servers: [
+        {
+          name: 'server',
+          transport: 'stdio',
+          command: 'node',
+          args: ['/definitely/missing/tools/server.js'],
+          line: 3,
+          raw: { command: 'node', args: ['/definitely/missing/tools/server.js'] },
+        },
+      ],
+    });
+    const issues = await checkMcpCommands(config, '/project');
+    expect(issues.filter((i) => i.ruleId === 'mcp-commands/args-path-missing')).toHaveLength(1);
+  });
+
+  it('does not flag relative-path commands in user-scope configs', async () => {
+    // Mirrors the args-path-missing user-scope skip: a user config's relative
+    // command resolves against that client's own cwd, not this project root.
+    const config = makeConfig({
+      filePath: '/home/user/.claude.json',
+      relativePath: '.claude.json',
+      scope: 'user',
+      servers: [
+        {
+          name: 'server',
+          transport: 'stdio',
+          command: './bin/serve.sh',
+          line: 3,
+          raw: { command: './bin/serve.sh' },
+        },
+      ],
+    });
+    const issues = await checkMcpCommands(config, '/project');
+    expect(issues.filter((i) => i.ruleId === 'mcp-commands/command-not-found')).toHaveLength(0);
+  });
+
   it('does not flag non-path args like flags and packages', async () => {
     const config = makeConfig({
       servers: [

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -200,31 +200,79 @@ describe('scanGlobalMcpConfigs', () => {
   });
 });
 
-describe('scanGlobalMcpConfigs without a resolvable home dir', () => {
+describe('scanGlobalMcpConfigs home resolution', () => {
   let savedHome: string | undefined;
   let savedUserprofile: string | undefined;
+  let savedAppdata: string | undefined;
+  let fakeHome: string;
 
   beforeEach(() => {
     savedHome = process.env.HOME;
     savedUserprofile = process.env.USERPROFILE;
+    savedAppdata = process.env.APPDATA;
+    fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-mcp-home-'));
+    // Keep the win32 Claude Desktop probe inside the sandbox so a real
+    // workstation config can't leak into the results.
+    process.env.APPDATA = path.join(fakeHome, 'AppData', 'Roaming');
     delete process.env.HOME;
     delete process.env.USERPROFILE;
   });
 
   afterEach(() => {
+    vi.doUnmock('node:os');
+    vi.resetModules();
     if (savedHome === undefined) delete process.env.HOME;
     else process.env.HOME = savedHome;
     if (savedUserprofile === undefined) delete process.env.USERPROFILE;
     else process.env.USERPROFILE = savedUserprofile;
+    if (savedAppdata === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = savedAppdata;
+    fs.rmSync(fakeHome, { recursive: true, force: true });
   });
 
-  it('returns [] instead of probing relative paths against cwd', async () => {
-    // With HOME and USERPROFILE both unset, home falls back to '' and
-    // path.join('', '.claude.json') yields the RELATIVE '.claude.json',
-    // which accessSync would resolve against process.cwd() -- picking up a
-    // project-local file and reporting it as '~/.claude.json'. The scan must
-    // bail out early instead.
-    const files = await scanGlobalMcpConfigs();
+  // scanner.ts binds `homedir` at import time, so the mock has to land before
+  // a fresh module instance is created.
+  async function importScannerWithHomedir(dir: string) {
+    vi.resetModules();
+    vi.doMock('node:os', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('node:os')>();
+      return { ...actual, homedir: () => dir };
+    });
+    return import('../scanner.js');
+  }
+
+  it('falls back to os.homedir() when HOME and USERPROFILE are unset', async () => {
+    // Env-stripped contexts (systemd services, minimal containers) must scan
+    // the OS-resolved home -- the same resolution the session and skill
+    // pillars use -- instead of silently returning [].
+    fs.mkdirSync(path.join(fakeHome, '.cursor'), { recursive: true });
+    fs.writeFileSync(path.join(fakeHome, '.cursor', 'mcp.json'), '{"mcpServers":{}}');
+
+    const mod = await importScannerWithHomedir(fakeHome);
+    const files = await mod.scanGlobalMcpConfigs();
+    expect(files.map((f) => f.relativePath)).toContain('~/.cursor/mcp.json');
+  });
+
+  it('prefers HOME over os.homedir() when both resolve', async () => {
+    // The config exists only under the env home -- finding it proves the
+    // env-first ordering (the mocked os home has no configs).
+    const envHome = path.join(fakeHome, 'env-home');
+    fs.mkdirSync(path.join(envHome, '.cursor'), { recursive: true });
+    fs.writeFileSync(path.join(envHome, '.cursor', 'mcp.json'), '{"mcpServers":{}}');
+    process.env.HOME = envHome;
+
+    const mod = await importScannerWithHomedir(path.join(fakeHome, 'os-home-without-configs'));
+    const files = await mod.scanGlobalMcpConfigs();
+    expect(files.map((f) => f.relativePath)).toContain('~/.cursor/mcp.json');
+  });
+
+  it('returns [] when no home resolves at all (env unset, os.homedir empty)', async () => {
+    // With home === '' every entry would degrade to a RELATIVE path
+    // (path.join('', '.claude.json') === '.claude.json') that accessSync
+    // resolves against process.cwd() -- picking up a project-local file and
+    // reporting it as '~/.claude.json'. The scan must bail out early instead.
+    const mod = await importScannerWithHomedir('');
+    const files = await mod.scanGlobalMcpConfigs();
     expect(files).toEqual([]);
   });
 });

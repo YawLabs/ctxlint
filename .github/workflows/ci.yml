@@ -40,9 +40,8 @@ jobs:
         run: npx tsc --noEmit
 
       # CLI-level tests execFileSync dist/index.js, so the bundle must exist
-      # (and be fresh) before vitest runs.
-      - name: Build
-        run: pnpm run build
-
+      # (and be fresh) before vitest runs. The pretest:run hook builds it
+      # (pnpm auto-runs pre-scripts), so a separate Build step would run
+      # build.mjs twice per leg.
       - name: Test
         run: pnpm run test:run

@@ -125,6 +125,18 @@ function extractNpxPackage(cmd: string): string | null {
 // single info diagnostic (asymmetric otherwise with the make-target branch,
 // which has its own no-makefile error).
 const PKG_DEPENDENT_TOOL_PATTERN = /^(vitest|jest|pytest|mocha|eslint|prettier|tsc)\b/;
+
+// Bin names whose npm package is named differently, consulted before the
+// dependency lookup in the tool-availability branch. Without it `tsc` is
+// looked up verbatim in deps and any project linted without node_modules
+// (fresh checkout, CI) gets a false tool-not-found despite typescript being
+// in devDependencies. `tsc` -> `typescript` is the only mapping among
+// PKG_DEPENDENT_TOOL_PATTERN's tools (and the npx-branch comment's named
+// mappings) where bin and package diverge — vitest/jest/mocha/eslint/prettier
+// are identity. The node_modules/.bin fallback keeps using the BIN name.
+const BIN_TO_PACKAGE: Record<string, string> = {
+  tsc: 'typescript',
+};
 const PKG_SHORTHAND_PATTERN =
   /^(npm|pnpm|yarn|bun)\s+(test|start|build|dev|lint|format|check|typecheck|clean|serve|preview|e2e)\b/;
 
@@ -264,13 +276,14 @@ export async function checkCommands(
     const toolMatch = cmd.match(PKG_DEPENDENT_TOOL_PATTERN);
     if (toolMatch && pkgJson) {
       const tool = toolMatch[1];
+      const pkgName = BIN_TO_PACKAGE[tool] ?? tool;
       const allDeps = {
         ...pkgJson.dependencies,
         ...pkgJson.devDependencies,
         ...pkgJson.peerDependencies,
         ...pkgJson.optionalDependencies,
       };
-      if (!(tool in allDeps)) {
+      if (!(pkgName in allDeps)) {
         // Check node_modules/.bin
         const binPath = path.join(projectRoot, 'node_modules', '.bin', tool);
         try {

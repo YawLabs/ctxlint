@@ -3,12 +3,16 @@ import { isLoopbackHost } from './loopback.js';
 
 // Known API key patterns (high-entropy + known prefixes)
 const API_KEY_PATTERNS = [
-  // sk- keys need [_-] in the class: modern OpenAI (sk-proj-...) and Anthropic
-  // (sk-ant-api03-...) keys carry interior hyphens that would otherwise stop
-  // the match short of the length floor. The leading \b keeps the run from
-  // starting mid-word ("whisk-", "desk-").
+  // The prefixed sk- forms need [_-] in the class: modern OpenAI (sk-proj-...)
+  // and Anthropic (sk-ant-api03-...) keys carry interior hyphens that would
+  // otherwise stop the match short of the length floor. The generic sk- form
+  // must stay alphanumeric-only: with [-_] it would swallow any kebab-case
+  // identifier starting with "sk-" (e.g. sk-canary-deployment-2026) and feed
+  // a non-secret to the destructive env-var autofix. The leading \b keeps the
+  // run from starting mid-word ("whisk-", "desk-").
   /\bsk-ant-[A-Za-z0-9_-]{20,}/, // Anthropic
-  /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}/, // OpenAI (classic or project-scoped) / generic
+  /\bsk-proj-[A-Za-z0-9_-]{20,}/, // OpenAI project-scoped
+  /\bsk-[a-zA-Z0-9]{20,}/, // OpenAI classic / generic
   /ghp_[a-zA-Z0-9]{36}/, // GitHub PAT
   /ghu_[a-zA-Z0-9]{36}/, // GitHub user token
   /github_pat_[a-zA-Z0-9_]{80,}/, // GitHub fine-grained PAT

@@ -10,14 +10,17 @@ export async function checkMcpConsistency(configs: ParsedMcpConfig[]): Promise<L
     return checkSingleFileIssues(configs).concat(checkMissingFromClient(configs));
   }
 
-  // Build a map of server name -> list of (config, server) pairs.
-  // Project-scope configs only: a user/global config differing from the
-  // project one is documented client precedence (project overrides user),
-  // not drift, so cross-scope pairs must not enter the comparison.
+  // Build a map of (scope bucket, server name) -> list of (config, server)
+  // pairs. Same-scope pairs are compared in EVERY scope; only cross-scope
+  // pairs are skipped: a user/global config differing from the project one is
+  // documented client precedence (project overrides user), not drift, but two
+  // per-user files (e.g. ~/.cursor/mcp.json vs Claude Desktop's config) have
+  // no precedence between them -- each client reads only its own file.
   const serverMap = new Map<
     string,
     {
       config: ParsedMcpConfig;
+      name: string;
       command?: string;
       url?: string;
       args?: string[];
@@ -26,22 +29,26 @@ export async function checkMcpConsistency(configs: ParsedMcpConfig[]): Promise<L
   >();
 
   for (const config of configs) {
-    if (config.scope !== 'project') continue;
+    // 'user' and 'global' configs live at the same per-user level; bucket
+    // them together (mirrors mcp-redundancy's user|global handling).
+    const bucket = config.scope === 'project' ? 'project' : 'user';
     for (const server of config.servers) {
-      const existing = serverMap.get(server.name) || [];
+      const key = `${bucket}::${server.name}`;
+      const existing = serverMap.get(key) || [];
       existing.push({
         config,
+        name: server.name,
         command: server.command,
         url: server.url,
         args: server.args,
         line: server.line,
       });
-      serverMap.set(server.name, existing);
+      serverMap.set(key, existing);
     }
   }
 
   // same-server-different-config
-  for (const [name, entries] of serverMap) {
+  for (const entries of serverMap.values()) {
     if (entries.length < 2) continue;
 
     for (let i = 0; i < entries.length; i++) {
@@ -59,7 +66,7 @@ export async function checkMcpConsistency(configs: ParsedMcpConfig[]): Promise<L
             check: 'mcp-consistency',
             ruleId: 'mcp-consistency/same-server-different-config',
             line: a.line,
-            message: `Server "${name}" is configured differently in ${a.config.relativePath} and ${b.config.relativePath}`,
+            message: `Server "${a.name}" is configured differently in ${a.config.relativePath} and ${b.config.relativePath}`,
           });
         }
       }

@@ -216,7 +216,14 @@ export interface RenameInfo {
 }
 
 function normalizeRenamePath(p: string): string {
-  return p.replace(/\\/g, '/').replace(/^\.\//, '');
+  const cleaned = p.replace(/\\/g, '/').replace(/^\.\//, '');
+  // Same win32 case-fold as normalizePath: a doc ref whose casing differs
+  // from git's stored casing still resolves on the case-insensitive
+  // filesystem, so both rename-match sides must fold consistently or the
+  // ref counts commits in staleness yet never matches a rename source.
+  // Comparison-only -- RenameInfo carries git's raw casing, so the fix text
+  // written into the doc is unaffected.
+  return process.platform === 'win32' ? cleaned.toLowerCase() : cleaned;
 }
 
 /**
@@ -313,6 +320,13 @@ export function parseRenameLog(result: string, targetPath?: string): RenameInfo 
   return fallbackAmbiguous ? null : basenameFallback;
 }
 
+/**
+ * `filePath` is interpreted relative to `projectRoot` (absolute paths inside
+ * the root are accepted too). A ref that is relative to something else --
+ * e.g. a `./sub/file.md` doc ref resolved from the context file's own
+ * directory -- must be resolved by the caller first, or the coordinate
+ * relativization below lands on the wrong repo path.
+ */
 export async function findRenames(
   projectRoot: string,
   filePath: string,
@@ -340,7 +354,37 @@ export async function findRenames(
       '-50',
     ]);
 
-    return parseRenameLog(result, filePath);
+    // `git log --name-status` emits paths relative to the REPO root, not to
+    // projectRoot or cwd. Callers hold projectRoot-relative or absolute
+    // paths, so a projectRoot below the repo root (monorepo package) or an
+    // absolute target could never exact-match a rename source. Relativize
+    // the target into git's coordinate space before matching.
+    let target = filePath;
+    try {
+      const toplevel = (await git.revparse(['--show-toplevel'])).trim();
+      const repoRel = path
+        .relative(toplevel, path.resolve(projectRoot, filePath))
+        .replace(/\\/g, '/');
+      if (repoRel && !repoRel.startsWith('..') && !path.isAbsolute(repoRel)) {
+        target = repoRel;
+      }
+    } catch {
+      // Repo root unavailable (symlinked tmp roots, GIT_DIR oddities): keep
+      // the caller's form, which still matches when projectRoot IS the root.
+    }
+
+    const exact = parseRenameLog(result, target);
+    if (exact) return exact;
+
+    // A bare-filename caller keeps parseRenameLog's conservative basename
+    // fallback. Relativization can turn `old.ts` into `pkg/old.ts` (pathed),
+    // which would silently drop that fallback -- retry with the caller's
+    // bare form. Pathed targets stay no-guess.
+    const original = normalizeRenamePath(filePath);
+    if (!original.includes('/') && original !== normalizeRenamePath(target)) {
+      return parseRenameLog(result, original);
+    }
+    return null;
   } catch {
     return null;
   }

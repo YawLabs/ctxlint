@@ -238,7 +238,7 @@
       "category": "mcp-commands",
       "severity": "warning",
       "description": "A stdio command references a local file path that does not exist.",
-      "trigger": "Command starts with ./ or ../ and the resolved path does not exist.",
+      "trigger": "Command starts with ./ or ../ and the resolved path does not exist. Project-scope configs only — a global config's relative command resolves against that client's own working directory.",
       "message": "Server \"{name}\": command \"{command}\" not found",
       "fixable": false,
       "clients": [
@@ -251,7 +251,7 @@
       "category": "mcp-commands",
       "severity": "warning",
       "description": "A stdio arg looks like a local file path but the file does not exist.",
-      "trigger": "An arg matches a file path pattern (contains / with extension, or starts with ./) and the file does not exist. Project-scope configs only — a global config's relative paths resolve against that client's own working directory.",
+      "trigger": "An arg matches a file path pattern (contains / with extension, or starts with ./) and the file does not exist. Relative paths are checked in project-scope configs only — a global config's relative paths resolve against that client's own working directory. Absolute paths are cwd-independent and are checked at every scope.",
       "message": "Server \"{name}\": arg \"{arg}\" looks like a file path but doesn't exist",
       "fixable": false,
       "clients": [
@@ -366,7 +366,7 @@
       "category": "mcp-consistency",
       "severity": "warning",
       "description": "The same server name is configured differently across multiple client config files.",
-      "trigger": "Server name exists in 2+ config files with different url or command/args values.",
+      "trigger": "Server name exists in 2+ same-scope config files (project-project or user-user) with different url or command/args values. Cross-scope pairs are skipped — a user/global config differing from the project one is documented client precedence (project overrides user), not drift.",
       "message": "Server \"{name}\" is configured differently in {file1} and {file2}",
       "fixable": false,
       "clients": [

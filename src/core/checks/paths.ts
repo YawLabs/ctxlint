@@ -1,10 +1,18 @@
 import * as path from 'node:path';
 import levenshteinPkg from 'fast-levenshtein';
 const levenshtein = levenshteinPkg.get;
-import { glob } from 'glob';
+import { globIterate } from 'glob';
 import { fileExists, isDirectory, getAllProjectFiles } from '../../utils/fs.js';
 import { findRenames } from '../../utils/git.js';
 import type { ParsedContextFile, LintIssue } from '../types.js';
+
+// Mirrors scanner.ts IGNORED_DIRS. Without it, a doc glob like
+// `**/*.test.ts` (extractable from plain prose) crawls all of node_modules /
+// dist / build on every lint of a large repo just to answer an existence
+// question. Tradeoff: a glob whose ONLY matches live inside these dirs now
+// reports no-match -- consistent with the project-file walk, which never
+// surfaces those dirs either.
+const GLOB_IGNORE = ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'];
 
 let cachedProjectFiles: { root: string; files: string[] } | null = null;
 
@@ -43,10 +51,13 @@ export async function checkPaths(
       // Absolute globs (/etc/*.conf) must not be relativized against cwd, or
       // glob would treat them as relative and never match. (path.isAbsolute is
       // platform-specific: a C:/x/*.ts form only classifies absolute on Windows.)
-      const matches = path.isAbsolute(normalizedRef)
-        ? await glob(normalizedRef, { absolute: true, nodir: false })
-        : await glob(normalizedRef, { cwd: baseDir, nodir: false });
-      if (matches.length === 0) {
+      // Only existence is tested, so iterate and stop at the first match
+      // instead of collecting every path the glob expands to.
+      const iter = path.isAbsolute(normalizedRef)
+        ? globIterate(normalizedRef, { absolute: true, nodir: false, ignore: GLOB_IGNORE })
+        : globIterate(normalizedRef, { cwd: baseDir, nodir: false, ignore: GLOB_IGNORE });
+      const hasMatch = !(await iter.next()).done;
+      if (!hasMatch) {
         issues.push({
           severity: 'error',
           check: 'paths',
@@ -84,8 +95,17 @@ export async function checkPaths(
     let detail: string | undefined;
     let fixTarget: string | undefined;
 
-    // Check for git renames
-    const rename = await findRenames(projectRoot, ref.value);
+    // Check for git renames. findRenames matches in git's repo-relative
+    // coordinate space, while ref.value may be context-file-relative
+    // (./sub/file.md in a subdirectory doc) -- pass the resolved form
+    // relativized against the project root so those refs can still
+    // exact-match a rename source. A bare-filename ref stays bare (its
+    // resolved form relativizes back to itself), preserving the
+    // conservative basename fallback.
+    const rename = await findRenames(
+      projectRoot,
+      path.relative(projectRoot, resolvedPath).replace(/\\/g, '/'),
+    );
     if (rename) {
       fixTarget = rename.newPath;
       suggestion = `Did you mean ${rename.newPath}?`;

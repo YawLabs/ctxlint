@@ -5,11 +5,18 @@ import type { DiscoveredFile } from './scanner.js';
 
 // Match paths with at least one / that look like project file references
 // (trailing-slash directory refs like `src/components/` also match via the
-// `*` on the final segment; directory refs are routed to the
-// `paths/directory-not-found` rule by the consuming check). Middle segments
-// allow `*` so glob patterns with double-star segments (`src/**/*.test.ts`,
-// spec 2.1's own example) are captured; the consuming check routes anything
-// containing `*` to `paths/glob-no-match`.
+// `*` quantifier on the final segment; directory refs are routed to the
+// `paths/directory-not-found` rule by the consuming check). A middle segment
+// is either a whole-star glob (`*`/`**`) or starts with a word-ish char, so
+// double-star globs (`src/**/*.test.ts`, spec 2.1's own example) are
+// captured; the consuming check routes anything containing `*` to
+// `paths/glob-no-match`. A middle segment must NOT start with `*` followed
+// by text: markdown emphasis wrappers (`**docs/missing**`, `*either/or*`,
+// `**I/O**`) would otherwise be captured whole — bypassing the ^-anchored
+// PATH_EXCLUDE and Word/Word guards — and emit false glob-no-match errors.
+// Since `*` is also not a valid leading delimiter, emphasis kills the whole
+// match. Trade-off: leading-star named segments (`*tests/foo`) are not
+// captured.
 // Ignore URLs, common false positives.
 //
 // LIMITATION: forward-slash only. Backslash/Windows-style paths
@@ -26,7 +33,7 @@ import type { DiscoveredFile } from './scanner.js';
 // match on a line starts mid-line at the previous line's leftover lastIndex and
 // the column (and even which matches are found) goes wrong.
 const PATH_PATTERN =
-  /(?:^|[\s`"'(])((\.{0,2}\/)?(?:[\w@.*-]+\/)+[\w.*-]*(?:\.\w+)?)(?=[\s`"'),;:]|$)/gm;
+  /(?:^|[\s`"'(])((\.{0,2}\/)?(?:(?:\*{1,2}|[\w@.-][\w@.*-]*)\/)+[\w.*-]*(?:\.\w+)?)(?=[\s`"'),;:]|$)/gm;
 
 // False positive patterns to skip
 const PATH_EXCLUDE =
@@ -247,12 +254,21 @@ function extractCommandReferences(lines: string[], sections: Section[]): Command
     // COMMON_COMMANDS / $-prefix gates below keep non-command lines in bare
     // blocks (sample output, directory trees) from being extracted.
     const isShellBlock = inCodeBlock && ['bash', 'sh', 'shell', 'zsh', ''].includes(codeBlockLang);
+    // In untagged fences `>` is commonly blockquote/redirect/REPL output
+    // rather than a prompt (PR templates quote prose like "> make sure tests
+    // pass before merging", which would otherwise extract as a make command),
+    // so only `$`-prefixed lines are honored there. Tagged shell fences keep
+    // honoring the `>` prompt.
+    const isBareFence = inCodeBlock && codeBlockLang === '';
 
-    // Check for $ or > prefixed commands (only outside code blocks, or inside shell blocks)
-    // Skip markdown blockquotes (lines starting with "> " outside code blocks)
+    // Check for $ or > prefixed commands (only outside code blocks, or inside shell blocks).
+    // `>`-prefixed lines count as commands only inside TAGGED shell fences:
+    // outside code blocks they are markdown blockquotes, in bare fences see
+    // the isBareFence note above.
     if (!inCodeBlock || isShellBlock) {
       const prefixMatch = line.match(COMMAND_PREFIXES);
-      if (prefixMatch && (inCodeBlock || !line.trimStart().startsWith('>'))) {
+      const quoteLike = line.trimStart().startsWith('>');
+      if (prefixMatch && (!quoteLike || (inCodeBlock && !isBareFence))) {
         commands.push({
           value: prefixMatch[1].trim(),
           line: i + 1,
@@ -268,7 +284,11 @@ function extractCommandReferences(lines: string[], sections: Section[]): Command
       const trimmed = line.trim();
       if (trimmed && !trimmed.startsWith('#') && !trimmed.startsWith('//')) {
         // Check if it looks like a command
-        if (COMMON_COMMANDS.test(trimmed) || trimmed.startsWith('$') || trimmed.startsWith('>')) {
+        if (
+          COMMON_COMMANDS.test(trimmed) ||
+          trimmed.startsWith('$') ||
+          (trimmed.startsWith('>') && !isBareFence)
+        ) {
           const cmd = trimmed.replace(/^\s*[\$>]\s*/, '');
           if (cmd) {
             // Find the actual position of the command text in the line

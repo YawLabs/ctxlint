@@ -90,7 +90,13 @@ function contextMentionsSecret(files: ParsedContextFile[], secretName: string): 
   // (no separator) and prefix hits like `awsaccesskey`.
   const escaped = secretName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   if (isGenericSecretName(secretName)) {
-    const exactCase = new RegExp(`\\b${escaped}\\b`);
+    // Always demand the conventional uppercase env-var form, regardless of
+    // how the workflow spelled the reference: GitHub secret lookups are
+    // case-insensitive, so `${{ secrets.token }}` is valid and arrives here
+    // lowercase. Building the probe from the as-written name would let
+    // ordinary prose ("request a token") count as documentation while a
+    // conventional "Set TOKEN" doc mention would not.
+    const exactCase = new RegExp(`\\b${escaped.toUpperCase()}\\b`);
     const secretsRef = new RegExp(`\\bsecrets\\.${escaped}\\b`, 'i');
     return files.some((f) => exactCase.test(f.content) || secretsRef.test(f.content));
   }

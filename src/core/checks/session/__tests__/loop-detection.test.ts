@@ -170,11 +170,46 @@ describe('checkLoopDetection', () => {
 
   it('does not flag the same command repeated across separate sessions', async () => {
     // Routine reuse: a one-shot `claude "/release"` run on three different
-    // days is three sessions, not a loop.
+    // days is three sessions, not a loop. The one-shot merge pools these into
+    // a single per-provider stream, but the >30-minute gap split keeps each
+    // day's run in its own below-threshold segment.
+    const DAY = 24 * 60 * 60 * 1000;
     const entries = [
-      makeEntry('/release', 1, '/project/foo', 's1'),
-      makeEntry('/release', 2, '/project/foo', 's2'),
-      makeEntry('/release', 3, '/project/foo', 's3'),
+      makeEntry('/release', 1 * DAY, '/project/foo', 's1'),
+      makeEntry('/release', 2 * DAY, '/project/foo', 's2'),
+      makeEntry('/release', 3 * DAY, '/project/foo', 's3'),
+    ];
+
+    const issues = await checkLoopDetection(makeCtx(entries));
+    expect(issues).toHaveLength(0);
+  });
+
+  it('flags rapid identical one-shot sessions as a respawn loop', async () => {
+    // A headless respawn loop (`claude -p "/fix"` re-spawned every few
+    // seconds) produces N one-command sessions, each a length-1 segment below
+    // the threshold on its own. The per-provider one-shot merge keeps the
+    // pathology detectable.
+    const entries = [
+      makeEntry('claude -p "/fix"', 1_000, '/project/foo', 's1'),
+      makeEntry('claude -p "/fix"', 5_000, '/project/foo', 's2'),
+      makeEntry('claude -p "/fix"', 9_000, '/project/foo', 's3'),
+    ];
+
+    const issues = await checkLoopDetection(makeCtx(entries));
+    expect(issues).toHaveLength(1);
+    expect(issues[0].ruleId).toBe('session-loop-detection/consecutive-repeat');
+    expect(issues[0].message).toContain('3 times');
+  });
+
+  it('does not synthesize a cycle from alternating one-shot sessions', async () => {
+    // The merged one-shot stream feeds only the consecutive-repeat scan:
+    // unrelated one-shots interleaved in time would otherwise read A,B,A,B --
+    // a phantom cycle no session actually ran.
+    const entries = [
+      makeEntry('cmd A', 1_000, '/project/foo', 's1'),
+      makeEntry('cmd B', 2_000, '/project/foo', 's2'),
+      makeEntry('cmd A', 3_000, '/project/foo', 's3'),
+      makeEntry('cmd B', 4_000, '/project/foo', 's4'),
     ];
 
     const issues = await checkLoopDetection(makeCtx(entries));
@@ -208,6 +243,22 @@ describe('checkLoopDetection', () => {
     expect(issues).toHaveLength(1);
     expect(issues[0].ruleId).toBe('session-loop-detection/consecutive-repeat');
     expect(issues[0].message).toContain('npm test');
+  });
+
+  it('does not flag timestamp-less sessionId-less entries', async () => {
+    // The scanner defaults a missing timestamp to 0 and a missing sessionId
+    // to '' (the codex {command, cwd} shape has neither). With all-zero
+    // timestamps the '' pseudo-session can never split at SESSION_GAP_MS, so
+    // a routine daily one-shot would read as a 3+ repeat; such entries are
+    // dropped from the loop scan instead.
+    const entries = [
+      makeEntry('/release', 0, '/project/foo', ''),
+      makeEntry('/release', 0, '/project/foo', ''),
+      makeEntry('/release', 0, '/project/foo', ''),
+    ];
+
+    const issues = await checkLoopDetection(makeCtx(entries));
+    expect(issues).toHaveLength(0);
   });
 
   it('breaks a sessionId-less sequence at large time gaps', async () => {
