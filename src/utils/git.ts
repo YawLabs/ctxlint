@@ -358,19 +358,26 @@ export async function findRenames(
     // projectRoot or cwd. Callers hold projectRoot-relative or absolute
     // paths, so a projectRoot below the repo root (monorepo package) or an
     // absolute target could never exact-match a rename source. Relativize
-    // the target into git's coordinate space before matching.
+    // the target into git's coordinate space before matching. The repo-root
+    // segment comes from `--show-prefix` (projectRoot's path below the repo
+    // root, computed BY git) rather than path.relative against
+    // `--show-toplevel`: git reports the toplevel in canonical long form,
+    // while the caller's projectRoot may be an alias of the same directory
+    // (Windows 8.3 short names like RUNNER~1, subst drives), and a textual
+    // cross-comparison between the two forms silently fails. The remaining
+    // segment is caller-space vs caller-space, so aliasing cancels out.
     let target = filePath;
     try {
-      const toplevel = (await git.revparse(['--show-toplevel'])).trim();
-      const repoRel = path
-        .relative(toplevel, path.resolve(projectRoot, filePath))
+      const prefix = (await git.revparse(['--show-prefix'])).trim();
+      const rel = path
+        .relative(projectRoot, path.resolve(projectRoot, filePath))
         .replace(/\\/g, '/');
-      if (repoRel && !repoRel.startsWith('..') && !path.isAbsolute(repoRel)) {
-        target = repoRel;
+      if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) {
+        target = prefix + rel;
       }
     } catch {
-      // Repo root unavailable (symlinked tmp roots, GIT_DIR oddities): keep
-      // the caller's form, which still matches when projectRoot IS the root.
+      // Prefix unavailable (GIT_DIR oddities): keep the caller's form, which
+      // still matches when projectRoot IS the root.
     }
 
     const exact = parseRenameLog(result, target);

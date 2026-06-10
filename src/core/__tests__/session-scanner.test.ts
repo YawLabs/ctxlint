@@ -11,7 +11,11 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  // maxRetries: Windows can transiently ENOTEMPTY/EBUSY the rmdir while a
+  // just-closed read stream still holds the directory (observed on the CI
+  // windows-latest runners; the failure attributes to whichever test's
+  // cleanup hits the race).
+  fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 function writeJsonl(filePath: string, entries: unknown[]): void {

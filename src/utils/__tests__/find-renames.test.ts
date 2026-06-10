@@ -193,6 +193,42 @@ describe('findRenames (real git mv, unscoped rename match)', { timeout: 30000 },
     expect(result).toMatchObject({ oldPath: 'src/old.ts', newPath: 'src/new.ts' });
   });
 
+  // The CI windows runners hand out 8.3 short temp paths (RUNNER~1) while
+  // git reports the toplevel in canonical long form, so any relativization
+  // that textually compares the two forms silently fails and rename
+  // detection nulls out. Capability-probed: skipped where the volume has
+  // 8.3 generation disabled (then no short alias exists to test).
+  it.runIf(process.platform === 'win32')(
+    'finds a rename when projectRoot is an 8.3 short-path alias',
+    async () => {
+      const { execFileSync } = await import('node:child_process');
+      // Path goes unquoted into the cmd one-liner: mkdtemp paths carry no
+      // spaces, and quoting here interacts badly with execFileSync's own
+      // Windows argument joining (the output grows stray quote characters).
+      const shortForm = execFileSync(
+        'cmd',
+        ['/c', `for %I in (${realTmpDir}) do @echo %~sI`],
+        { encoding: 'utf-8' },
+      ).trim();
+      if (!shortForm || shortForm.toLowerCase() === realTmpDir.toLowerCase()) {
+        return; // no short alias on this volume -- nothing to exercise
+      }
+
+      // Subdir projectRoot through the alias: this is the shape that nulls
+      // when relativization textually compares the aliased caller path with
+      // git's long-form toplevel (at the repo root the caller's relative
+      // target happens to match without relativization, hiding the bug).
+      await commit('add', [{ rel: 'pkg/src/old.ts', body: 'a\nb\nc\nd\ne\n' }]);
+      const git = simpleGit(realTmpDir);
+      await git.mv('pkg/src/old.ts', 'pkg/src/new.ts');
+      await git.commit('rename old -> new');
+
+      resetGit();
+      const result = await findRenames(path.join(shortForm, 'pkg'), 'src/old.ts');
+      expect(result).toMatchObject({ oldPath: 'pkg/src/old.ts', newPath: 'pkg/src/new.ts' });
+    },
+  );
+
   it('keeps the bare-filename basename fallback through findRenames', async () => {
     await commit('add', [{ rel: 'src/lib/old.ts', body: 'a\nb\nc\nd\ne\n' }]);
     const git = simpleGit(realTmpDir);
