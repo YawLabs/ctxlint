@@ -8,6 +8,14 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-06-10
+
+### Security
+- Bumped **`brace-expansion`** to `>=5.0.6` via `pnpm.overrides`, closing GHSA-jxxr-4gwj-5jf2 (moderate: large numeric ranges defeat the documented `max` DoS protection). The vulnerable copy ships bundled in `dist/index.js` via `glob` -> `minimatch`, and ctxlint runs user-supplied globs from context files through that path, so the bundled copy is the one that matters. `pnpm audit` now reports no known vulnerabilities. No runtime API change.
+
+### Internal
+- CI workflows bumped `pnpm/action-setup` v4 -> v6 (node24 runtime) ahead of the 2026-06-16 node20 Actions deprecation.
+
 ## [0.15.0] - 2026-06-10
 
 Full-pass audit of the entire codebase (161 files, every finding adversarially verified) followed by an independent review of the fix sweep: ~120 findings addressed across all pillars.
