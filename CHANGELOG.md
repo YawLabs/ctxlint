@@ -8,6 +8,26 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-06-10
+
+Full-pass audit of the entire codebase (161 files, every finding adversarially verified) followed by an independent review of the fix sweep: ~120 findings addressed across all pillars.
+
+### Added
+- **GitHub Actions CI** -- `ci.yml` (push/PR) and `release.yml` (`v*` tags) run lint, type-check, build, and tests across ubuntu/windows x node 20/22; `release.yml` publishes to npm with provenance, and `release.sh` now hands the publish off to CI and watches the run. `pretest` builds `dist/` so CLI-level tests can never silently exercise a stale bundle.
+- **content-secrets rules published** -- the shipped inline-secrets check now has its rules in `context-lint-rules.json` and a spec section (catalog: 39 rules / 12 categories).
+- **Catalog integrity guards** -- duplicate-rule-ID and unused-category checks, a prefix==category test (with the documented `ci/*` legacy allowlist), real-schema negative tests, and `build.mjs` now fails loudly on catalog drift instead of silently regenerating prose in place.
+
+### Fixed
+- **git utils**: both git readers pass `core.quotepath=false` so non-ASCII paths count and rename-match correctly; `normalizePath`/`normalizeRenamePath` case-fold on win32; rename detection works from subdirectory project roots, `./`-relative doc refs, and absolute MCP inputs (targets are relativized into git's repo-root coordinate space); ambiguous same-basename renames return no match instead of guessing (the result feeds an autofix); glob refs in staleness convert to their static directory prefix instead of silently counting 0.
+- **parser**: `parseSections` only closes a section on a heading of equal-or-shallower depth; markdown emphasis (`**docs/missing**`) is no longer captured as a path; blockquote prose inside bare fences is no longer extracted as commands; double-star globs are extracted and validated with an ignore list and first-match short-circuit; `tsc` maps to the `typescript` package before the dependency lookup.
+- **MCP pillar**: loopback coverage restored for `[::1]` and all of `127/8` (shared definition with `http-no-tls`, which now runs regardless of git-tracked status); `sk-ant-`/`sk-proj-` key patterns detect modern keys without flagging kebab-case identifiers; env-syntax autofix no longer corrupts multi-reference values; windsurf gets wrong-syntax checking; server line attribution is depth-aware; mixed-type `env`/`headers` blocks no longer disable secret scanning; consistency and path checks are scope-aware (user-user drift compared, only cross-scope pairs skipped; absolute args existence-checked at every scope).
+- **session pillar**: loop detection groups by provider+session and splits at 30-minute gaps (routine daily reuse no longer flagged; rapid one-shot respawn loops still detected via a same-provider merge; timestamp-less entries excluded); stream errors degrade to partial results instead of crashing the audit; BOM-safe history parsing; sibling git probing bounded to a concurrency pool; symlinked skills/agents visible; quote-aware `gh secret set` name extraction; MEMORY.md line-count off-by-one fixed.
+- **context checks**: contradiction detection is negation-aware ("never use yarn" no longer endorses yarn) and scans every match on a line; package-manager builtins (`pnpm install`) are no longer flagged as missing scripts; `hooks.Stop` and `permissions.ask` are credited as hard enforcement; the tier-tokens settings cache resets between runs; generic CI secret names require the uppercase env-var form in docs.
+- **CLI/MCP server**: `--format json|sarif` stdout carries only the payload (progress and the `--fix` prompt go to stderr); `--depth 0` is honored; `ctxlint_fix` reports post-fix state instead of pre-fix counts.
+
+### Removed
+- **Package `main`/`exports` entry point** -- ctxlint is a CLI/MCP server, not a library; the entry added briefly during this cycle pointed at the self-executing bundle, so `import '@yawlabs/ctxlint'` would run the linter against the host process argv. The bare import now fails at resolution (`bin` and `./package.json` remain).
+
 ## [0.14.1] - 2026-06-07
 
 ### Security
