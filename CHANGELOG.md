@@ -8,6 +8,18 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-06-10
+
+### Added
+- **`mcp-security/secret-scan-skipped`** (info, experimental) -- the three git-gated secret rules (`hardcoded-bearer`, `hardcoded-api-key`, `secret-in-url`) skip in files git does not track, but previously also skipped *silently* when git could not answer at all (binary missing, permissions, failing repo). Tracking detection is now tri-state: a determined "untracked" stays silent as before, while an undeterminable status emits this finding so a possibly-tracked file never passes blind. MCP catalog grows to 29 rules.
+
+### Fixed
+- Both MCP spec documents still showed the over-wide `sk-(proj-)?[A-Za-z0-9_-]{20,}` key pattern that v0.15.0 split into three (`sk-ant-`, `sk-proj-`, and an alphanumeric-only generic form); the docs now match the shipped patterns.
+- The `frontmatter/missing` suggestion for Windsurf rules derives its trigger list from `VALID_WINDSURF_TRIGGERS` instead of a hardcoded string that omitted `model_decision`.
+
+### Internal
+- Documented the deliberate bare-fence divergence between the context parser (extracts path references; file trees dominate) and the skills pillar (skips them; usage examples dominate) on both sides of the split.
+
 ## [0.15.1] - 2026-06-10
 
 ### Security
