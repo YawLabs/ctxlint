@@ -89,7 +89,10 @@ function formatJsonError(content: string, err: unknown): string {
   // in the source to derive an approximate line/col.
   const pos = findFirstErrorPos(content, msg);
   if (pos !== null) {
-    return `${msg} (${posToLineCol(content, pos)})`;
+    // "near": the position comes from a best-effort substring search
+    // (findFirstErrorPos), which can land on an earlier identical token, so the
+    // line/col is approximate rather than the exact parser-reported site.
+    return `${msg} (near ${posToLineCol(content, pos)})`;
   }
   return msg;
 }

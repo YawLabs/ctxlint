@@ -90,6 +90,13 @@ function safeLoadConfig(projectRoot: string): ReturnType<typeof loadConfig> {
 }
 
 function validateFilePathInput(rawPath: string): void {
+  // Reject the empty string and bare-root references ('.', './'): these resolve
+  // to the project root itself, so resolveWithinRoot returns root and the tool
+  // would answer `{ path: '', exists: true }` -- a meaningless "the root exists"
+  // for a tool whose job is to validate a *file* reference.
+  if (rawPath.trim() === '' || rawPath === '.' || rawPath === './') {
+    throw new Error('path must be a non-empty file path, not the project root');
+  }
   if (PATH_DISALLOWED.test(rawPath)) {
     throw new Error(
       `path contains disallowed character ${describeDisallowed(rawPath)} (control chars and shell metacharacters are rejected)`,
@@ -164,7 +171,7 @@ server.tool(
   'ctxlint_validate_path',
   'Check if a file path referenced in a context file actually exists in the project. Returns the file status and suggests corrections if the path is invalid.',
   {
-    path: z.string().describe('The file path to validate'),
+    path: z.string().min(1, 'path must not be empty').describe('The file path to validate'),
     projectPath: z.string().optional().describe('Project root. Defaults to cwd.'),
   },
   {

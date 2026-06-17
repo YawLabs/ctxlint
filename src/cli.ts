@@ -329,16 +329,21 @@ export async function runCli() {
                 ignoreRules: liveConfig?.ignoreRules,
               });
 
-              if (result.files.length === 0) {
-                console.log('\nNo context files found.\n');
-              } else if (liveOptions.tokensOnly) {
-                console.log(formatTokenReport(result));
-              } else if (liveOptions.format === 'json') {
-                console.log(formatJson(result));
-              } else if (liveOptions.format === 'sarif') {
-                console.log(formatSarif(result));
-              } else {
-                console.log(formatText(result, liveOptions.verbose));
+              // Honor --quiet on every watch tick, matching the initial run's
+              // `if (!options.quiet)` gate. Without this, `ctxlint --watch
+              // --quiet` printed a full report on every filesystem change.
+              if (!liveOptions.quiet) {
+                if (result.files.length === 0) {
+                  console.log('\nNo context files found.\n');
+                } else if (liveOptions.tokensOnly) {
+                  console.log(formatTokenReport(result));
+                } else if (liveOptions.format === 'json') {
+                  console.log(formatJson(result));
+                } else if (liveOptions.format === 'sarif') {
+                  console.log(formatSarif(result));
+                } else {
+                  console.log(formatText(result, liveOptions.verbose));
+                }
               }
             } catch (err) {
               console.error('Error:', err instanceof Error ? err.message : err);

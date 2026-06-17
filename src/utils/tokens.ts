@@ -56,16 +56,27 @@ function getEncoder(): Encoder | null {
 }
 
 // Fallback estimate for when tiktoken is unavailable. ~4 chars per BPE token
-// holds for English prose and code, but CJK text encodes at roughly one token
-// per codepoint, so a flat length/4 undercounts Japanese/Chinese/Korean text
-// 3-4x -- enough for an all-CJK CLAUDE.md to sail under every token budget.
-// CJK codepoints count as 1 token each; everything else at 1/4.
-const CJK_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu;
+// holds for English prose and code, but many scripts encode at roughly one
+// token per codepoint, so a flat length/4 undercounts them 3-4x -- enough for
+// such a CLAUDE.md to sail under every token budget. Those dense scripts count
+// as 1 token each; everything else at 1/4.
+//
+// Coverage: \p{Script=Han} already includes the CJK Unified Ideographs
+// Extensions (Ext A-G are all Han). Hiragana/Katakana/Hangul are the JP/KR
+// syllabaries. Thai and the major Brahmic scripts (Devanagari/Bengali/Tamil)
+// were previously dropped into the prose bucket and under-counted; they encode
+// ~1 token/codepoint too.
+// Deliberately conservative: scripts that tokenize closer to prose
+// (Latin-extended, Cyrillic, Greek) are intentionally NOT added, and adding a
+// script can only raise the estimate, never lower it -- so the budget check
+// stays at worst conservative on this fallback path.
+const DENSE_SCRIPT_RE =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Thai}\p{Script=Devanagari}\p{Script=Bengali}\p{Script=Tamil}]/gu;
 
 export function approximateTokens(text: string): number {
   if (!text) return 0;
-  const cjk = text.match(CJK_RE)?.length ?? 0;
-  return cjk + Math.ceil((text.length - cjk) / 4);
+  const dense = text.match(DENSE_SCRIPT_RE)?.length ?? 0;
+  return dense + Math.ceil((text.length - dense) / 4);
 }
 
 export function countTokens(text: string): number {
