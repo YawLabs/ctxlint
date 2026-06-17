@@ -109,6 +109,54 @@ export interface DiscoveredFile {
   type: 'context' | 'mcp-config';
 }
 
+// Reading and tokenizing a multi-MB file stalls the single-threaded, long-
+// running stdio MCP server; 5 MB (~1.25M tokens) is far past any real context
+// file, so cap reads there. Applies to project scans only -- the global scan
+// (scanGlobalMcpConfigs) deliberately keeps reading ~/.claude.json, Claude
+// Code's own large state file, via its streaming key-peek.
+const MAX_FILE_BYTES = 5 * 1024 * 1024;
+
+function resolveRealRoot(projectRoot: string): string {
+  try {
+    return fs.realpathSync(projectRoot);
+  } catch {
+    return path.resolve(projectRoot);
+  }
+}
+
+/**
+ * Decide whether a discovered project file must be EXCLUDED from linting:
+ *   - a symlink whose real target escapes the project root (a CLAUDE.md
+ *     symlinked to ~/.ssh/config or /etc/passwd would otherwise have its
+ *     out-of-tree content read, tokenized, and echoed into findings); or
+ *   - a file over MAX_FILE_BYTES (reading it would stall the stdio server).
+ * `realProjectRoot` must be realpath-resolved so an in-root symlink target is
+ * not misjudged as escaping when the root itself lives under a symlinked path
+ * (e.g. macOS /tmp -> /private/tmp).
+ */
+function isExcludedScanTarget(
+  normalized: string,
+  realProjectRoot: string,
+  symlink: boolean,
+): boolean {
+  if (symlink) {
+    let real: string;
+    try {
+      real = fs.realpathSync(normalized);
+    } catch {
+      return true; // broken / unreadable link
+    }
+    const rel = path.relative(realProjectRoot, real);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) return true;
+  }
+  try {
+    if (fs.statSync(normalized).size > MAX_FILE_BYTES) return true;
+  } catch {
+    return true;
+  }
+  return false;
+}
+
 export async function scanForContextFiles(
   projectRoot: string,
   options: ScanOptions = {},
@@ -150,6 +198,7 @@ export async function scanForContextFiles(
     dirsToScan.map((dir) => glob(patterns, { cwd: dir, absolute: true, nodir: true, dot: true })),
   );
 
+  const realRoot = resolveRealRoot(projectRoot);
   for (const matches of perDirMatches) {
     for (const match of matches) {
       const normalized = path.normalize(match);
@@ -158,6 +207,7 @@ export async function scanForContextFiles(
 
       const relativePath = path.relative(projectRoot, normalized);
       const symlink = isSymlink(normalized);
+      if (isExcludedScanTarget(normalized, realRoot, symlink)) continue;
       const target = symlink ? readSymlinkTarget(normalized) : undefined;
 
       found.push({
@@ -184,6 +234,7 @@ const MCP_CONFIG_PATTERNS = [
 export async function scanForMcpConfigs(projectRoot: string): Promise<DiscoveredFile[]> {
   const found: DiscoveredFile[] = [];
   const seen = new Set<string>();
+  const realRoot = resolveRealRoot(projectRoot);
 
   for (const pattern of MCP_CONFIG_PATTERNS) {
     const matches = await glob(pattern, {
@@ -200,6 +251,7 @@ export async function scanForMcpConfigs(projectRoot: string): Promise<Discovered
 
       const relativePath = path.relative(projectRoot, normalized);
       const symlink = isSymlink(normalized);
+      if (isExcludedScanTarget(normalized, realRoot, symlink)) continue;
       const target = symlink ? readSymlinkTarget(normalized) : undefined;
 
       found.push({

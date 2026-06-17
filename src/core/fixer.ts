@@ -44,7 +44,11 @@ export function applyFixes(result: LintResult, options: FixOptions = {}): FixSum
           skippedSymlinks.add(file.path);
           continue;
         }
-        const key = `${issue.fix.line}:${issue.fix.oldText}:${issue.fix.newText}`;
+        // Include column in the dedupe key: two fixes with the same
+        // (line, oldText, newText) but DIFFERENT columns are distinct
+        // occurrences and must both survive (the replaceAll path keys on the
+        // empty-string suffix and still collapses true duplicates).
+        const key = `${issue.fix.line}:${issue.fix.oldText}:${issue.fix.newText}:${issue.fix.column ?? ''}`;
         let seenInFile = dedupeKeys.get(issue.fix.file);
         if (!seenInFile) {
           seenInFile = new Set();
@@ -130,18 +134,37 @@ export function applyFixes(result: LintResult, options: FixOptions = {}): FixSum
         // An empty oldText would match at every position and never advance.
         if (fix.oldText.length === 0) continue;
         let matched = false;
-        let from = 0;
-        while (from <= original.length) {
-          const start = original.indexOf(fix.oldText, from);
-          if (start === -1) break;
+        if (fix.column != null) {
+          // Column-anchored: claim ONLY the occurrence the producer located,
+          // so a stale value that is a substring of a KEPT value on the same
+          // line (e.g. `src/old.ts` inside `src/old.ts.bak`) is not rewritten
+          // too. Verify the line still reads oldText at that column -- it can
+          // drift between scan and apply -- and skip (not blind-replace) if not.
+          const start = fix.column - 1;
           const end = start + fix.oldText.length;
-          const overlapsClaimed = replacements.some((r) => start < r.end && end > r.start);
-          if (overlapsClaimed) {
-            from = start + 1;
-          } else {
-            replacements.push({ start, end, newText: fix.newText });
-            matched = true;
-            from = end;
+          if (start >= 0 && original.slice(start, end) === fix.oldText) {
+            const overlapsClaimed = replacements.some((r) => start < r.end && end > r.start);
+            if (!overlapsClaimed) {
+              replacements.push({ start, end, newText: fix.newText });
+              matched = true;
+            }
+          }
+        } else {
+          // No column: rewrite every occurrence of oldText on the line
+          // (replaceAll). Safe when the producer's oldText is unambiguous.
+          let from = 0;
+          while (from <= original.length) {
+            const start = original.indexOf(fix.oldText, from);
+            if (start === -1) break;
+            const end = start + fix.oldText.length;
+            const overlapsClaimed = replacements.some((r) => start < r.end && end > r.start);
+            if (overlapsClaimed) {
+              from = start + 1;
+            } else {
+              replacements.push({ start, end, newText: fix.newText });
+              matched = true;
+              from = end;
+            }
           }
         }
         if (matched) {

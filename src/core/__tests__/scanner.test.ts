@@ -124,6 +124,41 @@ describe('scanner', () => {
     expect(claude?.isSymlink).toBe(true);
     expect(claude?.symlinkTarget).toBe(target);
   });
+
+  // Symlink whose real target is outside the project root must be excluded.
+  it('skips a context-file symlink whose target escapes the project root', async () => {
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-outside-'));
+    const outsideTarget = path.join(outsideDir, 'secret.md');
+    fs.writeFileSync(outsideTarget, '# outside the project root');
+    const link = path.join(tmpDir, 'CLAUDE.md');
+    try {
+      fs.symlinkSync(outsideTarget, link);
+    } catch {
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+      return; // symlinks unsupported in this env
+    }
+    try {
+      const files = await scanForContextFiles(tmpDir);
+      expect(files.find((f) => f.relativePath === 'CLAUDE.md')).toBeUndefined();
+    } finally {
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  // 5 MB cap: a file whose byte count exceeds MAX_FILE_BYTES must be excluded.
+  it('skips a context file larger than the 5 MB cap', async () => {
+    const filePath = path.join(tmpDir, 'CLAUDE.md');
+    fs.writeFileSync(filePath, Buffer.alloc(5 * 1024 * 1024 + 1, 'x'));
+    const files = await scanForContextFiles(tmpDir);
+    expect(files.find((f) => f.relativePath === 'CLAUDE.md')).toBeUndefined();
+  });
+
+  it('includes a context file at exactly the 5 MB cap', async () => {
+    const filePath = path.join(tmpDir, 'CLAUDE.md');
+    fs.writeFileSync(filePath, Buffer.alloc(5 * 1024 * 1024, 'x'));
+    const files = await scanForContextFiles(tmpDir);
+    expect(files.find((f) => f.relativePath === 'CLAUDE.md')).toBeDefined();
+  });
 });
 
 describe('nested-dotdir pattern discovery (regression guard)', () => {

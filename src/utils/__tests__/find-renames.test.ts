@@ -205,11 +205,9 @@ describe('findRenames (real git mv, unscoped rename match)', { timeout: 30000 },
       // Path goes unquoted into the cmd one-liner: mkdtemp paths carry no
       // spaces, and quoting here interacts badly with execFileSync's own
       // Windows argument joining (the output grows stray quote characters).
-      const shortForm = execFileSync(
-        'cmd',
-        ['/c', `for %I in (${realTmpDir}) do @echo %~sI`],
-        { encoding: 'utf-8' },
-      ).trim();
+      const shortForm = execFileSync('cmd', ['/c', `for %I in (${realTmpDir}) do @echo %~sI`], {
+        encoding: 'utf-8',
+      }).trim();
       if (!shortForm || shortForm.toLowerCase() === realTmpDir.toLowerCase()) {
         return; // no short alias on this volume -- nothing to exercise
       }

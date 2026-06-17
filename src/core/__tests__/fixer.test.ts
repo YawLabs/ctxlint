@@ -767,4 +767,89 @@ describe('applyFixes', () => {
       expect(fs.readFileSync(filePath, 'utf-8')).toContain('src/new.ts');
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Column-anchored fix (FixAction.column).
+  //
+  // When a stale path is a substring of a KEPT path on the same line
+  // (e.g. `src/old.ts` inside `src/old.ts.bak`), a replaceAll rewrite would
+  // corrupt the kept path. The column field lets the fixer claim only the
+  // exact occurrence the scanner located.
+  // -------------------------------------------------------------------------
+  describe('column-anchored fixes', () => {
+    it('rewrites only the column-pinned occurrence when stale text is a substring of a kept path', () => {
+      // Line: "See src/old.ts and src/old.ts.bak"
+      // src/old.ts starts at column 5 (1-indexed). src/old.ts.bak is the
+      // kept path; its leading `src/old.ts` must NOT be rewritten.
+      const line = 'See src/old.ts and src/old.ts.bak';
+      const filePath = writeFixture('CLAUDE.md', `${line}\n`);
+      const result = makeResult([
+        {
+          path: 'CLAUDE.md',
+          isSymlink: false,
+          tokens: 10,
+          lines: 1,
+          issues: [
+            {
+              severity: 'error',
+              check: 'paths',
+              line: 1,
+              message: 'src/old.ts does not exist',
+              fix: {
+                file: filePath,
+                line: 1,
+                oldText: 'src/old.ts',
+                newText: 'src/new.ts',
+                column: 5, // points at the standalone `src/old.ts`, not the one inside .bak
+              },
+            },
+          ],
+        },
+      ]);
+
+      const summary = applyFixes(result);
+      expect(summary.totalFixes).toBe(1);
+
+      const updated = fs.readFileSync(filePath, 'utf-8');
+      // The standalone ref is rewritten.
+      expect(updated).toContain('src/new.ts');
+      // The .bak path keeps its original prefix -- not corrupted to src/new.ts.bak.
+      expect(updated).toContain('src/old.ts.bak');
+    });
+
+    it('skips a column-anchored fix when the line has drifted since scan', () => {
+      // Simulate: scanner saw `src/old.ts` at column 5, but the file was edited
+      // before apply and that column now holds different text. The fixer must
+      // skip rather than blind-replace.
+      const filePath = writeFixture('CLAUDE.md', 'See src/other.ts instead\n');
+      const original = fs.readFileSync(filePath, 'utf-8');
+      const result = makeResult([
+        {
+          path: 'CLAUDE.md',
+          isSymlink: false,
+          tokens: 10,
+          lines: 1,
+          issues: [
+            {
+              severity: 'error',
+              check: 'paths',
+              line: 1,
+              message: 'src/old.ts does not exist',
+              fix: {
+                file: filePath,
+                line: 1,
+                oldText: 'src/old.ts',
+                newText: 'src/new.ts',
+                column: 5, // column 5 now reads 'src/other.ts', not 'src/old.ts'
+              },
+            },
+          ],
+        },
+      ]);
+
+      const summary = applyFixes(result);
+      expect(summary.totalFixes).toBe(0);
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe(original);
+    });
+  });
 });

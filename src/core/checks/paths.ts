@@ -147,7 +147,18 @@ export async function checkPaths(
       suggestion,
       detail,
       fix: fixText
-        ? { file: file.filePath, line: ref.line, oldText: ref.value, newText: fixText }
+        ? {
+            file: file.filePath,
+            line: ref.line,
+            oldText: ref.value,
+            newText: fixText,
+            // Anchor the rewrite to this reference's exact column so a stale
+            // path that is a substring of a kept path on the same line is not
+            // also rewritten. ref.column points at the start of ref.value, and
+            // ref.value is a prefix of the raw on-line match, so the fixer's
+            // verify-slice (original.slice(col-1, col-1+len) === oldText) holds.
+            column: ref.column,
+          }
         : undefined,
     });
   }
