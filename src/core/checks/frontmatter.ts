@@ -41,11 +41,15 @@ function parseFrontmatter(content: string): FrontmatterResult {
   let arrayKey = ''; // tracks a key whose value is a YAML array
 
   for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (line === '---') {
+    // The closing fence must be at column 0 to match the host loaders
+    // (gray-matter / Cursor): an indented `   ---` does NOT close the
+    // frontmatter, so the file parses as unclosed (which the suggestion text
+    // for frontmatter/unclosed explicitly warns about). Compare un-trimmed.
+    if (lines[i] === '---') {
       endLine = i + 1; // 1-indexed
       break;
     }
+    const line = lines[i].trim();
 
     // Collect YAML array items (- "value") into the preceding key
     if (line.startsWith('- ') && arrayKey) {

@@ -119,6 +119,25 @@ export async function checkPaths(
       }
     }
 
+    // fixTarget is always project-root-relative (rename.newPath is git
+    // repo-relative; findClosestMatch returns project-root-relative), but the
+    // autofix replaces ref.value literally on its line. When the ref was
+    // resolved from the context file's OWN directory (an explicit ./.. ref),
+    // a root-relative newText would be re-interpreted relative to contextDir
+    // by the consumer -- e.g. './sub/file.md' -> 'docs/sub/moved.md' reads as
+    // docs/docs/sub/moved.md. Re-express the target in the ref's OWN base so
+    // newText and oldText share a coordinate space. The human-readable
+    // suggestion keeps the project-root-relative form.
+    let fixText = fixTarget;
+    if (fixTarget && baseDir === contextDir) {
+      fixText = path.relative(contextDir, path.resolve(projectRoot, fixTarget)).replace(/\\/g, '/');
+      // Re-add the leading ./ when the original ref carried one, so the
+      // rewritten ref keeps its explicit-relative shape.
+      if (/^\.\//.test(normalizedRef) && !fixText.startsWith('.')) {
+        fixText = `./${fixText}`;
+      }
+    }
+
     issues.push({
       severity: 'error',
       check: 'paths',
@@ -127,8 +146,8 @@ export async function checkPaths(
       message: `${ref.value} does not exist`,
       suggestion,
       detail,
-      fix: fixTarget
-        ? { file: file.filePath, line: ref.line, oldText: ref.value, newText: fixTarget }
+      fix: fixText
+        ? { file: file.filePath, line: ref.line, oldText: ref.value, newText: fixText }
         : undefined,
     });
   }

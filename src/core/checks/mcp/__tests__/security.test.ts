@@ -469,4 +469,191 @@ describe('checkMcpSecurity', () => {
     const issues = await checkMcpSecurity(config, '/project');
     expect(issues.filter((i) => i.message.includes('hardcoded API key'))).toHaveLength(0);
   });
+
+  // --- A1: secrets in CLI args ---
+
+  it('flags a hardcoded key in --flag=value form in args', async () => {
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'api',
+          transport: 'stdio',
+          command: 'npx',
+          args: ['server', '--api-key=sk-proj-abcdefghijklmnopqrstuvwxyz1234567890'],
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    const apiKey = issues.find((i) => i.ruleId === 'mcp-security/hardcoded-api-key');
+    expect(apiKey).toBeDefined();
+    expect(apiKey!.severity).toBe('error');
+    // Fix replaces only the literal key, leaving the --flag= prefix intact.
+    expect(apiKey!.fix).toBeDefined();
+    expect(apiKey!.fix!.oldText).toBe('sk-proj-abcdefghijklmnopqrstuvwxyz1234567890');
+    expect(apiKey!.fix!.newText).toBe('${API_API_KEY}');
+  });
+
+  it('flags a hardcoded key in --flag value (separate-element) form in args', async () => {
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'gh',
+          transport: 'stdio',
+          command: 'npx',
+          args: ['server', '--token', 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij'],
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    const apiKey = issues.find((i) => i.ruleId === 'mcp-security/hardcoded-api-key');
+    expect(apiKey).toBeDefined();
+    expect(apiKey!.fix!.oldText).toBe('ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij');
+  });
+
+  it('does not flag an env-ref-only arg value', async () => {
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'api',
+          transport: 'stdio',
+          command: 'npx',
+          args: ['server', '--api-key=${API_KEY}', '--token', '${TOKEN}'],
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    expect(issues.filter((i) => i.ruleId === 'mcp-security/hardcoded-api-key')).toHaveLength(0);
+  });
+
+  // --- A2: secret-in-url no longer whole-string-gated by a stray env ref ---
+
+  it('flags a hardcoded api_key in the URL beside an unrelated env ref', async () => {
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'api',
+          transport: 'http',
+          url: 'https://api.example.com/mcp?api_key=mySecret123&ws=${WS}',
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    expect(issues.find((i) => i.ruleId === 'mcp-security/secret-in-url')).toBeDefined();
+  });
+
+  it('does not flag a URL whose secret param value is itself an env ref', async () => {
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'api',
+          transport: 'http',
+          url: 'https://api.example.com/mcp?token=${TOK}&region=us',
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    expect(issues.filter((i) => i.ruleId === 'mcp-security/secret-in-url')).toHaveLength(0);
+  });
+
+  // --- A3: per-value scans no longer disabled by a stray env ref ---
+
+  it('flags a hardcoded Bearer token sitting next to an unrelated env ref', async () => {
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'api',
+          transport: 'http',
+          url: 'https://api.example.com/mcp',
+          headers: {
+            // A real token glued to an unrelated ${VAR} must still fire.
+            Authorization: 'Bearer sk-proj-abcdefghijklmnopqrstuvwxyz1234567890${UNUSED}',
+          },
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    const bearer = issues.find((i) => i.message.includes('hardcoded Bearer token'));
+    expect(bearer).toBeDefined();
+    expect(bearer!.severity).toBe('error');
+  });
+
+  it('flags a known key in a non-Authorization header beside an unrelated env ref', async () => {
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'api',
+          transport: 'http',
+          url: 'https://api.example.com/mcp',
+          headers: {
+            'X-Api-Key': '${PREFIX}sk-proj-abcdefghijklmnopqrstuvwxyz1234567890',
+          },
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    expect(issues.find((i) => i.ruleId === 'mcp-security/hardcoded-api-key')).toBeDefined();
+  });
+
+  it('flags a known key in env beside an unrelated env ref', async () => {
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'github-server',
+          transport: 'stdio',
+          command: 'npx',
+          env: {
+            GITHUB_TOKEN: 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij ${UNUSED}',
+          },
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    expect(issues.find((i) => i.ruleId === 'mcp-security/hardcoded-api-key')).toBeDefined();
+  });
+
+  it('keeps an all-env-ref value safe across header, bearer, env, and url', async () => {
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'api',
+          transport: 'http',
+          url: 'https://api.example.com/mcp?token=${TOK}',
+          headers: {
+            Authorization: 'Bearer ${API_KEY}',
+            'X-Api-Key': '${API_KEY}',
+          },
+          env: {
+            GITHUB_TOKEN: '${GH_TOKEN}',
+          },
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    expect(
+      issues.filter(
+        (i) =>
+          i.ruleId === 'mcp-security/hardcoded-bearer' ||
+          i.ruleId === 'mcp-security/hardcoded-api-key' ||
+          i.ruleId === 'mcp-security/secret-in-url',
+      ),
+    ).toHaveLength(0);
+  });
 });

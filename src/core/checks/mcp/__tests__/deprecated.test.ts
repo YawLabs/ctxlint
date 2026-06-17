@@ -38,8 +38,59 @@ describe('checkMcpDeprecated', () => {
     expect(issues[0].severity).toBe('warning');
     expect(issues[0].message).toContain('deprecated SSE transport');
     expect(issues[0].fix).toBeDefined();
-    expect(issues[0].fix!.oldText).toBe('"sse"');
-    expect(issues[0].fix!.newText).toBe('"http"');
+    // oldText is the full matched type pair (not a bare '"sse"'), so the
+    // fixer's replaceAll is anchored to the real `"type": "sse"` and can't
+    // clobber an unrelated '"sse"' token sharing the line.
+    expect(issues[0].fix!.oldText).toBe('"type": "sse"');
+    expect(issues[0].fix!.newText).toBe('"type": "http"');
+  });
+
+  it('does not rewrite a description value "sse" sharing the type line', async () => {
+    // The `"type": "sse"` pair and a description value '"sse"' live on the
+    // same minified line. A bare-'"sse"' oldText would replaceAll both; the
+    // full-pair oldText rewrites only the transport type.
+    const config = makeConfig({
+      content:
+        '{\n  "mcpServers": {\n    "old": {\n      "type": "sse", "description": "speaks sse" }\n  }\n}',
+      servers: [
+        {
+          name: 'old',
+          transport: 'sse',
+          line: 3,
+          raw: { type: 'sse', description: 'speaks sse' },
+        },
+      ],
+    });
+    const issues = await checkMcpDeprecated(config, '/project');
+    expect(issues).toHaveLength(1);
+    expect(issues[0].fix).toBeDefined();
+    expect(issues[0].fix!.oldText).toBe('"type": "sse"');
+    expect(issues[0].fix!.newText).toBe('"type": "http"');
+    // The fix string must not be a bare '"sse"' that would also catch the
+    // description's '"sse"' substring.
+    expect(issues[0].fix!.oldText).not.toBe('"sse"');
+  });
+
+  it('preserves original whitespace in the matched type pair', async () => {
+    // Non-canonical spacing around the colon must round-trip into oldText so
+    // the fixer can locate it verbatim on disk.
+    const config = makeConfig({
+      content:
+        '{\n  "mcpServers": {\n    "old": {\n      "type"   :   "sse",\n      "url": "https://old.example.com/sse"\n    }\n  }\n}',
+      servers: [
+        {
+          name: 'old',
+          transport: 'sse',
+          url: 'https://old.example.com/sse',
+          line: 3,
+          raw: { type: 'sse', url: 'https://old.example.com/sse' },
+        },
+      ],
+    });
+    const issues = await checkMcpDeprecated(config, '/project');
+    expect(issues).toHaveLength(1);
+    expect(issues[0].fix!.oldText).toBe('"type"   :   "sse"');
+    expect(issues[0].fix!.newText).toBe('"type"   :   "http"');
   });
 
   it('does not flag http transport', async () => {

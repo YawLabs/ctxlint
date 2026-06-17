@@ -331,7 +331,12 @@ describe('checkPaths', () => {
       expect(notFound!.suggestion).toContain('docs/sub/moved.md');
       // Provenance comes from the rename match, not the fuzzy fallback.
       expect(notFound!.detail).toMatch(/commit [a-f0-9]{7}/);
-      expect(notFound!.fix?.newText).toBe('docs/sub/moved.md');
+      // The autofix newText must share the ref's coordinate space. The ref
+      // (./sub/file.md) is resolved from the doc's OWN dir, so the rewrite
+      // is doc-relative too -- ./sub/moved.md, not the root-relative
+      // docs/sub/moved.md the suggestion shows. A root-relative newText would
+      // re-resolve under docs/ to docs/docs/sub/moved.md when applied.
+      expect(notFound!.fix?.newText).toBe('./sub/moved.md');
     },
   );
 });

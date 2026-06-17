@@ -412,9 +412,37 @@ describe('checkCommands', () => {
   // Cover the full set of shorthand package managers (the regex matches
   // npm|pnpm|yarn|bun followed by test|start|build|dev|lint|…) so a future
   // edit to the pattern can't silently drop one.
+  // `bun test` runs Bun's builtin test runner — no `test` script required, so
+  // it must never produce commands/script-not-found, even when package.json
+  // has no `test` script. (`npm/pnpm/yarn test` DO resolve to a script and
+  // stay validated — covered by the it.each below.)
+  it('does NOT flag `bun test` as a missing script (builtin test runner)', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nbun test\n```\n',
+      },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/script-not-found')).toBeUndefined();
+  });
+
+  it('does NOT emit package-json-missing for a `bun test`-only file (builtin)', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nbun test\n```\n',
+      },
+      null, // no package.json — `bun test` would never be validated anyway
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/package-json-missing')).toBeUndefined();
+  });
+
   it.each([
     { cmd: 'yarn test', script: 'test' },
-    { cmd: 'bun test', script: 'test' },
+    { cmd: 'pnpm test', script: 'test' },
     { cmd: 'yarn build', script: 'build' },
     { cmd: 'bun start', script: 'start' },
     { cmd: 'bun run dev', script: 'dev' },

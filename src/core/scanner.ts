@@ -291,26 +291,69 @@ export async function scanGlobalMcpConfigs(): Promise<DiscoveredFile[]> {
   return found.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
 }
 
+const MCP_KEY_RE = /"(mcpServers|servers)"\s*:/;
+
 /**
  * Cheap text-only peek: does the file have a top-level "mcpServers" or
  * "servers" key? Avoids a full JSON parse here -- the mcp-parser will do that
  * authoritatively later. We only need a reliable enough signal to skip
  * obviously-non-MCP general Claude config files.
  *
- * Reads only the first 8KB of the file. `~/.claude.json` can be many MB on a
- * heavily-used workstation, and a synchronous full read just to regex-peek
- * for a top-level key blocks the event loop. The key, if present, is at the
- * top of a normally-serialized JSON object, so the prefix is plenty.
+ * `~/.claude/settings.json` is always small, so an 8KB prefix peek is plenty
+ * and avoids any streaming overhead. `~/.claude.json` is Claude Code's own
+ * state file -- on a heavily-used workstation it holds projects/history/
+ * tipsHistory ahead of `mcpServers`, so the key routinely sits PAST 8KB. A
+ * prefix-only peek there returns false and silently drops a real global MCP
+ * config from discovery, so `.claude.json` gets a chunked streaming scan
+ * (mcpFileStreamHasMcpKey) that bails the moment the key matches -- it stays
+ * cheap when the key is near the top and only reads further when it has to.
  */
 const PREFIX_BYTES = 8192;
 async function mcpFileHasMcpKey(filePath: string): Promise<boolean> {
+  if (filePath.endsWith(`${path.sep}.claude.json`)) {
+    return mcpFileStreamHasMcpKey(filePath);
+  }
   let fd: fs.promises.FileHandle | undefined;
   try {
     fd = await fs.promises.open(filePath, 'r');
     const buf = Buffer.alloc(PREFIX_BYTES);
     const { bytesRead } = await fd.read(buf, 0, PREFIX_BYTES, 0);
     const prefix = buf.subarray(0, bytesRead).toString('utf8');
-    return /"(mcpServers|servers)"\s*:/.test(prefix);
+    return MCP_KEY_RE.test(prefix);
+  } catch {
+    return false;
+  } finally {
+    await fd?.close().catch(() => {});
+  }
+}
+
+/**
+ * Streaming scan that reads the file in 64KB chunks and returns true as soon
+ * as the mcp-root-key regex matches -- so a key near the top still bails after
+ * one chunk (no full read), but a key buried megabytes in is still found. A
+ * small carry-over from the previous chunk's tail is prepended to each chunk
+ * so a key straddling a chunk boundary isn't missed.
+ */
+const STREAM_CHUNK_BYTES = 64 * 1024;
+// Longest token the regex can match (`"mcpServers"` + optional whitespace +
+// `:`) is well under 64; carry over enough to never split a match.
+const STREAM_OVERLAP_BYTES = 64;
+async function mcpFileStreamHasMcpKey(filePath: string): Promise<boolean> {
+  let fd: fs.promises.FileHandle | undefined;
+  try {
+    fd = await fs.promises.open(filePath, 'r');
+    const buf = Buffer.alloc(STREAM_CHUNK_BYTES);
+    let carry = '';
+    let pos = 0;
+    for (;;) {
+      const { bytesRead } = await fd.read(buf, 0, STREAM_CHUNK_BYTES, pos);
+      if (bytesRead === 0) break;
+      pos += bytesRead;
+      const text = carry + buf.subarray(0, bytesRead).toString('utf8');
+      if (MCP_KEY_RE.test(text)) return true;
+      carry = text.slice(-STREAM_OVERLAP_BYTES);
+    }
+    return false;
   } catch {
     return false;
   } finally {

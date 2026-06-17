@@ -30,8 +30,11 @@ const ENV_VAR_REF = /\$\{[^}]+\}/;
 // High-entropy string: >20 chars, all alphanumeric/base64
 const HIGH_ENTROPY_PATTERN = /^[A-Za-z0-9+/=_-]{21,}$/;
 
-// URL secret query params
-const URL_SECRET_PARAMS = /[?&](key|token|api_key|apikey|secret|password|access_token)=/i;
+// URL secret query params. The value group captures everything up to the next
+// `&` or end-of-string so the scan can tell a literal secret from an env ref:
+// a param is only safe when ITS OWN value is entirely an env ref, not when
+// some unrelated ${VAR} sits elsewhere in the url.
+const URL_SECRET_PARAMS = /[?&](key|token|api_key|apikey|secret|password|access_token)=([^&]*)/gi;
 
 // Variable name keywords that indicate the value is intended to be a secret.
 // We only run the high-entropy heuristic when the env var name matches one of
@@ -58,8 +61,42 @@ function isEnvVarRef(value: string): boolean {
   return ENV_VAR_REF.test(value);
 }
 
+// Strip every ${...} span out of a value so the residue can be scanned for a
+// LITERAL secret. A stray ${UNUSED} sitting next to a real key must not gate
+// the whole value as "safe" -- only the secret-bearing portion being itself an
+// env ref makes it safe. Used by the bearer / header / env / url scans below.
+function stripEnvVarRefs(value: string): string {
+  return value.replace(/\$\{[^}]*\}/g, '');
+}
+
+// True when the url carries a secret query param (key/token/api_key/...)
+// whose value is a LITERAL -- i.e. not entirely an env ref. A param whose
+// value is exactly `${VAR}` strips to empty and is treated as safe, but a
+// param with a hardcoded value still fires even when some OTHER param in the
+// url is an env ref.
+function hasLiteralSecretUrlParam(url: string): boolean {
+  URL_SECRET_PARAMS.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = URL_SECRET_PARAMS.exec(url)) !== null) {
+    const value = match[2];
+    if (stripEnvVarRefs(value).length > 0) return true;
+  }
+  return false;
+}
+
 function isKnownApiKey(value: string): boolean {
   return API_KEY_PATTERNS.some((p) => p.test(value));
+}
+
+// Return the first known-API-key substring in value, or null. Used by the args
+// scan to build a precise fix (replace just the literal key, not the whole
+// arg, so a `--flag=KEY` arg keeps its flag).
+function findKnownApiKey(value: string): string | null {
+  for (const p of API_KEY_PATTERNS) {
+    const m = value.match(p);
+    if (m) return m[0];
+  }
+  return null;
 }
 
 function nameSuggestsSecret(name: string): boolean {
@@ -108,7 +145,8 @@ export async function checkMcpSecurity(
       ruleId: 'mcp-security/secret-scan-skipped',
       line: 1,
       message: `Could not determine git-tracked status of ${config.relativePath}; hardcoded-secret rules were skipped`,
-      suggestion: 'Verify git is available and the file is not tracked, or re-run inside the repository',
+      suggestion:
+        'Verify git is available and the file is not tracked, or re-run inside the repository',
     });
   }
 
@@ -124,7 +162,10 @@ export async function checkMcpSecurity(
           const bearerMatch = headerValue.match(/^Bearer\s+(.+)$/i);
           if (bearerMatch) {
             const token = bearerMatch[1];
-            if (!isEnvVarRef(token)) {
+            // Safe only when the token is ENTIRELY an env ref: stripping the
+            // ${...} spans leaves nothing but whitespace. A literal token next
+            // to a stray ${VAR} still has residue here, so it still flags.
+            if (stripEnvVarRefs(token).trim().length > 0) {
               const envVar = deriveEnvVarName(server.name, 'API_KEY');
               issues.push({
                 severity: 'error',
@@ -144,8 +185,10 @@ export async function checkMcpSecurity(
           }
         }
 
-        // Check for known API key patterns in any header value
-        if (!flaggedBearer && !isEnvVarRef(headerValue) && isKnownApiKey(headerValue)) {
+        // Check for known API key patterns in any header value. Scan the
+        // residue with env refs stripped: a literal key next to an unrelated
+        // ${VAR} must still flag (whole-value env-ref gating would skip it).
+        if (!flaggedBearer && isKnownApiKey(stripEnvVarRefs(headerValue))) {
           issues.push({
             severity: 'error',
             check: 'mcp-security',
@@ -160,12 +203,17 @@ export async function checkMcpSecurity(
     // Check env values for hardcoded secrets
     if (checkSecrets && server.env) {
       for (const [envName, envValue] of Object.entries(server.env)) {
+        // Scan the residue with ${...} spans stripped: a literal key sitting
+        // next to an unrelated ${VAR} must still flag (whole-value env-ref
+        // gating would skip it). isHighEntropySecret already self-gates on a
+        // pure env ref, so a bare ${VAR} residue ('') stays safe.
+        const scanned = stripEnvVarRefs(envValue);
         // Known API key patterns (sk-, ghp_, AKIA, etc.) always flag.
         // High-entropy heuristic only fires when the variable name suggests a
         // secret -- avoids false positives on BUILD_ID, *_VERSION, *_COMMIT, etc.
         const isSecret =
-          isKnownApiKey(envValue) || (nameSuggestsSecret(envName) && isHighEntropySecret(envValue));
-        if (!isEnvVarRef(envValue) && isSecret) {
+          isKnownApiKey(scanned) || (nameSuggestsSecret(envName) && isHighEntropySecret(scanned));
+        if (isSecret) {
           const envVar = deriveEnvVarName(server.name, 'API_KEY');
           issues.push({
             severity: 'error',
@@ -184,13 +232,40 @@ export async function checkMcpSecurity(
       }
     }
 
-    // Check URL for secrets in query params
-    if (
-      checkSecrets &&
-      server.url &&
-      !isEnvVarRef(server.url) &&
-      URL_SECRET_PARAMS.test(server.url)
-    ) {
+    // Check CLI args for hardcoded secrets. A literal token can ride in an
+    // arg as `--flag=value` (one array element) or `--flag value` (the value
+    // is its own element) -- substring-scanning each arg for a known key
+    // catches both forms. Env refs are stripped first for consistency with the
+    // header/env scans; the fix replaces only the matched literal so a
+    // `--flag=KEY` arg keeps its flag.
+    if (checkSecrets && server.args) {
+      for (const arg of server.args) {
+        if (!isKnownApiKey(stripEnvVarRefs(arg))) continue;
+        const key = findKnownApiKey(arg);
+        if (!key) continue;
+        const envVar = deriveEnvVarName(server.name, 'API_KEY');
+        issues.push({
+          severity: 'error',
+          check: 'mcp-security',
+          ruleId: 'mcp-security/hardcoded-api-key',
+          line: server.line,
+          message: `Server "${server.name}" has a hardcoded API key in a git-tracked file`,
+          fix: {
+            file: config.filePath,
+            line: server.line,
+            oldText: key,
+            newText: `\${${envVar}}`,
+          },
+        });
+      }
+    }
+
+    // Check URL for secrets in query params. Scan each secret param's own
+    // value so a hardcoded api_key beside a trailing env ref (e.g.
+    // ?api_key=lit&ws=${WS}) still fires -- whole-url env-ref gating skipped it
+    // entirely. A param whose value is itself an env ref (?token=${TOK}) is
+    // treated as safe.
+    if (checkSecrets && server.url && hasLiteralSecretUrlParam(server.url)) {
       issues.push({
         severity: 'error',
         check: 'mcp-security',

@@ -5,8 +5,9 @@
  * Why hand-rolled instead of ajv: ctxlint bundles to a single zero-runtime-dep
  * file (see build.mjs). The catalog schema uses only a small, fixed subset of
  * JSON Schema draft 2020-12 (type, required, enum, pattern, minLength,
- * minItems, properties, items, $ref into $defs, additionalProperties: true).
- * Interpreting that subset is ~80 lines and avoids pulling ajv (+ its deps)
+ * minItems, properties, items, format ("uri"), $ref into $defs,
+ * additionalProperties: true). Interpreting that subset is ~80 lines and
+ * avoids pulling ajv (+ its deps)
  * into the dependency graph for one CI gate.
  *
  * It is NOT a general JSON Schema engine. If the schema grows constructs this
@@ -100,6 +101,15 @@ function validateNode(
         path: loc,
         message: `value "${value}" not in enum ${JSON.stringify(node.enum)}`,
       });
+    }
+    // We only implement the one format the catalog schema uses: "uri".
+    // new URL() throws on anything that isn't an absolute URL with a scheme.
+    if (node.format === 'uri') {
+      try {
+        new URL(value);
+      } catch {
+        errors.push({ path: loc, message: `string is not a valid uri` });
+      }
     }
   }
 

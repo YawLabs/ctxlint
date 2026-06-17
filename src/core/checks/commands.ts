@@ -78,16 +78,33 @@ const PM_BUILTIN_SUBCOMMANDS = new Set([
   'x',
 ]);
 
+// Subcommands that a SPECIFIC manager runs via a BUILTIN rather than a
+// package.json script, so `<manager> <sub>` (without explicit `run`) must not
+// be script-validated. `bun test` is the live false positive: it always runs
+// Bun's builtin test runner with no `test` script required — unlike
+// `npm/pnpm/yarn test`, which DO resolve to a script and stay validated.
+// Keyed by manager (these are NOT shared across managers like
+// PM_BUILTIN_SUBCOMMANDS is, since `test` is a real script name for the others).
+const PM_MANAGER_BUILTINS: Record<string, Set<string>> = {
+  bun: new Set(['test']),
+};
+
+function isManagerBuiltin(manager: string, sub: string): boolean {
+  return PM_MANAGER_BUILTINS[manager]?.has(sub) ?? false;
+}
+
 /**
  * Resolve the script name from an NPM_SCRIPT_PATTERN match, or null when the
  * captured token is not actually a script name: a flag (`pnpm -r build` —
- * the real script is unknowable without parsing pnpm's flag table), or a
- * package-manager builtin invoked without an explicit `run`.
+ * the real script is unknowable without parsing pnpm's flag table), a shared
+ * package-manager builtin invoked without an explicit `run`, or a
+ * manager-specific builtin (`bun test`).
  */
 function scriptNameFromMatch(match: RegExpMatchArray): string | null {
   const [, manager, explicitRun, name] = match;
   if (name.startsWith('-')) return null;
   if (manager && !explicitRun && PM_BUILTIN_SUBCOMMANDS.has(name)) return null;
+  if (manager && !explicitRun && isManagerBuiltin(manager, name)) return null;
   return name;
 }
 
@@ -145,9 +162,12 @@ function wouldNeedPackageJson(cmd: string): boolean {
   // they must not trigger the package-json-missing info either.
   const scriptMatch = cmd.match(NPM_SCRIPT_PATTERN);
   if (scriptMatch && scriptNameFromMatch(scriptMatch) !== null) return true;
-  return (
-    PKG_SHORTHAND_PATTERN.test(cmd) || /^npx\b/.test(cmd) || PKG_DEPENDENT_TOOL_PATTERN.test(cmd)
-  );
+  const shorthandMatch = cmd.match(PKG_SHORTHAND_PATTERN);
+  // A manager-builtin shorthand (`bun test`) is never script-validated, so it
+  // would not have been checked even with a package.json — don't surface the
+  // skip.
+  if (shorthandMatch && !isManagerBuiltin(shorthandMatch[1], shorthandMatch[2])) return true;
+  return /^npx\b/.test(cmd) || PKG_DEPENDENT_TOOL_PATTERN.test(cmd);
 }
 
 export async function checkCommands(
@@ -200,7 +220,9 @@ export async function checkCommands(
     // Check shorthand npm/pnpm/yarn/bun commands that map to scripts
     const shorthandMatch = cmd.match(PKG_SHORTHAND_PATTERN);
     if (shorthandMatch && pkgJson) {
+      const manager = shorthandMatch[1];
       const scriptName = shorthandMatch[2];
+      if (isManagerBuiltin(manager, scriptName)) continue; // e.g. `bun test`
       if (pkgJson.scripts && !(scriptName in pkgJson.scripts)) {
         issues.push({
           severity: 'error',
