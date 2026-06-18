@@ -513,7 +513,7 @@ export async function runAudit(
       const applicableRules: IgnoreRule[] = [];
       for (const rule of globScopedRules) {
         if (matchesGlob(fr.path, rule._fileGlob!)) {
-          const { _fileGlob: _unused, ...plainRule } = rule;
+          const { _fileGlob: _, ...plainRule } = rule;
           applicableRules.push(plainRule);
           firedGlobRules.add(rule);
         }

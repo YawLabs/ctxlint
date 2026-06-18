@@ -10,7 +10,6 @@ import {
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import * as path from 'node:path';
 import { runAuditOnContent } from '../core/audit.js';
-import { ALL_CHECKS } from '../core/audit.js';
 
 /**
  * Start the ctxlint LSP server. Reads/writes JSON-RPC 2.0 messages over
