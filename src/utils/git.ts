@@ -226,6 +226,82 @@ function normalizeRenamePath(p: string): string {
   return process.platform === 'win32' ? cleaned.toLowerCase() : cleaned;
 }
 
+interface RenameLogCache {
+  allRenames: Map<string, RenameInfo>; // key: normalizeRenamePath(oldPath)
+  basenameBuckets: Map<string, RenameInfo[]>; // key: basename, for fallback
+  prefix: string;
+}
+
+const renameCache = new Map<string, RenameLogCache>(); // key: projectRoot
+
+export function resetRenameCache(): void {
+  renameCache.clear();
+}
+
+/**
+ * Parses the full output of the rename log into two lookup maps:
+ * - allRenames: keyed by normalizeRenamePath(oldPath), newest entry wins
+ * - basenameBuckets: keyed by basename of normalizeRenamePath(oldPath), used for fallback
+ *
+ * Unlike parseRenameLog, this accumulates ALL entries instead of returning on
+ * first match, so findRenamesBatch can distribute results across N queried paths
+ * with a single Map lookup per path.
+ */
+export function parseRenameLogAll(result: string): {
+  allRenames: Map<string, RenameInfo>;
+  basenameBuckets: Map<string, RenameInfo[]>;
+} {
+  const allRenames = new Map<string, RenameInfo>();
+  const basenameBuckets = new Map<string, RenameInfo[]>();
+
+  if (!result.trim()) return { allRenames, basenameBuckets };
+
+  let currentHash = 'unknown';
+  let currentDateStr: string | undefined;
+
+  const lines = result.trim().split('\n');
+  for (const line of lines) {
+    const headerMatch = line.match(/^([a-f0-9]{7,40})\s+(\d{4}-\d\d-\d\d[T ].*)$/);
+    if (headerMatch) {
+      currentHash = headerMatch[1].substring(0, 7);
+      currentDateStr = headerMatch[2];
+      continue;
+    }
+    if (line.startsWith('R')) {
+      const parts = line.split('\t');
+      if (parts.length >= 3) {
+        const daysAgo = currentDateStr
+          ? Math.floor((Date.now() - new Date(currentDateStr).getTime()) / (1000 * 60 * 60 * 24))
+          : 0;
+        const info: RenameInfo = {
+          oldPath: parts[1],
+          newPath: parts[2],
+          commitHash: currentHash,
+          daysAgo,
+        };
+        const oldNorm = normalizeRenamePath(info.oldPath);
+        // Newest entry wins (log walks newest-first); only insert if not yet seen.
+        if (!allRenames.has(oldNorm)) {
+          allRenames.set(oldNorm, info);
+        }
+        const base = path.basename(oldNorm);
+        const bucket = basenameBuckets.get(base);
+        if (bucket) {
+          // Only track the newest entry per distinct source path; identical
+          // oldNorm appearing again is a re-rename of the same file -- skip.
+          if (!bucket.some((r) => normalizeRenamePath(r.oldPath) === oldNorm)) {
+            bucket.push(info);
+          }
+        } else {
+          basenameBuckets.set(base, [info]);
+        }
+      }
+    }
+  }
+
+  return { allRenames, basenameBuckets };
+}
+
 /**
  * Pure parser for the output of
  *   `git log --diff-filter=R --find-renames --name-status --format=%H %aI`.
@@ -395,4 +471,98 @@ export async function findRenames(
   } catch {
     return null;
   }
+}
+
+/**
+ * Batched variant of `findRenames`: runs the rename log ONCE per `projectRoot`,
+ * caches the parsed result, and distributes lookups across all `relPaths` via
+ * Map. Subsequent calls with the same `projectRoot` skip the git subprocess
+ * entirely and serve from cache.
+ *
+ * Each `relPath` undergoes the same two-step resolution as `findRenames`:
+ * 1. Exact match after prepending the git prefix (repo-root-relative form).
+ * 2. Basename fallback for bare-filename paths, with the same ambiguity guard
+ *    (multiple distinct sources sharing a basename -> null).
+ *
+ * Returns a Map keyed by each input `relPath`; the value is `RenameInfo` on
+ * a match, `null` on no match or an ambiguous basename.
+ */
+export async function findRenamesBatch(
+  projectRoot: string,
+  relPaths: readonly string[],
+): Promise<Map<string, RenameInfo | null>> {
+  const result = new Map<string, RenameInfo | null>();
+  if (relPaths.length === 0) return result;
+
+  let cache = renameCache.get(projectRoot);
+  if (!cache) {
+    try {
+      const git = getGit(projectRoot);
+      // Same flags as findRenames but without -50 so the cache covers the full
+      // rename history (one subprocess pays for all N queried paths).
+      const rawOutput = await git.raw([
+        '-c',
+        'core.quotepath=false',
+        'log',
+        '--diff-filter=R',
+        '--find-renames',
+        '--name-status',
+        '--format=%H %aI',
+      ]);
+
+      let prefix = '';
+      try {
+        prefix = (await git.revparse(['--show-prefix'])).trim();
+      } catch {
+        // Prefix unavailable: keep empty string, which is correct when
+        // projectRoot is already the repo root.
+      }
+
+      const { allRenames, basenameBuckets } = parseRenameLogAll(rawOutput);
+      cache = { allRenames, basenameBuckets, prefix };
+      renameCache.set(projectRoot, cache);
+    } catch {
+      // Git unavailable or not a repo -- return null for every path.
+      for (const p of relPaths) result.set(p, null);
+      return result;
+    }
+  }
+
+  const { allRenames, basenameBuckets, prefix } = cache;
+
+  for (const relPath of relPaths) {
+    // Build the repo-root-relative target the same way findRenames does.
+    const rel = relPath.replace(/\\/g, '/');
+    const target = prefix + rel;
+    const targetNorm = normalizeRenamePath(target);
+
+    // Step 1: exact match against repo-root-relative form.
+    const exactMatch = allRenames.get(targetNorm);
+    if (exactMatch) {
+      result.set(relPath, exactMatch);
+      continue;
+    }
+
+    // Step 2: basename fallback -- bare-filename targets only (same rule as
+    // parseRenameLog: a pathed target with no exact match returns null rather
+    // than guessing across directories).
+    const originalNorm = normalizeRenamePath(rel);
+    if (!originalNorm.includes('/')) {
+      // Also try the non-prefixed bare form when relativization would have
+      // turned it pathed (mirrors the retry in findRenames).
+      const tryNorm = originalNorm !== targetNorm ? originalNorm : targetNorm;
+      const base = path.basename(tryNorm);
+      const bucket = basenameBuckets.get(base);
+      if (bucket && bucket.length === 1) {
+        result.set(relPath, bucket[0]);
+      } else {
+        // Ambiguous (multiple distinct sources) or no bucket -- null.
+        result.set(relPath, null);
+      }
+    } else {
+      result.set(relPath, null);
+    }
+  }
+
+  return result;
 }

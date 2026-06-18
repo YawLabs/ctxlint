@@ -3,7 +3,7 @@ import levenshteinPkg from 'fast-levenshtein';
 const levenshtein = levenshteinPkg.get;
 import { globIterate } from 'glob';
 import { fileExists, isDirectory, getAllProjectFiles } from '../../utils/fs.js';
-import { findRenames } from '../../utils/git.js';
+import { findRenamesBatch, resetRenameCache } from '../../utils/git.js';
 import type { ParsedContextFile, LintIssue } from '../types.js';
 
 // Mirrors scanner.ts IGNORED_DIRS. Without it, a doc glob like
@@ -25,6 +25,14 @@ function getProjectFiles(projectRoot: string): string[] {
 
 export function resetPathsCache(): void {
   cachedProjectFiles = null;
+  resetRenameCache();
+}
+
+interface PendingRenameCheck {
+  ref: ParsedContextFile['references']['paths'][number];
+  normalizedRef: string;
+  baseDir: string;
+  relTarget: string;
 }
 
 export async function checkPaths(
@@ -36,6 +44,11 @@ export async function checkPaths(
 
   // Resolve relative paths from the context file's directory
   const contextDir = path.dirname(file.filePath);
+
+  // Accumulator for refs that need rename lookups (not-found, non-glob, non-dir).
+  // These are batched into a single findRenamesBatch call after the synchronous
+  // pass so the rename log is fetched at most once per projectRoot per tick.
+  const pending: PendingRenameCheck[] = [];
 
   for (const ref of file.references.paths) {
     const normalizedRef = ref.value.replace(/\\/g, '/');
@@ -90,77 +103,89 @@ export async function checkPaths(
       continue; // Path is valid
     }
 
-    // Path doesn't exist — try to find what happened
-    let suggestion: string | undefined;
-    let detail: string | undefined;
-    let fixTarget: string | undefined;
-
-    // Check for git renames. findRenames matches in git's repo-relative
-    // coordinate space, while ref.value may be context-file-relative
-    // (./sub/file.md in a subdirectory doc) -- pass the resolved form
-    // relativized against the project root so those refs can still
-    // exact-match a rename source. A bare-filename ref stays bare (its
-    // resolved form relativizes back to itself), preserving the
+    // Path doesn't exist -- queue for batched rename lookup.
+    // findRenamesBatch matches in git's repo-relative coordinate space, while
+    // ref.value may be context-file-relative (./sub/file.md in a subdirectory
+    // doc) -- pass the resolved form relativized against the project root so
+    // those refs can still exact-match a rename source. A bare-filename ref
+    // stays bare (its resolved form relativizes back to itself), preserving the
     // conservative basename fallback.
-    const rename = await findRenames(
+    const relTarget = path.relative(projectRoot, resolvedPath).replace(/\\/g, '/');
+    pending.push({ ref, normalizedRef, baseDir, relTarget });
+  }
+
+  // Batch rename lookup -- single git subprocess for all pending refs.
+  if (pending.length > 0) {
+    const batchResult = await findRenamesBatch(
       projectRoot,
-      path.relative(projectRoot, resolvedPath).replace(/\\/g, '/'),
+      pending.map((p) => p.relTarget),
     );
-    if (rename) {
-      fixTarget = rename.newPath;
-      suggestion = `Did you mean ${rename.newPath}?`;
-      detail = `Renamed ${rename.daysAgo} days ago in commit ${rename.commitHash}`;
-    } else {
-      // Fuzzy match against project files
-      const match = findClosestMatch(normalizedRef, projectFiles);
-      if (match) {
-        fixTarget = match;
-        suggestion = `Did you mean ${match}?`;
-      }
-    }
 
-    // fixTarget is always project-root-relative (rename.newPath is git
-    // repo-relative; findClosestMatch returns project-root-relative), but the
-    // autofix replaces ref.value literally on its line. When the ref was
-    // resolved from the context file's OWN directory (an explicit ./.. ref),
-    // a root-relative newText would be re-interpreted relative to contextDir
-    // by the consumer -- e.g. './sub/file.md' -> 'docs/sub/moved.md' reads as
-    // docs/docs/sub/moved.md. Re-express the target in the ref's OWN base so
-    // newText and oldText share a coordinate space. The human-readable
-    // suggestion keeps the project-root-relative form.
-    let fixText = fixTarget;
-    if (fixTarget && baseDir === contextDir) {
-      fixText = path.relative(contextDir, path.resolve(projectRoot, fixTarget)).replace(/\\/g, '/');
-      // Re-add the leading ./ when the original ref carried one, so the
-      // rewritten ref keeps its explicit-relative shape.
-      if (/^\.\//.test(normalizedRef) && !fixText.startsWith('.')) {
-        fixText = `./${fixText}`;
-      }
-    }
+    for (const { ref, normalizedRef, baseDir, relTarget } of pending) {
+      const rename = batchResult.get(relTarget) ?? null;
 
-    issues.push({
-      severity: 'error',
-      check: 'paths',
-      ruleId: 'paths/not-found',
-      line: ref.line,
-      message: `${ref.value} does not exist`,
-      suggestion,
-      detail,
-      fix: fixText
-        ? {
-            file: file.filePath,
-            line: ref.line,
-            oldText: ref.value,
-            newText: fixText,
-            // Anchor the rewrite to this reference's exact column so a stale
-            // path that is a substring of a kept path on the same line is not
-            // also rewritten. ref.column points at the start of ref.value, and
-            // ref.value is a prefix of the raw on-line match, so the fixer's
-            // verify-slice (original.slice(col-1, col-1+len) === oldText) holds.
-            column: ref.column,
-          }
-        : undefined,
-    });
+      let suggestion: string | undefined;
+      let detail: string | undefined;
+      let fixTarget: string | undefined;
+
+      if (rename) {
+        fixTarget = rename.newPath;
+        suggestion = `Did you mean ${rename.newPath}?`;
+        detail = `Renamed ${rename.daysAgo} days ago in commit ${rename.commitHash}`;
+      } else {
+        // Fuzzy match against project files
+        const match = findClosestMatch(normalizedRef, projectFiles);
+        if (match) {
+          fixTarget = match;
+          suggestion = `Did you mean ${match}?`;
+        }
+      }
+
+      // fixTarget is always project-root-relative (rename.newPath is git
+      // repo-relative; findClosestMatch returns project-root-relative), but the
+      // autofix replaces ref.value literally on its line. When the ref was
+      // resolved from the context file's OWN directory (an explicit ./.. ref),
+      // a root-relative newText would be re-interpreted relative to contextDir
+      // by the consumer -- e.g. './sub/file.md' -> 'docs/sub/moved.md' reads as
+      // docs/docs/sub/moved.md. Re-express the target in the ref's OWN base so
+      // newText and oldText share a coordinate space. The human-readable
+      // suggestion keeps the project-root-relative form.
+      let fixText = fixTarget;
+      if (fixTarget && baseDir === contextDir) {
+        fixText = path
+          .relative(contextDir, path.resolve(projectRoot, fixTarget))
+          .replace(/\\/g, '/');
+        // Re-add the leading ./ when the original ref carried one, so the
+        // rewritten ref keeps its explicit-relative shape.
+        if (/^\.\//.test(normalizedRef) && !fixText.startsWith('.')) {
+          fixText = `./${fixText}`;
+        }
+      }
+
+      issues.push({
+        severity: 'error',
+        check: 'paths',
+        ruleId: 'paths/not-found',
+        line: ref.line,
+        message: `${ref.value} does not exist`,
+        suggestion,
+        detail,
+        fix: fixText
+          ? {
+              file: file.filePath,
+              line: ref.line,
+              oldText: ref.value,
+              newText: fixText,
+              // Anchor the rewrite to this reference's exact column so a stale
+              // path that is a substring of a kept path on the same line is not
+              // also rewritten. ref.column points at the start of ref.value, and
+              // ref.value is a prefix of the raw on-line match, so the fixer's
+              // verify-slice (original.slice(col-1, col-1+len) === oldText) holds.
+              column: ref.column,
+            }
+          : undefined,
+      });
+    }
   }
 
   return issues;

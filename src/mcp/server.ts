@@ -272,7 +272,7 @@ server.tool(
 
 server.tool(
   'ctxlint_fix',
-  'Run the linter with --fix mode to auto-correct broken file paths in context files using git history and fuzzy matching. Returns a summary of what was fixed.',
+  'Run the linter with --fix mode to auto-correct broken file paths in context files using git history and fuzzy matching. Returns a summary of what was fixed. Pass dryRun: true to preview what would be fixed without writing any files.',
   {
     projectPath: z
       .string()
@@ -282,6 +282,12 @@ server.tool(
       .array(contextCheckEnum)
       .optional()
       .describe('Which context-file checks to run before fixing. Defaults to all.'),
+    dryRun: z
+      .boolean()
+      .optional()
+      .describe(
+        'If true, simulate fixes and report what would change without writing any files. Returns accurate counts.',
+      ),
   },
   {
     // ctxlint_fix writes to disk via applyFixes() → fs.writeFileSync, so it
@@ -292,7 +298,7 @@ server.tool(
     idempotentHint: true,
     openWorldHint: false,
   },
-  async ({ projectPath, checks }) => {
+  async ({ projectPath, checks, dryRun }) => {
     try {
       const root = validateProjectPath(projectPath);
       const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_CHECKS;
@@ -300,15 +306,17 @@ server.tool(
       const result = await runAudit(root, activeChecks, {
         ignoreRules: config?.ignoreRules,
       });
-      const fixSummary = applyFixes(result, { quiet: true });
+      const fixSummary = applyFixes(result, { quiet: true, dryRun: dryRun ?? false });
 
       // applyFixes wrote to disk, so the pre-fix summary no longer describes
       // the project. Re-audit before reporting `remainingIssues` -- returning
       // the pre-fix counts (which include every issue just fixed) tells the
       // host agent the fixes did nothing. Skip the second audit when nothing
       // was written: the pre-fix summary is still accurate then.
+      // Also skip the re-audit in dry-run mode: no files were written, so
+      // remainingIssues reflects the pre-fix (unfixed) state intentionally.
       let remaining = result.summary;
-      if (fixSummary.totalFixes > 0) {
+      if (!dryRun && fixSummary.totalFixes > 0) {
         resetGit();
         resetPathsCache();
         resetPackageJsonCache();
@@ -327,6 +335,7 @@ server.tool(
                 totalFixes: fixSummary.totalFixes,
                 filesModified: fixSummary.filesModified,
                 remainingIssues: remaining,
+                ...(dryRun ? { dryRun: true } : {}),
               },
               null,
               2,

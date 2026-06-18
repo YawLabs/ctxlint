@@ -92,6 +92,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/fast-levenshtein": "^0.0.4",
     "@types/node": "^25.9.3",
+    "@types/picomatch": "^4.0.3",
     "@vitest/coverage-v8": "^4.1.9",
     "chalk": "^5.6.2",
     "commander": "^14.0.3",
@@ -125,5 +126,10 @@
       "ip-address": "^10.1.1",
       "brace-expansion": "^5.0.6"
     }
+  },
+  "dependencies": {
+    "picomatch": "^4.0.4",
+    "vscode-languageserver": "^10.0.0",
+    "vscode-languageserver-textdocument": "^1.0.12"
   }
 }

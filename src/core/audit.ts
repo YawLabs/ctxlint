@@ -1,5 +1,9 @@
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { scanForContextFiles, scanForMcpConfigs, scanGlobalMcpConfigs } from './scanner.js';
 import { parseContextFile } from './parser.js';
+import { getCacheEntry, setCacheEntry } from './cache.js';
 import { parseMcpConfig } from './mcp-parser.js';
 import { countTokens } from '../utils/tokens.js';
 import { checkPaths } from './checks/paths.js';
@@ -38,6 +42,7 @@ import { checkHookCoverage } from './checks/hook-coverage.js';
 import { scanSkillFiles } from './skill-scanner.js';
 import { checkSkills } from './checks/skills.js';
 import { applyIgnoreRules, compileRules, type IgnoreRule } from './ignore-rules.js';
+import { loadIgnoreFile, matchesGlob, type IgnoreFileRule } from './ignore-file.js';
 import {
   SESSION_AUDIT_LABEL,
   SKILL_AUDIT_LABEL,
@@ -133,6 +138,11 @@ export interface AuditOptions {
    * through a safe-regex / step-bounded matcher before compilation.
    */
   ignoreRules?: IgnoreRule[];
+  /**
+   * When true, .ctxlintignore is not loaded. Config-based ignoreRules still
+   * apply. Corresponds to --no-ignore-file on the CLI.
+   */
+  noIgnoreFile?: boolean;
 }
 
 function hasMcpChecks(checks: CheckName[]): boolean {
@@ -201,30 +211,77 @@ export async function runAudit(
       depth: options.depth,
       extraPatterns: options.extraPatterns,
     });
-    const parsed = discovered.map((f) => parseContextFile(f));
 
+    // Incremental file cache: stat each discovered file and reuse cached
+    // parse + single-file check results when mtime and size are unchanged.
+    const parsed: ReturnType<typeof parseContextFile>[] = [];
+    const anyChanged: string[] = [];
+
+    for (const discoveredFile of discovered) {
+      const absPath = discoveredFile.absolutePath;
+      let stat: { mtimeMs: number; size: number } | null = null;
+      try {
+        const s = fs.statSync(absPath);
+        stat = { mtimeMs: s.mtimeMs, size: s.size };
+      } catch {
+        // File disappeared between scan and stat -- treat as cache miss.
+      }
+
+      const cached = getCacheEntry(absPath);
+      const hit =
+        stat !== null &&
+        cached !== undefined &&
+        cached.mtime === stat.mtimeMs &&
+        cached.size === stat.size;
+
+      if (hit && cached) {
+        parsed.push(cached.parseResult);
+        // Cache-hit files contribute their cached issues directly to fileResults
+        // below (after the cross-file checks decision).
+      } else {
+        anyChanged.push(absPath);
+        const parseResult = parseContextFile(discoveredFile);
+        parsed.push(parseResult);
+
+        // Run single-file checks now and cache the results.
+        const checkPromises: Promise<LintIssue[]>[] = [];
+        if (activeChecks.includes('paths')) checkPromises.push(checkPaths(parseResult, projectRoot));
+        if (activeChecks.includes('commands'))
+          checkPromises.push(checkCommands(parseResult, projectRoot));
+        if (activeChecks.includes('staleness'))
+          checkPromises.push(checkStaleness(parseResult, projectRoot));
+        if (activeChecks.includes('tokens'))
+          checkPromises.push(checkTokens(parseResult, projectRoot, thresholds));
+        if (activeChecks.includes('tier-tokens'))
+          checkPromises.push(
+            checkTierTokens(parseResult, projectRoot, thresholds, Boolean(options.hooksGlobal)),
+          );
+        if (activeChecks.includes('redundancy'))
+          checkPromises.push(checkRedundancy(parseResult, projectRoot));
+        if (activeChecks.includes('frontmatter'))
+          checkPromises.push(checkFrontmatter(parseResult, projectRoot));
+        if (activeChecks.includes('content-secrets'))
+          checkPromises.push(checkContentSecrets(parseResult, projectRoot));
+
+        const results = await Promise.all(checkPromises);
+        const singleFileIssues = results.flat();
+
+        if (stat !== null) {
+          setCacheEntry(absPath, {
+            mtime: stat.mtimeMs,
+            size: stat.size,
+            parseResult,
+            issues: singleFileIssues,
+          });
+        }
+      }
+    }
+
+    // Emit per-file results using cached issues for hits, freshly computed
+    // issues for misses (retrieved from cache since we just set them).
     for (const file of parsed) {
-      const checkPromises: Promise<LintIssue[]>[] = [];
-
-      if (activeChecks.includes('paths')) checkPromises.push(checkPaths(file, projectRoot));
-      if (activeChecks.includes('commands')) checkPromises.push(checkCommands(file, projectRoot));
-      if (activeChecks.includes('staleness')) checkPromises.push(checkStaleness(file, projectRoot));
-      if (activeChecks.includes('tokens'))
-        checkPromises.push(checkTokens(file, projectRoot, thresholds));
-      if (activeChecks.includes('tier-tokens'))
-        checkPromises.push(
-          checkTierTokens(file, projectRoot, thresholds, Boolean(options.hooksGlobal)),
-        );
-      if (activeChecks.includes('redundancy'))
-        checkPromises.push(checkRedundancy(file, projectRoot));
-      if (activeChecks.includes('frontmatter'))
-        checkPromises.push(checkFrontmatter(file, projectRoot));
-      if (activeChecks.includes('content-secrets'))
-        checkPromises.push(checkContentSecrets(file, projectRoot));
-
-      const results = await Promise.all(checkPromises);
-      const issues = results.flat();
-
+      const entry = getCacheEntry(file.filePath);
+      const issues = entry ? entry.issues : [];
       fileResults.push({
         path: file.relativePath,
         isSymlink: file.isSymlink,
@@ -235,46 +292,50 @@ export async function runAudit(
       });
     }
 
-    // Cross-file context checks — collected into a synthetic project-level result
-    const crossFileIssues: LintIssue[] = [];
-    if (activeChecks.includes('tokens')) {
-      const aggIssue = checkAggregateTokens(
-        fileResults.map((f) => ({ path: f.path, tokens: f.tokens })),
-        thresholds,
-      );
-      if (aggIssue) crossFileIssues.push(aggIssue);
-    }
-    if (activeChecks.includes('tier-tokens')) {
-      const tierAgg = checkAggregateTierTokens(parsed, thresholds);
-      if (tierAgg) crossFileIssues.push(tierAgg);
-    }
-    if (activeChecks.includes('redundancy')) {
-      crossFileIssues.push(...checkDuplicateContent(parsed));
-    }
-    if (activeChecks.includes('contradictions')) {
-      crossFileIssues.push(...checkContradictions(parsed));
-    }
-    if (activeChecks.includes('ci-coverage')) {
-      crossFileIssues.push(...(await checkCiCoverage(parsed, projectRoot)));
-    }
-    if (activeChecks.includes('ci-secrets')) {
-      crossFileIssues.push(...(await checkCiSecrets(parsed, projectRoot)));
-    }
-    if (activeChecks.includes('hook-coverage')) {
-      crossFileIssues.push(
-        ...(await checkHookCoverage(projectRoot, undefined, {
-          userGlobal: options.hooksGlobal,
-        })),
-      );
-    }
-    if (crossFileIssues.length > 0) {
-      fileResults.push({
-        path: '(project)',
-        isSymlink: false,
-        tokens: 0,
-        lines: 0,
-        issues: crossFileIssues,
-      });
+    // Cross-file context checks — only re-run when at least one file changed.
+    // When nothing changed, all per-file results came from cache and the
+    // cross-file results from the previous run are still valid.
+    if (anyChanged.length > 0) {
+      const crossFileIssues: LintIssue[] = [];
+      if (activeChecks.includes('tokens')) {
+        const aggIssue = checkAggregateTokens(
+          fileResults.map((f) => ({ path: f.path, tokens: f.tokens })),
+          thresholds,
+        );
+        if (aggIssue) crossFileIssues.push(aggIssue);
+      }
+      if (activeChecks.includes('tier-tokens')) {
+        const tierAgg = checkAggregateTierTokens(parsed, thresholds);
+        if (tierAgg) crossFileIssues.push(tierAgg);
+      }
+      if (activeChecks.includes('redundancy')) {
+        crossFileIssues.push(...checkDuplicateContent(parsed));
+      }
+      if (activeChecks.includes('contradictions')) {
+        crossFileIssues.push(...checkContradictions(parsed));
+      }
+      if (activeChecks.includes('ci-coverage')) {
+        crossFileIssues.push(...(await checkCiCoverage(parsed, projectRoot)));
+      }
+      if (activeChecks.includes('ci-secrets')) {
+        crossFileIssues.push(...(await checkCiSecrets(parsed, projectRoot)));
+      }
+      if (activeChecks.includes('hook-coverage')) {
+        crossFileIssues.push(
+          ...(await checkHookCoverage(projectRoot, undefined, {
+            userGlobal: options.hooksGlobal,
+          })),
+        );
+      }
+      if (crossFileIssues.length > 0) {
+        fileResults.push({
+          path: '(project)',
+          isSymlink: false,
+          tokens: 0,
+          lines: 0,
+          issues: crossFileIssues,
+        });
+      }
     }
   }
 
@@ -425,38 +486,99 @@ export async function runAudit(
     }
   }
 
+  // Load .ctxlintignore from the project root (unless --no-ignore-file was passed).
+  // Split into glob-scoped rules (_fileGlob set) and global rules (no glob).
+  // Global file rules are merged with config-based ignoreRules for the shared
+  // applyIgnoreRules() pass. Glob-scoped rules are pre-filtered per FileResult:
+  // each rule is applied only to the file(s) whose path matches the glob,
+  // suppressing matching issues before they reach the flat pass.
+  const fileIgnoreRules: IgnoreFileRule[] = options.noIgnoreFile
+    ? []
+    : loadIgnoreFile(projectRoot);
+  const globScopedRules = fileIgnoreRules.filter((r) => r._fileGlob !== undefined);
+  const globalFileRules: IgnoreRule[] = fileIgnoreRules
+    .filter((r) => r._fileGlob === undefined)
+    .map(({ _fileGlob: _unused, ...rest }) => rest);
+
+  // Pre-filter pass: apply glob-scoped rules to each FileResult individually.
+  // This runs before the flat applyIgnoreRules() pass so glob-filtered drops
+  // are counted in the same ignoreReport.
+  let globDropped = 0;
+  let globUnusedRules: IgnoreRule[] = [];
+  let globRulesMissingReason: IgnoreRule[] = [];
+  if (globScopedRules.length > 0) {
+    const firedGlobRules = new Set<IgnoreFileRule>();
+    for (const fr of fileResults) {
+      // Collect the glob rules that apply to this specific file path.
+      const applicableRules: IgnoreRule[] = [];
+      for (const rule of globScopedRules) {
+        if (matchesGlob(fr.path, rule._fileGlob!)) {
+          const { _fileGlob: _unused, ...plainRule } = rule;
+          applicableRules.push(plainRule);
+          firedGlobRules.add(rule);
+        }
+      }
+      if (applicableRules.length === 0) continue;
+      const applied = applyIgnoreRules(fr.issues, applicableRules);
+      fr.issues = applied.kept;
+      globDropped += applied.dropped;
+    }
+    // Unused glob rules: those that never matched any file path's glob AND
+    // whose plain-rule also never fired. Since firedGlobRules tracks which
+    // rules matched at least one file, unfired = not in the set.
+    globUnusedRules = globScopedRules
+      .filter((r) => !firedGlobRules.has(r))
+      .map(({ _fileGlob: _unused, ...rest }) => rest);
+    globRulesMissingReason = globScopedRules
+      .filter((r) => !r.reason)
+      .map(({ _fileGlob: _unused, ...rest }) => rest);
+  }
+
   // Apply ignoreRules (granular per-finding suppression) before computing
   // summary / estimatedWaste so dropped findings aren't counted in either.
   // The rule engine is per-issue-list, but we want a single fired-tracking
   // pass across the whole audit -- so apply rules to the flattened issue
   // stream once, then partition kept issues back per FileResult by position.
+  // Merge config-based rules with global (non-glob) file rules from .ctxlintignore.
+  const allIgnoreRules: IgnoreRule[] = [
+    ...(options.ignoreRules ?? []),
+    ...globalFileRules,
+  ];
   let ignoreReport: IgnoreReport | undefined;
-  if (options.ignoreRules && options.ignoreRules.length > 0) {
-    const flat: LintIssue[] = [];
-    const owners: number[] = [];
-    fileResults.forEach((fr, idx) => {
-      for (const issue of fr.issues) {
-        flat.push(issue);
-        owners.push(idx);
-      }
-    });
-    const applied = applyIgnoreRules(flat, options.ignoreRules);
-    // Rebuild per-FileResult issue lists from the kept subset, preserving
-    // order. `applied.keepMask` is aligned 1:1 with `flat`, so we partition by
-    // index + the parallel `owners` array -- no reliance on LintIssue object
-    // reference identity between `flat` and `applied.kept` (two structurally
-    // identical findings in different files would collide in a Set).
-    const rebuilt: LintIssue[][] = fileResults.map(() => []);
-    flat.forEach((issue, i) => {
-      if (applied.keepMask[i]) rebuilt[owners[i]].push(issue);
-    });
-    fileResults.forEach((fr, idx) => {
-      fr.issues = rebuilt[idx];
-    });
+  if (allIgnoreRules.length > 0 || globDropped > 0) {
+    let flatDropped = 0;
+    let flatUnusedRules: IgnoreRule[] = [];
+    let flatRulesMissingReason: IgnoreRule[] = [];
+    if (allIgnoreRules.length > 0) {
+      const flat: LintIssue[] = [];
+      const owners: number[] = [];
+      fileResults.forEach((fr, idx) => {
+        for (const issue of fr.issues) {
+          flat.push(issue);
+          owners.push(idx);
+        }
+      });
+      const applied = applyIgnoreRules(flat, allIgnoreRules);
+      // Rebuild per-FileResult issue lists from the kept subset, preserving
+      // order. `applied.keepMask` is aligned 1:1 with `flat`, so we partition by
+      // index + the parallel `owners` array -- no reliance on LintIssue object
+      // reference identity between `flat` and `applied.kept` (two structurally
+      // identical findings in different files would collide in a Set).
+      const rebuilt: LintIssue[][] = fileResults.map(() => []);
+      flat.forEach((issue, i) => {
+        if (applied.keepMask[i]) rebuilt[owners[i]].push(issue);
+      });
+      fileResults.forEach((fr, idx) => {
+        fr.issues = rebuilt[idx];
+      });
+      flatDropped = applied.dropped;
+      flatUnusedRules = applied.unusedRules;
+      flatRulesMissingReason = applied.rulesMissingReason;
+    }
     ignoreReport = {
-      dropped: applied.dropped,
-      unusedRules: applied.unusedRules,
-      rulesMissingReason: applied.rulesMissingReason,
+      dropped: flatDropped + globDropped,
+      unusedRules: [...flatUnusedRules, ...globUnusedRules],
+      rulesMissingReason: [...flatRulesMissingReason, ...globRulesMissingReason],
     };
   }
 
@@ -507,4 +629,64 @@ export async function runAudit(
   }
 
   return result;
+}
+
+/**
+ * Run the audit pipeline against an in-memory buffer (unsaved editor content).
+ *
+ * Writes `content` to a temporary file, runs the standard single-file context
+ * checks, then cleans up. The returned LintResult's fileResults use the
+ * original `filePath` (not the temp path) so LSP diagnostics map to the
+ * correct document URI.
+ */
+export async function runAuditOnContent(
+  filePath: string,
+  content: string,
+  projectRoot: string,
+  options: AuditOptions = {},
+): Promise<LintResult> {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-lsp-'));
+  const ext = path.extname(filePath) || '.md';
+  const tmpFile = path.join(tmpDir, 'content' + ext);
+
+  try {
+    fs.writeFileSync(tmpFile, content, 'utf-8');
+
+    // Run audit with extraPatterns pointing at the single temp file.
+    // scanForContextFiles will pick it up via its own glob resolution when the
+    // temp file name matches a known context-file pattern, but that's not
+    // reliable for arbitrary file names. Instead we drive via the scanner's
+    // extraPatterns mechanism and point projectRoot at the temp dir so the
+    // scanner's depth-1 walk resolves the file.
+    const tmpRelative = path.relative(tmpDir, tmpFile);
+    const rawResult = await runAudit(tmpDir, options.depth !== undefined
+      ? (ALL_CHECKS as CheckName[])
+      : (ALL_CHECKS as CheckName[]), {
+      ...options,
+      extraPatterns: [tmpRelative],
+      // Disable cross-project checks that need the real project tree.
+      session: false,
+      sessionOnly: false,
+      skills: false,
+      skillsOnly: false,
+    });
+
+    // Remap the temp path back to the original filePath so the LSP client sees
+    // diagnostics on the real document URI.
+    const remapped: typeof rawResult.files = rawResult.files.map((fr) => {
+      const isTmp =
+        fr.path === tmpRelative ||
+        fr.path === tmpFile ||
+        path.resolve(tmpDir, fr.path) === tmpFile;
+      return isTmp ? { ...fr, path: filePath } : fr;
+    });
+
+    return { ...rawResult, files: remapped, projectRoot };
+  } finally {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // Best-effort cleanup; don't mask the real result.
+    }
+  }
 }

@@ -330,4 +330,6 @@ export interface LintOptions {
   skills: boolean;
   skillsOnly: boolean;
   hooksGlobal: boolean;
+  /** When true, .ctxlintignore is not loaded. Use --no-ignore-file to see all findings. */
+  noIgnoreFile?: boolean;
 }
