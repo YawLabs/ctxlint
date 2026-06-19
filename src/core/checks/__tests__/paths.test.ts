@@ -301,6 +301,48 @@ describe('checkPaths', () => {
     expect(issues.find((i) => i.ruleId === 'paths/glob-no-match')).toBeUndefined();
   });
 
+  // @-imports resolve relative to the IMPORTING file's own directory (Claude
+  // Code / combineClaudeMd semantics), not the project root. A subdirectory
+  // CLAUDE.md whose `@./rules/x.md` import resolves to a real sibling file
+  // must NOT be reported as broken (the bug that fuzzy-"fixed" durable bundle
+  // source).
+  it('does NOT flag an @./-import that resolves under the doc directory', async () => {
+    seed({
+      'content/yaw-mode/CLAUDE.md': 'Imports @./rules/agent-setup.md at build time.\n',
+      'content/yaw-mode/rules/agent-setup.md': 'x',
+    });
+    const parsed = parseContextFile(discoveredIn('content/yaw-mode/CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'paths/not-found')).toBeUndefined();
+  });
+
+  it('does NOT flag a bare relative ref that resolves under the doc directory', async () => {
+    seed({
+      'content/yaw-mode/CLAUDE.md': 'combineClaudeMd reads rules/manifest.json.\n',
+      'content/yaw-mode/rules/manifest.json': '{}',
+    });
+    const parsed = parseContextFile(discoveredIn('content/yaw-mode/CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'paths/not-found')).toBeUndefined();
+  });
+
+  it('does NOT flag a scoped npm package mention that looks like an @-import', async () => {
+    seed({ 'CLAUDE.md': 'Use @anthropic-ai/sdk for the client.\n' });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'paths/not-found')).toBeUndefined();
+  });
+
+  it('does NOT flag a relative path that escapes the project root', async () => {
+    // The classic `ln -sf ../../scripts/x .git/hooks/y` symlink target: the
+    // path is relative to where the link lives, not the doc, and escapes the
+    // repo -- ctxlint can't validate it and must not autofix it into nonsense.
+    seed({ 'CLAUDE.md': 'Install: ln -sf ../../scripts/ci-local.sh .git/hooks/pre-push\n' });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'paths/not-found')).toBeUndefined();
+  });
+
   // findRenames matches in git's repo-root-relative coordinate space, so a
   // ./-relative ref in a SUBDIRECTORY context file (resolved against the
   // doc's own dir, paths.ts:38) must still get rename provenance (commit

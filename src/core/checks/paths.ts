@@ -33,6 +33,7 @@ interface PendingRenameCheck {
   normalizedRef: string;
   baseDir: string;
   relTarget: string;
+  isImport: boolean;
 }
 
 export async function checkPaths(
@@ -51,13 +52,41 @@ export async function checkPaths(
   const pending: PendingRenameCheck[] = [];
 
   for (const ref of file.references.paths) {
-    const normalizedRef = ref.value.replace(/\\/g, '/');
-    // Resolve explicitly-relative refs (./foo, ../foo, and the Windows-style
-    // .\foo, ..\foo) from the context file's directory, everything else from
-    // the project root. Resolution uses the slash-normalized form so a
+    const rawNormalized = ref.value.replace(/\\/g, '/');
+
+    // Claude Code @-imports (`@./rules/x.md`, `@rules/x.md`, `@../foo.md`,
+    // `@~/.claude/foo.md`): the path AFTER the `@` is resolved relative to the
+    // importing file's OWN directory (matching Claude Code / combineClaudeMd
+    // import semantics), never the project root. Strip the `@` and resolve from
+    // contextDir. Without this, `@./rules/x.md` in a subdirectory CLAUDE.md was
+    // resolved against the repo root, reported as broken, and fuzzy-"fixed" to
+    // an unrelated file -- corrupting durable source on `--fix`.
+    const isImport = rawNormalized.startsWith('@');
+    const normalizedRef = isImport ? rawNormalized.slice(1) : rawNormalized;
+
+    // @~/... home-relative imports point outside the repo; ctxlint can't
+    // validate the user's home dir, so don't flag them.
+    if (isImport && normalizedRef.startsWith('~/')) continue;
+
+    // A scoped npm package mention (`@anthropic-ai/sdk`) parses like an
+    // @-import but names a package, not a file: exactly two slash-free
+    // segments, no extension, no ./ or ../. Skip so it is never reported as a
+    // broken path or fuzzy-"fixed" to an unrelated file.
+    if (isImport && /^[\w.-]+\/[\w.-]+$/.test(normalizedRef) && !/\.\w+$/.test(normalizedRef)) {
+      continue;
+    }
+
+    // Where to resolve from. Explicitly-relative refs (./foo, ../foo, and the
+    // Windows-style .\foo, ..\foo) and @-imports are always relative to the
+    // doc's own directory. A BARE relative ref (`rules/manifest.json`) is
+    // ambiguous -- a top-level doc means project-root-relative, a subdirectory
+    // doc usually means a sibling of itself -- so try BOTH, project root first.
+    // The first base is the one the rename/fix coordinate logic uses when the
+    // path resolves nowhere. Resolution uses the slash-normalized form so a
     // Windows-authored ref still validates when the lint host is POSIX.
-    const baseDir = /^\.\.?\//.test(normalizedRef) ? contextDir : projectRoot;
-    const resolvedPath = path.resolve(baseDir, normalizedRef);
+    const explicitRel = /^\.\.?\//.test(normalizedRef);
+    const baseDirs = explicitRel || isImport ? [contextDir] : [projectRoot, contextDir];
+    const primaryBase = baseDirs[0];
 
     // Check if it's a glob pattern
     if (normalizedRef.includes('*')) {
@@ -66,10 +95,23 @@ export async function checkPaths(
       // platform-specific: a C:/x/*.ts form only classifies absolute on Windows.)
       // Only existence is tested, so iterate and stop at the first match
       // instead of collecting every path the glob expands to.
-      const iter = path.isAbsolute(normalizedRef)
-        ? globIterate(normalizedRef, { absolute: true, nodir: false, ignore: GLOB_IGNORE })
-        : globIterate(normalizedRef, { cwd: baseDir, nodir: false, ignore: GLOB_IGNORE });
-      const hasMatch = !(await iter.next()).done;
+      let hasMatch = false;
+      if (path.isAbsolute(normalizedRef)) {
+        const iter = globIterate(normalizedRef, {
+          absolute: true,
+          nodir: false,
+          ignore: GLOB_IGNORE,
+        });
+        hasMatch = !(await iter.next()).done;
+      } else {
+        for (const b of baseDirs) {
+          const iter = globIterate(normalizedRef, { cwd: b, nodir: false, ignore: GLOB_IGNORE });
+          if (!(await iter.next()).done) {
+            hasMatch = true;
+            break;
+          }
+        }
+      }
       if (!hasMatch) {
         issues.push({
           severity: 'error',
@@ -86,8 +128,7 @@ export async function checkPaths(
     // Check if path exists as file or directory
     const isDir = normalizedRef.endsWith('/');
     if (isDir) {
-      const dirPath = path.resolve(baseDir, normalizedRef);
-      if (!isDirectory(dirPath)) {
+      if (!baseDirs.some((b) => isDirectory(path.resolve(b, normalizedRef)))) {
         issues.push({
           severity: 'error',
           check: 'paths',
@@ -99,19 +140,32 @@ export async function checkPaths(
       continue;
     }
 
-    if (fileExists(resolvedPath) || isDirectory(resolvedPath)) {
-      continue; // Path is valid
+    const resolvedCandidates = baseDirs.map((b) => path.resolve(b, normalizedRef));
+    if (resolvedCandidates.some((p) => fileExists(p) || isDirectory(p))) {
+      continue; // Path is valid under at least one candidate base
     }
 
-    // Path doesn't exist -- queue for batched rename lookup.
+    // A ref that resolves OUTSIDE the project root under every candidate base
+    // is not a repo reference ctxlint can validate: a symlink target relative
+    // to where the link lives (`ln -sf ../../scripts/x .git/hooks/y`), an
+    // absolute system path, or a `../` escape above the repo. Skip rather than
+    // emit a confident-but-wrong "broken path" + autofix into another repo.
+    const insideRoot = resolvedCandidates.some((p) => {
+      const rel = path.relative(projectRoot, p);
+      return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+    });
+    if (!insideRoot) continue;
+
+    // Path doesn't exist anywhere sensible -- queue for batched rename lookup.
     // findRenamesBatch matches in git's repo-relative coordinate space, while
     // ref.value may be context-file-relative (./sub/file.md in a subdirectory
     // doc) -- pass the resolved form relativized against the project root so
     // those refs can still exact-match a rename source. A bare-filename ref
     // stays bare (its resolved form relativizes back to itself), preserving the
     // conservative basename fallback.
+    const resolvedPath = path.resolve(primaryBase, normalizedRef);
     const relTarget = path.relative(projectRoot, resolvedPath).replace(/\\/g, '/');
-    pending.push({ ref, normalizedRef, baseDir, relTarget });
+    pending.push({ ref, normalizedRef, baseDir: primaryBase, relTarget, isImport });
   }
 
   // Batch rename lookup -- single git subprocess for all pending refs.
@@ -121,7 +175,7 @@ export async function checkPaths(
       pending.map((p) => p.relTarget),
     );
 
-    for (const { ref, normalizedRef, baseDir, relTarget } of pending) {
+    for (const { ref, normalizedRef, baseDir, relTarget, isImport } of pending) {
       const rename = batchResult.get(relTarget) ?? null;
 
       let suggestion: string | undefined;
@@ -160,6 +214,13 @@ export async function checkPaths(
         if (/^\.\//.test(normalizedRef) && !fixText.startsWith('.')) {
           fixText = `./${fixText}`;
         }
+      }
+      // ref.value (oldText) for an @-import carries the leading `@`, which was
+      // stripped from normalizedRef before resolution. Re-prefix it so the
+      // rewrite replaces `@./rules/x.md` with `@./rules/moved.md`, not a bare
+      // `./rules/moved.md` that drops the import marker.
+      if (fixText && isImport) {
+        fixText = `@${fixText}`;
       }
 
       issues.push({
