@@ -15,6 +15,7 @@ import type { ParsedContextFile, LintIssue } from '../types.js';
 const GLOB_IGNORE = ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'];
 
 let cachedProjectFiles: { root: string; files: string[] } | null = null;
+let cachedBasenameIndex: { root: string; index: Map<string, string[]> } | null = null;
 
 function getProjectFiles(projectRoot: string): string[] {
   if (cachedProjectFiles?.root === projectRoot) return cachedProjectFiles.files;
@@ -23,8 +24,27 @@ function getProjectFiles(projectRoot: string): string[] {
   return files;
 }
 
+// Index project files by basename so findClosestMatch's common case (a doc ref
+// whose basename exists somewhere in the tree) is an O(1) lookup + small-list
+// levenshtein instead of an O(F) scan over every project file. Cached alongside
+// cachedProjectFiles and keyed by projectRoot; resetPathsCache clears both.
+function getBasenameIndex(projectRoot: string, files: string[]): Map<string, string[]> {
+  if (cachedBasenameIndex?.root === projectRoot) return cachedBasenameIndex.index;
+  const index = new Map<string, string[]>();
+  for (const file of files) {
+    const norm = file.replace(/\\/g, '/');
+    const base = path.basename(norm);
+    const list = index.get(base);
+    if (list) list.push(norm);
+    else index.set(base, [norm]);
+  }
+  cachedBasenameIndex = { root: projectRoot, index };
+  return index;
+}
+
 export function resetPathsCache(): void {
   cachedProjectFiles = null;
+  cachedBasenameIndex = null;
   resetRenameCache();
 }
 
@@ -42,6 +62,7 @@ export async function checkPaths(
 ): Promise<LintIssue[]> {
   const issues: LintIssue[] = [];
   const projectFiles = getProjectFiles(projectRoot);
+  const basenameIndex = getBasenameIndex(projectRoot, projectFiles);
 
   // Resolve relative paths from the context file's directory
   const contextDir = path.dirname(file.filePath);
@@ -188,7 +209,7 @@ export async function checkPaths(
         detail = `Renamed ${rename.daysAgo} days ago in commit ${rename.commitHash}`;
       } else {
         // Fuzzy match against project files
-        const match = findClosestMatch(normalizedRef, projectFiles);
+        const match = findClosestMatch(normalizedRef, projectFiles, basenameIndex);
         if (match) {
           fixTarget = match;
           suggestion = `Did you mean ${match}?`;
@@ -252,21 +273,26 @@ export async function checkPaths(
   return issues;
 }
 
-function findClosestMatch(target: string, files: string[]): string | null {
+function findClosestMatch(
+  target: string,
+  files: string[],
+  basenameIndex: Map<string, string[]>,
+): string | null {
   const targetNorm = target.replace(/\\/g, '/');
   const targetBase = path.basename(targetNorm);
 
-  // Pass 1: prefer files whose basename matches exactly (different directory).
-  // Deliberately uncapped: basename equality is the signal, so the nearest
-  // basename-equal candidate wins no matter how large the overall path-edit
-  // distance is. Distance is used only to RANK among basename-equal
-  // candidates; the absolute cap below belongs to the full-path fallback
-  // pass alone.
+  // Pass 1: O(1) basename-index lookup + small-list levenshtein. Files whose
+  // basename matches the target's are a strong signal regardless of overall
+  // path-edit distance, so this pass is deliberately uncapped: distance only
+  // RANKS among basename-equal candidates (the absolute cap below belongs to
+  // the full-path fallback pass alone). Pulling the candidates from the
+  // prebuilt index instead of scanning every project file makes the common
+  // case O(1) + a walk over same-basename files rather than O(F).
+  const candidates = basenameIndex.get(targetBase) ?? [];
   let basenameMatch: string | null = null;
   let basenameDistance = Infinity;
-  for (const file of files) {
-    const fileNorm = file.replace(/\\/g, '/');
-    if (path.basename(fileNorm) === targetBase && fileNorm !== targetNorm) {
+  for (const fileNorm of candidates) {
+    if (fileNorm !== targetNorm) {
       const dist = levenshtein(targetNorm, fileNorm);
       if (dist < basenameDistance) {
         basenameDistance = dist;

@@ -203,6 +203,25 @@ describe('checkPaths', () => {
     expect(notFound!.suggestion).toContain('utils.ts');
   });
 
+  // Basename-index: when multiple project files share the same basename, the
+  // one with the smallest Levenshtein distance to the full target path wins.
+  // Guards the index-backed Pass 1 against a regression that would pick an
+  // arbitrary same-basename file instead of the path-closest one.
+  it('picks the basename candidate with smallest path distance when multiple share the same basename', async () => {
+    seed({
+      'CLAUDE.md': 'See src/components/utils.ts\n',
+      // Two files with the same basename; src/lib/utils.ts is path-closer
+      'src/lib/utils.ts': 'x',
+      'other/deep/nested/dir/utils.ts': 'x',
+    });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    const notFound = issues.find((i) => i.ruleId === 'paths/not-found');
+    expect(notFound).toBeDefined();
+    // src/lib/utils.ts is closer to src/components/utils.ts than the deeply nested one
+    expect(notFound!.fix!.newText.replace(/\\/g, '/')).toBe('src/lib/utils.ts');
+  });
+
   it('emits paths/not-found without suggestion when no close match exists', async () => {
     seed({
       'CLAUDE.md': 'See docs/xyz-totally-unrelated-qqq.txt\n',

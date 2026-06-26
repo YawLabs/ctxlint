@@ -236,32 +236,33 @@ export async function scanForMcpConfigs(projectRoot: string): Promise<Discovered
   const seen = new Set<string>();
   const realRoot = resolveRealRoot(projectRoot);
 
-  for (const pattern of MCP_CONFIG_PATTERNS) {
-    const matches = await glob(pattern, {
-      cwd: projectRoot,
-      absolute: true,
-      nodir: true,
-      dot: true,
+  // Single batched glob call across all patterns (mirrors scanForContextFiles):
+  // glob shares the directory read across patterns instead of one readdir per
+  // pattern. The escaping-symlink / oversized-file exclusion below is preserved.
+  const matches = await glob(MCP_CONFIG_PATTERNS, {
+    cwd: projectRoot,
+    absolute: true,
+    nodir: true,
+    dot: true,
+  });
+
+  for (const match of matches) {
+    const normalized = path.normalize(match);
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+
+    const relativePath = path.relative(projectRoot, normalized);
+    const symlink = isSymlink(normalized);
+    if (isExcludedScanTarget(normalized, realRoot, symlink)) continue;
+    const target = symlink ? readSymlinkTarget(normalized) : undefined;
+
+    found.push({
+      absolutePath: normalized,
+      relativePath: relativePath.replace(/\\/g, '/'),
+      isSymlink: symlink,
+      symlinkTarget: target,
+      type: 'mcp-config',
     });
-
-    for (const match of matches) {
-      const normalized = path.normalize(match);
-      if (seen.has(normalized)) continue;
-      seen.add(normalized);
-
-      const relativePath = path.relative(projectRoot, normalized);
-      const symlink = isSymlink(normalized);
-      if (isExcludedScanTarget(normalized, realRoot, symlink)) continue;
-      const target = symlink ? readSymlinkTarget(normalized) : undefined;
-
-      found.push({
-        absolutePath: normalized,
-        relativePath: relativePath.replace(/\\/g, '/'),
-        isSymlink: symlink,
-        symlinkTarget: target,
-        type: 'mcp-config',
-      });
-    }
   }
 
   return found.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
