@@ -186,6 +186,15 @@ function extractPathReferences(lines: string[], sections: Section[]): PathRefere
       }
       if (!cleanValue.includes('/')) continue;
 
+      // Skip VCS internals (`.git/hooks/pre-push`) and macOS app-bundle
+      // internals (`yaw.app/Contents/MacOS/yaw`, a common `pkill -f` argument):
+      // neither is a project source reference, and resolving them produces
+      // confident-but-wrong "broken path" + autofix noise. `.github/` is NOT
+      // matched -- the trailing slash after `.git` is required, so workflow
+      // paths (`.github/workflows/release.yml`) still validate. `.app/` mirrors
+      // the existing artifact exclusions (.deb/, .rpm, .tar, .zip).
+      if (/(^|\/)\.git\//.test(cleanValue) || /\.app\//.test(cleanValue)) continue;
+
       // match[0] includes the leading delimiter, match[1] is the captured path
       const column = match.index! + match[0].length - match[1].length + 1;
       paths.push({

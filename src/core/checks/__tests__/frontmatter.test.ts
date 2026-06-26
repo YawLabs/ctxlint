@@ -195,6 +195,21 @@ describe('checkFrontmatter', () => {
       expect(issues[0].ruleId).toBe('frontmatter/unclosed');
     });
 
+    it('treats an INDENTED close fence as unclosed (host requires column 0)', async () => {
+      // gray-matter / Cursor only recognize a closing `---` at column 0. An
+      // indented `   ---` does not close the frontmatter, so the whole body is
+      // pulled into the YAML parse and the rule silently fails to apply — we
+      // must report frontmatter/unclosed, matching the suggestion text that
+      // says the close needs no leading whitespace.
+      const file = makeFile(
+        '.cursor/rules/test.mdc',
+        '---\ndescription: My rule\nalwaysApply: true\n   ---\nBody.',
+      );
+      const issues = await checkFrontmatter(file, '/project');
+      expect(issues).toHaveLength(1);
+      expect(issues[0].ruleId).toBe('frontmatter/unclosed');
+    });
+
     it('still treats a properly closed frontmatter as found', async () => {
       // Sanity: the unclosed signal must not fire when the close fence is
       // present, even if other validation issues exist.

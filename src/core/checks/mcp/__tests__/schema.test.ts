@@ -68,6 +68,47 @@ describe('checkMcpSchema', () => {
     expect(wrongKey).toBeDefined();
   });
 
+  it('suppresses the wrong-root-key fix when the expected key is also present', async () => {
+    // Both "mcpServers" (expected) and "servers" (wrong) exist. Swapping
+    // "servers" -> "mcpServers" would create a duplicate key, which JSON.parse
+    // resolves by keeping only the last -- silently dropping a server block.
+    // The wrong-root-key error must still fire, but with NO autofix.
+    const config = makeConfig({
+      filePath: '/project/.vscode/mcp.json',
+      relativePath: '.vscode/mcp.json',
+      client: 'vscode',
+      expectedRootKey: 'servers',
+      actualRootKey: 'mcpServers',
+      content: '{\n  "mcpServers": {},\n  "servers": {}\n}',
+    });
+    const issues = await checkMcpSchema(config, '/project');
+    const wrongKey = issues.find((i) => i.ruleId === 'mcp-schema/wrong-root-key');
+    expect(wrongKey).toBeDefined();
+    expect(wrongKey!.severity).toBe('error');
+    expect(wrongKey!.fix).toBeUndefined();
+  });
+
+  it('keeps the wrong-root-key fix when the expected key is absent', async () => {
+    // Only the wrong key exists; the expected key is nowhere in the file, so
+    // the rename is safe and the autofix is still emitted, anchored to the
+    // located root-key line.
+    const config = makeConfig({
+      filePath: '/project/.vscode/mcp.json',
+      relativePath: '.vscode/mcp.json',
+      client: 'vscode',
+      expectedRootKey: 'servers',
+      actualRootKey: 'mcpServers',
+      content: '{\n  "mcpServers": {}\n}',
+    });
+    const issues = await checkMcpSchema(config, '/project');
+    const wrongKey = issues.find((i) => i.ruleId === 'mcp-schema/wrong-root-key');
+    expect(wrongKey).toBeDefined();
+    expect(wrongKey!.fix).toBeDefined();
+    expect(wrongKey!.fix!.oldText).toBe('"mcpServers"');
+    expect(wrongKey!.fix!.newText).toBe('"servers"');
+    expect(wrongKey!.fix!.line).toBe(2);
+  });
+
   it('reports empty servers', async () => {
     const config = makeConfig({
       content: '{\n  "mcpServers": {}\n}',

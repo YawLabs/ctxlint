@@ -79,3 +79,40 @@ describe('parser BOM handling', () => {
     expect(paths).toContain('src/main.ts');
   });
 });
+
+describe('parser non-source path exclusions', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-parser-skip-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function pathsFor(content: string): string[] {
+    const p = path.join(tmpDir, 'CLAUDE.md');
+    fs.writeFileSync(p, content);
+    const file: DiscoveredFile = {
+      absolutePath: p,
+      relativePath: 'CLAUDE.md',
+      isSymlink: false,
+      type: 'context',
+    };
+    return parseContextFile(file).references.paths.map((r) => r.value);
+  }
+
+  it('skips .git/ internals but keeps .github/ workflow paths', () => {
+    const paths = pathsFor(
+      'Hook lives at .git/hooks/pre-push and CI is .github/workflows/release.yml\n',
+    );
+    expect(paths).not.toContain('.git/hooks/pre-push');
+    expect(paths).toContain('.github/workflows/release.yml');
+  });
+
+  it('skips macOS .app/ bundle paths (pkill -f argument)', () => {
+    const paths = pathsFor('Run `pkill -f yaw.app/Contents/MacOS/yaw` to stop it.\n');
+    expect(paths).not.toContain('yaw.app/Contents/MacOS/yaw');
+  });
+});

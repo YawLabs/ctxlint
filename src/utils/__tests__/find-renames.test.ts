@@ -3,7 +3,14 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import simpleGit from 'simple-git';
-import { findRenames, parseRenameLog, resetGit, type RenameInfo } from '../git.js';
+import {
+  findRenames,
+  findRenamesBatch,
+  parseRenameLog,
+  resetGit,
+  resetRenameCache,
+  type RenameInfo,
+} from '../git.js';
 
 // The exact flags findRenames hands to `git log`. We capture the live output
 // of THIS command (without the trailing `-- <path>` pathspec) to feed the
@@ -36,10 +43,12 @@ beforeEach(async () => {
   // by line-ending rewrites on the Windows runner.
   await git.addConfig('core.autocrlf', 'false');
   resetGit();
+  resetRenameCache();
 }, 30000);
 
 afterEach(async () => {
   resetGit();
+  resetRenameCache();
   // Windows holds .git/index handles briefly after the last git subprocess
   // exits; retry the cleanup a few times (mirrors git.test.ts).
   for (let i = 0; i < 5; i++) {
@@ -205,11 +214,9 @@ describe('findRenames (real git mv, unscoped rename match)', { timeout: 30000 },
       // Path goes unquoted into the cmd one-liner: mkdtemp paths carry no
       // spaces, and quoting here interacts badly with execFileSync's own
       // Windows argument joining (the output grows stray quote characters).
-      const shortForm = execFileSync(
-        'cmd',
-        ['/c', `for %I in (${realTmpDir}) do @echo %~sI`],
-        { encoding: 'utf-8' },
-      ).trim();
+      const shortForm = execFileSync('cmd', ['/c', `for %I in (${realTmpDir}) do @echo %~sI`], {
+        encoding: 'utf-8',
+      }).trim();
       if (!shortForm || shortForm.toLowerCase() === realTmpDir.toLowerCase()) {
         return; // no short alias on this volume -- nothing to exercise
       }
@@ -498,5 +505,36 @@ describe('parseRenameLog', () => {
       `R100\tpackages/web/index.md\tpackages/site/index.md\n`;
     expect(parseRenameLog(raw, 'docs/index.md')).toBeNull();
     expect(parseRenameLog(raw, '../packages/web/index.md')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gap 3: findRenamesBatch -- batched rename lookup via cache.
+// ---------------------------------------------------------------------------
+describe('findRenamesBatch (real git mv, batched lookup)', { timeout: 30000 }, () => {
+  it('resolves two stale paths in a single call', async () => {
+    // Commit two files then rename both in a single commit.
+    await commit('add', [
+      { rel: 'src/alpha.ts', body: 'a\nb\nc\nd\ne\n' },
+      { rel: 'src/beta.ts', body: 'a\nb\nc\nd\ne\n' },
+    ]);
+    const git = simpleGit(realTmpDir);
+    await git.mv('src/alpha.ts', 'src/alpha2.ts');
+    await git.mv('src/beta.ts', 'src/beta2.ts');
+    await git.commit('rename alpha and beta');
+
+    // Both stale paths are queried together; findRenamesBatch must return
+    // correct RenameInfo for each without running the git subprocess twice.
+    const result = await findRenamesBatch(realTmpDir, ['src/alpha.ts', 'src/beta.ts']);
+
+    expect(result.size).toBe(2);
+
+    const alpha = result.get('src/alpha.ts');
+    expect(alpha).not.toBeNull();
+    expect(alpha).toMatchObject({ oldPath: 'src/alpha.ts', newPath: 'src/alpha2.ts' });
+
+    const beta = result.get('src/beta.ts');
+    expect(beta).not.toBeNull();
+    expect(beta).toMatchObject({ oldPath: 'src/beta.ts', newPath: 'src/beta2.ts' });
   });
 });

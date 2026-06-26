@@ -1,6 +1,6 @@
 {
   "name": "@yawlabs/ctxlint",
-  "version": "0.16.0",
+  "version": "0.18.1",
   "mcpName": "io.github.YawLabs/ctxlint",
   "description": "Lint your AI agent context files, MCP server configs, and session data against your actual codebase",
   "bin": {
@@ -91,25 +91,26 @@
     "@eslint/js": "^10.0.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/fast-levenshtein": "^0.0.4",
-    "@types/node": "^25.6.0",
-    "@vitest/coverage-v8": "^4.1.4",
+    "@types/node": "^25.9.3",
+    "@types/picomatch": "^4.0.3",
+    "@vitest/coverage-v8": "^4.1.9",
     "chalk": "^5.6.2",
     "commander": "^14.0.3",
     "esbuild": "^0.28.1",
-    "eslint": "^10.2.0",
+    "eslint": "^10.5.0",
     "fast-levenshtein": "^3.0.0",
     "glob": "^13.0.6",
     "jsonc-parser": "^3.3.1",
-    "ora": "^9.3.0",
-    "prettier": "^3.8.2",
-    "simple-git": "^3.35.2",
+    "ora": "^9.4.0",
+    "prettier": "^3.8.4",
+    "simple-git": "^3.36.0",
     "tiktoken": "^1.0.22",
     "tsup": "^8.5.1",
-    "typescript": "^6.0.2",
-    "typescript-eslint": "^8.58.1",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.61.1",
     "vite": "^8.0.16",
-    "vitest": "^4.1.4",
-    "zod": "^4.3.6"
+    "vitest": "^4.1.9",
+    "zod": "^4.4.3"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -126,5 +127,10 @@
       "ip-address": "^10.1.1",
       "brace-expansion": "^5.0.6"
     }
+  },
+  "dependencies": {
+    "picomatch": "^4.0.4",
+    "vscode-languageserver": "^10.0.0",
+    "vscode-languageserver-textdocument": "^1.0.12"
   }
 }

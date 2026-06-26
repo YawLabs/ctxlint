@@ -124,6 +124,41 @@ describe('scanner', () => {
     expect(claude?.isSymlink).toBe(true);
     expect(claude?.symlinkTarget).toBe(target);
   });
+
+  // Symlink whose real target is outside the project root must be excluded.
+  it('skips a context-file symlink whose target escapes the project root', async () => {
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-outside-'));
+    const outsideTarget = path.join(outsideDir, 'secret.md');
+    fs.writeFileSync(outsideTarget, '# outside the project root');
+    const link = path.join(tmpDir, 'CLAUDE.md');
+    try {
+      fs.symlinkSync(outsideTarget, link);
+    } catch {
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+      return; // symlinks unsupported in this env
+    }
+    try {
+      const files = await scanForContextFiles(tmpDir);
+      expect(files.find((f) => f.relativePath === 'CLAUDE.md')).toBeUndefined();
+    } finally {
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  // 5 MB cap: a file whose byte count exceeds MAX_FILE_BYTES must be excluded.
+  it('skips a context file larger than the 5 MB cap', async () => {
+    const filePath = path.join(tmpDir, 'CLAUDE.md');
+    fs.writeFileSync(filePath, Buffer.alloc(5 * 1024 * 1024 + 1, 'x'));
+    const files = await scanForContextFiles(tmpDir);
+    expect(files.find((f) => f.relativePath === 'CLAUDE.md')).toBeUndefined();
+  });
+
+  it('includes a context file at exactly the 5 MB cap', async () => {
+    const filePath = path.join(tmpDir, 'CLAUDE.md');
+    fs.writeFileSync(filePath, Buffer.alloc(5 * 1024 * 1024, 'x'));
+    const files = await scanForContextFiles(tmpDir);
+    expect(files.find((f) => f.relativePath === 'CLAUDE.md')).toBeDefined();
+  });
 });
 
 describe('nested-dotdir pattern discovery (regression guard)', () => {
@@ -328,12 +363,14 @@ describe('nested-dotted dir discovery (fix 1)', () => {
   });
 });
 
-describe('mcpFileHasMcpKey prefix-only read (fix 2)', () => {
+describe('mcpFileHasMcpKey peek (fix 2)', () => {
   // scanGlobalMcpConfigs gates `~/.claude.json` and `~/.claude/settings.json`
-  // through a cheap text-only peek. The peek must (a) detect the mcpServers
-  // key when present in the file's first 8KB, and (b) NOT read past the
-  // prefix -- a key buried at byte 1MB inside a multi-MB file should look
-  // like "no mcp key" from the peek's perspective.
+  // through a cheap text-only peek. For `.claude.json` -- Claude Code's own
+  // state file, where projects/history precede `mcpServers` and push the key
+  // well past 8KB on real workstations -- the peek STREAMS the file and must
+  // detect the key wherever it sits, bailing as soon as it matches (so a key
+  // near the top still avoids a full read). `settings.json` stays on the cheap
+  // 8KB prefix peek since it's always small.
   //
   // We exercise the peek through scanGlobalMcpConfigs by pointing HOME at a
   // throwaway dir, then asserting whether `.claude.json` is included in the
@@ -367,22 +404,49 @@ describe('mcpFileHasMcpKey prefix-only read (fix 2)', () => {
     expect(paths).toContain('~/.claude.json');
   });
 
-  it('does NOT detect mcpServers when key is buried past the 8KB prefix', async () => {
+  it('detects mcpServers in .claude.json when the key is buried past 8KB', async () => {
     const claudeJson = path.join(tmpDir, '.claude.json');
-    // 50KB of leading filler, THEN the mcpServers key. The 8KB prefix peek
-    // must miss it and the file must be SKIPPED.
+    // 50KB of leading filler (the projects/history Claude Code writes ahead
+    // of mcpServers on a real workstation), THEN the mcpServers key. The
+    // streaming scan must read past the 8KB prefix and INCLUDE the file --
+    // the old prefix-only peek dropped it silently.
     const filler = '"a":"' + 'x'.repeat(50_000) + '",';
     const body = '{' + filler + '"mcpServers":{"x":{"command":"node"}}}';
+    fs.writeFileSync(claudeJson, body);
+    const files = await scanGlobalMcpConfigs();
+    const paths = files.map((f) => f.relativePath);
+    expect(paths).toContain('~/.claude.json');
+  });
+
+  it('detects mcpServers in .claude.json when the key straddles a chunk boundary', async () => {
+    const claudeJson = path.join(tmpDir, '.claude.json');
+    // Pad so the `"mcpServers":` token lands across a 64KB chunk boundary --
+    // the carry-over overlap between chunks must prevent the split from
+    // hiding the match. 64KB minus a few bytes of leading filler puts the key
+    // right on the seam.
+    const filler = '"a":"' + 'x'.repeat(64 * 1024 - 6) + '",';
+    const body = '{' + filler + '"mcpServers":{"x":{"command":"node"}}}';
+    fs.writeFileSync(claudeJson, body);
+    const files = await scanGlobalMcpConfigs();
+    const paths = files.map((f) => f.relativePath);
+    expect(paths).toContain('~/.claude.json');
+  });
+
+  it('skips a large .claude.json with NO mcp key anywhere', async () => {
+    const claudeJson = path.join(tmpDir, '.claude.json');
+    // 100KB of general state, no mcpServers/servers key -- the streaming scan
+    // reads to EOF and the file is correctly excluded.
+    const body = '{"projects":"' + 'x'.repeat(100_000) + '","theme":"dark"}';
     fs.writeFileSync(claudeJson, body);
     const files = await scanGlobalMcpConfigs();
     const paths = files.map((f) => f.relativePath);
     expect(paths).not.toContain('~/.claude.json');
   });
 
-  it('completes the peek fast on a large file (no full read)', async () => {
+  it('bails early on a large file when the key sits near the top (no full read)', async () => {
     const claudeJson = path.join(tmpDir, '.claude.json');
-    // 10MB file -- a full readFileSync would take noticeably longer than a
-    // prefix read. Detection should succeed since the key sits in the prefix.
+    // 10MB file with the key at the very top. The streaming scan must match
+    // on the first chunk and return WITHOUT reading the remaining ~10MB.
     const body =
       '{"mcpServers":{"x":{"command":"node"}},"filler":"' + 'x'.repeat(10_000_000) + '"}';
     fs.writeFileSync(claudeJson, body);
@@ -391,7 +455,8 @@ describe('mcpFileHasMcpKey prefix-only read (fix 2)', () => {
     const elapsed = Date.now() - start;
     expect(files.map((f) => f.relativePath)).toContain('~/.claude.json');
     // Generous bound -- a true full-read of 10MB is ~50-200ms on most disks,
-    // a prefix read is <5ms. 250ms catches the regression without flaking.
+    // an early-exit first-chunk read is <5ms. 250ms catches a regression to a
+    // full read without flaking.
     expect(elapsed).toBeLessThan(250);
   });
 

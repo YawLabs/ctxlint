@@ -258,6 +258,32 @@ describe('MCP server tools', () => {
       expect(result.filesModified).toHaveLength(0);
       expect(result.remainingIssues.errors).toBe(0);
     });
+
+    it('dryRun: reports fixes without writing the file', () => {
+      const originalContent = fs.readFileSync(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
+      const result = callMcpTool('ctxlint_fix', {
+        projectPath: tmpDir,
+        checks: ['paths'],
+        dryRun: true,
+      }) as any;
+      // Should identify at least one fixable path
+      expect(result.dryRun).toBe(true);
+      expect(result.totalFixes).toBeGreaterThanOrEqual(1);
+      // File must be unchanged on disk
+      const afterContent = fs.readFileSync(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
+      expect(afterContent).toBe(originalContent);
+      expect(afterContent).toContain('lib/helpers.ts');
+    });
+
+    it('dryRun: remainingIssues reflects pre-fix state (no re-audit)', () => {
+      const result = callMcpTool('ctxlint_fix', {
+        projectPath: tmpDir,
+        checks: ['paths'],
+        dryRun: true,
+      }) as any;
+      // No re-audit ran, so the broken path is still counted as an error
+      expect(result.remainingIssues.errors).toBeGreaterThanOrEqual(1);
+    });
   });
 
   describe('ctxlint_session_audit', () => {

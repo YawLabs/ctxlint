@@ -233,6 +233,31 @@ describe('checkContradictions', () => {
     expect(issues.filter((i) => i.message.includes('package manager'))).toHaveLength(0);
   });
 
+  it('does not flag a file that LISTS multiple options in one category as conflicting', () => {
+    // CLAUDE.md legitimately lists both quote styles (single in TS, double in
+    // JSON) -> {single quotes, double quotes}. AGENTS.md picks one of them.
+    // The lister is a superset of the picker, not a contradiction: the picker's
+    // label is already present in the lister, so there is no TRUE cross-file
+    // disagreement and no conflict must fire.
+    const files = [
+      makeFile('CLAUDE.md', 'Use single quotes for TS. Use double quotes for JSON config.'),
+      makeFile('AGENTS.md', 'Prefer single quotes everywhere.'),
+    ];
+    const issues = checkContradictions(files);
+    expect(issues.filter((i) => i.message.includes('quote style'))).toHaveLength(0);
+  });
+
+  it('still flags two files that each pick a DIFFERENT single option', () => {
+    // Sanity: the multi-label guard must not suppress a genuine pick-vs-pick
+    // disagreement.
+    const files = [
+      makeFile('CLAUDE.md', 'Use single quotes everywhere.'),
+      makeFile('AGENTS.md', 'Use double quotes everywhere.'),
+    ];
+    const issues = checkContradictions(files);
+    expect(issues.filter((i) => i.message.includes('quote style')).length).toBeGreaterThan(0);
+  });
+
   it('emits a single cluster issue for 3+ file conflict', () => {
     const files = [
       makeFile('CLAUDE.md', 'Always use pnpm as the package manager.'),

@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import { Command, Option } from 'commander';
 import ora from 'ora';
 import { resetPathsCache } from './core/checks/paths.js';
+import { clearFileCache } from './core/cache.js';
 import { formatText, formatJson, formatTokenReport, formatSarif } from './core/reporter.js';
 import { applyFixes } from './core/fixer.js';
 import { freeEncoder } from './utils/tokens.js';
@@ -74,6 +75,9 @@ export async function runCli() {
     // never sees this flag; if you refactor index.ts to always route through
     // commander, also wire startServer() into the action handler.
     .option('--mcp-server', 'Start the MCP server (alias: `ctxlint serve`)')
+    // --lsp is intercepted in src/index.ts BEFORE commander runs (same pattern
+    // as --mcp-server). Declared here only so --help lists it.
+    .option('--lsp', 'Start in LSP server mode (JSON-RPC over stdio for editor integration)')
     .option('--session', 'Run session audit checks (cross-project consistency)', false)
     .option('--session-only', 'Run only session checks, skip context and MCP checks', false)
     .option('--skills', 'Run agent-skill checks (~/.claude/skills + ~/.claude/agents)', false)
@@ -83,6 +87,7 @@ export async function runCli() {
       'Also scan the user-global ~/.claude/settings.json in the dead-hook check (off by default; the standard run only reads project .claude/settings.json[.local])',
       false,
     )
+    .option('--no-ignore-file', 'Disable .ctxlintignore suppression (see all findings)')
     .option('--watch', 'Re-lint on context file changes', false)
     .action(async (projectPath: string, opts: Record<string, unknown>) => {
       const resolvedPath = path.resolve(projectPath as string);
@@ -115,6 +120,7 @@ export async function runCli() {
           hooksGlobal: options.hooksGlobal,
           tokenThresholds: config?.tokenThresholds,
           ignoreRules: config?.ignoreRules,
+          noIgnoreFile: options.noIgnoreFile,
         };
         let result = await runAudit(resolvedPath, activeChecks, auditOptions);
 
@@ -271,6 +277,8 @@ export async function runCli() {
           // restarting the watcher.
           path.join(resolvedPath, '.ctxlintrc'),
           path.join(resolvedPath, '.ctxlintrc.json'),
+          // .ctxlintignore — re-lint when suppression rules change.
+          path.join(resolvedPath, '.ctxlintignore'),
         ];
 
         const watchDirs = [
@@ -327,18 +335,24 @@ export async function runCli() {
                 hooksGlobal: liveOptions.hooksGlobal,
                 tokenThresholds: liveConfig?.tokenThresholds,
                 ignoreRules: liveConfig?.ignoreRules,
+                noIgnoreFile: liveOptions.noIgnoreFile,
               });
 
-              if (result.files.length === 0) {
-                console.log('\nNo context files found.\n');
-              } else if (liveOptions.tokensOnly) {
-                console.log(formatTokenReport(result));
-              } else if (liveOptions.format === 'json') {
-                console.log(formatJson(result));
-              } else if (liveOptions.format === 'sarif') {
-                console.log(formatSarif(result));
-              } else {
-                console.log(formatText(result, liveOptions.verbose));
+              // Honor --quiet on every watch tick, matching the initial run's
+              // `if (!options.quiet)` gate. Without this, `ctxlint --watch
+              // --quiet` printed a full report on every filesystem change.
+              if (!liveOptions.quiet) {
+                if (result.files.length === 0) {
+                  console.log('\nNo context files found.\n');
+                } else if (liveOptions.tokensOnly) {
+                  console.log(formatTokenReport(result));
+                } else if (liveOptions.format === 'json') {
+                  console.log(formatJson(result));
+                } else if (liveOptions.format === 'sarif') {
+                  console.log(formatSarif(result));
+                } else {
+                  console.log(formatText(result, liveOptions.verbose));
+                }
               }
             } catch (err) {
               console.error('Error:', err instanceof Error ? err.message : err);
@@ -347,6 +361,7 @@ export async function runCli() {
               resetGit();
               resetPathsCache();
               resetPackageJsonCache();
+              clearFileCache();
             }
             console.log(chalk.dim('\nWatching for changes... (Ctrl+C to stop)\n'));
           }, 300);
@@ -597,6 +612,10 @@ function resolveSession(
     skills: effectiveSkills,
     skillsOnly,
     hooksGlobal,
+    // Commander's --no-X pattern: --no-ignore-file sets opts.ignoreFile = false.
+    // When the flag is not passed, opts.ignoreFile is true (default). So
+    // noIgnoreFile is true only when the user explicitly passed --no-ignore-file.
+    noIgnoreFile: opts.ignoreFile === false,
   };
 
   // Token thresholds from config flow through runAudit's tokenThresholds

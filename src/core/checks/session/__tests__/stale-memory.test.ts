@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { checkStaleMemory } from '../stale-memory.js';
 import type { SessionContext, MemoryEntry } from '../../../types.js';
@@ -112,6 +113,30 @@ describe('checkStaleMemory', () => {
       const ctx = makeCtx([makeMemory(['~/.claude/CLAUDE.md'])]);
       const issues = await checkStaleMemory(ctx);
       expect(issues).toHaveLength(0);
+    } finally {
+      process.env.HOME = originalHome;
+      process.env.USERPROFILE = originalUser;
+    }
+  });
+
+  it('resolves ~/ refs via os.homedir() when neither HOME nor USERPROFILE is set', async () => {
+    const originalHome = process.env.HOME;
+    const originalUser = process.env.USERPROFILE;
+    delete process.env.HOME;
+    delete process.env.USERPROFILE;
+    const expandedTarget = resolve(homedir(), '.claude/CLAUDE.md');
+    // existsSync returns true only for the homedir()-expanded path. Without the
+    // fallback `home` would be null, the ref would be skipped, and no issue
+    // would fire even though the path does not "exist" per the mock for any
+    // other input.
+    mockExistsSync.mockImplementation((p) => p !== expandedTarget);
+    try {
+      const ctx = makeCtx([makeMemory(['~/.claude/CLAUDE.md'])]);
+      const issues = await checkStaleMemory(ctx);
+      // The ref resolved (was not skipped) and was checked against existsSync,
+      // which reports it missing -> one issue.
+      expect(issues).toHaveLength(1);
+      expect(issues[0].message).toContain('~/.claude/CLAUDE.md');
     } finally {
       process.env.HOME = originalHome;
       process.env.USERPROFILE = originalUser;

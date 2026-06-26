@@ -236,6 +236,16 @@ export interface FixAction {
   line: number;
   oldText: string;
   newText: string;
+  /**
+   * 1-indexed column where `oldText` starts on `line`. When set, the fixer
+   * claims exactly that occurrence (after verifying the line still reads
+   * `oldText` there) instead of replaceAll-matching every occurrence -- this
+   * stops a stale value that is a substring of a KEPT value on the same line
+   * (e.g. `src/old.ts` inside `src/old.ts.bak`) from being rewritten too.
+   * Producers whose `oldText` is unambiguous on its line may omit it; the
+   * fixer then falls back to whole-line replaceAll.
+   */
+  column?: number;
 }
 
 export interface LintIssue {
@@ -320,4 +330,6 @@ export interface LintOptions {
   skills: boolean;
   skillsOnly: boolean;
   hooksGlobal: boolean;
+  /** When true, .ctxlintignore is not loaded. Use --no-ignore-file to see all findings. */
+  noIgnoreFile?: boolean;
 }

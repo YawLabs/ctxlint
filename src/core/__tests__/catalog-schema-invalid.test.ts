@@ -20,6 +20,7 @@ import {
  *   - type mismatch                       (line 82-85)
  *   - minLength on a string               (line 89-90)
  *   - pattern miss on a string            (line 92-93)
+ *   - format: "uri" miss on a string      (the format branch)
  *   - enum violation (string + non-string)(line 95-100, 103-105)
  *   - minItems on an array                (line 108-109)
  *   - missing required property           (line 120-123)
@@ -68,6 +69,23 @@ describe('validateCatalogObject (invalid inputs)', () => {
     };
     const errors = validateCatalogObject({ slug: 'Has_Caps' }, schema);
     expect(errors).toEqual([{ path: 'slug', message: 'string does not match pattern ^[a-z-]+$' }]);
+  });
+
+  it('flags a string that is not a valid uri (format: "uri")', () => {
+    const schema = {
+      type: 'object',
+      properties: { repository: { type: 'string', format: 'uri' } },
+    };
+    const errors = validateCatalogObject({ repository: 'not a url' }, schema);
+    expect(errors).toEqual([{ path: 'repository', message: 'string is not a valid uri' }]);
+  });
+
+  it('does NOT flag a valid uri (format: "uri")', () => {
+    const schema = {
+      type: 'object',
+      properties: { repository: { type: 'string', format: 'uri' } },
+    };
+    expect(validateCatalogObject({ repository: 'https://example.com/repo' }, schema)).toEqual([]);
   });
 
   it('flags a string value outside its enum', () => {

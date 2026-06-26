@@ -322,15 +322,26 @@ export function checkContradictions(files: ParsedContextFile[]): LintIssue[] {
       existing.add(d.label);
     }
 
-    // Only files that pick a distinct label from at least one other file are
-    // part of the conflict cluster.
+    // Only files in a TRUE cross-file disagreement are part of the cluster. A
+    // file `f` conflicts with another file only when EACH holds a label the
+    // other lacks (mutual disagreement) — a directive in `f` that the other
+    // file rejects, and vice versa. Requiring it on both sides means a file
+    // that merely LISTS multiple options in one category (e.g. "single quotes
+    // in TS, double in JSON" => {single, double}) is a SUPERSET of a file that
+    // picks just one of them, not a contradiction: the picker's label is
+    // already present in the lister, so there is no label the lister lacks.
+    const conflictsWith = (a: Set<string>, b: Set<string>): boolean => {
+      let aHasExtra = false;
+      let bHasExtra = false;
+      for (const l of a) if (!b.has(l)) aHasExtra = true;
+      for (const l of b) if (!a.has(l)) bHasExtra = true;
+      return aHasExtra && bHasExtra;
+    };
     const conflictingFiles = [...fileLabels.keys()].filter((f) => {
       const myLabels = fileLabels.get(f)!;
       for (const [otherFile, otherLabels] of fileLabels) {
         if (otherFile === f) continue;
-        for (const l of myLabels) {
-          if (!otherLabels.has(l)) return true;
-        }
+        if (conflictsWith(myLabels, otherLabels)) return true;
       }
       return false;
     });
