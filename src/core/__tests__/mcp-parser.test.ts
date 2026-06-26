@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { parseMcpConfig } from '../mcp-parser.js';
+import { classifyGitTrackedError, parseMcpConfig } from '../mcp-parser.js';
 import type { DiscoveredFile } from '../scanner.js';
 
 const FIXTURES = path.resolve(__dirname, '../../../fixtures/mcp-configs');
@@ -162,6 +162,99 @@ describe('parseMcpConfig', () => {
     expect(config.servers[0].name).toBe('fs');
   });
 
+  it('attributes a server named after a field key to its own line, not an earlier nested key', async () => {
+    // A flat regex scan finds the FIRST `"env":` after the root key, which is
+    // server a's nested env block (line 5), not the server defined at line 7.
+    const file = writeTmp(
+      [
+        '{',
+        '  "mcpServers": {',
+        '    "a": {',
+        '      "command": "foo",',
+        '      "env": { "K": "v" }',
+        '    },',
+        '    "env": {',
+        '      "command": "bar"',
+        '    }',
+        '  }',
+        '}',
+      ].join('\n'),
+    );
+    const config = await parseMcpConfig(file, tmpDir, 'project');
+    const envServer = config.servers.find((s) => s.name === 'env');
+    expect(envServer).toBeDefined();
+    expect(envServer!.line).toBe(7);
+  });
+
+  it('attributes a duplicated server name to the last definition (the one JSON.parse keeps)', async () => {
+    const file = writeTmp(
+      [
+        '{',
+        '  "mcpServers": {',
+        '    "api": { "url": "https://old.example.com/mcp" },',
+        '    "other": { "url": "https://other.example.com/mcp" },',
+        '    "api": { "url": "https://new.example.com/mcp" }',
+        '  }',
+        '}',
+      ].join('\n'),
+    );
+    const config = await parseMcpConfig(file, tmpDir, 'project');
+    const api = config.servers.find((s) => s.name === 'api');
+    expect(api!.url).toBe('https://new.example.com/mcp');
+    expect(api!.line).toBe(5);
+  });
+
+  it('keeps string env values when a sibling value is non-string', async () => {
+    // All-or-nothing narrowing would drop the whole env block -- hiding the
+    // token next to the stray number from the security check.
+    const file = writeTmp(
+      JSON.stringify({
+        mcpServers: {
+          gh: {
+            command: 'npx',
+            env: { GITHUB_TOKEN: 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij', PORT: 3000 },
+          },
+        },
+      }),
+    );
+    const config = await parseMcpConfig(file, tmpDir, 'project');
+    expect(config.servers[0].env).toEqual({
+      GITHUB_TOKEN: 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij',
+    });
+  });
+
+  it('keeps string header values when a sibling header is non-string', async () => {
+    const file = writeTmp(
+      JSON.stringify({
+        mcpServers: {
+          api: {
+            url: 'https://api.example.com/mcp',
+            headers: { 'X-Api-Key': 'sk-proj-abcdefghijklmnopqrstuvwxyz1234567890', Retries: 3 },
+          },
+        },
+      }),
+    );
+    const config = await parseMcpConfig(file, tmpDir, 'project');
+    expect(config.servers[0].headers).toEqual({
+      'X-Api-Key': 'sk-proj-abcdefghijklmnopqrstuvwxyz1234567890',
+    });
+  });
+
+  it('leaves env undefined when a non-empty env has no string values', async () => {
+    // Surfacing `{}` here would false-trigger mcp-env/empty-env-block.
+    const file = writeTmp(
+      JSON.stringify({ mcpServers: { srv: { command: 'npx', env: { PORT: 3000 } } } }),
+    );
+    const config = await parseMcpConfig(file, tmpDir, 'project');
+    expect(config.servers[0].env).toBeUndefined();
+  });
+
+  it('keeps a genuinely empty env object (so empty-env-block can fire)', async () => {
+    const file = writeTmp(JSON.stringify({ mcpServers: { srv: { command: 'npx', env: {} } } }));
+    const config = await parseMcpConfig(file, tmpDir, 'project');
+    expect(config.servers[0].env).toEqual({});
+  });
+
   it('rejects array-shaped oauth field on a server entry', async () => {
     // `typeof [] === 'object'` and arrays are not null, so a previous guard
     // accepted arrays here and surfaced them as `oauth: Record<string, unknown>`.
@@ -179,5 +272,32 @@ describe('parseMcpConfig', () => {
     const config = await parseMcpConfig(file, tmpDir, 'project');
     expect(config.servers).toHaveLength(1);
     expect(config.servers[0].oauth).toBeUndefined();
+  });
+
+  it('marks a non-repo config untracked without the unknown flag', async () => {
+    // No .git in tmpDir: tracking is DETERMINED absent, not unanswerable.
+    const file = writeTmp(JSON.stringify({ mcpServers: {} }));
+    const config = await parseMcpConfig(file, tmpDir, 'project');
+    expect(config.isGitTracked).toBe(false);
+    expect(config.gitTrackedUnknown).toBeUndefined();
+  });
+});
+
+describe('classifyGitTrackedError', () => {
+  it('classifies the two determined-untracked shapes', () => {
+    expect(
+      classifyGitTrackedError("error: pathspec '.mcp.json' did not match any file(s) known to git"),
+    ).toBe('untracked');
+    expect(
+      classifyGitTrackedError('fatal: not a git repository (or any of the parent directories)'),
+    ).toBe('untracked');
+  });
+
+  it('classifies everything else as unknown', () => {
+    expect(classifyGitTrackedError('spawn git ENOENT')).toBe('unknown');
+    expect(classifyGitTrackedError('fatal: detected dubious ownership in repository')).toBe(
+      'unknown',
+    );
+    expect(classifyGitTrackedError('')).toBe('unknown');
   });
 });

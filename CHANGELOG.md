@@ -8,13 +8,126 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-06-10
+
+### Added
+- **`mcp-security/secret-scan-skipped`** (info, experimental) -- the three git-gated secret rules (`hardcoded-bearer`, `hardcoded-api-key`, `secret-in-url`) skip in files git does not track, but previously also skipped *silently* when git could not answer at all (binary missing, permissions, failing repo). Tracking detection is now tri-state: a determined "untracked" stays silent as before, while an undeterminable status emits this finding so a possibly-tracked file never passes blind. MCP catalog grows to 29 rules.
+
+### Fixed
+- Both MCP spec documents still showed the over-wide `sk-(proj-)?[A-Za-z0-9_-]{20,}` key pattern that v0.15.0 split into three (`sk-ant-`, `sk-proj-`, and an alphanumeric-only generic form); the docs now match the shipped patterns.
+- The `frontmatter/missing` suggestion for Windsurf rules derives its trigger list from `VALID_WINDSURF_TRIGGERS` instead of a hardcoded string that omitted `model_decision`.
+
+### Internal
+- Documented the deliberate bare-fence divergence between the context parser (extracts path references; file trees dominate) and the skills pillar (skips them; usage examples dominate) on both sides of the split.
+
+## [0.15.1] - 2026-06-10
+
+### Security
+- Bumped **`brace-expansion`** to `>=5.0.6` via `pnpm.overrides`, closing GHSA-jxxr-4gwj-5jf2 (moderate: large numeric ranges defeat the documented `max` DoS protection). The vulnerable copy ships bundled in `dist/index.js` via `glob` -> `minimatch`, and ctxlint runs user-supplied globs from context files through that path, so the bundled copy is the one that matters. `pnpm audit` now reports no known vulnerabilities. No runtime API change.
+
+### Internal
+- CI workflows bumped `pnpm/action-setup` v4 -> v6 (node24 runtime) ahead of the 2026-06-16 node20 Actions deprecation.
+
+## [0.15.0] - 2026-06-10
+
+Full-pass audit of the entire codebase (161 files, every finding adversarially verified) followed by an independent review of the fix sweep: ~120 findings addressed across all pillars.
+
+### Added
+- **GitHub Actions CI** -- `ci.yml` (push/PR) and `release.yml` (`v*` tags) run lint, type-check, build, and tests across ubuntu/windows x node 20/22; `release.yml` publishes to npm with provenance, and `release.sh` now hands the publish off to CI and watches the run. `pretest` builds `dist/` so CLI-level tests can never silently exercise a stale bundle.
+- **content-secrets rules published** -- the shipped inline-secrets check now has its rules in `context-lint-rules.json` and a spec section (catalog: 39 rules / 12 categories).
+- **Catalog integrity guards** -- duplicate-rule-ID and unused-category checks, a prefix==category test (with the documented `ci/*` legacy allowlist), real-schema negative tests, and `build.mjs` now fails loudly on catalog drift instead of silently regenerating prose in place.
+
+### Fixed
+- **git utils**: both git readers pass `core.quotepath=false` so non-ASCII paths count and rename-match correctly; `normalizePath`/`normalizeRenamePath` case-fold on win32; rename detection works from subdirectory project roots, `./`-relative doc refs, and absolute MCP inputs (targets are relativized into git's repo-root coordinate space); ambiguous same-basename renames return no match instead of guessing (the result feeds an autofix); glob refs in staleness convert to their static directory prefix instead of silently counting 0.
+- **parser**: `parseSections` only closes a section on a heading of equal-or-shallower depth; markdown emphasis (`**docs/missing**`) is no longer captured as a path; blockquote prose inside bare fences is no longer extracted as commands; double-star globs are extracted and validated with an ignore list and first-match short-circuit; `tsc` maps to the `typescript` package before the dependency lookup.
+- **MCP pillar**: loopback coverage restored for `[::1]` and all of `127/8` (shared definition with `http-no-tls`, which now runs regardless of git-tracked status); `sk-ant-`/`sk-proj-` key patterns detect modern keys without flagging kebab-case identifiers; env-syntax autofix no longer corrupts multi-reference values; windsurf gets wrong-syntax checking; server line attribution is depth-aware; mixed-type `env`/`headers` blocks no longer disable secret scanning; consistency and path checks are scope-aware (user-user drift compared, only cross-scope pairs skipped; absolute args existence-checked at every scope).
+- **session pillar**: loop detection groups by provider+session and splits at 30-minute gaps (routine daily reuse no longer flagged; rapid one-shot respawn loops still detected via a same-provider merge; timestamp-less entries excluded); stream errors degrade to partial results instead of crashing the audit; BOM-safe history parsing; sibling git probing bounded to a concurrency pool; symlinked skills/agents visible; quote-aware `gh secret set` name extraction; MEMORY.md line-count off-by-one fixed.
+- **context checks**: contradiction detection is negation-aware ("never use yarn" no longer endorses yarn) and scans every match on a line; package-manager builtins (`pnpm install`) are no longer flagged as missing scripts; `hooks.Stop` and `permissions.ask` are credited as hard enforcement; the tier-tokens settings cache resets between runs; generic CI secret names require the uppercase env-var form in docs.
+- **CLI/MCP server**: `--format json|sarif` stdout carries only the payload (progress and the `--fix` prompt go to stderr); `--depth 0` is honored; `ctxlint_fix` reports post-fix state instead of pre-fix counts.
+
+### Removed
+- **Package `main`/`exports` entry point** -- ctxlint is a CLI/MCP server, not a library; the entry added briefly during this cycle pointed at the self-executing bundle, so `import '@yawlabs/ctxlint'` would run the linter against the host process argv. The bare import now fails at resolution (`bin` and `./package.json` remain).
+
+## [0.14.1] - 2026-06-07
+
+### Security
+- Bumped vulnerable transitive dependencies flagged by Dependabot. **`fast-uri`** (pulled via `@modelcontextprotocol/sdk` -> `ajv`) is updated to `>=3.1.2` -- it is the only flagged package bundled into the shipped `dist/index.js` -- closing two high-severity advisories: CVE-2026-6321 (path traversal via percent-encoded dot segments) and CVE-2026-6322 (host confusion via percent-encoded authority delimiters). The vulnerable URI-normalization path is not reachable through ctxlint's usage (ajv uses it for schema validation, and ctxlint makes no URI-based security decisions), but the bundled copy is updated regardless. Dev-only transitive deps `hono`, `postcss`, `qs`, and `ip-address` were also bumped via `pnpm.overrides` (build/test toolchain only -- never shipped). No runtime API change.
+
+## [0.14.0] - 2026-06-07
+
+### Fixed
+- Session memory path extraction dropped Windows drive-absolute paths entirely and (once added) kept trailing sentence punctuation and `:line` suffixes, producing false "stale path" findings; the MCP `http-no-tls` loopback exemption used a `127.`-prefix string match that fail-open-exempted public hosts like `127.evil.com` (now anchored to the `127.0.0.0/8` dotted-quad, with the same fix applied to `mcph` apibase's now-removed `isPrivateHost`); and the `session-missing-secret` check mis-parsed `gh secret set` invocations with flag-first ordering or `-R` / `--repo=` repo forms.
+
+### Removed
+- **mcph config-linting pillar** (`.mcph.json` / mcp.hosting CLI config). The entire `mcph-*` rule family, the `--mcph` / `--mcph-only` / `--mcph-global` / `--mcph-strict-env-token` flags, the `ctxlint_mcph_audit` MCP tool, the `.mcph.json` / `.mcph.local.json` scanning, and the `mcph-config-lint-rules.json` catalog are removed. mcp.hosting has been decommissioned and replaced by Yaw Labs MCP ("Yaw MCP"), integrated directly into Yaw Terminal, so the config file these rules linted no longer exists.
+
+## [0.13.1] - 2026-06-02
+
+### Fixed
+- **`findRenames` now detects real git renames.** The git-history auto-fixer's "Did you mean `<new path>`?" suggestion never fired: a path-scoped `git log -- <old>` returns nothing once `<old>` has been renamed away (the name no longer exists at HEAD, and `--follow` only tracks a path that still exists), so a referenced-but-renamed path always fell through to a fuzzy match. `findRenames` now scans an unscoped `--diff-filter=R` rename log and matches the entry whose source path is the broken reference. `parseRenameLog` gained an optional `targetPath` (exact match, then a most-recent basename fallback; no-target behaviour unchanged).
+
+### Internal
+- High-severity test coverage added across the lint engine: `findRenames`/`parseRenameLog`, the fixer dry-run and symlink-skip branches, and the catalog-schema validator's error paths. `parseRenameLog` was extracted from `findRenames` for direct testing (behaviour-preserving).
+
+## [0.13.0] - 2026-06-02
+
+### Added
+- **Agent-skill lint pillar** (`AGENT_SKILL_LINT_SPEC`) - a fourth open spec covering Claude Code `~/.claude/skills/<name>/SKILL.md` and `~/.claude/agents/*.md`: frontmatter presence, broken path/command references, trigger-phrase collisions, orphaned skills, and dead tool restrictions. New `--skills` / `--skills-only` flags and an `agent-skill-lint-rules.json` catalog.
+- **`hook-coverage` / dead-hook rule** - flags `.claude/settings.json` hook and permission entries that reference a script or path missing on disk (a dead gate silently no-ops). The user-global `~/.claude/settings.json` scan is gated behind `--hooks-global`.
+- **Catalog JSON Schema + generate-from-catalog** - a governing schema for the rule catalogs with normalized metadata, plus a build step that generates the spec rule-count headers and the README family-table counts from the catalogs so the prose cannot drift from the machine-readable source.
+
+### Fixed
+- Corrected rule-count drift across the spec headers and the README table.
+- The skill `broken-ref` check no longer false-flags `./` paths inside shell code fences.
+- Removed stale references to the archived `mcp.hosting`.
+
+## [0.12.3] - 2026-05-28
+
+### Internal
+- `release.sh` hardening: a tag-drift push guard, a `SKIP_LINT` escape hatch for the Windows-ARM lint segfault, and a `gh release create` step.
+
+## [0.12.2] - 2026-05-28
+
+### Changed
+- `release.sh` now publishes to the MCP Registry and creates the GitHub release itself; `release.yml` and the other CI workflows were dropped in favor of the local release flow.
+- README: replaced the mcp.hosting badge with an "Add to Yaw MCP" deep link, and pinned the `npx` spawn to `@latest` for auto-update.
+
+### Internal
+- Release-flow fixes: tty-gated confirmation prompt, unconditional `server.json` version sync, a `gh auth token` fallback for the MCP Registry, and CI hand-off instead of racing it.
+
+## [0.12.1] - 2026-05-19
+
+### Fixed
+- A batch of correctness fixes across the git utilities, file scanner, fixer, and checks (from a full-pass review).
+
+## [0.12.0] - 2026-05-17
+
+### Fixed
+- Path matching in `getCommitsSinceBatch` (the git commit-history utility).
+
+## [0.11.0] — 2026-05-15
+
+### Added
+- **Path-detector classification stage** in `session-stale-memory`. A new `classifyPath()` filter rejects candidates that look path-like but aren't filesystem paths: slash commands (`/yaw-review`, `/release-yaw`), tilde approximations (`~80%`, `~23h`, `~1KB`, `~Nx`), URL paths (`/blog`, `/docs`, `/api/...` -- recognized via a `WEB_FIRST_SEGMENTS` vocabulary or a co-occurring `https?://` base URL in the same memory), and template placeholders (`~/.claude/skills/<name>/SKILL.md`, `src/{{module}}/index.ts`). Order: approximation -> template -> URL-path -> slash-command -> fall-through fs-path. `WEB_FIRST_SEGMENTS` lives at `tests/fixtures/web-first-segments.json` so additions go through a fixture edit + a test rather than a code edit, bundled into the dist at build time via an esbuild define.
+- **`ignoreRules` config field** alongside the existing `ignore: CheckName[]`. Granular per-finding suppression with three filter axes: `check` (required, exact `CheckName`), `match` (regex tested against the finding message), and `pathPattern` (regex tested against each extracted path in a `session-stale-memory` message -- every path must match for the rule to fire). Optional `reason` field surfaces in drift reports. `ignore` is unchanged; `ignoreRules` is purely additive.
+- **Drift report** in all three output formats: CLI text footer (after the main report), JSON `_meta.ignoreReport` block on `LintResult`, and the MCP response payload. Reports `dropped` count, `unusedRules` (rules that never fired -- stale-config debt), and `rulesMissingReason` (rules without a `reason` field -- undocumented suppression debt).
+
+### Changed
+- `session-stale-memory` produces fewer false positives. The same content that previously surfaced `~80%`, `/blog`, `/yaw-review`, etc. as broken filesystem references no longer flags them at all. Behaviour change is user-visible (hence the minor bump), but no consumer relied on the false-positive output.
+
+### Security
+- Ignore-rule regexes from `.ctxlintrc.json` are repo-author-trusted, same posture as `.eslintrc.json`. Compiled with `new RegExp(...)` and run with no step cap. Documented at the top of `src/core/ignore-rules.ts`.
+
+### Why
+A `ctxlint_session_audit` run against `~/yaw/mcp-hosting` on 2026-05-15 returned 20 findings, only 5 of which were actionable. 9 of the 15 false positives came from the path detector flagging slash commands / URL paths / approximations; the remaining 6 needed per-project context the auditor couldn't know (intentionally diverged config files, intentionally absent `release.yml`). Improvement 1 fixes the detector; Improvement 2 adds the mechanism so per-project context can be suppressed without disabling whole checks. Same audit now produces 5 findings, all actionable.
+
 ## [0.9.17] — 2026-04-16
 
 ### Added
 - **`.mcph.json` linting** — 10 new rules under the `mcph-config/*` ID family for the config file read by the `@yawlabs/mcph` CLI. Distinct from `.mcp.json` (client-side MCP server list): `.mcph.json` holds auth token + API base + allow/deny lists for the mcph binary that orchestrates mcp.hosting-managed servers.
 - Rules cover five themes: **token security** (`token-in-project-scope` error on git-tracked project files, `invalid-token-format`, configurable `prefer-env-token`), **API endpoint validation** (`insecure-apibase` on public plaintext HTTP, `invalid-apibase`), **schema conformance** (`unknown-field` to catch typos like `tokens` vs `token`, `stale-version`), **allow/deny list semantics** (`allowlist-denylist-conflict`, `duplicate-entries`), and **gitignore hygiene** (`local-file-not-gitignored` with auto-fix).
 - New CLI flags: `--mcph`, `--mcph-only`, `--mcph-global`, `--mcph-strict-env-token` (upgrades `prefer-env-token` from warning to error).
-- New machine-readable catalog: [`mcph-config-lint-rules.json`](./mcph-config-lint-rules.json).
+- New machine-readable catalog: `mcph-config-lint-rules.json` (removed along with the mcph pillar in v0.14.0).
 - Token-related rules emit per-shell `export MCPH_TOKEN` examples (bash/zsh, fish, PowerShell, direnv) and include the rotation URL (`https://mcp.hosting/settings/tokens`) when a leak is already on-disk.
 
 ### Why

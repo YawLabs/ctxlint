@@ -1,18 +1,19 @@
 import chalk from 'chalk';
-import type { FileResult, LintResult, LintIssue } from './types.js';
+import {
+  SESSION_AUDIT_PATH_MARKER,
+  SKILL_AUDIT_PATH_MARKER,
+  type FileResult,
+  type LintResult,
+  type LintIssue,
+} from './types.js';
 
-type FileGroup = 'context' | 'mcp' | 'mcph' | 'session';
+type FileGroup = 'context' | 'mcp' | 'session' | 'skill';
 
 /**
  * Classify a result row into one of the four output families. Issue-prefix is
  * the strongest signal because audit.ts dispatches checks per-domain (one
  * file's issues are always from a single family). Path is a fallback for
  * empty-issue rows surfaced in --verbose mode.
- *
- * Note on the prefix order: `mcph-` shares the first three characters with
- * `mcp-` but the fourth character (`h` vs `-`) makes them distinct prefixes.
- * Test for `mcph-` BEFORE `mcp-` so a future loosening of either side can't
- * silently route mcph rows into the MCP bucket.
  */
 function classifyFile(f: FileResult): FileGroup {
   // Synthetic cross-file buckets (audit.ts emits these with these exact paths).
@@ -20,22 +21,24 @@ function classifyFile(f: FileResult): FileGroup {
   // to the context group.
   if (f.path === '(project)') return 'context';
   if (f.path === '(mcp)') return 'mcp';
-  if (f.path === '(mcph)') return 'mcph';
-  if (f.path.includes('session audit')) return 'session';
+  if (f.path.includes(SESSION_AUDIT_PATH_MARKER)) return 'session';
+  if (f.path.includes(SKILL_AUDIT_PATH_MARKER)) return 'skill';
 
   for (const issue of f.issues) {
     if (issue.check.startsWith('session-')) return 'session';
-    if (issue.check.startsWith('mcph-')) return 'mcph';
+    if (issue.check.startsWith('skill-')) return 'skill';
     if (issue.check.startsWith('mcp-')) return 'mcp';
   }
 
   // Empty-issue fallback: classify by path so --verbose still groups correctly.
   const norm = f.path.replace(/\\/g, '/');
-  if (norm.endsWith('.mcph.json') || norm.endsWith('.mcph.local.json')) return 'mcph';
   if (
     norm === '.mcp.json' ||
     norm.endsWith('/.mcp.json') ||
     norm.endsWith('/mcp.json') ||
+    // Windsurf's global config (~/.codeium/windsurf/mcp_config.json,
+    // surfaced by scanGlobalMcpConfigs) doesn't match the '/mcp.json' suffix.
+    norm.endsWith('/mcp_config.json') ||
     norm.includes('/mcpServers/') ||
     norm.endsWith('/.claude.json') ||
     norm.endsWith('.claude/settings.json') ||
@@ -47,22 +50,31 @@ function classifyFile(f: FileResult): FileGroup {
   return 'context';
 }
 
-const GROUP_ORDER: FileGroup[] = ['context', 'mcp', 'mcph', 'session'];
+const GROUP_ORDER: FileGroup[] = ['context', 'mcp', 'session', 'skill'];
 const GROUP_LABELS: Record<FileGroup, string> = {
   context: 'Context Files',
   mcp: 'MCP Configs',
-  mcph: 'mcph Configs',
   session: 'Session Audit',
+  skill: 'Skill Audit',
 };
 const GROUP_SUMMARY_NOUNS: Record<FileGroup, string> = {
   context: 'context file',
   mcp: 'MCP config',
-  mcph: 'mcph config',
   session: 'session audit',
+  skill: 'skill audit',
 };
 
 function isSyntheticBucket(p: string): boolean {
-  return p.startsWith('(') || p.includes('session audit');
+  // Exact-match the cross-file bucket labels (mirroring classifyFile's
+  // equality checks) rather than a '(' prefix test: a real context file under
+  // a paren-named directory (e.g. a Next.js route group like
+  // '(docs)/CLAUDE.md') must not be silently dropped from the summaries.
+  return (
+    p === '(project)' ||
+    p === '(mcp)' ||
+    p.includes(SESSION_AUDIT_PATH_MARKER) ||
+    p.includes(SKILL_AUDIT_PATH_MARKER)
+  );
 }
 
 export function formatText(result: LintResult, verbose: boolean = false): string {
@@ -78,8 +90,8 @@ export function formatText(result: LintResult, verbose: boolean = false): string
   const groups: Record<FileGroup, FileResult[]> = {
     context: [],
     mcp: [],
-    mcph: [],
     session: [],
+    skill: [],
   };
   for (const f of result.files) {
     groups[classifyFile(f)].push(f);
@@ -89,13 +101,16 @@ export function formatText(result: LintResult, verbose: boolean = false): string
   // cross-file buckets ('(project)', '(mcp)', '~/.claude/ (session audit)').
   // Those aren't files the user authored — they appear in the issue listing
   // section below.
-  const totalTokens = result.summary.totalTokens;
   let renderedAnySummary = false;
 
   const contextReal = groups.context.filter((f) => !isSyntheticBucket(f.path));
+  // Context tokens only. summary.totalTokens also counts MCP config files,
+  // which are never loaded into agent context -- using it here (and in the
+  // "per agent session" line below) over-reported on --mcp runs.
+  const contextTokens = contextReal.reduce((sum, f) => sum + f.tokens, 0);
   if (contextReal.length > 0) {
     lines.push(
-      `Found ${contextReal.length} context file${contextReal.length !== 1 ? 's' : ''} (${totalTokens.toLocaleString()} tokens total)`,
+      `Found ${contextReal.length} context file${contextReal.length !== 1 ? 's' : ''} (${contextTokens.toLocaleString()} tokens total)`,
     );
     for (const file of contextReal) {
       let desc = `  ${file.path} (${file.tokens.toLocaleString()} tokens, ${file.lines} lines)`;
@@ -107,13 +122,14 @@ export function formatText(result: LintResult, verbose: boolean = false): string
     renderedAnySummary = true;
   }
 
-  for (const g of ['mcp', 'mcph'] as const) {
-    const real = groups[g].filter((f) => !isSyntheticBucket(f.path));
-    if (real.length === 0) continue;
-    if (renderedAnySummary) lines.push('');
-    lines.push(`Found ${real.length} ${GROUP_SUMMARY_NOUNS[g]}${real.length !== 1 ? 's' : ''}`);
-    for (const file of real) lines.push(`  ${file.path}`);
-    renderedAnySummary = true;
+  {
+    const real = groups.mcp.filter((f) => !isSyntheticBucket(f.path));
+    if (real.length > 0) {
+      if (renderedAnySummary) lines.push('');
+      lines.push(`Found ${real.length} ${GROUP_SUMMARY_NOUNS.mcp}${real.length !== 1 ? 's' : ''}`);
+      for (const file of real) lines.push(`  ${file.path}`);
+      renderedAnySummary = true;
+    }
   }
 
   // Session has no real files, only the synthetic audit bucket. Show it as a
@@ -122,6 +138,17 @@ export function formatText(result: LintResult, verbose: boolean = false): string
   if (groups.session.length > 0) {
     if (renderedAnySummary) lines.push('');
     lines.push('Session audit scanned');
+    renderedAnySummary = true;
+  }
+
+  // Skill audit, like session, has no real authored files -- it's a synthetic
+  // bucket (SKILL_AUDIT_LABEL from audit.ts, path starting with '~', filtered
+  // out of the real-file summaries above). Without this arm a clean
+  // --skills-only run rendered no group summary and fell through to the
+  // misleading "Found N files" line.
+  if (groups.skill.length > 0) {
+    if (renderedAnySummary) lines.push('');
+    lines.push('Skill audit scanned');
     renderedAnySummary = true;
   }
 
@@ -178,15 +205,63 @@ export function formatText(result: LintResult, verbose: boolean = false): string
     lines.push(chalk.green('No issues found!'));
   }
 
-  lines.push(`  Token usage: ${totalTokens.toLocaleString()} tokens per agent session`);
+  lines.push(`  Token usage: ${contextTokens.toLocaleString()} tokens per agent session`);
 
   if (result.summary.estimatedWaste > 0) {
     lines.push(`  Estimated waste: ~${result.summary.estimatedWaste} tokens (redundant content)`);
   }
 
+  // Ignore-rule drift footer. Surfaces dropped count + unused rules + rules
+  // missing a `reason` so maintainers can review their `.ctxlintrc.json`
+  // ignoreRules entries periodically. Mirrors the JSON `_meta.ignoreReport`
+  // block and the MCP response payload.
+  const ig = result._meta?.ignoreReport;
+  if (ig && (ig.dropped > 0 || ig.unusedRules.length > 0 || ig.rulesMissingReason.length > 0)) {
+    lines.push('');
+    lines.push(chalk.bold('Ignore rules'));
+    if (ig.dropped > 0) {
+      lines.push(
+        chalk.dim(`  ${ig.dropped} finding${ig.dropped !== 1 ? 's' : ''} dropped by ignoreRules`),
+      );
+    }
+    if (ig.unusedRules.length > 0) {
+      lines.push(
+        chalk.yellow(
+          `  ${ig.unusedRules.length} ignore rule${ig.unusedRules.length !== 1 ? 's' : ''} never fired (drift -- consider removing):`,
+        ),
+      );
+      for (const r of ig.unusedRules) {
+        lines.push(`    - ${formatIgnoreRule(r)}`);
+      }
+    }
+    if (ig.rulesMissingReason.length > 0) {
+      lines.push(
+        chalk.yellow(
+          `  ${ig.rulesMissingReason.length} ignore rule${ig.rulesMissingReason.length !== 1 ? 's' : ''} missing a "reason" field:`,
+        ),
+      );
+      for (const r of ig.rulesMissingReason) {
+        lines.push(`    - ${formatIgnoreRule(r)}`);
+      }
+    }
+  }
+
   lines.push('');
 
   return lines.join('\n');
+}
+
+function formatIgnoreRule(r: {
+  check: string;
+  match?: string;
+  pathPattern?: string;
+  reason?: string;
+}): string {
+  const parts: string[] = [r.check];
+  if (r.match) parts.push(`match=/${r.match}/`);
+  if (r.pathPattern) parts.push(`pathPattern=/${r.pathPattern}/`);
+  if (r.reason) parts.push(`reason="${r.reason}"`);
+  return parts.join(' ');
 }
 
 export function formatJson(result: LintResult): string {
@@ -203,14 +278,20 @@ export function formatTokenReport(result: LintResult): string {
   );
   lines.push('');
 
-  const maxPathLen = Math.max(...result.files.map((f) => f.path.length), 4);
+  // Drop synthetic cross-file buckets ((project), (mcp), ~/.claude/ (session
+  // audit)) -- they carry 0 tokens / 0 lines, so rendering them as table rows
+  // is noise and their (often long) labels would needlessly widen maxPathLen.
+  // Mirrors the real-file filtering formatText applies to its top summary.
+  const realFiles = result.files.filter((f) => !isSyntheticBucket(f.path));
+
+  const maxPathLen = Math.max(...realFiles.map((f) => f.path.length), 4);
 
   lines.push(
     `  ${chalk.dim('File'.padEnd(maxPathLen))}  ${chalk.dim('Tokens'.padStart(8))}  ${chalk.dim('Lines'.padStart(6))}`,
   );
   lines.push(`  ${'-'.repeat(maxPathLen)}  ${'-'.repeat(8)}  ${'-'.repeat(6)}`);
 
-  for (const file of result.files) {
+  for (const file of realFiles) {
     const tokenStr = file.tokens.toLocaleString().padStart(8);
     const lineStr = file.lines.toString().padStart(6);
     lines.push(`  ${file.path.padEnd(maxPathLen)}  ${tokenStr}  ${lineStr}`);
@@ -246,7 +327,15 @@ export function formatTokenReport(result: LintResult): string {
  * can display the bucket name without pretending it's a file.
  */
 function isSyntheticPath(p: string): boolean {
-  return p.startsWith('(') || p.startsWith('~');
+  // Share the central predicate (exact '(project)' / '(mcp)' labels +
+  // session/skill markers) so a reskinned label that carries a marker but
+  // does NOT start with '~' (e.g. '$HOME/.claude/ (session audit)') can't
+  // leak into a SARIF physicalLocation.artifactLocation.uri. The extra '~'
+  // prefix here covers any future '~'-rooted bucket label that doesn't match
+  // a known marker. Real paths under paren-named dirs (e.g. a Next.js route
+  // group like '(docs)/CLAUDE.md') intentionally fail the predicate and get
+  // a normal physicalLocation.
+  return isSyntheticBucket(p) || p.startsWith('~');
 }
 
 /**
@@ -379,6 +468,16 @@ function buildRuleDescriptors(): SarifRule[] {
       helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
     },
     {
+      id: 'ctxlint/content-secrets',
+      shortDescription: { text: 'Inline-pasted secret detected in a context file' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
+      id: 'ctxlint/hook-coverage',
+      shortDescription: { text: 'Hook/permission entry references a script that no longer exists' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
       id: 'ctxlint/mcp-schema',
       shortDescription: { text: 'MCP config structural validation error' },
       helpUri: 'https://github.com/yawlabs/ctxlint#mcp-config-linting',
@@ -419,31 +518,6 @@ function buildRuleDescriptors(): SarifRule[] {
       helpUri: 'https://github.com/yawlabs/ctxlint#mcp-config-linting',
     },
     {
-      id: 'ctxlint/mcph-token-security',
-      shortDescription: { text: 'mcp.hosting PAT leakage or env-var posture' },
-      helpUri: 'https://github.com/yawlabs/ctxlint#mcph-config-linting',
-    },
-    {
-      id: 'ctxlint/mcph-apibase',
-      shortDescription: { text: 'mcph apiBase URL validation' },
-      helpUri: 'https://github.com/yawlabs/ctxlint#mcph-config-linting',
-    },
-    {
-      id: 'ctxlint/mcph-schema-conformance',
-      shortDescription: { text: 'mcph config unknown field or stale schema version' },
-      helpUri: 'https://github.com/yawlabs/ctxlint#mcph-config-linting',
-    },
-    {
-      id: 'ctxlint/mcph-lists',
-      shortDescription: { text: 'mcph allow/deny list conflict or duplicate entry' },
-      helpUri: 'https://github.com/yawlabs/ctxlint#mcph-config-linting',
-    },
-    {
-      id: 'ctxlint/mcph-gitignore',
-      shortDescription: { text: 'mcph machine-local file not covered by .gitignore' },
-      helpUri: 'https://github.com/yawlabs/ctxlint#mcph-config-linting',
-    },
-    {
       id: 'ctxlint/session-missing-secret',
       shortDescription: { text: 'GitHub secret set on sibling repos but missing here' },
       helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
@@ -478,6 +552,31 @@ function buildRuleDescriptors(): SarifRule[] {
       shortDescription: {
         text: "MEMORY.md exceeds Claude Code's 200-line / 25KB session-load cap",
       },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
+      id: 'ctxlint/skill-frontmatter',
+      shortDescription: { text: 'Skill/agent definition missing required frontmatter' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
+      id: 'ctxlint/skill-broken-ref',
+      shortDescription: { text: 'Skill/agent body references a path that does not exist' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
+      id: 'ctxlint/skill-trigger-collision',
+      shortDescription: { text: 'Two skills/agents declare the same trigger phrase' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
+      id: 'ctxlint/skill-orphaned',
+      shortDescription: { text: 'Skill directory has no SKILL.md' },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
+      id: 'ctxlint/skill-dead-tool-restriction',
+      shortDescription: { text: 'Agent tool restriction names an unknown Claude Code tool' },
       helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
     },
   ];

@@ -15,6 +15,18 @@ function makeDiscovered(fixtureName: string, fileName: string): DiscoveredFile {
   };
 }
 
+// Like makeDiscovered but the context file lives in a subdirectory of the
+// project root, so its dirname differs from projectRoot. Used to exercise
+// the ./-relative directory resolution.
+function makeNestedDiscovered(fixtureName: string, relPath: string): DiscoveredFile {
+  return {
+    absolutePath: path.join(FIXTURES, fixtureName, relPath),
+    relativePath: relPath,
+    isSymlink: false,
+    type: 'context',
+  };
+}
+
 describe('checkRedundancy', () => {
   it('flags technology mentions already in package.json', async () => {
     const parsed = parseContextFile(makeDiscovered('redundant-content', 'CLAUDE.md'));
@@ -33,6 +45,20 @@ describe('checkRedundancy', () => {
 
     const messages = issues.map((i) => i.message);
     expect(messages.some((m) => m.includes('src/components/'))).toBe(true);
+  });
+
+  it('resolves ./-relative directory refs against the context file dir, not project root', async () => {
+    // nested-context/sub/CLAUDE.md references `./components/`, which exists at
+    // nested-context/sub/components (relative to the file), NOT at
+    // nested-context/components (relative to the project root). The old code
+    // resolved against projectRoot and would miss this.
+    const parsed = parseContextFile(makeNestedDiscovered('nested-context', 'sub/CLAUDE.md'));
+    const projectRoot = path.join(FIXTURES, 'nested-context');
+    const issues = await checkRedundancy(parsed, projectRoot);
+
+    const dirIssue = issues.find((i) => i.ruleId === 'redundancy/discoverable-dir');
+    expect(dirIssue).toBeDefined();
+    expect(dirIssue!.message).toContain('./components/');
   });
 });
 

@@ -1,5 +1,5 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$schema": "https://raw.githubusercontent.com/YawLabs/ctxlint/main/schemas/ctxlint-catalog.schema.json",
   "specVersion": "1.0.0-draft",
   "specDate": "2026-04-07",
   "mcpSpecCompatibility": "2025-11-25",
@@ -93,7 +93,7 @@
       "severity": "error",
       "description": "A stdio server entry has no \"command\" field.",
       "trigger": "Server has type \"stdio\" (or no type with no url) and no \"command\" field.",
-      "message": "Server \"{name}\": missing \"command\" field",
+      "message": "Server \"{name}\" has no \"command\" field",
       "fixable": false,
       "clients": [
         "all"
@@ -106,7 +106,20 @@
       "severity": "error",
       "description": "An HTTP or SSE server entry has no \"url\" field.",
       "trigger": "Server has type \"http\" or \"sse\" and no \"url\" field.",
-      "message": "Server \"{name}\": missing \"url\" field",
+      "message": "Server \"{name}\" has no \"url\" field",
+      "fixable": false,
+      "clients": [
+        "all"
+      ],
+      "stability": "stable"
+    },
+    {
+      "id": "mcp-schema/no-name-field",
+      "category": "mcp-schema",
+      "severity": "error",
+      "description": "A server entry's key (its name) is empty. Every server entry must be named.",
+      "trigger": "A key in the mcpServers/servers object is the empty string.",
+      "message": "Server name cannot be empty",
       "fixable": false,
       "clients": [
         "all"
@@ -117,9 +130,9 @@
       "id": "mcp-schema/unknown-transport",
       "category": "mcp-schema",
       "severity": "warning",
-      "description": "Server type field is not a recognized transport.",
-      "trigger": "\"type\" field is present but is not \"stdio\", \"http\", or \"sse\".",
-      "message": "Server \"{name}\": unknown transport type \"{type}\"",
+      "description": "Server transport cannot be classified: the \"type\" field is not a recognized transport, or the entry has no \"command\", no \"url\", and no valid \"type\" at all.",
+      "trigger": "The parser could not classify the server's transport — a string \"type\" outside stdio/http/sse, a non-string \"type\", or an entry with neither \"command\" nor \"url\". The no-recognizable-transport case emits the message variant: Server \"{name}\" has no recognizable transport — expected \"command\", \"url\", or a valid \"type\".",
+      "message": "Server \"{name}\" has unknown transport type \"{type}\"",
       "fixable": false,
       "clients": [
         "all"
@@ -132,7 +145,7 @@
       "severity": "warning",
       "description": "Server has both a command (stdio) and a URL (http), making the transport ambiguous.",
       "trigger": "Server entry has both \"command\" and \"url\" fields.",
-      "message": "Server \"{name}\": has both \"command\" and \"url\" — transport is ambiguous",
+      "message": "Server \"{name}\" has both \"command\" and \"url\" — transport is ambiguous",
       "fixable": false,
       "clients": [
         "all"
@@ -158,7 +171,7 @@
       "severity": "error",
       "description": "A git-tracked config file contains a literal Bearer token in the Authorization header.",
       "trigger": "Authorization header value matches \"Bearer <literal>\" where the token is not an env var reference, and the file is tracked by git.",
-      "message": "Server \"{name}\": hardcoded Bearer token in a git-tracked file",
+      "message": "Server \"{name}\" has a hardcoded Bearer token in a git-tracked file",
       "fixable": true,
       "fixDescription": "Replace the literal token with an env var reference derived from the server name.",
       "clients": [
@@ -170,9 +183,9 @@
       "id": "mcp-security/hardcoded-api-key",
       "category": "mcp-security",
       "severity": "error",
-      "description": "A git-tracked config file contains a value matching known API key patterns.",
-      "trigger": "A header or env value matches known API key prefixes (sk-, ghp_, xoxb-, AKIA, etc.) or is a high-entropy string > 20 chars, and the file is tracked by git.",
-      "message": "Server \"{name}\": possible API key in a git-tracked file",
+      "description": "A git-tracked config file contains a value matching known API key patterns, or a high-entropy value whose variable name suggests a secret.",
+      "trigger": "A header or env value matches known API key prefixes (sk-, ghp_, xoxb-, AKIA, AGE-SECRET-KEY-1, glpat-, sq0atp-, etc.), or is a high-entropy string > 20 chars AND the env var name contains a secret-suggesting keyword (KEY, TOKEN, SECRET, PASSWORD, AUTH, CREDENTIAL, ...) — the name gate keeps build IDs, commit SHAs, and version strings from false-positiving. File must be tracked by git.",
+      "message": "Server \"{name}\" has a hardcoded API key in a git-tracked file",
       "fixable": true,
       "fixDescription": "Replace the literal value with an env var reference.",
       "clients": [
@@ -186,7 +199,7 @@
       "severity": "error",
       "description": "A git-tracked config URL contains query parameters that look like secrets.",
       "trigger": "URL contains query params like ?key=, ?token=, ?api_key= with literal values in a git-tracked file.",
-      "message": "Server \"{name}\": possible secret in URL query string",
+      "message": "Server \"{name}\" has a secret in the URL query string",
       "fixable": false,
       "clients": [
         "all"
@@ -194,12 +207,25 @@
       "stability": "stable"
     },
     {
+      "id": "mcp-security/secret-scan-skipped",
+      "category": "mcp-security",
+      "severity": "info",
+      "description": "Git-tracked status of the config file could not be determined, so the git-gated secret rules were skipped without an answer.",
+      "trigger": "git ls-files fails for a reason other than \"untracked\" or \"not a repository\" (git unavailable, permissions, timeout). A determined \"untracked\" does not fire this rule.",
+      "message": "Could not determine git-tracked status of {file}; hardcoded-secret rules were skipped",
+      "fixable": false,
+      "clients": [
+        "all"
+      ],
+      "stability": "experimental"
+    },
+    {
       "id": "mcp-security/http-no-tls",
       "category": "mcp-security",
       "severity": "warning",
       "description": "Server URL uses HTTP without TLS for a non-localhost target.",
-      "trigger": "URL scheme is http:// and host is not localhost or 127.0.0.1.",
-      "message": "Server \"{name}\": URL uses HTTP without TLS",
+      "trigger": "URL scheme is http:// and host is not a loopback address (localhost, [::1], 127.0.0.0/8).",
+      "message": "Server \"{name}\" uses HTTP without TLS",
       "fixable": false,
       "clients": [
         "all"
@@ -225,7 +251,7 @@
       "category": "mcp-commands",
       "severity": "warning",
       "description": "A stdio command references a local file path that does not exist.",
-      "trigger": "Command starts with ./ or ../ and the resolved path does not exist.",
+      "trigger": "Command starts with ./ or ../ and the resolved path does not exist. Project-scope configs only — a global config's relative command resolves against that client's own working directory.",
       "message": "Server \"{name}\": command \"{command}\" not found",
       "fixable": false,
       "clients": [
@@ -238,8 +264,8 @@
       "category": "mcp-commands",
       "severity": "warning",
       "description": "A stdio arg looks like a local file path but the file does not exist.",
-      "trigger": "An arg matches a file path pattern (contains / with extension, or starts with ./) and the file does not exist.",
-      "message": "Server \"{name}\": arg \"{arg}\" references a missing file",
+      "trigger": "An arg matches a file path pattern (contains / with extension, or starts with ./) and the file does not exist. Relative paths are checked in project-scope configs only — a global config's relative paths resolve against that client's own working directory. Absolute paths are cwd-independent and are checked at every scope.",
+      "message": "Server \"{name}\": arg \"{arg}\" looks like a file path but doesn't exist",
       "fixable": false,
       "clients": [
         "all"
@@ -252,7 +278,7 @@
       "severity": "warning",
       "description": "SSE transport was deprecated in the March 2025 MCP spec update. Use Streamable HTTP instead.",
       "trigger": "Server has \"type\": \"sse\".",
-      "message": "Server \"{name}\": SSE transport is deprecated — use \"http\" (Streamable HTTP)",
+      "message": "Server \"{name}\" uses deprecated SSE transport — use \"http\" (Streamable HTTP) instead",
       "fixable": true,
       "fixDescription": "Replace \"sse\" with \"http\" in the type field.",
       "clients": [
@@ -281,15 +307,18 @@
       "id": "mcp-env/unset-variable",
       "category": "mcp-env",
       "severity": "info",
-      "description": "A referenced environment variable is not set in the current shell environment.",
-      "trigger": "Env var reference found but the variable is not in process.env.",
+      "description": "A referenced environment variable is not set in the current shell environment. Deliberately info severity: many env vars are set only in CI, .env files, or shell profiles unavailable during linting.",
+      "trigger": "Env var reference found in any collected string value (env, url, command, args, headers) but the variable is not in process.env. Skipped entirely for Continue configs — their ${{ secrets.VAR }} refs resolve from GitHub Actions secrets, not the local environment, so every correct Continue config would false-positive.",
       "message": "Server \"{name}\": environment variable \"{var}\" is not set",
       "fixable": false,
       "clients": [
         "claude-code",
+        "claude-desktop",
+        "vscode",
         "cursor",
-        "continue",
-        "windsurf"
+        "windsurf",
+        "cline",
+        "amazonq"
       ],
       "stability": "stable"
     },
@@ -307,12 +336,12 @@
       "stability": "stable"
     },
     {
-      "id": "mcp-urls/malformed",
+      "id": "mcp-urls/malformed-url",
       "category": "mcp-urls",
       "severity": "error",
       "description": "Server URL is not a valid URL.",
       "trigger": "URL cannot be parsed by standard URL parser and does not contain env var placeholders.",
-      "message": "Server \"{name}\": invalid URL",
+      "message": "Server \"{name}\": invalid URL \"{url}\"",
       "fixable": false,
       "clients": [
         "all"
@@ -323,9 +352,9 @@
       "id": "mcp-urls/localhost-in-project-config",
       "category": "mcp-urls",
       "severity": "warning",
-      "description": "A project-level config (committed to version control) references localhost, which won't work for other team members.",
-      "trigger": "URL host is localhost or 127.0.0.1 and the file is a project-level config.",
-      "message": "Server \"{name}\": localhost URL in project config won't work for teammates",
+      "description": "A project-level config (committed to version control) references a loopback address, which won't work for other team members.",
+      "trigger": "URL host is a loopback address (localhost, [::1], 127.0.0.0/8 — the same set http-no-tls exempts) and the file is a project-level config.",
+      "message": "Server \"{name}\": loopback URL in project config won't work for teammates",
       "fixable": false,
       "clients": [
         "all"
@@ -350,7 +379,7 @@
       "category": "mcp-consistency",
       "severity": "warning",
       "description": "The same server name is configured differently across multiple client config files.",
-      "trigger": "Server name exists in 2+ config files with different url or command/args values.",
+      "trigger": "Server name exists in 2+ same-scope config files (project-project or user-user) with different url or command/args values. Cross-scope pairs are skipped — a user/global config differing from the project one is documented client precedence (project overrides user), not drift.",
       "message": "Server \"{name}\" is configured differently in {file1} and {file2}",
       "fixable": false,
       "clients": [
@@ -376,7 +405,7 @@
       "category": "mcp-consistency",
       "severity": "info",
       "description": "A server in .mcp.json is not present in another client's project config that also exists.",
-      "trigger": "Server exists in .mcp.json but is absent from .cursor/mcp.json or .vscode/mcp.json (when those files exist).",
+      "trigger": "Server exists in .mcp.json but is absent from .cursor/mcp.json, .vscode/mcp.json, or .amazonq/mcp.json (when those files exist).",
       "message": "Server \"{name}\" is in .mcp.json but missing from {file}",
       "fixable": false,
       "clients": [
@@ -388,12 +417,12 @@
       "id": "mcp-redundancy/disabled-server",
       "category": "mcp-redundancy",
       "severity": "info",
-      "description": "A server entry is explicitly disabled.",
-      "trigger": "Server has \"disabled\": true.",
-      "message": "Server \"{name}\" is disabled — consider removing if no longer needed",
+      "description": "A server entry is explicitly disabled. The \"disabled\" field is Cline-specific, but the rule fires on any config that carries it.",
+      "trigger": "Server has \"disabled\": true (any client's config).",
+      "message": "Server \"{name}\" is disabled — consider removing it if no longer needed",
       "fixable": false,
       "clients": [
-        "cline"
+        "all"
       ],
       "stability": "stable"
     },
@@ -402,8 +431,8 @@
       "category": "mcp-redundancy",
       "severity": "info",
       "description": "The same server is identically configured at both project and global scope, making the global entry redundant.",
-      "trigger": "Server with same name and identical config exists at both project and global scope.",
-      "message": "Server \"{name}\" is identically configured in {projectFile} and {globalFile}",
+      "trigger": "Server with same name and identical config (command/args/url/env) exists at both project and global scope.",
+      "message": "Server \"{name}\" is identically configured in both {projectFile} and {globalFile}",
       "fixable": false,
       "clients": [
         "claude-code",

@@ -29,14 +29,6 @@ export function applyFixes(result: LintResult, options: FixOptions = {}): FixSum
   const dryRun = options.dryRun ?? false;
   const skipSymlinks = options.skipSymlinks ?? true;
 
-  // Build a quick lookup: which files in the result are symlinks?
-  const symlinkFiles = new Set<string>();
-  if (skipSymlinks) {
-    for (const f of result.files) {
-      if (f.isSymlink) symlinkFiles.add(f.path);
-    }
-  }
-
   // Collect all fixable issues grouped by file, skipping symlinks. Dedupe on
   // (line, oldText, newText) because an earlier version silently dropped the
   // second of two fixes targeting the same (line, oldText) — line.replace()
@@ -52,7 +44,11 @@ export function applyFixes(result: LintResult, options: FixOptions = {}): FixSum
           skippedSymlinks.add(file.path);
           continue;
         }
-        const key = `${issue.fix.line}:${issue.fix.oldText}:${issue.fix.newText}`;
+        // Include column in the dedupe key: two fixes with the same
+        // (line, oldText, newText) but DIFFERENT columns are distinct
+        // occurrences and must both survive (the replaceAll path keys on the
+        // empty-string suffix and still collapses true duplicates).
+        const key = `${issue.fix.line}:${issue.fix.oldText}:${issue.fix.newText}:${issue.fix.column ?? ''}`;
         let seenInFile = dedupeKeys.get(issue.fix.file);
         if (!seenInFile) {
           seenInFile = new Set();
@@ -76,7 +72,18 @@ export function applyFixes(result: LintResult, options: FixOptions = {}): FixSum
   const filesModified: string[] = [];
 
   for (const [filePath, fixes] of fixesByFile) {
-    const content = fs.readFileSync(filePath, 'utf-8');
+    // A fix-target file can vanish or lose read permission between scan and
+    // apply (the interactive --fix flow has an unbounded confirmation window
+    // in between). Earlier Map entries are already written by this point, so
+    // an unguarded throw here would abort with partial fix application and
+    // no accurate FixSummary -- skip the file and keep going instead.
+    let content: string;
+    try {
+      content = fs.readFileSync(filePath, 'utf-8');
+    } catch (err) {
+      log(chalk.yellow('  Skipped') + ` ${filePath}: ${(err as Error).message}`);
+      continue;
+    }
     const lines = content.split('\n');
     let modified = false;
 
@@ -104,15 +111,63 @@ export function applyFixes(result: LintResult, options: FixOptions = {}): FixSum
       const lineIdx = lineNum - 1; // 0-indexed
       if (lineIdx < 0 || lineIdx >= lines.length) continue;
 
-      let line = lines[lineIdx];
-      for (const fix of lineFixes) {
-        if (line.includes(fix.oldText)) {
-          // replaceAll (not replace) so that if the same oldText literal
-          // appears twice on one line — e.g. "see src/old/x.ts and src/old/y.ts"
-          // where the dir got renamed — every occurrence is rewritten.
-          // Fix actions carry literal strings (no regex), so replaceAll on a
-          // string is the correct, non-escaping form.
-          line = line.replaceAll(fix.oldText, fix.newText);
+      const original = lines[lineIdx];
+      // Sort longest-oldText-first so a more-specific fix (e.g.
+      // `src/old/util.ts` -> `src/new/util.ts`) claims its match ranges
+      // before a more-general one that contains it as a substring (e.g.
+      // `src/old` -> `src/new`) can claim overlapping ranges.
+      // Stable sort is fine -- ties (equal length) keep their original order.
+      const orderedLineFixes = [...lineFixes].sort((a, b) => b.oldText.length - a.oldText.length);
+
+      // Every match is located against the ORIGINAL line text, then all
+      // claimed ranges are spliced in one pass. Chaining replaceAll on the
+      // mutated string let a later fix's oldText re-match an earlier fix's
+      // newText output (fix A 'foo'->'bar' + fix B 'bar'->'baz' turned the
+      // user's 'foo' into 'baz' -- content nobody asked to change; reachable
+      // when two differently-stale refs on one line resolve to the same
+      // target). Matching the original means each fix sees only text the
+      // user actually wrote. All occurrences of an oldText are still
+      // rewritten (replaceAll semantics), and a fix counts once toward the
+      // summary when it lands at least one range.
+      const replacements: Array<{ start: number; end: number; newText: string }> = [];
+      for (const fix of orderedLineFixes) {
+        // An empty oldText would match at every position and never advance.
+        if (fix.oldText.length === 0) continue;
+        let matched = false;
+        if (fix.column != null) {
+          // Column-anchored: claim ONLY the occurrence the producer located,
+          // so a stale value that is a substring of a KEPT value on the same
+          // line (e.g. `src/old.ts` inside `src/old.ts.bak`) is not rewritten
+          // too. Verify the line still reads oldText at that column -- it can
+          // drift between scan and apply -- and skip (not blind-replace) if not.
+          const start = fix.column - 1;
+          const end = start + fix.oldText.length;
+          if (start >= 0 && original.slice(start, end) === fix.oldText) {
+            const overlapsClaimed = replacements.some((r) => start < r.end && end > r.start);
+            if (!overlapsClaimed) {
+              replacements.push({ start, end, newText: fix.newText });
+              matched = true;
+            }
+          }
+        } else {
+          // No column: rewrite every occurrence of oldText on the line
+          // (replaceAll). Safe when the producer's oldText is unambiguous.
+          let from = 0;
+          while (from <= original.length) {
+            const start = original.indexOf(fix.oldText, from);
+            if (start === -1) break;
+            const end = start + fix.oldText.length;
+            const overlapsClaimed = replacements.some((r) => start < r.end && end > r.start);
+            if (overlapsClaimed) {
+              from = start + 1;
+            } else {
+              replacements.push({ start, end, newText: fix.newText });
+              matched = true;
+              from = end;
+            }
+          }
+        }
+        if (matched) {
           perFileFixCount++;
           const prefix = dryRun ? chalk.cyan('  Would fix') : chalk.green('  Fixed');
           perFileLogs.push(
@@ -122,9 +177,19 @@ export function applyFixes(result: LintResult, options: FixOptions = {}): FixSum
         }
       }
 
-      if (line !== lines[lineIdx]) {
-        lines[lineIdx] = line;
-        modified = true;
+      if (replacements.length > 0) {
+        replacements.sort((a, b) => a.start - b.start);
+        let rebuilt = '';
+        let pos = 0;
+        for (const r of replacements) {
+          rebuilt += original.slice(pos, r.start) + r.newText;
+          pos = r.end;
+        }
+        rebuilt += original.slice(pos);
+        if (rebuilt !== original) {
+          lines[lineIdx] = rebuilt;
+          modified = true;
+        }
       }
     }
 
@@ -142,7 +207,15 @@ export function applyFixes(result: LintResult, options: FixOptions = {}): FixSum
       }
 
       if (!dryRun) {
-        fs.writeFileSync(filePath, newContent, 'utf-8');
+        try {
+          fs.writeFileSync(filePath, newContent, 'utf-8');
+        } catch (err) {
+          // Same partial-application hazard as the read above (e.g. the file
+          // turned read-only between scan and apply). Skip before the staged
+          // count/logs commit so the FixSummary reflects only what landed.
+          log(chalk.yellow('  Skipped') + ` ${filePath}: ${(err as Error).message}`);
+          continue;
+        }
       }
       filesModified.push(filePath);
       totalFixes += perFileFixCount;

@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import { Command, Option } from 'commander';
 import ora from 'ora';
 import { resetPathsCache } from './core/checks/paths.js';
-import { setTokenThresholds, resetTokenThresholds } from './core/checks/tokens.js';
+import { clearFileCache } from './core/cache.js';
 import { formatText, formatJson, formatTokenReport, formatSarif } from './core/reporter.js';
 import { applyFixes } from './core/fixer.js';
 import { freeEncoder } from './utils/tokens.js';
@@ -13,8 +13,8 @@ import {
   runAudit,
   ALL_CHECKS,
   ALL_MCP_CHECKS,
-  ALL_MCPH_CHECKS,
   ALL_SESSION_CHECKS,
+  ALL_SKILL_CHECKS,
 } from './core/audit.js';
 import type { LintOptions, CheckName } from './core/types.js';
 import * as path from 'node:path';
@@ -23,8 +23,8 @@ import { VERSION } from './version.js';
 const VALID_CHECKS = new Set<string>([
   ...ALL_CHECKS,
   ...ALL_MCP_CHECKS,
-  ...ALL_MCPH_CHECKS,
   ...ALL_SESSION_CHECKS,
+  ...ALL_SKILL_CHECKS,
 ]);
 
 function validateCheckNames(names: string[], source: string): CheckName[] {
@@ -69,17 +69,25 @@ export async function runCli() {
     .option('--mcp', 'Enable MCP config linting alongside context file checks', false)
     .option('--mcp-only', 'Run only MCP config checks, skip context file checks', false)
     .option('--mcp-global', 'Also scan user/global MCP config files (implies --mcp)', false)
+    // --mcp-server is intercepted in src/index.ts BEFORE commander runs (it's
+    // a sibling of the `serve` subcommand). Declared here only so --help lists
+    // it and unknown-flag handling doesn't reject it. The action handler below
+    // never sees this flag; if you refactor index.ts to always route through
+    // commander, also wire startServer() into the action handler.
     .option('--mcp-server', 'Start the MCP server (alias: `ctxlint serve`)')
-    .option('--mcph', 'Enable .mcph.json (mcp.hosting CLI config) linting', false)
-    .option('--mcph-only', 'Run only mcph config checks', false)
-    .option('--mcph-global', 'Also scan ~/.mcph.json (implies --mcph)', false)
-    .option(
-      '--mcph-strict-env-token',
-      'Upgrade mcph-config/prefer-env-token from warning to error (strict env-var-only posture)',
-      false,
-    )
+    // --lsp is intercepted in src/index.ts BEFORE commander runs (same pattern
+    // as --mcp-server). Declared here only so --help lists it.
+    .option('--lsp', 'Start in LSP server mode (JSON-RPC over stdio for editor integration)')
     .option('--session', 'Run session audit checks (cross-project consistency)', false)
     .option('--session-only', 'Run only session checks, skip context and MCP checks', false)
+    .option('--skills', 'Run agent-skill checks (~/.claude/skills + ~/.claude/agents)', false)
+    .option('--skills-only', 'Run only agent-skill checks, skip everything else', false)
+    .option(
+      '--hooks-global',
+      'Also scan the user-global ~/.claude/settings.json in the dead-hook check (off by default; the standard run only reads project .claude/settings.json[.local])',
+      false,
+    )
+    .option('--no-ignore-file', 'Disable .ctxlintignore suppression (see all findings)')
     .option('--watch', 'Re-lint on context file changes', false)
     .action(async (projectPath: string, opts: Record<string, unknown>) => {
       const resolvedPath = path.resolve(projectPath as string);
@@ -97,26 +105,31 @@ export async function runCli() {
       try {
         if (spinner) spinner.text = 'Running checks...';
 
-        const result = await runAudit(resolvedPath, activeChecks, {
+        // Shared by the initial audit and the post-`--fix` re-audit below,
+        // so both runs see identical scope/threshold/ignore settings.
+        const auditOptions = {
           depth: options.depth,
           extraPatterns: config?.contextFiles,
           mcp: options.mcp,
           mcpGlobal: options.mcpGlobal,
           mcpOnly: options.mcpOnly,
-          mcph: options.mcph,
-          mcphGlobal: options.mcphGlobal,
-          mcphOnly: options.mcphOnly,
-          mcphStrictEnvToken: options.mcphStrictEnvToken,
           session: options.session,
           sessionOnly: options.sessionOnly,
-        });
+          skills: options.skills,
+          skillsOnly: options.skillsOnly,
+          hooksGlobal: options.hooksGlobal,
+          tokenThresholds: config?.tokenThresholds,
+          ignoreRules: config?.ignoreRules,
+          noIgnoreFile: options.noIgnoreFile,
+        };
+        let result = await runAudit(resolvedPath, activeChecks, auditOptions);
 
         spinner?.stop();
 
         if (result.files.length === 0) {
           if (!options.quiet) {
             if (options.format === 'json') {
-              console.log(JSON.stringify(result));
+              console.log(formatJson(result));
             } else if (options.format === 'sarif') {
               console.log(formatSarif(result));
             } else {
@@ -133,17 +146,27 @@ export async function runCli() {
         const yes = (opts.yes as boolean) || false;
         const followSymlinks = (opts.followSymlinks as boolean) || false;
         const isInteractive = !!process.stdout.isTTY && !options.quiet;
+        // In json/sarif mode stdout must carry ONLY the payload: fix-progress
+        // text goes to stderr, and applyFixes' own per-fix stdout lines are
+        // silenced via quiet. Otherwise `--fix --format json | jq` breaks on
+        // "Fixed N issues..." interleaved before the JSON document.
+        const machineFormat = options.format !== 'text';
+        const progress = machineFormat ? console.error : console.log;
 
+        let fixesApplied = false;
         if (dryRunFlag || options.fix) {
-          const commonOpts = { quiet: options.quiet, skipSymlinks: !followSymlinks };
+          const commonOpts = {
+            quiet: options.quiet || machineFormat,
+            skipSymlinks: !followSymlinks,
+          };
 
           if (dryRunFlag) {
             const preview = applyFixes(result, { ...commonOpts, dryRun: true });
             if (!options.quiet) {
               if (preview.totalFixes === 0) {
-                console.log('\nNo auto-fixable issues.\n');
+                progress('\nNo auto-fixable issues.\n');
               } else {
-                console.log(
+                progress(
                   `\nWould fix ${preview.totalFixes} issue${preview.totalFixes !== 1 ? 's' : ''} in ${preview.filesModified.length} file${preview.filesModified.length !== 1 ? 's' : ''}. (dry-run — no files modified)\n`,
                 );
               }
@@ -153,33 +176,47 @@ export async function runCli() {
               // Show a preview, then ask for confirmation before writing.
               const preview = applyFixes(result, { ...commonOpts, dryRun: true });
               if (preview.totalFixes === 0) {
-                console.log('\nNo auto-fixable issues.\n');
+                progress('\nNo auto-fixable issues.\n');
               } else {
-                console.log(
+                progress(
                   `\n${preview.totalFixes} fix${preview.totalFixes !== 1 ? 'es' : ''} proposed across ${preview.filesModified.length} file${preview.filesModified.length !== 1 ? 's' : ''}.`,
                 );
                 const confirmed = await promptYesNo(
                   'Apply these fixes? Re-run with --yes to skip this prompt. [y/N] ',
                 );
                 if (!confirmed) {
-                  console.log('Aborted. No files modified.\n');
+                  progress('Aborted. No files modified.\n');
                 } else {
                   const applied = applyFixes(result, commonOpts);
-                  console.log(
+                  progress(
                     `\nFixed ${applied.totalFixes} issue${applied.totalFixes !== 1 ? 's' : ''} in ${applied.filesModified.length} file${applied.filesModified.length !== 1 ? 's' : ''}.\n`,
                   );
+                  fixesApplied = applied.totalFixes > 0;
                 }
               }
             } else {
               // Non-interactive (CI) or --yes: apply directly.
               const applied = applyFixes(result, commonOpts);
               if (applied.totalFixes > 0 && !options.quiet) {
-                console.log(
+                progress(
                   `\nFixed ${applied.totalFixes} issue${applied.totalFixes !== 1 ? 's' : ''} in ${applied.filesModified.length} file${applied.filesModified.length !== 1 ? 's' : ''}.\n`,
                 );
               }
+              fixesApplied = applied.totalFixes > 0;
             }
           }
+        }
+
+        // --fix rewrote files on disk, so the pre-fix audit no longer
+        // describes the project. Re-run it so the printed report and the
+        // --strict exit code reflect post-fix state -- otherwise issues that
+        // were just repaired are still reported as present and still fail
+        // --strict.
+        if (fixesApplied) {
+          resetGit();
+          resetPathsCache();
+          resetPackageJsonCache();
+          result = await runAudit(resolvedPath, activeChecks, auditOptions);
         }
 
         // Output
@@ -212,7 +249,6 @@ export async function runCli() {
         resetGit();
         resetPathsCache();
         resetPackageJsonCache();
-        resetTokenThresholds();
       }
 
       // Watch mode: re-lint when context files, MCP configs, or package.json change
@@ -236,15 +272,13 @@ export async function runCli() {
           path.join(resolvedPath, 'replit.md'),
           path.join(resolvedPath, 'package.json'),
           path.join(resolvedPath, '.mcp.json'),
-          // mcph configs — without these, edits to the .mcph.json the user is
-          // actively iterating on don't trigger a re-lint.
-          path.join(resolvedPath, '.mcph.json'),
-          path.join(resolvedPath, '.mcph.local.json'),
           // ctxlint config — re-resolve on edit so threshold changes,
           // ignore-list edits, and check-list overrides take effect without
           // restarting the watcher.
           path.join(resolvedPath, '.ctxlintrc'),
           path.join(resolvedPath, '.ctxlintrc.json'),
+          // .ctxlintignore — re-lint when suppression rules change.
+          path.join(resolvedPath, '.ctxlintignore'),
         ];
 
         const watchDirs = [
@@ -277,7 +311,7 @@ export async function runCli() {
             let liveOptions = options;
             let liveActiveChecks = activeChecks;
             try {
-              const resolved = resolveSession(resolvedPath, opts);
+              const resolved = resolveSession(resolvedPath, opts, true);
               liveConfig = resolved.config;
               liveOptions = resolved.options;
               liveActiveChecks = resolved.activeChecks;
@@ -288,36 +322,37 @@ export async function runCli() {
               console.error('Error reloading config:', err instanceof Error ? err.message : err);
             }
             try {
-              if (liveConfig?.tokenThresholds) {
-                setTokenThresholds(liveConfig.tokenThresholds);
-              } else {
-                resetTokenThresholds();
-              }
-
               const result = await runAudit(resolvedPath, liveActiveChecks, {
                 depth: liveOptions.depth,
                 extraPatterns: liveConfig?.contextFiles,
                 mcp: liveOptions.mcp,
                 mcpGlobal: liveOptions.mcpGlobal,
                 mcpOnly: liveOptions.mcpOnly,
-                mcph: liveOptions.mcph,
-                mcphGlobal: liveOptions.mcphGlobal,
-                mcphOnly: liveOptions.mcphOnly,
-                mcphStrictEnvToken: liveOptions.mcphStrictEnvToken,
                 session: liveOptions.session,
                 sessionOnly: liveOptions.sessionOnly,
+                skills: liveOptions.skills,
+                skillsOnly: liveOptions.skillsOnly,
+                hooksGlobal: liveOptions.hooksGlobal,
+                tokenThresholds: liveConfig?.tokenThresholds,
+                ignoreRules: liveConfig?.ignoreRules,
+                noIgnoreFile: liveOptions.noIgnoreFile,
               });
 
-              if (result.files.length === 0) {
-                console.log('\nNo context files found.\n');
-              } else if (liveOptions.tokensOnly) {
-                console.log(formatTokenReport(result));
-              } else if (liveOptions.format === 'json') {
-                console.log(formatJson(result));
-              } else if (liveOptions.format === 'sarif') {
-                console.log(formatSarif(result));
-              } else {
-                console.log(formatText(result, liveOptions.verbose));
+              // Honor --quiet on every watch tick, matching the initial run's
+              // `if (!options.quiet)` gate. Without this, `ctxlint --watch
+              // --quiet` printed a full report on every filesystem change.
+              if (!liveOptions.quiet) {
+                if (result.files.length === 0) {
+                  console.log('\nNo context files found.\n');
+                } else if (liveOptions.tokensOnly) {
+                  console.log(formatTokenReport(result));
+                } else if (liveOptions.format === 'json') {
+                  console.log(formatJson(result));
+                } else if (liveOptions.format === 'sarif') {
+                  console.log(formatSarif(result));
+                } else {
+                  console.log(formatText(result, liveOptions.verbose));
+                }
               }
             } catch (err) {
               console.error('Error:', err instanceof Error ? err.message : err);
@@ -326,7 +361,7 @@ export async function runCli() {
               resetGit();
               resetPathsCache();
               resetPackageJsonCache();
-              resetTokenThresholds();
+              clearFileCache();
             }
             console.log(chalk.dim('\nWatching for changes... (Ctrl+C to stop)\n'));
           }, 300);
@@ -406,8 +441,25 @@ npx @yawlabs/ctxlint@${VERSION} --strict
 
       if (fs.existsSync(hookPath)) {
         const existing = fs.readFileSync(hookPath, 'utf-8');
-        if (existing.includes('ctxlint')) {
-          console.log('Pre-commit hook already includes ctxlint.');
+        // Detect the actual hook command (a non-comment `npx @yawlabs/ctxlint`
+        // invocation), not any 'ctxlint' substring -- a hook that merely
+        // mentions ctxlint in a comment or an unrelated tool name still needs
+        // the real command appended.
+        const installed = existing.match(
+          /^[^#\r\n]*\bnpx\s+(?:-y\s+|--yes\s+)?@yawlabs\/ctxlint(?:@(\d+\.\d+\.\d+))?/m,
+        );
+        if (installed) {
+          const pinned = installed[1];
+          if (pinned && pinned !== VERSION) {
+            // Re-running init is the documented way to bump the pin.
+            fs.writeFileSync(
+              hookPath,
+              existing.replace(/(@yawlabs\/ctxlint@)\d+\.\d+\.\d+/g, `$1${VERSION}`),
+            );
+            console.log(`Updated ctxlint pre-commit hook pin from ${pinned} to ${VERSION}.`);
+          } else {
+            console.log('Pre-commit hook already includes ctxlint.');
+          }
           return;
         }
         // Append to existing hook (without shebang — the existing hook already has one)
@@ -428,16 +480,31 @@ npx @yawlabs/ctxlint@${VERSION} --strict
  * Prompt the user for a yes/no answer on a TTY. Defaults to no if the response
  * is anything other than an affirmative ('y' / 'yes', case-insensitive). Only
  * called when process.stdout.isTTY is true.
+ *
+ * The prompt is written to stderr: in json/sarif mode stdout must carry ONLY
+ * the payload (the invariant the `machineFormat` routing above enforces), and
+ * a TTY renders stderr inline so text mode loses nothing. Exported because
+ * the prompt path needs a TTY stdout that spawned e2e tests can't fake.
  */
-async function promptYesNo(question: string): Promise<boolean> {
+export async function promptYesNo(question: string): Promise<boolean> {
   const { createInterface } = await import('node:readline/promises');
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
   try {
     const answer = await rl.question(question);
     return /^\s*y(es)?\s*$/i.test(answer);
   } finally {
     rl.close();
   }
+}
+
+/**
+ * Parse `--depth`. 0 is a valid value (root-only scan), so the fallback test
+ * is NaN, not falsiness -- `parseInt('0') || 2` used to silently coerce a
+ * requested 0 back to the default. Clamped to [0, 10].
+ */
+function resolveDepth(raw: string): number {
+  const parsed = parseInt(raw, 10);
+  return Number.isNaN(parsed) ? 2 : Math.max(0, Math.min(parsed, 10));
 }
 
 interface ResolvedSession {
@@ -452,32 +519,41 @@ interface ResolvedSession {
  * token thresholds (the caller does, after deciding whether it's the
  * initial run or a watch-mode rerun).
  *
- * Throws on invalid check names (process.exit via validateCheckNames) for
- * the initial run; watch mode catches the throw and keeps the previous
- * resolution active.
+ * Invalid check names always `process.exit(2)` via validateCheckNames (they
+ * never throw), so they don't need a watch-mode rethrow path — `--checks` is
+ * fixed across a watch session, so a name that validated on the initial run
+ * stays valid for every rerun. The rethrow-on-watch path is for a bad explicit
+ * `--config`: when `throwOnConfigError` is set (watch reruns), loadConfigFromPath
+ * rethrows instead of process.exit(2) so the rerun try/catch can survive it and
+ * keep the previous resolution active; the initial run leaves it false for the
+ * clean console.error + exit(2) path.
  */
-function resolveSession(resolvedPath: string, opts: Record<string, unknown>): ResolvedSession {
+function resolveSession(
+  resolvedPath: string,
+  opts: Record<string, unknown>,
+  throwOnConfigError = false,
+): ResolvedSession {
   const configPath = opts.config ? path.resolve(opts.config as string) : undefined;
-  const config = configPath ? loadConfigFromPath(configPath) : loadConfig(resolvedPath);
+  const config = configPath
+    ? loadConfigFromPath(configPath, throwOnConfigError)
+    : loadConfig(resolvedPath);
 
   // Fold config-sourced booleans into the local vars so everything
-  // downstream (effectiveMcp/effectiveMcph/effectiveSession and the final
-  // `checks` array) sees them consistently. Without this, a config-only
-  // `mcpGlobal: true` would run MCP checks via runAudit's fallback while
-  // bypassing the cli-side `ignore` filter.
+  // downstream (effectiveMcp/effectiveSession and the final `checks` array)
+  // sees them consistently. Without this, a config-only `mcpGlobal: true`
+  // would run MCP checks via runAudit's fallback while bypassing the
+  // cli-side `ignore` filter.
   const mcpGlobal = (opts.mcpGlobal as boolean) || config?.mcpGlobal || false;
   const mcpOnly = (opts.mcpOnly as boolean) || config?.mcpOnly || false;
   const mcpFlag = (opts.mcp as boolean) || mcpGlobal || mcpOnly || config?.mcp || false;
-  const mcphGlobal = (opts.mcphGlobal as boolean) || config?.mcphGlobal || false;
-  const mcphOnly = (opts.mcphOnly as boolean) || config?.mcphOnly || false;
-  const mcphFlag = (opts.mcph as boolean) || mcphGlobal || mcphOnly || config?.mcph || false;
-  const mcphStrictEnvToken =
-    (opts.mcphStrictEnvToken as boolean) || config?.mcphStrictEnvToken || false;
   const sessionOnly = (opts.sessionOnly as boolean) || config?.sessionOnly || false;
   const sessionFlag = (opts.session as boolean) || sessionOnly || config?.session || false;
+  const skillsOnly = (opts.skillsOnly as boolean) || config?.skillsOnly || false;
+  const skillsFlag = (opts.skills as boolean) || skillsOnly || config?.skills || false;
+  const hooksGlobal = (opts.hooksGlobal as boolean) || config?.hooksGlobal || false;
 
-  // Build checks list: if explicit --checks includes mcp-* / mcph-* /
-  // session-*, imply the corresponding --<flag>.
+  // Build checks list: if explicit --checks includes mcp-* / session-*,
+  // imply the corresponding --<flag>.
   let explicitChecks = opts.checks
     ? validateCheckNames(
         (opts.checks as string).split(',').map((c: string) => c.trim()),
@@ -486,30 +562,29 @@ function resolveSession(resolvedPath: string, opts: Record<string, unknown>): Re
     : null;
   if (explicitChecks?.length === 0) explicitChecks = null;
 
-  const hasMcpInChecks =
-    explicitChecks?.some((c) => c.startsWith('mcp-') && !c.startsWith('mcph-')) || false;
-  const hasMcphInChecks = explicitChecks?.some((c) => c.startsWith('mcph-')) || false;
+  const hasMcpInChecks = explicitChecks?.some((c) => c.startsWith('mcp-')) || false;
   const hasSessionInChecks = explicitChecks?.some((c) => c.startsWith('session-')) || false;
+  const hasSkillInChecks = explicitChecks?.some((c) => c.startsWith('skill-')) || false;
   const effectiveMcp = mcpFlag || hasMcpInChecks;
-  const effectiveMcph = mcphFlag || hasMcphInChecks;
   const effectiveSession = sessionFlag || sessionOnly || hasSessionInChecks;
+  const effectiveSkills = skillsFlag || skillsOnly || hasSkillInChecks;
 
   let checks: CheckName[];
   if (explicitChecks) {
     checks = explicitChecks;
   } else if (sessionOnly) {
     checks = ALL_SESSION_CHECKS;
+  } else if (skillsOnly) {
+    checks = ALL_SKILL_CHECKS;
   } else if (mcpOnly) {
     checks = ALL_MCP_CHECKS;
-  } else if (mcphOnly) {
-    checks = ALL_MCPH_CHECKS;
   } else {
     const base = config?.checks || ALL_CHECKS;
     checks = [
       ...base,
       ...(effectiveMcp ? ALL_MCP_CHECKS : []),
-      ...(effectiveMcph ? ALL_MCPH_CHECKS : []),
       ...(effectiveSession ? ALL_SESSION_CHECKS : []),
+      ...(effectiveSkills ? ALL_SKILL_CHECKS : []),
     ];
   }
 
@@ -528,33 +603,38 @@ function resolveSession(resolvedPath: string, opts: Record<string, unknown>): Re
       : config?.ignore || [],
     tokensOnly: opts.tokens as boolean,
     quiet: opts.quiet as boolean,
-    depth: Math.max(0, Math.min(parseInt(opts.depth as string, 10) || 2, 10)),
+    depth: resolveDepth(opts.depth as string),
     mcp: effectiveMcp,
     mcpOnly,
     mcpGlobal,
-    mcph: effectiveMcph,
-    mcphOnly,
-    mcphGlobal,
-    mcphStrictEnvToken,
     session: effectiveSession,
     sessionOnly,
+    skills: effectiveSkills,
+    skillsOnly,
+    hooksGlobal,
+    // Commander's --no-X pattern: --no-ignore-file sets opts.ignoreFile = false.
+    // When the flag is not passed, opts.ignoreFile is true (default). So
+    // noIgnoreFile is true only when the user explicitly passed --no-ignore-file.
+    noIgnoreFile: opts.ignoreFile === false,
   };
 
-  // Apply token thresholds from config (initial-run path; watch-mode rerun
-  // calls setTokenThresholds itself with `liveConfig`).
-  if (config?.tokenThresholds) {
-    setTokenThresholds(config.tokenThresholds);
-  }
+  // Token thresholds from config flow through runAudit's tokenThresholds
+  // option (passed by both initial and watch-mode call sites). There is no
+  // module-level state to apply here.
 
   const activeChecks = options.checks.filter((c) => !options.ignore.includes(c));
 
   return { config, options, activeChecks };
 }
 
-function loadConfigFromPath(configPath: string) {
+function loadConfigFromPath(configPath: string, throwOnError = false) {
   try {
     return loadConfigFromExplicitPath(configPath);
   } catch (err) {
+    // Watch reruns pass throwOnError so a bad mid-watch --config edit
+    // propagates to the rerun try/catch (which keeps the previous
+    // resolution) instead of calling the uncatchable process.exit(2).
+    if (throwOnError) throw err;
     const detail = err instanceof Error ? err.message : String(err);
     console.error(`Error: ${detail}`);
     process.exit(2);

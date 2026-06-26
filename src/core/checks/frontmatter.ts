@@ -21,6 +21,15 @@ interface FrontmatterResult {
   unclosed: boolean;
 }
 
+// LIMITATION: this is a shallow, hand-rolled scanner, NOT a real YAML parser.
+// It only understands top-level `key: value` lines and a single level of
+// `- item` array entries. Consequences callers must keep in mind:
+//   - Duplicate keys silently OVERWRITE (last write wins) -- no error/warning.
+//   - Array values are JOINED into a single ', '-delimited STRING (e.g.
+//     `globs:\n  - a\n  - b` becomes `"a, b"`), not preserved as a list.
+//   - Nested maps, multi-line/block scalars, flow collections, anchors,
+//     comments, and quoting subtleties are all IGNORED.
+// Anything needing true YAML semantics must not rely on this function.
 function parseFrontmatter(content: string): FrontmatterResult {
   const lines = content.split('\n');
   if (lines[0]?.trim() !== '---') {
@@ -32,11 +41,15 @@ function parseFrontmatter(content: string): FrontmatterResult {
   let arrayKey = ''; // tracks a key whose value is a YAML array
 
   for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (line === '---') {
+    // The closing fence must be at column 0 to match the host loaders
+    // (gray-matter / Cursor): an indented `   ---` does NOT close the
+    // frontmatter, so the file parses as unclosed (which the suggestion text
+    // for frontmatter/unclosed explicitly warns about). Compare un-trimmed.
+    if (lines[i] === '---') {
       endLine = i + 1; // 1-indexed
       break;
     }
+    const line = lines[i].trim();
 
     // Collect YAML array items (- "value") into the preceding key
     if (line.startsWith('- ') && arrayKey) {
@@ -99,11 +112,15 @@ function hasUnbalancedBracketsOrQuotes(val: string): boolean {
   }
   if (square !== 0 || curly !== 0) return true;
 
-  // Count unescaped quotes; an odd count means an unmatched quote.
-  const doubleQuotes = (val.match(/"/g) || []).length;
-  const singleQuotes = (val.match(/'/g) || []).length;
-  if (doubleQuotes % 2 !== 0) return true;
-  if (singleQuotes % 2 !== 0) return true;
+  // Quotes only act as YAML quoting when the value STARTS with a quote char.
+  // A quote appearing mid-value is a literal (e.g. `globs: src/don't/**` has a
+  // lone apostrophe that is part of the path, not an unbalanced YAML quote),
+  // so only the leading-quote case can be unbalanced.
+  const quoteChar = val[0];
+  if (quoteChar === '"' || quoteChar === "'") {
+    const count = (val.match(quoteChar === '"' ? /"/g : /'/g) || []).length;
+    if (count % 2 !== 0) return true;
+  }
 
   return false;
 }
@@ -276,7 +293,7 @@ function validateWindsurfRule(file: ParsedContextFile): LintIssue[] {
       ruleId: 'frontmatter/missing',
       line: 1,
       message: 'Windsurf rule file has no frontmatter',
-      suggestion: 'Add YAML frontmatter with a trigger field (always_on, glob, manual, model)',
+      suggestion: `Add YAML frontmatter with a trigger field (${VALID_WINDSURF_TRIGGERS.join(', ')})`,
     });
     return issues;
   }

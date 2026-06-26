@@ -154,6 +154,7 @@ export async function checkRedundancy(
             line: i + 1,
             message: `"${mention}" is in package.json ${pkgJson.dependencies?.[pkg] ? 'dependencies' : pkgJson.devDependencies?.[pkg] ? 'devDependencies' : pkgJson.peerDependencies?.[pkg] ? 'peerDependencies' : 'optionalDependencies'} — agent can infer this`,
             suggestion: `~${wastedTokens} tokens could be saved`,
+            wastedTokens,
           });
         }
       }
@@ -170,7 +171,11 @@ export async function checkRedundancy(
     );
     if (dirMatch) {
       const dir = dirMatch[1].replace(/[`"]/g, '');
-      const fullPath = path.resolve(projectRoot, dir);
+      // Mirror paths.ts: resolve ./ and ../ refs relative to the context
+      // file's own directory; everything else relative to the project root.
+      const baseDir =
+        dir.startsWith('./') || dir.startsWith('../') ? path.dirname(file.filePath) : projectRoot;
+      const fullPath = path.resolve(baseDir, dir);
       if (isDirectory(fullPath)) {
         // The directory exists and is obviously named — agent can discover it
         issues.push({

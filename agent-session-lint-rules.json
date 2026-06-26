@@ -1,5 +1,5 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$schema": "https://raw.githubusercontent.com/YawLabs/ctxlint/main/schemas/ctxlint-catalog.schema.json",
   "title": "AI Agent Session Lint Rules",
   "description": "Machine-readable catalog of lint rules for AI agent session data cross-project consistency",
   "specVersion": "1.0.0-draft",
@@ -69,7 +69,7 @@
       "category": "session",
       "severity": "info",
       "description": "Near-duplicate memory entries across projects.",
-      "trigger": "Two memory files from different projects have >60% line overlap.",
+      "trigger": "Two memory files from different projects have >60% line overlap, and at least one of the pair belongs to the current project (otherwise every lint run from any repo would resurface the same unrelated cross-project duplicates).",
       "message": "\"{file1}\" and \"{file2}\" have {overlap}% content overlap",
       "fixable": false,
       "stability": "stable"
@@ -79,7 +79,7 @@
       "category": "session",
       "severity": "warning",
       "description": "Same command run 3+ times consecutively in agent history.",
-      "trigger": "Agent history for the current project shows the same display string 3+ times in a row.",
+      "trigger": "Agent history for the current project (entries lacking a project path or timestamp are excluded), grouped into sessions (by provider + session ID, split at >30-minute timestamp gaps), shows the same display string 3+ times in a row within a single session segment. Single-command sessions are additionally merged per provider into one stream (split at the same gaps) so rapid one-shot respawn loops are caught.",
       "message": "Command run {count} times consecutively: \"{command}\"",
       "fixable": false,
       "stability": "experimental"
@@ -89,7 +89,7 @@
       "category": "session",
       "severity": "warning",
       "description": "Cyclic command pattern detected in agent history.",
-      "trigger": "Agent history shows a repeating sequence of 2-3 commands (e.g. A,B,A,B) repeated 2+ times.",
+      "trigger": "Within a single session segment (same provider + session ID, split at >30-minute gaps; entries lacking a project path or timestamp are excluded), agent history shows a repeating sequence of 2-3 commands (e.g. A,B,A,B) repeated 2+ times. Spans already reported by session/consecutive-repeat are not re-reported. The merged one-shot stream is not scanned for cycles.",
       "message": "Cyclic pattern repeated {count} times: {cycle}",
       "fixable": false,
       "stability": "experimental"

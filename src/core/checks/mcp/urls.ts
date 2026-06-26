@@ -1,4 +1,5 @@
 import type { ParsedMcpConfig, LintIssue } from '../../types.js';
+import { isLoopbackHost } from './loopback.js';
 
 const ENV_VAR_REF = /\$\{[^}]+\}/;
 
@@ -24,24 +25,23 @@ export async function checkMcpUrls(
       issues.push({
         severity: 'error',
         check: 'mcp-urls',
-        ruleId: 'malformed-url',
+        ruleId: 'mcp-urls/malformed-url',
         line: server.line,
         message: `Server "${server.name}": invalid URL "${server.url}"`,
       });
       continue;
     }
 
-    // localhost-in-project-config
-    if (
-      config.scope === 'project' &&
-      (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1')
-    ) {
+    // localhost-in-project-config: the full loopback set (localhost, [::1],
+    // 127.0.0.0/8) -- the same set http-no-tls exempts, so a loopback URL in
+    // a committed config can't slip through both rules.
+    if (config.scope === 'project' && isLoopbackHost(parsed.hostname)) {
       issues.push({
         severity: 'warning',
         check: 'mcp-urls',
-        ruleId: 'localhost-in-project-config',
+        ruleId: 'mcp-urls/localhost-in-project-config',
         line: server.line,
-        message: `Server "${server.name}": localhost URL in project config won't work for teammates`,
+        message: `Server "${server.name}": loopback URL in project config won't work for teammates`,
       });
     }
 
@@ -50,7 +50,7 @@ export async function checkMcpUrls(
       issues.push({
         severity: 'info',
         check: 'mcp-urls',
-        ruleId: 'missing-path',
+        ruleId: 'mcp-urls/missing-path',
         line: server.line,
         message: `Server "${server.name}": URL has no path — most MCP servers expect /mcp`,
       });

@@ -1,5 +1,5 @@
 import { readFile, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { jaccardSimilarityFromSets, toLineSet } from '../../../utils/similarity.js';
 import { stripBom } from '../../../utils/fs.js';
@@ -107,7 +107,7 @@ export async function checkDivergedFile(ctx: SessionContext): Promise<LintIssue[
     if (!currentLineSet) continue;
 
     // Check which siblings have this same file
-    const diverged: Array<{ sibling: string; overlap: number }> = [];
+    const diverged: Array<{ sibling: string; overlap: number; path: string }> = [];
 
     for (const sib of ctx.siblings) {
       const sibPath = join(sib.path, fileName);
@@ -126,20 +126,31 @@ export async function checkDivergedFile(ctx: SessionContext): Promise<LintIssue[
       // Flag if overlap is between 20% and 90% — similar but diverged
       // Below 20% means intentionally different, above 90% means close enough
       if (overlap >= 0.2 && overlap < 0.9) {
-        diverged.push({ sibling: sib.name, overlap: Math.round(overlap * 100) });
+        diverged.push({
+          sibling: sib.name,
+          overlap: Math.round(overlap * 100),
+          path: resolve(sibPath),
+        });
       }
     }
 
     if (diverged.length > 0) {
+      // Lowest overlap first (per the spec's 2.2 Notes): the sibling that has
+      // drifted furthest is the one worth reading first.
+      diverged.sort((a, b) => a.overlap - b.overlap);
       const details = diverged.map((d) => `${d.sibling} (${d.overlap}% overlap)`).join(', ');
+      // Lead the detail with navigable absolute paths (mirroring
+      // memory-index-overflow's `File: ...` detail) since the message is
+      // basename-only and the issue carries line:0.
+      const sibPaths = diverged.map((d) => `  ${d.sibling}: ${d.path}`).join('\n');
       issues.push({
         severity: 'warning',
         check: 'session-diverged-file',
-        ruleId: 'session/diverged-file',
+        ruleId: 'session-diverged-file/diverged-file',
         line: 0,
         message: `${fileName} has diverged from sibling repos: ${details}`,
         suggestion: `Compare with sibling versions to identify unintentional drift`,
-        detail: `Files with the same name across sibling repos should be kept in sync when they serve the same purpose`,
+        detail: `File: ${resolve(currentPath)}\nDiverged siblings:\n${sibPaths}`,
       });
     }
   }

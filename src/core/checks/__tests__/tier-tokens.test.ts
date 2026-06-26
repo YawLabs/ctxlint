@@ -1,20 +1,25 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { checkTierTokens, checkAggregateTierTokens, isAlwaysLoaded } from '../tier-tokens.js';
-import { resetTokenThresholds } from '../tokens.js';
+import {
+  checkTierTokens,
+  checkAggregateTierTokens,
+  isAlwaysLoaded,
+  resetSettingsCache,
+} from '../tier-tokens.js';
 import type { ParsedContextFile, Section } from '../../types.js';
 
 let tmpDir: string;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-tier-'));
-  resetTokenThresholds();
+  resetSettingsCache();
 });
 
 afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
+  resetSettingsCache();
 });
 
 function makeFile(overrides: Partial<ParsedContextFile> = {}): ParsedContextFile {
@@ -85,6 +90,31 @@ describe('isAlwaysLoaded', () => {
 
   it('treats random basenames as on-demand', () => {
     expect(isAlwaysLoaded(makeFile({ relativePath: 'notes.md' }))).toBe(false);
+  });
+
+  it('treats Windsurf glob-trigger rules as on-demand', () => {
+    const content = '---\ntrigger: glob\nglobs: "**/*.ts"\n---\n\nbody';
+    expect(isAlwaysLoaded(makeFile({ relativePath: '.windsurf/rules/r.md', content }))).toBe(false);
+  });
+
+  it('treats Windsurf manual-trigger rules (no globs) as on-demand', () => {
+    const content = '---\ntrigger: manual\n---\n\nbody';
+    expect(isAlwaysLoaded(makeFile({ relativePath: '.windsurf/rules/r.md', content }))).toBe(false);
+  });
+
+  it('treats Windsurf always_on rules as always-loaded', () => {
+    const content = '---\ntrigger: always_on\n---\n\nbody';
+    expect(isAlwaysLoaded(makeFile({ relativePath: '.windsurf/rules/r.md', content }))).toBe(true);
+  });
+
+  it('treats Cursor .md rules with globs frontmatter as on-demand', () => {
+    const content = '---\nglobs: "src/**/*.ts"\n---\n\nbody';
+    expect(isAlwaysLoaded(makeFile({ relativePath: '.cursor/rules/r.md', content }))).toBe(false);
+  });
+
+  it('treats Cursor .md rules without scoping frontmatter as always-loaded', () => {
+    const content = '---\ndescription: general rule\n---\n\nbody';
+    expect(isAlwaysLoaded(makeFile({ relativePath: '.cursor/rules/r.md', content }))).toBe(true);
   });
 
   it('matches .junie/guidelines.md but not docs/api/guidelines.md', () => {
@@ -176,6 +206,46 @@ describe('checkTierTokens — hard-enforcement-missing', () => {
       tmpDir,
     );
     expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
+  });
+
+  it('ignores user-global ~/.claude/settings.json unless includeGlobal is set', async () => {
+    // Only a PERSONAL global settings.json denies the command; the project has none.
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-home-'));
+    fs.mkdirSync(path.join(fakeHome, '.claude'), { recursive: true });
+    fs.writeFileSync(
+      path.join(fakeHome, '.claude', 'settings.json'),
+      JSON.stringify({ permissions: { deny: ['Bash(npm login)'] } }),
+    );
+    const origHome = process.env.HOME;
+    const origProfile = process.env.USERPROFILE;
+    process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
+    try {
+      const content = '# CLAUDE.md\n\nNEVER run `npm login` locally.\n';
+      const file = () => makeFile({ content, sections: [], totalTokens: 50 });
+
+      // Default run (includeGlobal=false): personal global deny is NOT consulted,
+      // so the finding still fires — it can't be suppressed by another machine's
+      // private settings.
+      resetSettingsCache();
+      const without = await checkTierTokens(file(), tmpDir);
+      expect(
+        without.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing'),
+      ).toBeDefined();
+
+      // Opt-in (includeGlobal=true): the global deny is consulted and suppresses it.
+      resetSettingsCache();
+      const withGlobal = await checkTierTokens(file(), tmpDir, undefined, true);
+      expect(
+        withGlobal.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing'),
+      ).toBeUndefined();
+    } finally {
+      if (origHome === undefined) delete process.env.HOME;
+      else process.env.HOME = origHome;
+      if (origProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = origProfile;
+      fs.rmSync(fakeHome, { recursive: true, force: true });
+    }
   });
 
   it('skips when a hyphenated PreToolUse hook script name matches the command', async () => {
@@ -271,6 +341,125 @@ describe('checkTierTokens — hard-enforcement-missing', () => {
       tmpDir,
     );
     expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
+  });
+
+  it('treats a permissions.ask entry as enforcement (human prompt is a hard gate)', async () => {
+    const dotClaude = path.join(tmpDir, '.claude');
+    fs.mkdirSync(dotClaude, { recursive: true });
+    fs.writeFileSync(
+      path.join(dotClaude, 'settings.json'),
+      JSON.stringify({ permissions: { ask: ['Bash(npm login)'] } }),
+    );
+    const content = '# CLAUDE.md\n\nNEVER run `npm login` locally.\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
+  });
+
+  it('credits a Stop hook as enforcement (the shape the ALWAYS suggestion offers)', async () => {
+    // The ALWAYS-branch suggestion says "add a PreToolUse or Stop hook" —
+    // adding exactly that Stop hook must suppress the finding, otherwise
+    // following the suggestion leaves it firing forever.
+    const dotClaude = path.join(tmpDir, '.claude');
+    fs.mkdirSync(dotClaude, { recursive: true });
+    fs.writeFileSync(
+      path.join(dotClaude, 'settings.json'),
+      JSON.stringify({ hooks: { Stop: [{ hooks: [{ command: 'npm test' }] }] } }),
+    );
+    const content = '# CLAUDE.md\n\nALWAYS run `npm test` before declaring done.\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
+  });
+
+  it('suggests an enforcing hook (not a deny/block) for ALWAYS-framed rules', async () => {
+    const content = '# CLAUDE.md\n\nALWAYS run `npm test` before pushing.\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    const hard = issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing');
+    expect(hard).toBeDefined();
+    expect(hard!.suggestion).toContain('npm test');
+    // "Block the command" is inverted polarity for an ALWAYS rule — the fix
+    // is a hook that runs/verifies it, not one that denies it.
+    expect(hard!.suggestion).not.toContain('physically blocked');
+  });
+
+  it('reads a settings.json with a trailing comma (same leniency as hook-coverage)', async () => {
+    const dotClaude = path.join(tmpDir, '.claude');
+    fs.mkdirSync(dotClaude, { recursive: true });
+    // jsonc with allowTrailingComma — the identical file hook-coverage can
+    // read must not be treated as absent here.
+    fs.writeFileSync(
+      path.join(dotClaude, 'settings.json'),
+      '{ "permissions": { "deny": ["Bash(npm login)"], } }',
+    );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const content = '# CLAUDE.md\n\nNEVER run `npm login` locally.\n';
+      const issues = await checkTierTokens(
+        makeFile({ content, sections: [], totalTokens: 50 }),
+        tmpDir,
+      );
+      expect(
+        issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing'),
+      ).toBeUndefined();
+      const parseWarns = warnSpy.mock.calls.filter((c) => String(c[0]).includes('could not parse'));
+      expect(parseWarns).toHaveLength(0);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('picks up a settings.json edit between runs without a manual cache reset', async () => {
+    const content = '# CLAUDE.md\n\nNEVER run `npm login` locally.\n';
+    // First run: no settings — the finding fires (and the empty state is cached).
+    const first = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    expect(first.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeDefined();
+
+    // The user adds the suggested deny entry and re-audits in the SAME
+    // process (MCP server / --watch shape) with NO resetSettingsCache().
+    const dotClaude = path.join(tmpDir, '.claude');
+    fs.mkdirSync(dotClaude, { recursive: true });
+    fs.writeFileSync(
+      path.join(dotClaude, 'settings.json'),
+      JSON.stringify({ permissions: { deny: ['Bash(npm login)'] } }),
+    );
+    const second = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    expect(second.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
+  });
+
+  it('warns only ONCE for a malformed settings.json across many always-loaded files', async () => {
+    const dotClaude = path.join(tmpDir, '.claude');
+    fs.mkdirSync(dotClaude, { recursive: true });
+    // Genuinely malformed (unterminated) — even the lenient jsonc parse errors.
+    fs.writeFileSync(
+      path.join(dotClaude, 'settings.json'),
+      '{ "permissions": { "deny": ["Bash(npm login)"',
+    );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // Simulate the audit calling checkTierTokens once per always-loaded file.
+      const content = '# CLAUDE.md\n\nNEVER run `npm login` locally.\n';
+      for (let i = 0; i < 4; i++) {
+        await checkTierTokens(makeFile({ content, sections: [], totalTokens: 50 }), tmpDir);
+      }
+      const parseWarns = warnSpy.mock.calls.filter((c) => String(c[0]).includes('could not parse'));
+      expect(parseWarns).toHaveLength(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 

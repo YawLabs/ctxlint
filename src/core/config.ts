@@ -3,11 +3,14 @@ import * as path from 'node:path';
 import levenshteinPkg from 'fast-levenshtein';
 const levenshtein = levenshteinPkg.get;
 import { stripBom } from '../utils/fs.js';
+import { offsetToPosition } from '../utils/positions.js';
 import type { CheckName } from './types.js';
+import type { IgnoreRule } from './ignore-rules.js';
 
 export interface CtxlintConfig {
   checks?: CheckName[];
   ignore?: CheckName[];
+  ignoreRules?: IgnoreRule[];
   strict?: boolean;
   tokenThresholds?: {
     info?: number;
@@ -21,30 +24,45 @@ export interface CtxlintConfig {
   mcp?: boolean;
   mcpOnly?: boolean;
   mcpGlobal?: boolean;
-  mcph?: boolean;
-  mcphOnly?: boolean;
-  mcphGlobal?: boolean;
-  mcphStrictEnvToken?: boolean;
   session?: boolean;
   sessionOnly?: boolean;
+  skills?: boolean;
+  skillsOnly?: boolean;
+  hooksGlobal?: boolean;
 }
 
-const KNOWN_CONFIG_KEYS: Array<keyof CtxlintConfig> = [
+// Bidirectional check between this array and `CtxlintConfig`:
+// - `satisfies readonly (keyof CtxlintConfig)[]` -- a typo or removed type key
+//   becomes a tsc error here (extra-element rejection).
+// - `KnownKeys extends keyof CtxlintConfig ? keyof CtxlintConfig extends KnownKeys ? ...`
+//   below makes the type unhappy if a new CtxlintConfig key is added without
+//   being listed here -- missing-element rejection. The conditional is the
+//   structural way to express "every key in CtxlintConfig must appear in this
+//   array's element union".
+const KNOWN_CONFIG_KEYS = [
   'checks',
   'ignore',
+  'ignoreRules',
   'strict',
   'tokenThresholds',
   'contextFiles',
   'mcp',
   'mcpOnly',
   'mcpGlobal',
-  'mcph',
-  'mcphOnly',
-  'mcphGlobal',
-  'mcphStrictEnvToken',
   'session',
   'sessionOnly',
-];
+  'skills',
+  'skillsOnly',
+  'hooksGlobal',
+] as const satisfies readonly (keyof CtxlintConfig)[];
+
+// Missing-element guard: if CtxlintConfig gains a key that isn't in
+// KNOWN_CONFIG_KEYS, this assignment fails with "Type X is not assignable to
+// type never". Forces the maintainer to add the missing key above.
+type _ExhaustiveKnownKeys =
+  Exclude<keyof CtxlintConfig, (typeof KNOWN_CONFIG_KEYS)[number]> extends never ? true : never;
+const _knownKeysExhaustive: _ExhaustiveKnownKeys = true;
+void _knownKeysExhaustive;
 
 const CONFIG_FILENAMES = ['.ctxlintrc', '.ctxlintrc.json'];
 
@@ -71,23 +89,17 @@ function formatJsonError(content: string, err: unknown): string {
   // in the source to derive an approximate line/col.
   const pos = findFirstErrorPos(content, msg);
   if (pos !== null) {
-    return `${msg} (${posToLineCol(content, pos)})`;
+    // "near": the position comes from a best-effort substring search
+    // (findFirstErrorPos), which can land on an earlier identical token, so the
+    // line/col is approximate rather than the exact parser-reported site.
+    return `${msg} (near ${posToLineCol(content, pos)})`;
   }
   return msg;
 }
 
 function posToLineCol(content: string, pos: number): string {
-  let line = 1;
-  let col = 1;
-  for (let i = 0; i < pos && i < content.length; i++) {
-    if (content[i] === '\n') {
-      line++;
-      col = 1;
-    } else {
-      col++;
-    }
-  }
-  return `line ${line}, column ${col}`;
+  const { line, column } = offsetToPosition(content, pos);
+  return `line ${line}, column ${column}`;
 }
 
 function findFirstErrorPos(content: string, errMsg: string): number | null {
@@ -130,7 +142,13 @@ function suggestKey(unknown: string): string | null {
   }
   // Only suggest when the typo distance is small relative to the key length —
   // avoids "did you mean checks?" for completely unrelated junk like `license`.
-  if (best && bestDist <= Math.max(2, Math.floor(unknown.length / 3))) {
+  //
+  // Threshold: scale by 1/3 of key length for short keys, but CAP at 4. Without
+  // the cap, a long key like `tokenThresholds` (15 chars) would accept distance
+  // up to 5, which produces surprising "did you mean ...?" hits on genuinely
+  // unrelated keys.
+  const threshold = Math.min(4, Math.max(2, Math.floor(unknown.length / 3)));
+  if (best && bestDist <= threshold) {
     return best;
   }
   return null;
@@ -143,7 +161,7 @@ function suggestKey(unknown: string): string | null {
 function warnUnknownKeys(config: unknown, source: string): void {
   if (!config || typeof config !== 'object' || Array.isArray(config)) return;
   const keys = Object.keys(config as Record<string, unknown>);
-  const known = new Set<string>(KNOWN_CONFIG_KEYS as string[]);
+  const known = new Set<string>(KNOWN_CONFIG_KEYS);
   for (const k of keys) {
     if (known.has(k)) continue;
     const hint = suggestKey(k);
@@ -167,7 +185,31 @@ function parseConfigContent(content: string, source: string): CtxlintConfig {
     );
   }
   warnUnknownKeys(parsed, source);
+  warnIgnoreRulePathPatternMisuse(parsed, source);
   return parsed as CtxlintConfig;
+}
+
+/**
+ * Warn when an `ignoreRules` entry sets `pathPattern` for any check other
+ * than `session-stale-memory`. The apply logic in `ignore-rules.ts:97`
+ * short-circuits on the check mismatch -- the rule silently never fires, so
+ * the user thinks they've suppressed something they haven't. Surface it at
+ * config-load time so the drift is visible immediately.
+ */
+function warnIgnoreRulePathPatternMisuse(config: unknown, source: string): void {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return;
+  const rules = (config as { ignoreRules?: unknown }).ignoreRules;
+  if (!Array.isArray(rules)) return;
+  for (const r of rules) {
+    if (!r || typeof r !== 'object') continue;
+    const rec = r as { check?: unknown; pathPattern?: unknown };
+    if (typeof rec.pathPattern !== 'string') continue;
+    if (rec.check === 'session-stale-memory') continue;
+    const checkName = typeof rec.check === 'string' ? rec.check : '<unknown>';
+    console.error(
+      `Warning: ignoreRule with pathPattern is only honored for "session-stale-memory" (got "${checkName}") in ${source}`,
+    );
+  }
 }
 
 export function loadConfig(projectRoot: string): CtxlintConfig | null {

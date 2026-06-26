@@ -1,0 +1,171 @@
+// Granular per-finding suppression for ctxlint.
+//
+// `ignoreRules` is a sibling of the long-standing `ignore: CheckName[]` field
+// in `.ctxlintrc.json`. `ignore` drops a whole check class; `ignoreRules`
+// drops individual findings by check + message regex + (for stale-memory)
+// path regex.
+//
+// Trust posture: ignore-rule regexes are repo-author-trusted, same posture
+// as `.eslintrc.json`. We compile them with `new RegExp(...)` and run them
+// against issue messages with no step cap. A malicious `.ctxlintrc.json` in
+// a repo you've already cloned is out of scope -- this is for project
+// maintainers tuning their own audit signal, not user-submitted input.
+import type { LintIssue, CheckName } from './types.js';
+
+export interface IgnoreRule {
+  /** Required: which check this rule applies to. Use exact CheckName. */
+  check: CheckName;
+  /** Optional: regex tested against the finding's `message`. */
+  match?: string;
+  /** Optional: regex tested against each extracted path in the finding.
+   *  Only applies to `session-stale-memory`. If EVERY path in a finding
+   *  matches the pattern, the finding is dropped. */
+  pathPattern?: string;
+  /** Optional but recommended -- surfaces in "review me" tail. */
+  reason?: string;
+}
+
+interface CompiledRule {
+  check: CheckName;
+  match?: RegExp;
+  pathPattern?: RegExp;
+  reason?: string;
+  // Track whether the rule fired at least once. Unused rules surface as
+  // "ignore drift" debt -- the same pattern the /yaw-session-audit skill uses.
+  fired: boolean;
+  // Keep the original string patterns so drift-report output reproduces what
+  // the user wrote in .ctxlintrc.json verbatim. Reading `RegExp.source`
+  // re-escapes `/` (V8 returns `^\/x` for a pattern compiled from `^/x`),
+  // which would surface as user-visible noise in unusedRules.
+  matchSource?: string;
+  pathPatternSource?: string;
+}
+
+export interface IgnoreApplyResult {
+  kept: LintIssue[];
+  /**
+   * Boolean mask aligned 1:1 with the input `issues` array (same length, same
+   * order): `keepMask[i]` is true iff `issues[i]` survived suppression. Lets
+   * callers partition the original array by index without relying on object
+   * reference identity between `issues` and `kept`.
+   */
+  keepMask: boolean[];
+  dropped: number;
+  unusedRules: IgnoreRule[];
+  rulesMissingReason: IgnoreRule[];
+}
+
+/**
+ * Compile one user-supplied pattern, converting V8's bare SyntaxError
+ * ('Invalid regular expression: /[/: ...') into an error that names the
+ * offending rule index and field. The patterns come from `ignoreRules` in
+ * `.ctxlintrc.json`; without this context the throw surfaces from deep
+ * inside runAudit with no pointer back to the config entry that caused it.
+ */
+function compilePattern(pattern: string, index: number, field: 'match' | 'pathPattern'): RegExp {
+  try {
+    return new RegExp(pattern);
+  } catch (err) {
+    throw new Error(
+      `Invalid regex in ignoreRules[${index}].${field} ("${pattern}"): ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+      { cause: err },
+    );
+  }
+}
+
+export function compileRules(rules: IgnoreRule[]): CompiledRule[] {
+  return rules.map((r, i) => ({
+    check: r.check,
+    match: r.match ? compilePattern(r.match, i, 'match') : undefined,
+    pathPattern: r.pathPattern ? compilePattern(r.pathPattern, i, 'pathPattern') : undefined,
+    reason: r.reason,
+    fired: false,
+    matchSource: r.match,
+    pathPatternSource: r.pathPattern,
+  }));
+}
+
+/**
+ * Extract the path-list segment from a session-stale-memory message.
+ * Current message format (stale-memory.ts:53):
+ *   `Memory "<name>" references N path(s) that no longer exist: <a>, <b>`
+ * We split on ': ' once and then on ', '. If the format ever changes, this
+ * is the single place to update.
+ *
+ * Documented fallback: `applyIgnoreRules` prefers the structured
+ * `issue.affectedPaths` when present (emitted by checkStaleMemory) and only
+ * falls back to this message-scraping parser when it is absent — e.g. an issue
+ * synthesized without the structured field. This parser stays coupled to the
+ * exact message string emitted by checkStaleMemory.
+ *
+ * TODO(structured-paths-followup): once every emitter of session-stale-memory
+ * findings sets `affectedPaths`, this fallback can be retired.
+ */
+export function extractPathsFromMessage(msg: string): string[] {
+  const idx = msg.lastIndexOf(': ');
+  if (idx === -1) return [];
+  return msg
+    .slice(idx + 2)
+    .split(', ')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+export function applyIgnoreRules(issues: LintIssue[], rules: IgnoreRule[]): IgnoreApplyResult {
+  const compiled = compileRules(rules);
+  const kept: LintIssue[] = [];
+  const keepMask: boolean[] = [];
+  let dropped = 0;
+
+  for (const issue of issues) {
+    let suppress = false;
+    for (const rule of compiled) {
+      if (rule.check !== issue.check) continue;
+
+      // pathPattern: only for session-stale-memory; ALL paths must match.
+      if (rule.pathPattern) {
+        if (issue.check !== 'session-stale-memory') continue;
+        // Prefer the structured affectedPaths; fall back to scraping the
+        // message only when the finding didn't set it (see extractPathsFromMessage).
+        const paths = issue.affectedPaths ?? extractPathsFromMessage(issue.message);
+        if (paths.length === 0) continue;
+        const allMatch = paths.every((p) => rule.pathPattern!.test(p));
+        if (!allMatch) continue;
+      }
+
+      // match: regex against the message.
+      if (rule.match && !rule.match.test(issue.message)) continue;
+
+      // First matching rule wins.
+      suppress = true;
+      rule.fired = true;
+      break;
+    }
+    if (suppress) {
+      dropped++;
+      keepMask.push(false);
+    } else {
+      kept.push(issue);
+      keepMask.push(true);
+    }
+  }
+
+  return {
+    kept,
+    keepMask,
+    dropped,
+    unusedRules: compiled.filter((r) => !r.fired).map(stripCompiled),
+    rulesMissingReason: rules.filter((r) => !r.reason),
+  };
+}
+
+function stripCompiled(r: CompiledRule): IgnoreRule {
+  return {
+    check: r.check,
+    match: r.matchSource,
+    pathPattern: r.pathPatternSource,
+    reason: r.reason,
+  };
+}

@@ -21,14 +21,18 @@ export async function checkMcpCommands(
   for (const server of config.servers) {
     if (server.transport !== 'stdio' || !server.command) continue;
 
-    // windows-npx-no-wrapper: only for project-level configs
+    // windows-npx-no-wrapper: only for project-level configs.
+    //
+    // The check is the literal `command === 'npx'` test on the outer if. If
+    // the user already wrapped via `command: 'cmd'` + `args: ['/c', 'npx',
+    // ...]` the outer condition is false and this branch is skipped -- which
+    // is the correct behavior. There is no separate "is it already wrapped?"
+    // detection because the wrapped form has `command !== 'npx'`.
     if (process.platform === 'win32' && config.scope === 'project' && server.command === 'npx') {
-      // Check if already wrapped in cmd /c
-      // If command is "npx" directly (not "cmd"), it needs wrapping
       issues.push({
         severity: 'error',
         check: 'mcp-commands',
-        ruleId: 'windows-npx-no-wrapper',
+        ruleId: 'mcp-commands/windows-npx-no-wrapper',
         line: server.line,
         message: `Server "${server.name}": npx requires "cmd /c" wrapper on Windows`,
         suggestion:
@@ -36,36 +40,44 @@ export async function checkMcpCommands(
       });
     }
 
-    // command-not-found: local path commands
-    if (LOCAL_PATH_PATTERN.test(server.command)) {
+    // command-not-found: local path commands. Project scope only -- the
+    // command is always relative here (LOCAL_PATH_PATTERN), and a user/global
+    // config's relative paths resolve against that client's own working
+    // directory, not this project's root, so resolving them here produces
+    // spurious misses (same rationale as args-path-missing below).
+    if (config.scope === 'project' && LOCAL_PATH_PATTERN.test(server.command)) {
       const resolved = path.resolve(projectRoot, server.command);
       if (!fileExistsSafe(resolved)) {
         issues.push({
           severity: 'warning',
           check: 'mcp-commands',
-          ruleId: 'command-not-found',
+          ruleId: 'mcp-commands/command-not-found',
           line: server.line,
           message: `Server "${server.name}": command "${server.command}" not found`,
         });
       }
     }
 
-    // args-path-missing: check args that look like file paths
+    // args-path-missing: check args that look like file paths. Relative paths
+    // are project scope only -- a user/global config's relative paths resolve
+    // against that client's own working directory, not this project's root,
+    // so resolving them here produces spurious misses. Absolute paths are
+    // cwd-independent, so they get the existence check at every scope.
     if (server.args) {
       for (const arg of server.args) {
         // Skip URLs — they match FILE_PATH_PATTERN but aren't local refs.
         if (URL_PREFIX.test(arg)) continue;
-        if (LOCAL_PATH_PATTERN.test(arg) || FILE_PATH_PATTERN.test(arg)) {
-          const resolved = path.resolve(projectRoot, arg);
-          if (!fileExistsSafe(resolved)) {
-            issues.push({
-              severity: 'warning',
-              check: 'mcp-commands',
-              ruleId: 'args-path-missing',
-              line: server.line,
-              message: `Server "${server.name}": arg "${arg}" looks like a file path but doesn't exist`,
-            });
-          }
+        if (!LOCAL_PATH_PATTERN.test(arg) && !FILE_PATH_PATTERN.test(arg)) continue;
+        if (config.scope !== 'project' && !path.isAbsolute(arg)) continue;
+        const resolved = path.resolve(projectRoot, arg);
+        if (!fileExistsSafe(resolved)) {
+          issues.push({
+            severity: 'warning',
+            check: 'mcp-commands',
+            ruleId: 'mcp-commands/args-path-missing',
+            line: server.line,
+            message: `Server "${server.name}": arg "${arg}" looks like a file path but doesn't exist`,
+          });
         }
       }
     }

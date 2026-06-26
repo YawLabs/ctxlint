@@ -92,6 +92,18 @@ describe('checkDuplicateMemory', () => {
     expect(issues).toHaveLength(0);
   });
 
+  it('skips memories that fall under 50 characters once trimmed', async () => {
+    // Raw length clears 50 only via surrounding blank lines; the trimmed core
+    // is too short for meaningful overlap comparison and must be skipped
+    // (spec 2.5 step 3: "after stripping whitespace").
+    const padded = '\n'.repeat(10) + 'short convention memo' + '\n'.repeat(30);
+    expect(padded.length).toBeGreaterThanOrEqual(50);
+    expect(padded.trim().length).toBeLessThan(50);
+    const ctx = makeCtx([makeMemory(padded, 'project-a'), makeMemory(padded, 'project-b')]);
+    const issues = await checkDuplicateMemory(ctx);
+    expect(issues).toHaveLength(0);
+  });
+
   it('ignores duplicate pairs where neither side is the current project', async () => {
     const sharedContent = [
       'This project uses TypeScript for everything',

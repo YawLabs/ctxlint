@@ -10,7 +10,7 @@ export async function checkMcpRedundancy(configs: ParsedMcpConfig[]): Promise<Li
         issues.push({
           severity: 'info',
           check: 'mcp-redundancy',
-          ruleId: 'disabled-server',
+          ruleId: 'mcp-redundancy/disabled-server',
           line: server.line,
           message: `Server "${server.name}" is disabled — consider removing it if no longer needed`,
         });
@@ -46,7 +46,7 @@ export async function checkMcpRedundancy(configs: ParsedMcpConfig[]): Promise<Li
           issues.push({
             severity: 'info',
             check: 'mcp-redundancy',
-            ruleId: 'identical-across-scopes',
+            ruleId: 'mcp-redundancy/identical-across-scopes',
             line: projectServer.line,
             message: `Server "${projectServer.name}" is identically configured in both ${projectConfig.relativePath} and ${globalConfig.relativePath}`,
           });

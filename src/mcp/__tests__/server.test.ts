@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { VERSION } from '../../version.js';
 
@@ -73,7 +75,60 @@ function callMcpTool(toolName: string, args: Record<string, unknown>): Record<st
   }
 }
 
+/** List registered tool names via a JSON-RPC tools/list request. */
+function listMcpTools(): string[] {
+  const initRequest = JSON.stringify({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'initialize',
+    params: {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'test', version: '1.0' },
+    },
+  });
+  const listRequest = JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+  const input = initRequest + '\n' + listRequest + '\n';
+
+  let stdout: string;
+  try {
+    stdout = execFileSync('node', [SERVER_JS, '--mcp-server'], {
+      input,
+      encoding: 'utf-8',
+      timeout: 15000,
+    });
+  } catch (err: any) {
+    // Process exits when stdin closes — parse whatever output we got
+    stdout = err.stdout || '';
+  }
+  const lines = stdout.trim().split('\n').filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const parsed = JSON.parse(lines[i]);
+      if (parsed.id === 2 && parsed.result?.tools) {
+        return parsed.result.tools.map((t: { name: string }) => t.name);
+      }
+    } catch {
+      continue;
+    }
+  }
+  throw new Error('No tools/list response found');
+}
+
 describe('MCP server tools', () => {
+  describe('tool registration', () => {
+    it('exposes all four lint pillars plus the utility tools', () => {
+      const names = listMcpTools();
+      expect(names).toContain('ctxlint_audit');
+      expect(names).toContain('ctxlint_validate_path');
+      expect(names).toContain('ctxlint_token_report');
+      expect(names).toContain('ctxlint_fix');
+      expect(names).toContain('ctxlint_mcp_audit');
+      expect(names).toContain('ctxlint_session_audit');
+      expect(names).toContain('ctxlint_skill_audit');
+    });
+  });
+
   describe('ctxlint_audit', () => {
     it('returns audit results for a project with context files', () => {
       const result = callMcpTool('ctxlint_audit', {
@@ -163,26 +218,99 @@ describe('MCP server tools', () => {
     });
   });
 
-  describe('ctxlint_mcph_audit', () => {
-    it('returns a well-formed result on a project with no .mcph.json', () => {
-      // healthy-project ships no .mcph.json — the tool should still respond
-      // with a valid LintResult (zero issues, zero files) instead of erroring,
-      // and prove the new tool is wired into the server's tools/list.
-      const result = callMcpTool('ctxlint_mcph_audit', {
-        projectPath: path.join(FIXTURES, 'healthy-project'),
-      }) as any;
-      expect(result.version).toBe(VERSION);
-      expect(Array.isArray(result.files)).toBe(true);
-      expect(result.summary).toBeDefined();
-      expect(typeof result.summary.errors).toBe('number');
+  describe('ctxlint_fix', () => {
+    // A temp-dir project with one broken, auto-fixable path: CLAUDE.md points
+    // at lib/helpers.ts while the file lives at src/helpers.ts. The basename
+    // fuzzy match generates the fix without git history, and the temp copy
+    // keeps the write out of the shared fixtures.
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-mcp-fix-'));
+      fs.mkdirSync(path.join(tmpDir, 'src'));
+      fs.writeFileSync(path.join(tmpDir, 'src', 'helpers.ts'), 'export {};\n');
+      fs.writeFileSync(path.join(tmpDir, 'CLAUDE.md'), '# Project\n\n- Utils: `lib/helpers.ts`\n');
     });
 
-    it('accepts the strictEnvToken flag without erroring', () => {
-      const result = callMcpTool('ctxlint_mcph_audit', {
+    afterEach(() => {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('applies fixes and reports post-fix remainingIssues', () => {
+      const result = callMcpTool('ctxlint_fix', {
+        projectPath: tmpDir,
+        checks: ['paths'],
+      }) as any;
+      expect(result.totalFixes).toBe(1);
+      expect(result.filesModified).toHaveLength(1);
+      // remainingIssues is the post-fix re-audit summary. The pre-fix summary
+      // (1 error) would tell the host agent the fix did nothing.
+      expect(result.remainingIssues.errors).toBe(0);
+      expect(fs.readFileSync(path.join(tmpDir, 'CLAUDE.md'), 'utf-8')).toContain('src/helpers.ts');
+    });
+
+    it('reports zero fixes and an unchanged summary when nothing is fixable', () => {
+      const result = callMcpTool('ctxlint_fix', {
         projectPath: path.join(FIXTURES, 'healthy-project'),
-        strictEnvToken: true,
+        checks: ['paths'],
+      }) as any;
+      expect(result.totalFixes).toBe(0);
+      expect(result.filesModified).toHaveLength(0);
+      expect(result.remainingIssues.errors).toBe(0);
+    });
+
+    it('dryRun: reports fixes without writing the file', () => {
+      const originalContent = fs.readFileSync(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
+      const result = callMcpTool('ctxlint_fix', {
+        projectPath: tmpDir,
+        checks: ['paths'],
+        dryRun: true,
+      }) as any;
+      // Should identify at least one fixable path
+      expect(result.dryRun).toBe(true);
+      expect(result.totalFixes).toBeGreaterThanOrEqual(1);
+      // File must be unchanged on disk
+      const afterContent = fs.readFileSync(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
+      expect(afterContent).toBe(originalContent);
+      expect(afterContent).toContain('lib/helpers.ts');
+    });
+
+    it('dryRun: remainingIssues reflects pre-fix state (no re-audit)', () => {
+      const result = callMcpTool('ctxlint_fix', {
+        projectPath: tmpDir,
+        checks: ['paths'],
+        dryRun: true,
+      }) as any;
+      // No re-audit ran, so the broken path is still counted as an error
+      expect(result.remainingIssues.errors).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  describe('ctxlint_session_audit', () => {
+    it('smoke: returns a session-audit bucket without crashing', () => {
+      const result = callMcpTool('ctxlint_session_audit', {
+        projectPath: path.join(FIXTURES, 'healthy-project'),
       }) as any;
       expect(result.version).toBe(VERSION);
+      // The session bucket is always emitted when session checks ran, even
+      // with zero issues -- environment contents vary, so assert shape only.
+      expect(result.files.some((f: any) => f.path.includes('(session audit)'))).toBe(true);
+    });
+  });
+
+  describe('ctxlint_skill_audit', () => {
+    it('smoke: returns a skill-audit bucket without crashing', () => {
+      const result = callMcpTool('ctxlint_skill_audit', {
+        projectPath: path.join(FIXTURES, 'healthy-project'),
+      }) as any;
+      expect(result.version).toBe(VERSION);
+      expect(result.files.some((f: any) => f.path.includes('(skill audit)'))).toBe(true);
+    });
+
+    it('rejects non-skill check names via the per-tool enum', () => {
+      // 'paths' is a context check; the skill tool's enum must refuse it
+      // instead of validating-then-silently-doing-nothing.
+      expect(() => callMcpTool('ctxlint_skill_audit', { checks: ['paths'] })).toThrow();
     });
   });
 

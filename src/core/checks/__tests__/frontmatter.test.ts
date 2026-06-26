@@ -92,6 +92,18 @@ describe('checkFrontmatter', () => {
       expect(globsIssue!.message).toContain('malformed');
     });
 
+    it('accepts a globs value with a literal mid-value apostrophe', async () => {
+      // A lone apostrophe inside the path (not at the start) is literal, not
+      // YAML quoting — must not trip the odd-quote-count branch.
+      const file = makeFile(
+        '.cursor/rules/test.mdc',
+        "---\ndescription: My rule\nglobs: src/don't/**\nalwaysApply: false\n---\nContent.",
+      );
+      const issues = await checkFrontmatter(file, '/project');
+      const globsIssue = issues.find((i) => i.message.toLowerCase().includes('globs'));
+      expect(globsIssue).toBeUndefined();
+    });
+
     it('flags globs with unmatched quotes', async () => {
       const file = makeFile(
         '.cursor/rules/test.mdc',
@@ -180,6 +192,21 @@ describe('checkFrontmatter', () => {
       const file = makeFile('.windsurf/rules/test.md', '---\ntrigger: always_on\n\nBody.');
       const issues = await checkFrontmatter(file, '/project');
       expect(issues.length).toBe(1);
+      expect(issues[0].ruleId).toBe('frontmatter/unclosed');
+    });
+
+    it('treats an INDENTED close fence as unclosed (host requires column 0)', async () => {
+      // gray-matter / Cursor only recognize a closing `---` at column 0. An
+      // indented `   ---` does not close the frontmatter, so the whole body is
+      // pulled into the YAML parse and the rule silently fails to apply — we
+      // must report frontmatter/unclosed, matching the suggestion text that
+      // says the close needs no leading whitespace.
+      const file = makeFile(
+        '.cursor/rules/test.mdc',
+        '---\ndescription: My rule\nalwaysApply: true\n   ---\nBody.',
+      );
+      const issues = await checkFrontmatter(file, '/project');
+      expect(issues).toHaveLength(1);
       expect(issues[0].ruleId).toBe('frontmatter/unclosed');
     });
 

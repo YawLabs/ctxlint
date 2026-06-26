@@ -54,7 +54,7 @@ export async function checkMissingWorkflow(ctx: SessionContext): Promise<LintIss
     issues.push({
       severity: 'warning',
       check: 'session-missing-workflow',
-      ruleId: 'session/missing-workflow',
+      ruleId: 'session-missing-workflow/missing-workflow',
       line: 0,
       message: `GitHub Actions workflow "${workflow}" exists in ${siblings.length} sibling repos (${sibNames}) but not in this project`,
       suggestion: `Consider adding .github/workflows/${workflow} for consistency`,

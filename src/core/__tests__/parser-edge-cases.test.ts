@@ -197,4 +197,124 @@ Shared types are in \`../shared/types.ts\`.
     expect(paths).toContain('./src/index.ts');
     expect(paths).toContain('../shared/types.ts');
   });
+
+  // Spec 2.1 lists `src/**/*.test.ts` as an extractable glob pattern. The
+  // middle-segment char class must allow `*` or the `**/` segment kills the
+  // match and paths/glob-no-match can never fire on the spec's own example.
+  it('extracts double-star glob patterns as path references (spec 2.1)', () => {
+    const result = parseContent('Tests match `src/**/*.test.ts` and `**/*.snap` in CI.');
+    const paths = result.references.paths.map((p) => p.value);
+    expect(paths).toContain('src/**/*.test.ts');
+    expect(paths).toContain('**/*.snap');
+  });
+
+  it('still extracts single-star globs in the final segment', () => {
+    const result = parseContent('Configs live in `config/*.yaml`.');
+    const paths = result.references.paths.map((p) => p.value);
+    expect(paths).toContain('config/*.yaml');
+  });
+
+  // Markdown emphasis wrappers around slash-joined prose must not be captured
+  // as paths: a middle segment may be a whole-star glob (`*`/`**`) but may
+  // not START with `*` followed by text, and the leading `*` is not a valid
+  // delimiter — so the emphasis kills the whole match instead of routing
+  // bold/italic prose to paths/glob-no-match.
+  it('does not capture markdown emphasis-wrapped prose as paths', () => {
+    const result = parseContent(
+      [
+        'The **docs/missing** section is bold.',
+        'Measure **I/O** carefully.',
+        'Pick *either/or* style.',
+        'Rule **paths/not-found** fires on dead refs.',
+      ].join('\n'),
+    );
+    expect(result.references.paths).toHaveLength(0);
+  });
+
+  // Spec 2.2: command references include content in code blocks with no
+  // language tag, gated on COMMON_COMMANDS / $-prefix so non-command lines
+  // (sample output) are not extracted.
+  it('extracts commands from code blocks with no language tag (spec 2.2)', () => {
+    const result = parseContent(
+      ['```', 'npm run build', 'compiled 14 files in 1.2s', '$ make deploy', '```'].join('\n'),
+    );
+    const commands = result.references.commands.map((c) => c.value);
+    expect(commands).toContain('npm run build');
+    expect(commands).toContain('make deploy');
+    expect(commands).not.toContain('compiled 14 files in 1.2s');
+  });
+
+  // In untagged fences `>` marks blockquote/redirect/REPL output far more
+  // often than a prompt (PR templates quote prose like "> make sure tests
+  // pass before merging"); only `$`-prefixed lines are honored there.
+  it('does not extract >-quoted prose inside a bare fence as a command', () => {
+    const result = parseContent(
+      ['```', '> make sure tests pass before merging', '$ make deploy', '```'].join('\n'),
+    );
+    const commands = result.references.commands.map((c) => c.value);
+    expect(commands).not.toContain('make sure tests pass before merging');
+    expect(commands).toContain('make deploy');
+  });
+
+  it('still honors the > prompt inside tagged shell fences', () => {
+    const result = parseContent(['```bash', '> make deploy', '```'].join('\n'));
+    const commands = result.references.commands.map((c) => c.value);
+    expect(commands).toContain('make deploy');
+  });
+
+  it('recognizes mocha/tsc/eslint/prettier as commands (spec 2.2 tool list)', () => {
+    const result = parseContent(
+      [
+        'Run `tsc --noEmit` before committing.',
+        'Lint with `eslint src/`.',
+        'Format via `prettier --write .`.',
+        'Tests use `mocha test/unit`.',
+      ].join('\n'),
+    );
+    const commands = result.references.commands.map((c) => c.value);
+    expect(commands).toContain('tsc --noEmit');
+    expect(commands).toContain('eslint src/');
+    expect(commands).toContain('prettier --write .');
+    expect(commands).toContain('mocha test/unit');
+  });
+
+  it('does not match longer words sharing a recognized-tool prefix', () => {
+    // \b after the alternation: `tsconfig.json` must not register as `tsc`.
+    const result = parseContent('Edit `tsconfig.json` and `eslintrc-helper` by hand.');
+    const commands = result.references.commands.map((c) => c.value);
+    expect(commands).toHaveLength(0);
+  });
+});
+
+describe('parseSections nesting', () => {
+  // A parent section's range must span its subsections: tier-tokens
+  // section-breakdown slices lines.slice(startLine - 1, endLine) per
+  // top-level section, so closing an H2 at its first H3 child would silently
+  // exclude all subsection tokens from the parent's cost.
+  it('keeps a parent section open across its subsections', () => {
+    const result = parseContent(
+      ['## Parent', 'intro', '### Child', 'child body', '## Next', 'next body'].join('\n'),
+    );
+    const [parent, child, next] = result.sections;
+    expect(parent).toMatchObject({ title: 'Parent', startLine: 1, endLine: 4, level: 2 });
+    expect(child).toMatchObject({ title: 'Child', startLine: 3, endLine: 4, level: 3 });
+    expect(next).toMatchObject({ title: 'Next', startLine: 5, endLine: 6, level: 2 });
+  });
+
+  it('a shallower heading closes all deeper open sections at once', () => {
+    const result = parseContent(
+      ['# Top', '### Deep', 'deep body', '## Mid', 'mid body'].join('\n'),
+    );
+    const byTitle = new Map(result.sections.map((s) => [s.title, s]));
+    expect(byTitle.get('Top')?.endLine).toBe(5); // spans everything to EOF
+    expect(byTitle.get('Deep')?.endLine).toBe(3); // closed by the shallower ## Mid
+    expect(byTitle.get('Mid')?.endLine).toBe(5);
+  });
+
+  it('same-level siblings still close each other (flat documents unchanged)', () => {
+    const result = parseContent(['## A', 'a body', '## B', 'b body'].join('\n'));
+    const [a, b] = result.sections;
+    expect(a.endLine).toBe(2);
+    expect(b.endLine).toBe(4);
+  });
 });

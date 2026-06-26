@@ -7,16 +7,17 @@ import {
   runAudit,
   ALL_CHECKS,
   ALL_MCP_CHECKS,
-  ALL_MCPH_CHECKS,
   ALL_SESSION_CHECKS,
+  ALL_SKILL_CHECKS,
 } from '../core/audit.js';
 import { applyFixes } from '../core/fixer.js';
+import { loadConfig } from '../core/config.js';
 import { fileExists, isDirectory, resetPackageJsonCache } from '../utils/fs.js';
 import { findRenames } from '../utils/git.js';
 import { freeEncoder, keepEncoderAlive } from '../utils/tokens.js';
 import { resetGit } from '../utils/git.js';
 import { resetPathsCache } from '../core/checks/paths.js';
-import type { CheckName, McpCheckName, McphCheckName, SessionCheckName } from '../core/types.js';
+import type { CheckName, McpCheckName, SessionCheckName, SkillCheckName } from '../core/types.js';
 import * as path from 'node:path';
 import { VERSION } from '../version.js';
 
@@ -27,8 +28,8 @@ import { VERSION } from '../version.js';
 // domain it actually runs.
 const contextCheckEnum = z.enum(ALL_CHECKS as [CheckName, ...CheckName[]]);
 const mcpCheckEnum = z.enum(ALL_MCP_CHECKS as [McpCheckName, ...McpCheckName[]]);
-const mcphCheckEnum = z.enum(ALL_MCPH_CHECKS as [McphCheckName, ...McphCheckName[]]);
 const sessionCheckEnum = z.enum(ALL_SESSION_CHECKS as [SessionCheckName, ...SessionCheckName[]]);
+const skillCheckEnum = z.enum(ALL_SKILL_CHECKS as [SkillCheckName, ...SkillCheckName[]]);
 
 // Shell metacharacters + control chars that have no legitimate place in a
 // filesystem path. Rejecting these at the tool boundary does two things:
@@ -63,7 +64,39 @@ function validateProjectPath(rawPath: string | undefined): string {
   return resolved;
 }
 
+/**
+ * Load .ctxlintrc[.json] from the project root, swallowing errors. The MCP
+ * tools should not fail the audit if the config file is malformed -- the
+ * audit's value is the findings, not the config. CLI surfaces parse errors
+ * to the user; MCP returns the un-ignored result instead.
+ *
+ * TRUST BOUNDARY: `projectRoot` derives from the caller's `projectPath`
+ * argument (via validateProjectPath), so the .ctxlintrc.json loaded here is
+ * attacker-influenceable if the caller points at a directory whose config it
+ * does not control. We treat any projectPath-supplied .ctxlintrc.json as
+ * TRUSTED input regardless: its `ignoreRules` regexes are compiled with
+ * `new RegExp(...)` and run with NO step cap (see ignore-rules.ts trust
+ * posture), so a hostile config is a latent ReDoS vector. This matches the
+ * CLI posture (repo-author-trusted, same as .eslintrc.json) -- ctxlint
+ * assumes the project root you audit is one you trust. Do not point an MCP
+ * tool at an untrusted project root.
+ */
+function safeLoadConfig(projectRoot: string): ReturnType<typeof loadConfig> {
+  try {
+    return loadConfig(projectRoot);
+  } catch {
+    return null;
+  }
+}
+
 function validateFilePathInput(rawPath: string): void {
+  // Reject the empty string and bare-root references ('.', './'): these resolve
+  // to the project root itself, so resolveWithinRoot returns root and the tool
+  // would answer `{ path: '', exists: true }` -- a meaningless "the root exists"
+  // for a tool whose job is to validate a *file* reference.
+  if (rawPath.trim() === '' || rawPath === '.' || rawPath === './') {
+    throw new Error('path must be a non-empty file path, not the project root');
+  }
   if (PATH_DISALLOWED.test(rawPath)) {
     throw new Error(
       `path contains disallowed character ${describeDisallowed(rawPath)} (control chars and shell metacharacters are rejected)`,
@@ -114,7 +147,10 @@ server.tool(
     try {
       const root = validateProjectPath(projectPath);
       const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_CHECKS;
-      const result = await runAudit(root, activeChecks);
+      const config = safeLoadConfig(root);
+      const result = await runAudit(root, activeChecks, {
+        ignoreRules: config?.ignoreRules,
+      });
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -135,7 +171,7 @@ server.tool(
   'ctxlint_validate_path',
   'Check if a file path referenced in a context file actually exists in the project. Returns the file status and suggests corrections if the path is invalid.',
   {
-    path: z.string().describe('The file path to validate'),
+    path: z.string().min(1, 'path must not be empty').describe('The file path to validate'),
     projectPath: z.string().optional().describe('Project root. Defaults to cwd.'),
   },
   {
@@ -156,7 +192,10 @@ server.tool(
       };
 
       if (!result.exists) {
-        const rename = await findRenames(root, filePath);
+        // findRenames matches in git's repo-relative coordinate space; the
+        // raw input may be absolute (resolveWithinRoot permits that), which
+        // could never exact-match, so pass the root-relative resolved form.
+        const rename = await findRenames(root, path.relative(root, resolved));
         if (rename) {
           result.renamed = true;
           result.newPath = rename.newPath;
@@ -233,7 +272,7 @@ server.tool(
 
 server.tool(
   'ctxlint_fix',
-  'Run the linter with --fix mode to auto-correct broken file paths in context files using git history and fuzzy matching. Returns a summary of what was fixed.',
+  'Run the linter with --fix mode to auto-correct broken file paths in context files using git history and fuzzy matching. Returns a summary of what was fixed. Pass dryRun: true to preview what would be fixed without writing any files.',
   {
     projectPath: z
       .string()
@@ -243,6 +282,12 @@ server.tool(
       .array(contextCheckEnum)
       .optional()
       .describe('Which context-file checks to run before fixing. Defaults to all.'),
+    dryRun: z
+      .boolean()
+      .optional()
+      .describe(
+        'If true, simulate fixes and report what would change without writing any files. Returns accurate counts.',
+      ),
   },
   {
     // ctxlint_fix writes to disk via applyFixes() → fs.writeFileSync, so it
@@ -253,12 +298,33 @@ server.tool(
     idempotentHint: true,
     openWorldHint: false,
   },
-  async ({ projectPath, checks }) => {
+  async ({ projectPath, checks, dryRun }) => {
     try {
       const root = validateProjectPath(projectPath);
       const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_CHECKS;
-      const result = await runAudit(root, activeChecks);
-      const fixSummary = applyFixes(result, { quiet: true });
+      const config = safeLoadConfig(root);
+      const result = await runAudit(root, activeChecks, {
+        ignoreRules: config?.ignoreRules,
+      });
+      const fixSummary = applyFixes(result, { quiet: true, dryRun: dryRun ?? false });
+
+      // applyFixes wrote to disk, so the pre-fix summary no longer describes
+      // the project. Re-audit before reporting `remainingIssues` -- returning
+      // the pre-fix counts (which include every issue just fixed) tells the
+      // host agent the fixes did nothing. Skip the second audit when nothing
+      // was written: the pre-fix summary is still accurate then.
+      // Also skip the re-audit in dry-run mode: no files were written, so
+      // remainingIssues reflects the pre-fix (unfixed) state intentionally.
+      let remaining = result.summary;
+      if (!dryRun && fixSummary.totalFixes > 0) {
+        resetGit();
+        resetPathsCache();
+        resetPackageJsonCache();
+        const postFix = await runAudit(root, activeChecks, {
+          ignoreRules: config?.ignoreRules,
+        });
+        remaining = postFix.summary;
+      }
 
       return {
         content: [
@@ -268,7 +334,8 @@ server.tool(
               {
                 totalFixes: fixSummary.totalFixes,
                 filesModified: fixSummary.filesModified,
-                remainingIssues: result.summary,
+                remainingIssues: remaining,
+                ...(dryRun ? { dryRun: true } : {}),
               },
               null,
               2,
@@ -315,62 +382,12 @@ server.tool(
     try {
       const root = validateProjectPath(projectPath);
       const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_MCP_CHECKS;
+      const config = safeLoadConfig(root);
       const result = await runAudit(root, activeChecks, {
         mcp: true,
         mcpOnly: true,
         mcpGlobal: includeGlobal || false,
-      });
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ error: msg }) }],
-        isError: true,
-      };
-    } finally {
-      freeEncoder();
-      resetGit();
-      resetPathsCache();
-      resetPackageJsonCache();
-    }
-  },
-);
-
-server.tool(
-  'ctxlint_mcph_audit',
-  'Lint .mcph.json (the @yawlabs/mcph CLI config) files. Checks for PAT (mcp_pat_*) leakage in git-tracked project-scope files, environment-variable posture, plaintext HTTP apiBase to public hosts, schema drift, allow/deny list conflicts and duplicates, and machine-local override files not covered by .gitignore. Distinct from ctxlint_mcp_audit, which lints client-side .mcp.json server lists.',
-  {
-    projectPath: z
-      .string()
-      .optional()
-      .describe('Path to the project root. Defaults to current working directory.'),
-    checks: z
-      .array(mcphCheckEnum)
-      .optional()
-      .describe('Specific mcph checks to run (default: all mcph-* checks).'),
-    includeGlobal: z.boolean().optional().describe('Also scan ~/.mcph.json (user-global config).'),
-    strictEnvToken: z
-      .boolean()
-      .optional()
-      .describe(
-        'Upgrade mcph-config/prefer-env-token from warning to error (env-var-only posture).',
-      ),
-  },
-  {
-    readOnlyHint: true,
-    destructiveHint: false,
-    idempotentHint: true,
-    openWorldHint: false,
-  },
-  async ({ projectPath, checks, includeGlobal, strictEnvToken }) => {
-    try {
-      const root = validateProjectPath(projectPath);
-      const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_MCPH_CHECKS;
-      const result = await runAudit(root, activeChecks, {
-        mcph: true,
-        mcphOnly: true,
-        mcphGlobal: includeGlobal || false,
-        mcphStrictEnvToken: strictEnvToken || false,
+        ignoreRules: config?.ignoreRules,
       });
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     } catch (err) {
@@ -411,9 +428,58 @@ server.tool(
     try {
       const root = validateProjectPath(projectPath);
       const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_SESSION_CHECKS;
+      const config = safeLoadConfig(root);
       const result = await runAudit(root, activeChecks, {
         session: true,
         sessionOnly: true,
+        ignoreRules: config?.ignoreRules,
+      });
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ error: msg }) }],
+        isError: true,
+      };
+    } finally {
+      freeEncoder();
+      resetGit();
+      resetPathsCache();
+      resetPackageJsonCache();
+    }
+  },
+);
+
+server.tool(
+  'ctxlint_skill_audit',
+  'Audit agent skill and subagent definitions (~/.claude/skills/*/SKILL.md, ~/.claude/agents/*.md). Checks for frontmatter problems, broken file references, trigger collisions, orphaned skill directories, and dead tool restrictions.',
+  {
+    projectPath: z
+      .string()
+      .optional()
+      .describe('Path to the project root. Defaults to current working directory.'),
+    checks: z
+      .array(skillCheckEnum)
+      .optional()
+      .describe('Specific skill checks to run (default: all skill-* checks).'),
+  },
+  {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    // Like ctxlint_session_audit, this reads outside the project root
+    // (the user-global ~/.claude tree), hence open-world.
+    openWorldHint: true,
+  },
+  async ({ projectPath, checks }) => {
+    try {
+      const root = validateProjectPath(projectPath);
+      const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_SKILL_CHECKS;
+      const config = safeLoadConfig(root);
+      const result = await runAudit(root, activeChecks, {
+        skills: true,
+        skillsOnly: true,
+        ignoreRules: config?.ignoreRules,
       });
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     } catch (err) {

@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { resolve, isAbsolute } from 'node:path';
 import type { LintIssue, SessionContext } from '../../types.js';
 import { projectDirMatchesPath } from '../../session-parser.js';
@@ -12,7 +13,10 @@ import { projectDirMatchesPath } from '../../session-parser.js';
  */
 function resolveRef(ref: string, projectRoot: string): string | null {
   if (ref.startsWith('~/') || ref === '~') {
-    const home = process.env.HOME || process.env.USERPROFILE;
+    // Mirror the home-scoped scanners (session-scanner.ts, skill-scanner.ts,
+    // memory-index-overflow.ts): fall back to os.homedir() so ~/ refs still
+    // resolve when neither HOME nor USERPROFILE is set.
+    const home = process.env.HOME || process.env.USERPROFILE || homedir();
     if (!home) return null;
     return ref === '~' ? home : resolve(home, ref.slice(2));
   }
@@ -48,9 +52,10 @@ export async function checkStaleMemory(ctx: SessionContext): Promise<LintIssue[]
       issues.push({
         severity: 'info',
         check: 'session-stale-memory',
-        ruleId: 'session/stale-memory',
+        ruleId: 'session-stale-memory/stale-memory',
         line: 0,
         message: `Memory "${name}" references ${brokenPaths.length} path(s) that no longer exist: ${brokenPaths.join(', ')}`,
+        affectedPaths: brokenPaths,
         suggestion: `Update or remove the memory file: ${mem.filePath}`,
         detail: `Memory files with broken path references may cause the AI agent to follow stale instructions`,
       });

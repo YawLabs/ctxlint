@@ -73,6 +73,57 @@ describe('checkMcpConsistency', () => {
     expect(issues.filter((i) => i.message.includes('configured differently'))).toHaveLength(0);
   });
 
+  it('does not flag a cross-scope difference (project overrides user is precedence, not drift)', async () => {
+    const configs = [
+      makeConfig({
+        relativePath: '.mcp.json',
+        scope: 'project',
+        servers: [
+          { name: 'api', transport: 'http', url: 'https://v1.example.com/mcp', line: 3, raw: {} },
+        ],
+      }),
+      makeConfig({
+        filePath: '/home/user/.claude.json',
+        relativePath: '.claude.json',
+        scope: 'user',
+        servers: [
+          { name: 'api', transport: 'http', url: 'https://v2.example.com/mcp', line: 3, raw: {} },
+        ],
+      }),
+    ];
+    const issues = await checkMcpConsistency(configs);
+    expect(issues.filter((i) => i.message.includes('configured differently'))).toHaveLength(0);
+  });
+
+  it('flags user-user drift between two global client configs', async () => {
+    // Two different clients' per-user files (e.g. under --mcp-global) have no
+    // precedence relationship -- each client reads only its own file -- so a
+    // shared server name with divergent values is drift, same as at project
+    // scope.
+    const configs = [
+      makeConfig({
+        filePath: '/home/user/.cursor/mcp.json',
+        relativePath: '.cursor/mcp.json',
+        client: 'cursor',
+        scope: 'user',
+        servers: [
+          { name: 'api', transport: 'http', url: 'https://v1.example.com/mcp', line: 3, raw: {} },
+        ],
+      }),
+      makeConfig({
+        filePath: '/home/user/claude_desktop_config.json',
+        relativePath: 'claude_desktop_config.json',
+        client: 'claude-desktop',
+        scope: 'user',
+        servers: [
+          { name: 'api', transport: 'http', url: 'https://v2.example.com/mcp', line: 3, raw: {} },
+        ],
+      }),
+    ];
+    const issues = await checkMcpConsistency(configs);
+    expect(issues.filter((i) => i.message.includes('configured differently'))).toHaveLength(1);
+  });
+
   it('flags server in .mcp.json but missing from .cursor/mcp.json', async () => {
     const configs = [
       makeConfig({
@@ -104,19 +155,33 @@ describe('checkMcpConsistency', () => {
     expect(missing!.severity).toBe('info');
   });
 
-  it('flags duplicate server name within a single file', async () => {
+  it('flags duplicate server name within a single file at the redefinition line', async () => {
+    // Second "api" definition sits on line 7, well below line 1, so a hardcoded
+    // line:1 would be wrong.
     const config = makeConfig({
       relativePath: '.mcp.json',
-      content:
-        '{\n  "mcpServers": {\n    "api": { "url": "https://old.example.com" },\n    "api": { "url": "https://new.example.com" }\n  }\n}',
+      content: [
+        '{',
+        '  "mcpServers": {',
+        '    "api": {',
+        '      "url": "https://old.example.com"',
+        '    },',
+        '    "other": { "url": "https://other.example.com" },',
+        '    "api": {',
+        '      "url": "https://new.example.com"',
+        '    }',
+        '  }',
+        '}',
+      ].join('\n'),
       servers: [
-        { name: 'api', transport: 'http', url: 'https://new.example.com', line: 4, raw: {} },
+        { name: 'api', transport: 'http', url: 'https://new.example.com', line: 7, raw: {} },
       ],
     });
     const issues = await checkMcpConsistency([config]);
     const dup = issues.find((i) => i.message.includes('Duplicate server name'));
     expect(dup).toBeDefined();
     expect(dup!.severity).toBe('warning');
+    expect(dup!.line).toBe(7);
   });
 
   it('returns empty for a single config with no issues', async () => {

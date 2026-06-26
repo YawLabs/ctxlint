@@ -86,6 +86,57 @@ describe('checkDivergedFile', () => {
     expect(issues.length).toBeGreaterThanOrEqual(1);
     expect(issues[0].check).toBe('session-diverged-file');
     expect(issues[0].severity).toBe('warning');
+    // detail carries navigable absolute paths for both the current file and
+    // the diverged sibling (message itself is basename-only).
+    expect(issues[0].detail).toContain('File:');
+    expect(issues[0].detail).toMatch(/repos[\\/]current[\\/]/);
+    expect(issues[0].detail).toMatch(/repos[\\/]foo[\\/]/);
+  });
+
+  it('lists diverged siblings lowest-overlap first', async () => {
+    mockExistsSync.mockReturnValue(true);
+
+    // current vs hi: 3 shared of (4 + 5 - 3) unique lines = 50% overlap.
+    // current vs lo: 2 shared of (4 + 6 - 2) unique lines = 25% overlap.
+    const currentContent = [
+      'shared alpha line',
+      'shared beta line',
+      'shared gamma line',
+      'current only delta',
+    ].join('\n');
+    const hiContent = [
+      'shared alpha line',
+      'shared beta line',
+      'shared gamma line',
+      'hi only epsilon line',
+      'hi only zeta line',
+    ].join('\n');
+    const loContent = [
+      'shared alpha line',
+      'shared beta line',
+      'lo only one line',
+      'lo only two line',
+      'lo only three line',
+      'lo only four line',
+    ].join('\n');
+
+    mockReadFile.mockImplementation(async (p) => {
+      const ps = String(p).replace(/\\/g, '/');
+      if (ps.includes('/repos/current/')) return currentContent;
+      if (ps.includes('/repos/hi/')) return hiContent;
+      if (ps.includes('/repos/lo/')) return loContent;
+      return '';
+    });
+
+    // The higher-overlap sibling iterates FIRST; the report must still lead
+    // with the lowest-overlap (most-drifted) sibling.
+    const ctx = makeCtx([makeSibling('hi'), makeSibling('lo')]);
+    const issues = await checkDivergedFile(ctx);
+    expect(issues.length).toBeGreaterThanOrEqual(1);
+    const msg = issues[0].message;
+    expect(msg).toContain('lo (25% overlap)');
+    expect(msg).toContain('hi (50% overlap)');
+    expect(msg.indexOf('lo (25% overlap)')).toBeLessThan(msg.indexOf('hi (50% overlap)'));
   });
 
   it('does not flag files with >90% overlap (close enough)', async () => {

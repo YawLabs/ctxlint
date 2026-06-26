@@ -24,4 +24,14 @@ runs:
 
     - name: Run ctxlint
       shell: bash
-      run: npx -y @yawlabs/ctxlint@${{ inputs.version }} ${{ inputs.args }}
+      # Inputs flow through env vars, never interpolated inline into the
+      # script body: expression interpolation pastes the raw input into the
+      # shell script before it runs, so a consumer workflow that wires
+      # attacker-influenceable data (issue title, branch name) into `with:`
+      # would hand that data command execution on their runner.
+      # CTXLINT_ARGS is expanded unquoted on purpose -- it carries multiple
+      # whitespace-separated CLI flags that must word-split.
+      env:
+        CTXLINT_VERSION: ${{ inputs.version }}
+        CTXLINT_ARGS: ${{ inputs.args }}
+      run: npx -y "@yawlabs/ctxlint@${CTXLINT_VERSION}" ${CTXLINT_ARGS}

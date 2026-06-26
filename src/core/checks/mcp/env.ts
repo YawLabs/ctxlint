@@ -1,9 +1,10 @@
 import type { ParsedMcpConfig, LintIssue } from '../../types.js';
 
-// Detect wrong syntax patterns
+// Detect wrong syntax patterns. The optional default tail must be [^}]* (not
+// .*): a greedy tail matches across `}` and swallows everything up to the
+// LAST brace in the value, so `${A:-x} and ${B}` would read as one reference.
 const HAS_CURSOR_SYNTAX = /\$\{env:[^}]+\}/;
-const HAS_CLAUDE_SYNTAX = /\$\{[A-Za-z_][A-Za-z0-9_]*(?::-.*)?\}/;
-const HAS_CONTINUE_SYNTAX = /\$\{\{\s*secrets\.[^}]+\}\}/;
+const HAS_CLAUDE_SYNTAX = /\$\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\}/;
 
 // Any env var reference — matches ${VAR}, ${env:VAR}, and ${{ secrets.VAR }}
 const ANY_ENV_REF = /\$\{\{[^}]*\}\}|\$\{[^}]+\}/g;
@@ -33,7 +34,7 @@ function extractEnvVarRefs(value: string): EnvVarRef[] {
       varName = continueMatch[1];
     }
 
-    const claudeMatch = full.match(/^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-.*)?\}$/);
+    const claudeMatch = full.match(/^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}$/);
     if (!varName && claudeMatch) {
       varName = claudeMatch[1];
     }
@@ -81,7 +82,7 @@ export async function checkMcpEnv(
           issues.push({
             severity: 'error',
             check: 'mcp-env',
-            ruleId: 'wrong-syntax',
+            ruleId: 'mcp-env/wrong-syntax',
             line: server.line,
             message: `Server "${server.name}": Claude Code uses \${VAR}, not \${env:VAR}`,
             fix: buildSyntaxFix(config, server.line, value, 'claude-code'),
@@ -89,34 +90,34 @@ export async function checkMcpEnv(
         }
       }
 
-      if (config.client === 'cursor') {
-        // Cursor expects ${env:VAR}, flag bare ${VAR}
-        if (
-          HAS_CLAUDE_SYNTAX.test(value) &&
-          !HAS_CURSOR_SYNTAX.test(value) &&
-          !HAS_CONTINUE_SYNTAX.test(value)
-        ) {
+      if (config.client === 'cursor' || config.client === 'windsurf') {
+        // Cursor and Windsurf expect ${env:VAR}, flag bare ${VAR}.
+        // HAS_CLAUDE_SYNTAX only matches the bare-${VAR} shape (a ${env:VAR}
+        // or ${{ secrets.VAR }} ref can't satisfy it), so this is a
+        // per-reference test -- one correct ref elsewhere in the value must
+        // not suppress flagging an incorrect one next to it.
+        if (HAS_CLAUDE_SYNTAX.test(value)) {
+          const clientName = config.client === 'cursor' ? 'Cursor' : 'Windsurf';
           issues.push({
             severity: 'error',
             check: 'mcp-env',
-            ruleId: 'wrong-syntax',
+            ruleId: 'mcp-env/wrong-syntax',
             line: server.line,
-            message: `Server "${server.name}": Cursor uses \${env:VAR}, not \${VAR}`,
-            fix: buildSyntaxFix(config, server.line, value, 'cursor'),
+            message: `Server "${server.name}": ${clientName} uses \${env:VAR}, not \${VAR}`,
+            fix: buildSyntaxFix(config, server.line, value, config.client),
           });
         }
       }
 
       if (config.client === 'continue') {
-        // Continue expects ${{ secrets.VAR }}, flag other syntaxes
-        if (
-          (HAS_CLAUDE_SYNTAX.test(value) || HAS_CURSOR_SYNTAX.test(value)) &&
-          !HAS_CONTINUE_SYNTAX.test(value)
-        ) {
+        // Continue expects ${{ secrets.VAR }}, flag other syntaxes.
+        // Per-reference for the same reason as above: a correct
+        // ${{ secrets.VAR }} in the value must not mask a bare ${VAR}.
+        if (HAS_CLAUDE_SYNTAX.test(value) || HAS_CURSOR_SYNTAX.test(value)) {
           issues.push({
             severity: 'error',
             check: 'mcp-env',
-            ruleId: 'wrong-syntax',
+            ruleId: 'mcp-env/wrong-syntax',
             line: server.line,
             message: `Server "${server.name}": Continue uses \${{ secrets.VAR }}, not \${VAR}`,
             fix: buildSyntaxFix(config, server.line, value, 'continue'),
@@ -129,6 +130,14 @@ export async function checkMcpEnv(
     // Skip for Continue — its ${{ secrets.VAR }} refs resolve from GitHub
     // Actions secrets, not process.env, so every correct Continue config
     // would false-positive here.
+    //
+    // NOTE (host-state-dependent, intentional): this tests `ref.varName in
+    // process.env` of the machine running the linter, so a project .mcp.json
+    // referencing an unexported var emits this for everyone who hasn't set it
+    // locally — that is the normal state, which is why the finding stays at
+    // `info` severity. It also scans ALL collected string values (env, url,
+    // command, args, headers via collectAllStringValues), so a ${VAR} embedded
+    // in a url or command is treated as an env reference too. Both are deliberate.
     if (config.client !== 'continue') {
       for (const value of allValues) {
         const refs = extractEnvVarRefs(value);
@@ -137,7 +146,7 @@ export async function checkMcpEnv(
             issues.push({
               severity: 'info',
               check: 'mcp-env',
-              ruleId: 'unset-variable',
+              ruleId: 'mcp-env/unset-variable',
               line: server.line,
               message: `Server "${server.name}": environment variable "${ref.varName}" is not set`,
             });
@@ -151,7 +160,7 @@ export async function checkMcpEnv(
       issues.push({
         severity: 'info',
         check: 'mcp-env',
-        ruleId: 'empty-env-block',
+        ruleId: 'mcp-env/empty-env-block',
         line: server.line,
         message: `Server "${server.name}": empty "env" block can be removed`,
       });
@@ -161,33 +170,38 @@ export async function checkMcpEnv(
   return issues;
 }
 
+// The default tail in the rewrite regexes below is [^}]* so a `:-default`
+// can never span past its own closing brace -- greedy `.*` turned
+// `${A:-x} and ${B}` into the single replacement `${env:A}`, destroying the
+// literal text and the second reference. A `:-default` is dropped from the
+// converted ref: neither ${env:VAR} nor ${{ secrets.VAR }} has a default form.
 function buildSyntaxFix(
   config: ParsedMcpConfig,
   line: number,
   value: string,
-  targetClient: 'claude-code' | 'cursor' | 'continue',
+  targetClient: 'claude-code' | 'cursor' | 'windsurf' | 'continue',
 ): LintIssue['fix'] {
   if (targetClient === 'claude-code') {
     // Convert ${env:VAR} to ${VAR}
     const fixed = value.replace(/\$\{env:([^}]+)\}/g, '${$1}');
     return { file: config.filePath, line, oldText: value, newText: fixed };
   }
-  if (targetClient === 'cursor') {
-    // Convert ${VAR} to ${env:VAR} (but not ${env:VAR} which is already correct)
-    const fixed = value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-.*)?\}/g, (match, varName) => {
-      if (match.startsWith('${env:')) return match;
-      return `\${env:${varName}}`;
-    });
+  if (targetClient === 'cursor' || targetClient === 'windsurf') {
+    // Convert ${VAR} to ${env:VAR} (the pattern can't match an existing
+    // ${env:VAR} -- 'env:' fails the var-name character class)
+    const fixed = value.replace(
+      /\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}/g,
+      (_match, varName) => `\${env:${varName}}`,
+    );
     return { file: config.filePath, line, oldText: value, newText: fixed };
   }
   if (targetClient === 'continue') {
     // Convert ${VAR} or ${env:VAR} to ${{ secrets.VAR }}
     let fixed = value.replace(/\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, '${{ secrets.$1 }}');
-    fixed = fixed.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-.*)?\}/g, (match) => {
-      if (match.includes('secrets.')) return match;
-      const varMatch = match.match(/\$\{([A-Za-z_][A-Za-z0-9_]*)/);
-      return varMatch ? `\${{ secrets.${varMatch[1]} }}` : match;
-    });
+    fixed = fixed.replace(
+      /\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}/g,
+      (_match, varName) => `\${{ secrets.${varName} }}`,
+    );
     return { file: config.filePath, line, oldText: value, newText: fixed };
   }
   return undefined;

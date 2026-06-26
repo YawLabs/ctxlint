@@ -25,23 +25,23 @@ npm test
 
 1. **One PR per change.** Keep PRs focused — a bug fix, a new feature, or a refactor, not all three.
 2. **Branch from `main`** (or `master` if that's the default branch).
-3. **Run `npm run format && npm run lint`** before committing — CI will reject formatting issues.
+3. **Run `npm run format && npm run lint`** before committing — formatting drift fails CI (`.github/workflows/ci.yml` lints every push/PR) and the release flow (`release.sh` runs the same checks).
 4. **Run `npm test`** and confirm all tests pass.
-5. **Write a clear PR title and description** — explain *what* changed and *why*.
+5. **Write a clear PR title and description** — explain _what_ changed and _why_.
 6. **All PRs require approval** from a maintainer before merging.
 
 ## Development Workflow
 
-| Command | What it does |
-|---------|-------------|
-| `npm install` | Install dependencies |
-| `npm run build` | Bundle `src/` → `dist/index.js` via esbuild |
-| `npm run dev` | Same as `build` — one-shot rebuild |
-| `npm test` | Run the test suite (vitest, watch mode) |
-| `npm run test:run` | Run the test suite once (no watch) |
-| `npm run test:coverage` | Run tests with v8 coverage report |
-| `npm run lint` | Check for ESLint errors |
-| `npm run format` | Auto-format via Prettier |
+| Command                 | What it does                                |
+| ----------------------- | ------------------------------------------- |
+| `npm install`           | Install dependencies                        |
+| `npm run build`         | Bundle `src/` → `dist/index.js` via esbuild |
+| `npm run dev`           | Same as `build` — one-shot rebuild          |
+| `npm test`              | Run the test suite (vitest, watch mode)     |
+| `npm run test:run`      | Run the test suite once (no watch)          |
+| `npm run test:coverage` | Run tests with v8 coverage report           |
+| `npm run lint`          | Check for ESLint errors                     |
+| `npm run format`        | Auto-format via Prettier                    |
 
 ## Code Style
 
@@ -64,6 +64,15 @@ If you're an AI agent (Claude Code, Copilot, Cursor, etc.) submitting a PR:
 
 A "check" is a single lint category (e.g., `paths`, `tokens`, `tier-tokens`). Each check lives in its own file under `src/core/checks/` and can emit one or more **rules** — specific issue variants identified by `ruleId` like `paths/not-found` or `tier-tokens/section-breakdown`. Here's the end-to-end recipe.
 
+### Rule ID format (canonical)
+
+ctxlint rule IDs use **`category/slug`** — a single forward-slash separating the category from the rule slug, both lowercase kebab-case (e.g. `paths/not-found`, `tier-tokens/hard-enforcement-missing`). Two distinct things enforce this, and they cover different ground:
+
+- The catalog schema (`schemas/ctxlint-catalog.schema.json`, the `rule.id` `pattern`) enforces only the **shape** — lowercase kebab-case with exactly one `/`. It cannot see whether the prefix matches the rule's `category`.
+- The **prefix-equals-category invariant** is enforced separately by `checkRuleIdPrefixes` (asserted in `src/core/__tests__/catalog-schema.test.ts`, which CI and `release.sh` run via `pnpm run test:run`). Two published legacy IDs are explicitly allowlisted there: `ci/no-release-docs` (category `ci-coverage`) and `ci/undocumented-secret` (category `ci-secrets`). They predate the convention; their IDs are published API and stay as-is. Do not add new entries to that allowlist — new rules must use their full category as the prefix.
+
+> **Why this differs from mcp-compliance.** The sibling [`mcp-compliance`](https://github.com/YawLabs/mcp-compliance) project uses **`category-suffix`** (a hyphen, no slash) for its rule IDs. The difference is **deliberate, not drift**: ctxlint lints static config/context files on disk, mcp-compliance tests live servers over the wire, and the two rule namespaces are intentionally kept visually distinct so a `category/slug` ID is unambiguously a ctxlint rule and a `category-suffix` ID is unambiguously an mcp-compliance rule. Do not "harmonize" them. This note is the single canonical statement of the difference; other docs link here rather than restating it.
+
 ### 1. Pick a check name and rule IDs
 
 - Check name: short, kebab-case, matches the directory it'd live in (e.g., `staleness`, `ci-coverage`).
@@ -84,10 +93,10 @@ export async function checkYourName(
   const issues: LintIssue[] = [];
   // Detection logic here.
   issues.push({
-    severity: 'warning',             // 'error' | 'warning' | 'info'
+    severity: 'warning', // 'error' | 'warning' | 'info'
     check: 'your-name',
     ruleId: 'your-name/specific-thing',
-    line: 1,                         // 1-indexed source line
+    line: 1, // 1-indexed source line
     message: 'human-readable',
     suggestion: 'what to do instead',
     detail: 'optional extra context',
@@ -116,19 +125,18 @@ import { checkYourName } from './checks/your-name.js';
 
 export const ALL_CHECKS: CheckName[] = [
   ...existing,
-  'your-name',             // add here so it runs by default
+  'your-name', // add here so it runs by default
 ];
 
 // inside runAudit's per-file loop:
-if (activeChecks.includes('your-name'))
-  checkPromises.push(checkYourName(file, projectRoot));
+if (activeChecks.includes('your-name')) checkPromises.push(checkYourName(file, projectRoot));
 ```
 
 For cross-file or session/MCP checks, use the corresponding cross-file block or the `ALL_SESSION_CHECKS` / `ALL_MCP_CHECKS` array.
 
 ### 4. Add to the rule catalog
 
-Edit **`context-lint-rules.json`** (or `agent-session-lint-rules.json` / `mcp-config-lint-rules.json` depending on the check's domain):
+Edit **`context-lint-rules.json`** (or `mcp-config-lint-rules.json` / `agent-session-lint-rules.json` / `agent-skill-lint-rules.json`, depending on the check's domain):
 
 ```json
 {
@@ -144,6 +152,8 @@ Edit **`context-lint-rules.json`** (or `agent-session-lint-rules.json` / `mcp-co
 ```
 
 Also add a category entry at the top of the same file if you introduced a new check name. The catalog is consumed by downstream integrations — keep it accurate.
+
+After editing a catalog, run `node scripts/generate-catalog-prose.mjs` (or `pnpm run generate`) to resync the derived rule counts in the spec headers and the README family table. The build (`build.mjs`) fails loudly when those counts have drifted — it deliberately does not rewrite them for you, so the regenerated prose gets reviewed and committed alongside the catalog change.
 
 ### 5. Write tests
 
@@ -161,6 +171,7 @@ Also add a category entry at the top of the same file if you introduced a new ch
 ## Reporting Issues
 
 Open an issue on GitHub. Include:
+
 - What you expected to happen
 - What actually happened
 - Steps to reproduce

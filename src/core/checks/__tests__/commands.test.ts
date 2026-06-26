@@ -192,6 +192,51 @@ describe('checkCommands', () => {
     expect(byRule!.message).toContain('vitest');
   });
 
+  // The `tsc` bin ships in the `typescript` package; the tool branch must
+  // consult the bin->package map before the deps lookup so a fresh checkout
+  // (no node_modules) with typescript in devDependencies stays clean.
+  it('does NOT flag `tsc` when typescript is in devDependencies (bin->package map)', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\nRun `tsc --noEmit` before committing.\n',
+      },
+      { devDependencies: { typescript: '^5' } },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/tool-not-found')).toBeUndefined();
+  });
+
+  it('still flags `tsc` when typescript is absent from deps and node_modules/.bin', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\ntsc --noEmit\n```\n',
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    const byRule = issues.find((i) => i.ruleId === 'commands/tool-not-found');
+    expect(byRule).toBeDefined();
+    expect(byRule!.message).toContain('tsc');
+  });
+
+  // >-quoted prose inside a bare fence must not surface as a make command —
+  // with no Makefile in the project it would otherwise be a false
+  // commands/no-makefile error.
+  it('does not flag >-quoted prose in a bare fence as a make command', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# PR template\n\n```\n> make sure tests pass before merging\n```\n',
+      },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/no-makefile')).toBeUndefined();
+    expect(issues.find((i) => i.ruleId === 'commands/make-target-not-found')).toBeUndefined();
+  });
+
   it('does NOT flag common tool present in devDependencies', async () => {
     seed(
       {
@@ -218,6 +263,37 @@ describe('checkCommands', () => {
     expect(issues.find((i) => i.ruleId === 'commands/tool-not-found')).toBeUndefined();
   });
 
+  it('emits a single info when package.json is missing but a command would be checked', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nnpm run build\nvitest run\n```\n',
+      },
+      null, // no package.json written
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    const skipped = issues.filter((i) => i.ruleId === 'commands/package-json-missing');
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0].severity).toBe('info');
+    expect(skipped[0].message).toContain('command checks skipped');
+    // The script/tool branches themselves must stay silent without a pkgJson.
+    expect(issues.find((i) => i.ruleId === 'commands/script-not-found')).toBeUndefined();
+    expect(issues.find((i) => i.ruleId === 'commands/tool-not-found')).toBeUndefined();
+  });
+
+  it('does NOT emit the missing-package.json info when only a make target is referenced', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nmake build\n```\n',
+        Makefile: 'build:\n\techo build\n',
+      },
+      null, // no package.json; make branch is independent of pkgJson
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/package-json-missing')).toBeUndefined();
+  });
+
   it('flags shorthand package manager test/build/etc. when script missing', async () => {
     seed(
       {
@@ -232,12 +308,141 @@ describe('checkCommands', () => {
     expect(byRule!.message).toContain('test');
   });
 
+  // Package-manager builtins invoked without `run` (`pnpm install`,
+  // `yarn add zod`, ...) are not script names and must never produce
+  // commands/script-not-found, no matter what package.json's scripts say.
+  it.each(['pnpm install', 'yarn add zod', 'bun install', 'pnpm dlx foo', 'pnpm exec tsc'])(
+    'does NOT flag the builtin subcommand in "%s" as a missing script',
+    async (cmd) => {
+      seed(
+        {
+          'CLAUDE.md': `# Commands\n\n\`\`\`bash\n${cmd}\n\`\`\`\n`,
+        },
+        { scripts: { build: 'tsc' } },
+      );
+      const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+      const issues = await checkCommands(parsed, tmpRoot);
+      expect(issues.find((i) => i.ruleId === 'commands/script-not-found')).toBeUndefined();
+    },
+  );
+
+  it('still validates an explicit `pnpm run <name>` even when <name> collides with a builtin', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\npnpm run install\n```\n',
+      },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    const byRule = issues.find((i) => i.ruleId === 'commands/script-not-found');
+    expect(byRule).toBeDefined();
+    expect(byRule!.message).toContain('"install"');
+  });
+
+  it('skips script validation when a flag precedes the name (pnpm -r build)', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\npnpm -r build\n```\n',
+      },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/script-not-found')).toBeUndefined();
+  });
+
+  it('does NOT emit package-json-missing for a builtin-only command (pnpm install)', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\npnpm install\n```\n',
+      },
+      null, // no package.json — but `pnpm install` would never be validated anyway
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/package-json-missing')).toBeUndefined();
+  });
+
+  it('flags a target that only exists as a := variable assignment', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nmake build\n```\n',
+        Makefile: 'build := dist\n\ntest:\n\techo test\n',
+      },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    const byRule = issues.find((i) => i.ruleId === 'commands/make-target-not-found');
+    expect(byRule).toBeDefined();
+    expect(byRule!.message).toContain('"build"');
+  });
+
+  it('does not treat a make flag as the target (make -j4 build)', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nmake -j4 build\n```\n',
+        Makefile: 'build:\n\techo b\n',
+      },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    // A leading flag bails out of target extraction entirely — the token
+    // after it may be a flag value, not a target.
+    expect(issues.find((i) => i.ruleId === 'commands/make-target-not-found')).toBeUndefined();
+  });
+
+  it('skips NAME=value overrides when extracting the make target', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nmake FOO=1 missing\n```\n',
+        Makefile: 'build:\n\techo b\n',
+      },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    const byRule = issues.find((i) => i.ruleId === 'commands/make-target-not-found');
+    expect(byRule).toBeDefined();
+    expect(byRule!.message).toContain('"missing"');
+  });
+
   // Cover the full set of shorthand package managers (the regex matches
   // npm|pnpm|yarn|bun followed by test|start|build|dev|lint|…) so a future
   // edit to the pattern can't silently drop one.
+  // `bun test` runs Bun's builtin test runner — no `test` script required, so
+  // it must never produce commands/script-not-found, even when package.json
+  // has no `test` script. (`npm/pnpm/yarn test` DO resolve to a script and
+  // stay validated — covered by the it.each below.)
+  it('does NOT flag `bun test` as a missing script (builtin test runner)', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nbun test\n```\n',
+      },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/script-not-found')).toBeUndefined();
+  });
+
+  it('does NOT emit package-json-missing for a `bun test`-only file (builtin)', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nbun test\n```\n',
+      },
+      null, // no package.json — `bun test` would never be validated anyway
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/package-json-missing')).toBeUndefined();
+  });
+
   it.each([
     { cmd: 'yarn test', script: 'test' },
-    { cmd: 'bun test', script: 'test' },
+    { cmd: 'pnpm test', script: 'test' },
     { cmd: 'yarn build', script: 'build' },
     { cmd: 'bun start', script: 'start' },
     { cmd: 'bun run dev', script: 'dev' },

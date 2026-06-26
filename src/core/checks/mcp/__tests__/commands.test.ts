@@ -56,6 +56,72 @@ describe('checkMcpCommands', () => {
     expect(argIssue!.severity).toBe('warning');
   });
 
+  it('does not flag path-shaped args in user-scope configs', async () => {
+    // A user/global config's relative paths resolve against that client's own
+    // cwd, not this project root -- resolving them here is a spurious miss.
+    const config = makeConfig({
+      filePath: '/home/user/.claude.json',
+      relativePath: '.claude.json',
+      scope: 'user',
+      servers: [
+        {
+          name: 'server',
+          transport: 'stdio',
+          command: 'node',
+          args: ['./scripts/nonexistent.js'],
+          line: 3,
+          raw: { command: 'node', args: ['./scripts/nonexistent.js'] },
+        },
+      ],
+    });
+    const issues = await checkMcpCommands(config, '/project');
+    expect(issues.filter((i) => i.ruleId === 'mcp-commands/args-path-missing')).toHaveLength(0);
+  });
+
+  it('flags missing absolute-path args in user-scope configs', async () => {
+    // Absolute paths are cwd-independent, so the relative-path rationale for
+    // the user-scope skip doesn't apply -- and user/global configs are where
+    // absolute paths are most common.
+    const config = makeConfig({
+      filePath: '/home/user/.claude.json',
+      relativePath: '.claude.json',
+      scope: 'user',
+      servers: [
+        {
+          name: 'server',
+          transport: 'stdio',
+          command: 'node',
+          args: ['/definitely/missing/tools/server.js'],
+          line: 3,
+          raw: { command: 'node', args: ['/definitely/missing/tools/server.js'] },
+        },
+      ],
+    });
+    const issues = await checkMcpCommands(config, '/project');
+    expect(issues.filter((i) => i.ruleId === 'mcp-commands/args-path-missing')).toHaveLength(1);
+  });
+
+  it('does not flag relative-path commands in user-scope configs', async () => {
+    // Mirrors the args-path-missing user-scope skip: a user config's relative
+    // command resolves against that client's own cwd, not this project root.
+    const config = makeConfig({
+      filePath: '/home/user/.claude.json',
+      relativePath: '.claude.json',
+      scope: 'user',
+      servers: [
+        {
+          name: 'server',
+          transport: 'stdio',
+          command: './bin/serve.sh',
+          line: 3,
+          raw: { command: './bin/serve.sh' },
+        },
+      ],
+    });
+    const issues = await checkMcpCommands(config, '/project');
+    expect(issues.filter((i) => i.ruleId === 'mcp-commands/command-not-found')).toHaveLength(0);
+  });
+
   it('does not flag non-path args like flags and packages', async () => {
     const config = makeConfig({
       servers: [
@@ -117,7 +183,7 @@ describe('checkMcpCommands', () => {
           ],
         });
         const issues = await checkMcpCommands(config, '/project');
-        const w = issues.find((i) => i.ruleId === 'windows-npx-no-wrapper');
+        const w = issues.find((i) => i.ruleId === 'mcp-commands/windows-npx-no-wrapper');
         expect(w).toBeDefined();
         expect(w!.message).toContain('cmd /c');
       } finally {
@@ -133,7 +199,9 @@ describe('checkMcpCommands', () => {
           servers: [{ name: 'srv', transport: 'stdio', command: 'npx', line: 3, raw: {} }],
         });
         const issues = await checkMcpCommands(config, '/project');
-        expect(issues.find((i) => i.ruleId === 'windows-npx-no-wrapper')).toBeUndefined();
+        expect(
+          issues.find((i) => i.ruleId === 'mcp-commands/windows-npx-no-wrapper'),
+        ).toBeUndefined();
       } finally {
         restore();
       }
@@ -147,7 +215,9 @@ describe('checkMcpCommands', () => {
           servers: [{ name: 'srv', transport: 'stdio', command: 'npx', line: 3, raw: {} }],
         });
         const issues = await checkMcpCommands(config, '/project');
-        expect(issues.find((i) => i.ruleId === 'windows-npx-no-wrapper')).toBeUndefined();
+        expect(
+          issues.find((i) => i.ruleId === 'mcp-commands/windows-npx-no-wrapper'),
+        ).toBeUndefined();
       } finally {
         restore();
       }
@@ -170,7 +240,9 @@ describe('checkMcpCommands', () => {
           ],
         });
         const issues = await checkMcpCommands(config, '/project');
-        expect(issues.find((i) => i.ruleId === 'windows-npx-no-wrapper')).toBeUndefined();
+        expect(
+          issues.find((i) => i.ruleId === 'mcp-commands/windows-npx-no-wrapper'),
+        ).toBeUndefined();
       } finally {
         restore();
       }

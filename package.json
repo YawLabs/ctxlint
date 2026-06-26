@@ -1,14 +1,23 @@
 {
   "name": "@yawlabs/ctxlint",
-  "version": "0.9.20",
+  "version": "0.18.1",
+  "mcpName": "io.github.YawLabs/ctxlint",
   "description": "Lint your AI agent context files, MCP server configs, and session data against your actual codebase",
   "bin": {
     "ctxlint": "dist/index.js"
   },
   "type": "module",
+  "exports": {
+    "./package.json": "./package.json"
+  },
   "scripts": {
     "build": "node build.mjs",
     "dev": "node build.mjs",
+    "generate": "node scripts/generate-catalog-prose.mjs",
+    "generate:check": "node scripts/generate-catalog-prose.mjs --check",
+    "pretest": "node build.mjs",
+    "pretest:run": "node build.mjs",
+    "pretest:coverage": "node build.mjs",
     "test": "vitest",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage --coverage.reporter=text-summary --coverage.reporter=html --coverage.exclude='**/__tests__/**' --coverage.exclude='**/fixtures/**' --coverage.exclude='dist/**' --coverage.exclude='build.mjs' --coverage.exclude='coverage-report.mjs'",
@@ -55,10 +64,12 @@
     "CONTEXT_LINT_SPEC.md",
     "MCP_CONFIG_LINT_SPEC.md",
     "AGENT_SESSION_LINT_SPEC.md",
+    "AGENT_SKILL_LINT_SPEC.md",
     "context-lint-rules.json",
     "mcp-config-lint-rules.json",
-    "mcph-config-lint-rules.json",
     "agent-session-lint-rules.json",
+    "agent-skill-lint-rules.json",
+    "schemas/ctxlint-catalog.schema.json",
     "LICENSE",
     "README.md"
   ],
@@ -80,34 +91,45 @@
     "@eslint/js": "^10.0.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/fast-levenshtein": "^0.0.4",
-    "@types/node": "^25.6.0",
-    "@vitest/coverage-v8": "^4.1.4",
+    "@types/node": "^25.9.3",
+    "@types/picomatch": "^4.0.3",
+    "@vitest/coverage-v8": "^4.1.9",
     "chalk": "^5.6.2",
     "commander": "^14.0.3",
-    "esbuild": "^0.28.0",
-    "eslint": "^10.2.0",
+    "esbuild": "^0.28.1",
+    "eslint": "^10.5.0",
     "fast-levenshtein": "^3.0.0",
     "glob": "^13.0.6",
     "jsonc-parser": "^3.3.1",
-    "ora": "^9.3.0",
-    "prettier": "^3.8.2",
-    "simple-git": "^3.35.2",
+    "ora": "^9.4.0",
+    "prettier": "^3.8.4",
+    "simple-git": "^3.36.0",
     "tiktoken": "^1.0.22",
     "tsup": "^8.5.1",
-    "typescript": "^6.0.2",
-    "typescript-eslint": "^8.58.1",
-    "vite": "^8.0.8",
-    "vitest": "^4.1.4",
-    "zod": "^4.3.6"
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.61.1",
+    "vite": "^8.0.16",
+    "vitest": "^4.1.9",
+    "zod": "^4.4.3"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild"
     ],
     "overrides": {
-      "hono": "^4.12.18",
+      "hono": "^4.12.21",
       "@hono/node-server": "^1.19.13",
-      "vite": "^8.0.8"
+      "vite": "^8.0.8",
+      "fast-uri": "^3.1.2",
+      "postcss": "^8.5.10",
+      "qs": "^6.15.2",
+      "ip-address": "^10.1.1",
+      "brace-expansion": "^5.0.6"
     }
+  },
+  "dependencies": {
+    "picomatch": "^4.0.4",
+    "vscode-languageserver": "^10.0.0",
+    "vscode-languageserver-textdocument": "^1.0.12"
   }
 }

@@ -116,6 +116,137 @@ describe('checkMcpEnv', () => {
     expect(empty!.severity).toBe('info');
   });
 
+  it('flags ${VAR} syntax in Windsurf config', async () => {
+    const config = makeConfig({
+      client: 'windsurf',
+      relativePath: '.codeium/windsurf/mcp_config.json',
+      servers: [
+        {
+          name: 'api',
+          transport: 'http',
+          url: 'https://api.example.com/mcp',
+          headers: { Authorization: 'Bearer ${API_KEY}' },
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpEnv(config, '/project');
+    const wrongSyntax = issues.find((i) => i.message.includes('Windsurf uses ${env:VAR}'));
+    expect(wrongSyntax).toBeDefined();
+    expect(wrongSyntax!.severity).toBe('error');
+    expect(wrongSyntax!.fix!.newText).toBe('Bearer ${env:API_KEY}');
+  });
+
+  it('does not flag correct ${env:VAR} syntax in Windsurf config', async () => {
+    const config = makeConfig({
+      client: 'windsurf',
+      relativePath: '.codeium/windsurf/mcp_config.json',
+      servers: [
+        {
+          name: 'api',
+          transport: 'http',
+          url: 'https://api.example.com/mcp',
+          headers: { Authorization: 'Bearer ${env:API_KEY}' },
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpEnv(config, '/project');
+    expect(issues.filter((i) => i.ruleId === 'mcp-env/wrong-syntax')).toHaveLength(0);
+  });
+
+  it('flags a bare ${VAR} next to a correct ${env:VAR} in Cursor config', async () => {
+    // One correct reference in the value must not suppress flagging the
+    // incorrect one beside it.
+    const config = makeConfig({
+      client: 'cursor',
+      relativePath: '.cursor/mcp.json',
+      servers: [
+        {
+          name: 'api',
+          transport: 'http',
+          url: 'https://api.example.com/mcp',
+          headers: { Authorization: 'Bearer ${env:PREFIX}-${API_KEY}' },
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpEnv(config, '/project');
+    const wrongSyntax = issues.find((i) => i.message.includes('Cursor uses ${env:VAR}'));
+    expect(wrongSyntax).toBeDefined();
+    expect(wrongSyntax!.fix!.newText).toBe('Bearer ${env:PREFIX}-${env:API_KEY}');
+  });
+
+  it('cursor fix converts each reference separately, bounded by its own closing brace', async () => {
+    // Greedy default matching used to collapse `${A:-x} and ${B}` into the
+    // single replacement `${env:A}`, destroying the literal text and the
+    // second reference. The default itself is dropped: ${env:VAR} has no
+    // default form.
+    const config = makeConfig({
+      client: 'cursor',
+      relativePath: '.cursor/mcp.json',
+      servers: [
+        {
+          name: 'api',
+          transport: 'stdio',
+          command: 'npx',
+          env: { COMBINED: '${HOST:-localhost} and ${PORT}' },
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpEnv(config, '/project');
+    const wrongSyntax = issues.find((i) => i.ruleId === 'mcp-env/wrong-syntax');
+    expect(wrongSyntax).toBeDefined();
+    expect(wrongSyntax!.fix!.newText).toBe('${env:HOST} and ${env:PORT}');
+  });
+
+  it('continue fix converts each reference separately, bounded by its own closing brace', async () => {
+    const config = makeConfig({
+      client: 'continue',
+      relativePath: '.continue/mcpServers/test.json',
+      servers: [
+        {
+          name: 'api',
+          transport: 'stdio',
+          command: 'npx',
+          env: { COMBINED: '${HOST:-localhost} and ${PORT}' },
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpEnv(config, '/project');
+    const wrongSyntax = issues.find((i) => i.ruleId === 'mcp-env/wrong-syntax');
+    expect(wrongSyntax).toBeDefined();
+    expect(wrongSyntax!.fix!.newText).toBe('${{ secrets.HOST }} and ${{ secrets.PORT }}');
+  });
+
+  it('flags a bare ${VAR} in Continue config even when a correct secrets ref is present', async () => {
+    const config = makeConfig({
+      client: 'continue',
+      relativePath: '.continue/mcpServers/test.json',
+      servers: [
+        {
+          name: 'api',
+          transport: 'http',
+          url: 'https://api.example.com/mcp',
+          headers: { Authorization: 'Bearer ${{ secrets.PREFIX }}-${API_KEY}' },
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpEnv(config, '/project');
+    const wrongSyntax = issues.find((i) => i.message.includes('Continue uses'));
+    expect(wrongSyntax).toBeDefined();
+    expect(wrongSyntax!.fix!.newText).toBe('Bearer ${{ secrets.PREFIX }}-${{ secrets.API_KEY }}');
+  });
+
   it('flags wrong syntax in Continue config', async () => {
     const config = makeConfig({
       client: 'continue',

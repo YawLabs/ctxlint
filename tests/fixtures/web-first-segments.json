@@ -1,0 +1,25 @@
+{
+  "segments": [
+    "blog",
+    "docs",
+    "api",
+    "admin",
+    "assets",
+    "static",
+    "public",
+    "images",
+    "img",
+    "css",
+    "js",
+    "fonts",
+    "auth",
+    "login",
+    "logout",
+    "signup",
+    "pricing",
+    "about",
+    "contact",
+    "privacy",
+    "terms"
+  ]
+}

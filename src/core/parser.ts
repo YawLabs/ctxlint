@@ -5,20 +5,47 @@ import type { DiscoveredFile } from './scanner.js';
 
 // Match paths with at least one / that look like project file references
 // (trailing-slash directory refs like `src/components/` also match via the
-// `*` on the final segment; directory refs are routed to the
-// `paths/directory-not-found` rule by the consuming check).
+// `*` quantifier on the final segment; directory refs are routed to the
+// `paths/directory-not-found` rule by the consuming check). A middle segment
+// is either a whole-star glob (`*`/`**`) or starts with a word-ish char, so
+// double-star globs (`src/**/*.test.ts`, spec 2.1's own example) are
+// captured; the consuming check routes anything containing `*` to
+// `paths/glob-no-match`. A middle segment must NOT start with `*` followed
+// by text: markdown emphasis wrappers (`**docs/missing**`, `*either/or*`,
+// `**I/O**`) would otherwise be captured whole — bypassing the ^-anchored
+// PATH_EXCLUDE and Word/Word guards — and emit false glob-no-match errors.
+// Since `*` is also not a valid leading delimiter, emphasis kills the whole
+// match. Trade-off: leading-star named segments (`*tests/foo`) are not
+// captured.
 // Ignore URLs, common false positives.
+//
+// LIMITATION: forward-slash only. Backslash/Windows-style paths
+// (`src\components\foo.ts`) are NOT captured by this pattern -- the segment
+// separator is a literal `/`. Only POSIX-shaped path references are detected.
+//
+// Capture-group note (load-bearing for the column calc at the extract site):
+// group 1 is the path itself, deliberately split from the leading delimiter in
+// the non-capturing `(?:^|[\s`"'(])` prefix. The column is computed as
+// `match.index + match[0].length - match[1].length + 1`, which depends on
+// match[1] being the path (without the delimiter). The `/g` flag makes the
+// regex stateful across `exec` calls, so callers MUST reset
+// `PATH_PATTERN.lastIndex = 0` before scanning each line -- otherwise the first
+// match on a line starts mid-line at the previous line's leftover lastIndex and
+// the column (and even which matches are found) goes wrong.
 const PATH_PATTERN =
-  /(?:^|[\s`"'(])((\.{0,2}\/)?(?:[\w@.-]+\/)+[\w.*-]*(?:\.\w+)?)(?=[\s`"'),;:]|$)/gm;
+  /(?:^|[\s`"'(])((\.{0,2}\/)?(?:(?:\*{1,2}|[\w@.-][\w@.*-]*)\/)+[\w.*-]*(?:\.\w+)?)(?=[\s`"'),;:]|$)/gm;
 
 // False positive patterns to skip
 const PATH_EXCLUDE =
   /^(https?:\/\/|ftp:\/\/|mailto:|n\/a|w\/o|I\/O|i\/o|e\.g\.|N\/A|\.deb\/|\.rpm[.\/]|\.tar[.\/]|\.zip[.\/])/i;
 
-// Command patterns
+// Command patterns. The tool list mirrors spec 2.2's "common command
+// patterns to recognize" and the validator's PKG_DEPENDENT_TOOL_PATTERN in
+// checks/commands.ts -- a tool listed there but missing here is never
+// extracted, so it would silently never be validated.
 const COMMAND_PREFIXES = /^\s*[\$>]\s+(.+)$/;
 const COMMON_COMMANDS =
-  /^(npm|npx|pnpm|yarn|make|cargo|go\s+(run|build|test)|python|pytest|vitest|jest|bun|deno)\b/;
+  /^(npm|npx|pnpm|yarn|make|cargo|go\s+(run|build|test)|python|pytest|vitest|jest|mocha|tsc|eslint|prettier|bun|deno)\b/;
 
 export function parseContextFile(file: DiscoveredFile): ParsedContextFile {
   const content = readFileContent(file.absolutePath);
@@ -45,37 +72,45 @@ export function parseContextFile(file: DiscoveredFile): ParsedContextFile {
 
 function parseSections(lines: string[]): Section[] {
   const sections: Section[] = [];
+  // Sections whose endLine is still open: an ancestor chain ordered by
+  // strictly increasing heading level, innermost last.
+  const openStack: Section[] = [];
 
   for (let i = 0; i < lines.length; i++) {
     const match = lines[i].match(/^(#{1,6})\s+(.+)/);
     if (match) {
-      // Close previous section at same or higher level. `endLine` is the
-      // 1-indexed last content line of that section — i.e. the line right
-      // before this heading. `i` is 0-indexed here, so the line before the
-      // current heading (1-indexed) is `i`, not `i - 1`. (Callers use
-      // `lines.slice(startLine - 1, endLine)` — an exclusive-end slice into
-      // 0-indexed `lines` — which lines up with this convention.)
-      if (sections.length > 0) {
-        const prev = sections[sections.length - 1];
-        if (prev.endLine === -1) {
-          prev.endLine = i;
-        }
+      const level = match[1].length;
+      // Close every open section at the same or a deeper level; SHALLOWER
+      // open sections (ancestors) stay open so a parent's range spans its
+      // subsections -- per-section token attribution (tier-tokens
+      // section-breakdown slices `lines.slice(startLine - 1, endLine)` per
+      // top-level section) relies on the parent range including child
+      // content. `endLine` is the 1-indexed last content line of the closed
+      // section, i.e. the line right before this heading. `i` is 0-indexed
+      // here, so the line before the current heading (1-indexed) is `i`,
+      // not `i - 1`. (Callers use `lines.slice(startLine - 1, endLine)` --
+      // an exclusive-end slice into 0-indexed `lines` -- which lines up
+      // with this convention.)
+      while (openStack.length > 0) {
+        const innermost = openStack[openStack.length - 1];
+        if (innermost.level < level) break;
+        innermost.endLine = i;
+        openStack.pop();
       }
-      sections.push({
+      const section: Section = {
         title: match[2].trim(),
         startLine: i + 1, // 1-indexed
         endLine: -1,
-        level: match[1].length,
-      });
+        level,
+      };
+      sections.push(section);
+      openStack.push(section);
     }
   }
 
-  // Close last section
-  if (sections.length > 0) {
-    const last = sections[sections.length - 1];
-    if (last.endLine === -1) {
-      last.endLine = lines.length;
-    }
+  // Close all still-open sections at EOF.
+  for (const open of openStack) {
+    open.endLine = lines.length;
   }
 
   return sections;
@@ -151,6 +186,15 @@ function extractPathReferences(lines: string[], sections: Section[]): PathRefere
       }
       if (!cleanValue.includes('/')) continue;
 
+      // Skip VCS internals (`.git/hooks/pre-push`) and macOS app-bundle
+      // internals (`yaw.app/Contents/MacOS/yaw`, a common `pkill -f` argument):
+      // neither is a project source reference, and resolving them produces
+      // confident-but-wrong "broken path" + autofix noise. `.github/` is NOT
+      // matched -- the trailing slash after `.git` is required, so workflow
+      // paths (`.github/workflows/release.yml`) still validate. `.app/` mirrors
+      // the existing artifact exclusions (.deb/, .rpm, .tar, .zip).
+      if (/(^|\/)\.git\//.test(cleanValue) || /\.app\//.test(cleanValue)) continue;
+
       // match[0] includes the leading delimiter, match[1] is the captured path
       const column = match.index! + match[0].length - match[1].length + 1;
       paths.push({
@@ -166,7 +210,13 @@ function extractPathReferences(lines: string[], sections: Section[]): PathRefere
 }
 
 function isExampleCodeBlock(lang: string): boolean {
-  // These languages likely contain example code, not file path references
+  // These languages likely contain example code, not file path references.
+  // Unlabeled ('') fences are deliberately NOT in this list: bare fences in
+  // context files commonly hold file trees and config layouts whose paths
+  // users want validated. This diverges from the skills pillar
+  // (checks/skills.ts checkBrokenRefs), which SKIPS bare fences -- there a
+  // bare fence is usually a usage example, and a broken-ref error on
+  // illustrative text is noise. Same primitive, different base rates.
   return [
     'javascript',
     'js',
@@ -214,13 +264,26 @@ function extractCommandReferences(lines: string[], sections: Section[]): Command
       continue;
     }
 
-    const isShellBlock = inCodeBlock && ['bash', 'sh', 'shell', 'zsh'].includes(codeBlockLang);
+    // Spec 2.2: command references include content in bash/sh/shell/zsh
+    // blocks AND blocks with no language tag (commonly shell snippets). The
+    // COMMON_COMMANDS / $-prefix gates below keep non-command lines in bare
+    // blocks (sample output, directory trees) from being extracted.
+    const isShellBlock = inCodeBlock && ['bash', 'sh', 'shell', 'zsh', ''].includes(codeBlockLang);
+    // In untagged fences `>` is commonly blockquote/redirect/REPL output
+    // rather than a prompt (PR templates quote prose like "> make sure tests
+    // pass before merging", which would otherwise extract as a make command),
+    // so only `$`-prefixed lines are honored there. Tagged shell fences keep
+    // honoring the `>` prompt.
+    const isBareFence = inCodeBlock && codeBlockLang === '';
 
-    // Check for $ or > prefixed commands (only outside code blocks, or inside shell blocks)
-    // Skip markdown blockquotes (lines starting with "> " outside code blocks)
+    // Check for $ or > prefixed commands (only outside code blocks, or inside shell blocks).
+    // `>`-prefixed lines count as commands only inside TAGGED shell fences:
+    // outside code blocks they are markdown blockquotes, in bare fences see
+    // the isBareFence note above.
     if (!inCodeBlock || isShellBlock) {
       const prefixMatch = line.match(COMMAND_PREFIXES);
-      if (prefixMatch && (inCodeBlock || !line.trimStart().startsWith('>'))) {
+      const quoteLike = line.trimStart().startsWith('>');
+      if (prefixMatch && (!quoteLike || (inCodeBlock && !isBareFence))) {
         commands.push({
           value: prefixMatch[1].trim(),
           line: i + 1,
@@ -236,7 +299,11 @@ function extractCommandReferences(lines: string[], sections: Section[]): Command
       const trimmed = line.trim();
       if (trimmed && !trimmed.startsWith('#') && !trimmed.startsWith('//')) {
         // Check if it looks like a command
-        if (COMMON_COMMANDS.test(trimmed) || trimmed.startsWith('$') || trimmed.startsWith('>')) {
+        if (
+          COMMON_COMMANDS.test(trimmed) ||
+          trimmed.startsWith('$') ||
+          (trimmed.startsWith('>') && !isBareFence)
+        ) {
           const cmd = trimmed.replace(/^\s*[\$>]\s*/, '');
           if (cmd) {
             // Find the actual position of the command text in the line

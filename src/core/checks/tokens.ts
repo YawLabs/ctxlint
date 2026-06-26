@@ -9,7 +9,7 @@ export interface TokenThresholds {
   tierAggregate: number;
 }
 
-const DEFAULT_THRESHOLDS: TokenThresholds = {
+export const DEFAULT_TOKEN_THRESHOLDS: TokenThresholds = {
   info: 1000,
   warning: 3000,
   error: 8000,
@@ -18,35 +18,39 @@ const DEFAULT_THRESHOLDS: TokenThresholds = {
   tierAggregate: 4000,
 };
 
-let currentThresholds: TokenThresholds = DEFAULT_THRESHOLDS;
-
-export function setTokenThresholds(overrides: Partial<TokenThresholds>): void {
-  const merged = { ...DEFAULT_THRESHOLDS, ...overrides };
+/**
+ * Merge user-supplied overrides into DEFAULT_TOKEN_THRESHOLDS. Validates the
+ * info < warning < error invariant and, on violation, logs a warning and
+ * falls back to defaults. Pure aside from the single stderr line on bad
+ * input; safe to call concurrently from independent audit runs.
+ *
+ * This is the only entry point for resolving thresholds. The previous
+ * module-level state (`setTokenThresholds` / `getTokenThresholds`) was
+ * removed because long-running hosts (the MCP server) could race on it if
+ * audits ever ran concurrently. Threshold resolution now flows through the
+ * call chain: caller -> runAudit -> per-check function.
+ */
+export function resolveTokenThresholds(overrides?: Partial<TokenThresholds>): TokenThresholds {
+  if (!overrides) return DEFAULT_TOKEN_THRESHOLDS;
+  const merged = { ...DEFAULT_TOKEN_THRESHOLDS, ...overrides };
   if (merged.info >= merged.warning || merged.warning >= merged.error) {
     console.error(
       `Warning: token thresholds should satisfy info < warning < error (got ${merged.info}, ${merged.warning}, ${merged.error}) — using defaults`,
     );
-    return;
+    return DEFAULT_TOKEN_THRESHOLDS;
   }
-  currentThresholds = merged;
-}
-
-export function resetTokenThresholds(): void {
-  currentThresholds = DEFAULT_THRESHOLDS;
-}
-
-export function getTokenThresholds(): TokenThresholds {
-  return currentThresholds;
+  return merged;
 }
 
 export async function checkTokens(
   file: ParsedContextFile,
   _projectRoot: string,
+  thresholds: TokenThresholds = DEFAULT_TOKEN_THRESHOLDS,
 ): Promise<LintIssue[]> {
   const issues: LintIssue[] = [];
   const tokens = file.totalTokens;
 
-  if (tokens >= currentThresholds.error) {
+  if (tokens >= thresholds.error) {
     issues.push({
       severity: 'error',
       check: 'tokens',
@@ -55,7 +59,7 @@ export async function checkTokens(
       message: `${tokens.toLocaleString()} tokens — consumes significant context window space`,
       suggestion: 'Consider splitting into focused sections or removing redundant content.',
     });
-  } else if (tokens >= currentThresholds.warning) {
+  } else if (tokens >= thresholds.warning) {
     issues.push({
       severity: 'warning',
       check: 'tokens',
@@ -64,7 +68,7 @@ export async function checkTokens(
       message: `${tokens.toLocaleString()} tokens — large context file`,
       suggestion: 'Consider trimming — research shows diminishing returns past ~300 lines.',
     });
-  } else if (tokens >= currentThresholds.info) {
+  } else if (tokens >= thresholds.info) {
     issues.push({
       severity: 'info',
       check: 'tokens',
@@ -77,9 +81,12 @@ export async function checkTokens(
   return issues;
 }
 
-export function checkAggregateTokens(files: { path: string; tokens: number }[]): LintIssue | null {
+export function checkAggregateTokens(
+  files: { path: string; tokens: number }[],
+  thresholds: TokenThresholds = DEFAULT_TOKEN_THRESHOLDS,
+): LintIssue | null {
   const total = files.reduce((sum, f) => sum + f.tokens, 0);
-  if (total > currentThresholds.aggregate && files.length > 1) {
+  if (total >= thresholds.aggregate && files.length > 1) {
     return {
       severity: 'warning',
       check: 'tokens',

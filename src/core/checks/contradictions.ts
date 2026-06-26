@@ -22,19 +22,23 @@ const DIRECTIVE_CATEGORIES: DirectiveCategory[] = [
     options: [
       {
         label: 'Jest',
-        patterns: [/\buse\s+jest\b/i, /\bjest\s+for\s+test/i, /\btest.*with\s+jest\b/i],
+        // The third pattern bounds the gap between `test` and `with <fw>` to a
+        // few intra-clause chars so prose like "run our test suite and then
+        // deploy with jest" no longer matches the framework directive — only
+        // tight phrasings like "test with jest" / "tests run with jest" do.
+        patterns: [/\buse\s+jest\b/i, /\bjest\s+for\s+test/i, /\btest\w*\s+with\s+jest\b/i],
       },
       {
         label: 'Vitest',
-        patterns: [/\buse\s+vitest\b/i, /\bvitest\s+for\s+test/i, /\btest.*with\s+vitest\b/i],
+        patterns: [/\buse\s+vitest\b/i, /\bvitest\s+for\s+test/i, /\btest\w*\s+with\s+vitest\b/i],
       },
       {
         label: 'Mocha',
-        patterns: [/\buse\s+mocha\b/i, /\bmocha\s+for\s+test/i, /\btest.*with\s+mocha\b/i],
+        patterns: [/\buse\s+mocha\b/i, /\bmocha\s+for\s+test/i, /\btest\w*\s+with\s+mocha\b/i],
       },
       {
         label: 'pytest',
-        patterns: [/\buse\s+pytest\b/i, /\bpytest\s+for\s+test/i, /\btest.*with\s+pytest\b/i],
+        patterns: [/\buse\s+pytest\b/i, /\bpytest\s+for\s+test/i, /\btest\w*\s+with\s+pytest\b/i],
       },
       {
         label: 'Playwright',
@@ -89,19 +93,11 @@ const DIRECTIVE_CATEGORIES: DirectiveCategory[] = [
       },
       {
         label: '2 spaces',
-        patterns: [
-          /\b2[\s-]?space\s+indent/i,
-          /\bindent\s+with\s+2\s+spaces/i,
-          /\b2[\s-]?space\s+tabs?\b/i,
-        ],
+        patterns: [/\b2[\s-]?space\s+indent/i, /\bindent\s+with\s+2\s+spaces/i],
       },
       {
         label: '4 spaces',
-        patterns: [
-          /\b4[\s-]?space\s+indent/i,
-          /\bindent\s+with\s+4\s+spaces/i,
-          /\b4[\s-]?space\s+tabs?\b/i,
-        ],
+        patterns: [/\b4[\s-]?space\s+indent/i, /\bindent\s+with\s+4\s+spaces/i],
       },
     ],
   },
@@ -214,6 +210,41 @@ interface DetectedDirective {
   text: string;
 }
 
+// A directive mention preceded by a negation ("never use yarn", "don't use
+// npm") is a prohibition, not an endorsement. Without this guard the banned
+// tool registers as a directive label, which both (a) emits a false conflict
+// against a file that actually agrees, and (b) can suppress a real conflict:
+// the extra label makes another file's labels a subset of this one's, the
+// cluster filter drops that file, and `conflictingFiles` falls below 2.
+//
+// The window is clause-scoped: it looks back NEGATION_WINDOW chars and the
+// negation must not be separated from the match by clause punctuation, so
+// "Never use yarn; use pnpm" still registers the pnpm endorsement. `n['’]t`
+// covers the contraction family (don't / doesn't / won't / shouldn't).
+const NEGATION_BEFORE_MATCH = /(?:\b(?:never|not|avoid|stop|instead\s+of)\b|n['’]t\b)[^.;:,!?]*$/i;
+const NEGATION_WINDOW = 20;
+
+function isNegated(line: string, matchIndex: number): boolean {
+  const windowStart = Math.max(0, matchIndex - NEGATION_WINDOW);
+  return NEGATION_BEFORE_MATCH.test(line.slice(windowStart, matchIndex));
+}
+
+// Negation is per-occurrence, not per-line: in "Don't use pnpm in CI, use
+// pnpm locally." only the first mention is negated (the comma ends the
+// negation's clause), so the second is a live endorsement. A single
+// non-global exec stops at the first occurrence — if that one happens to be
+// negated, the endorsement is dropped and a real cross-file conflict is
+// suppressed. Scan every occurrence; ANY non-negated one registers.
+function hasUnnegatedMatch(pattern: RegExp, line: string): boolean {
+  const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
+  const global = new RegExp(pattern.source, flags);
+  let m: RegExpExecArray | null;
+  while ((m = global.exec(line)) !== null) {
+    if (!isNegated(line, m.index)) return true;
+  }
+  return false;
+}
+
 function detectDirectives(file: ParsedContextFile): DetectedDirective[] {
   const directives: DetectedDirective[] = [];
   const lines = file.content.split('\n');
@@ -224,7 +255,7 @@ function detectDirectives(file: ParsedContextFile): DetectedDirective[] {
     for (const category of DIRECTIVE_CATEGORIES) {
       for (const option of category.options) {
         for (const pattern of option.patterns) {
-          if (pattern.test(line)) {
+          if (hasUnnegatedMatch(pattern, line)) {
             directives.push({
               file: file.relativePath,
               category: category.name,
@@ -291,15 +322,26 @@ export function checkContradictions(files: ParsedContextFile[]): LintIssue[] {
       existing.add(d.label);
     }
 
-    // Only files that pick a distinct label from at least one other file are
-    // part of the conflict cluster.
+    // Only files in a TRUE cross-file disagreement are part of the cluster. A
+    // file `f` conflicts with another file only when EACH holds a label the
+    // other lacks (mutual disagreement) — a directive in `f` that the other
+    // file rejects, and vice versa. Requiring it on both sides means a file
+    // that merely LISTS multiple options in one category (e.g. "single quotes
+    // in TS, double in JSON" => {single, double}) is a SUPERSET of a file that
+    // picks just one of them, not a contradiction: the picker's label is
+    // already present in the lister, so there is no label the lister lacks.
+    const conflictsWith = (a: Set<string>, b: Set<string>): boolean => {
+      let aHasExtra = false;
+      let bHasExtra = false;
+      for (const l of a) if (!b.has(l)) aHasExtra = true;
+      for (const l of b) if (!a.has(l)) bHasExtra = true;
+      return aHasExtra && bHasExtra;
+    };
     const conflictingFiles = [...fileLabels.keys()].filter((f) => {
       const myLabels = fileLabels.get(f)!;
       for (const [otherFile, otherLabels] of fileLabels) {
         if (otherFile === f) continue;
-        for (const l of myLabels) {
-          if (!otherLabels.has(l)) return true;
-        }
+        if (conflictsWith(myLabels, otherLabels)) return true;
       }
       return false;
     });

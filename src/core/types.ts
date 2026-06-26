@@ -1,5 +1,28 @@
 export type Severity = 'error' | 'warning' | 'info';
 
+// Label audit.ts stamps onto the synthetic session-audit FileResult bucket.
+// Exported so reporter.ts can route on the SAME literal it was authored
+// against, rather than a substring grep that drifts silently when the label
+// is reskinned.
+export const SESSION_AUDIT_LABEL = '~/.claude/ (session audit)';
+
+// Tighter substring the reporter uses for path-based classification. A
+// reskinned label (different leading path, different trailing punctuation)
+// keeps routing correctly as long as it contains this marker; that's the
+// decoupling the const is here to provide.
+export const SESSION_AUDIT_PATH_MARKER = '(session audit)';
+
+// Label for the synthetic agent-skill audit bucket (fourth pillar). Same
+// shape as SESSION_AUDIT_LABEL: findings live outside the project dir
+// (~/.claude/skills, ~/.claude/agents).
+export const SKILL_AUDIT_LABEL = '~/.claude/ (skill audit)';
+
+// Tighter substring the reporter uses for path-based classification of the
+// skill bucket (mirrors SESSION_AUDIT_PATH_MARKER). Lives next to
+// SKILL_AUDIT_LABEL so a reskin of the label can't silently desync the
+// reporter's routing.
+export const SKILL_AUDIT_PATH_MARKER = '(skill audit)';
+
 // --- Session check types ---
 
 export type SessionCheckName =
@@ -10,6 +33,35 @@ export type SessionCheckName =
   | 'session-duplicate-memory'
   | 'session-loop-detection'
   | 'session-memory-index-overflow';
+
+// --- Agent-skill check types (fourth pillar) ---
+
+export type SkillCheckName =
+  | 'skill-frontmatter'
+  | 'skill-broken-ref'
+  | 'skill-trigger-collision'
+  | 'skill-orphaned'
+  | 'skill-dead-tool-restriction';
+
+/** A discovered skill (SKILL.md) or agent (.md) definition under ~/.claude. */
+export interface SkillFile {
+  /** Absolute path of the SKILL.md / agent .md file. */
+  filePath: string;
+  /** Display path, e.g. ~/.claude/skills/foo/SKILL.md. */
+  displayPath: string;
+  /** 'skill' (skills/<name>/SKILL.md) or 'agent' (agents/<name>.md). */
+  kind: 'skill' | 'agent';
+  /** Logical name derived from the directory (skill) or filename (agent). */
+  name: string;
+  content: string;
+}
+
+export interface SkillContext {
+  /** Skill + agent definition files found. */
+  files: SkillFile[];
+  /** Skill directories that contain no SKILL.md (orphaned). */
+  orphanedSkillDirs: { name: string; displayPath: string }[];
+}
 
 export type AgentProvider =
   | 'claude-code'
@@ -66,13 +118,6 @@ export type McpCheckName =
   | 'mcp-consistency'
   | 'mcp-redundancy';
 
-export type McphCheckName =
-  | 'mcph-token-security'
-  | 'mcph-apibase'
-  | 'mcph-schema-conformance'
-  | 'mcph-lists'
-  | 'mcph-gitignore';
-
 export type CheckName =
   | 'paths'
   | 'commands'
@@ -84,17 +129,23 @@ export type CheckName =
   | 'frontmatter'
   | 'ci-coverage'
   | 'ci-secrets'
+  | 'content-secrets'
+  | 'hook-coverage'
   | McpCheckName
-  | McphCheckName
-  | SessionCheckName;
+  | SessionCheckName
+  | SkillCheckName;
 
+// Clients whose MCP config is a repo-discoverable file. Cline is intentionally
+// absent: its MCP server list lives in VS Code globalStorage
+// (cline_mcp_settings.json), not a file the scanner surfaces, so detectClient
+// can never classify one. Cline's `.clinerules` context files are handled by
+// the context pillar, not here.
 export type McpClient =
   | 'claude-code'
   | 'claude-desktop'
   | 'vscode'
   | 'cursor'
   | 'windsurf'
-  | 'cline'
   | 'amazonq'
   | 'continue';
 
@@ -135,46 +186,13 @@ export interface ParsedMcpConfig {
   parseErrors: string[];
   content: string;
   isGitTracked: boolean;
-}
-
-// --- mcph (mcp.hosting CLI) config types ---
-//
-// .mcph.json is the config file for the @yawlabs/mcph CLI. Unlike .mcp.json
-// (a project-level MCP client config), .mcph.json configures the mcph tool
-// itself: auth token, API base, allow/deny lists of hosted servers.
-//
-// Canonical schema: https://raw.githubusercontent.com/YawLabs/mcph/main/schemas/mcph.config.v1.json
-
-export type McphConfigScope = 'global' | 'project' | 'project-local';
-
-export interface McphFieldPosition {
-  line: number;
-  column: number;
-  endLine: number;
-  endColumn: number;
-}
-
-export interface ParsedMcphConfig {
-  filePath: string;
-  relativePath: string;
-  scope: McphConfigScope;
-  content: string;
-  parseErrors: string[];
-  isGitTracked: boolean;
-  isGitignored: boolean;
-  // Raw parsed object; null if parse failed.
-  raw: Record<string, unknown> | null;
-  // Per-field positions for precise diagnostics. Missing entries = field absent.
-  positions: Partial<
-    Record<'$schema' | 'version' | 'token' | 'apiBase' | 'servers' | 'blocked', McphFieldPosition>
-  >;
-  // Positions for individual array entries of `servers` and `blocked`.
-  listEntries: {
-    servers: { value: string; position: McphFieldPosition }[];
-    blocked: { value: string; position: McphFieldPosition }[];
-  };
-  // Unknown fields detected alongside known ones.
-  unknownFields: { name: string; position: McphFieldPosition }[];
+  /**
+   * True when git-tracked status could not be determined (git unavailable or
+   * failing -- NOT merely untracked). isGitTracked is false in that case, so
+   * the git-gated secret rules skip; this flag lets mcp-security surface that
+   * the gate was skipped blind. Optional so test fixtures stay unchanged.
+   */
+  gitTrackedUnknown?: boolean;
 }
 
 export interface Section {
@@ -218,6 +236,16 @@ export interface FixAction {
   line: number;
   oldText: string;
   newText: string;
+  /**
+   * 1-indexed column where `oldText` starts on `line`. When set, the fixer
+   * claims exactly that occurrence (after verifying the line still reads
+   * `oldText` there) instead of replaceAll-matching every occurrence -- this
+   * stops a stale value that is a substring of a KEPT value on the same line
+   * (e.g. `src/old.ts` inside `src/old.ts.bak`) from being rewritten too.
+   * Producers whose `oldText` is unambiguous on its line may omit it; the
+   * fixer then falls back to whole-line replaceAll.
+   */
+  column?: number;
 }
 
 export interface LintIssue {
@@ -229,6 +257,18 @@ export interface LintIssue {
   suggestion?: string;
   detail?: string;
   fix?: FixAction;
+  /**
+   * Optional structured estimate of tokens this finding wastes. When set, the
+   * audit summary sums these directly instead of scraping `~N tokens` out of
+   * `suggestion`. Currently emitted by the redundancy check.
+   */
+  wastedTokens?: number;
+  /**
+   * Optional structured list of the paths this finding is about. When set,
+   * ignore-rule path-pattern matching reads these directly instead of scraping
+   * them back out of `message`. Currently emitted by the stale-memory check.
+   */
+  affectedPaths?: string[];
 }
 
 export interface FileResult {
@@ -238,6 +278,19 @@ export interface FileResult {
   tokens: number;
   lines: number;
   issues: LintIssue[];
+}
+
+export interface IgnoreRuleSummary {
+  check: CheckName;
+  match?: string;
+  pathPattern?: string;
+  reason?: string;
+}
+
+export interface IgnoreReport {
+  dropped: number;
+  unusedRules: IgnoreRuleSummary[];
+  rulesMissingReason: IgnoreRuleSummary[];
 }
 
 export interface LintResult {
@@ -251,6 +304,9 @@ export interface LintResult {
     info: number;
     totalTokens: number;
     estimatedWaste: number;
+  };
+  _meta?: {
+    ignoreReport?: IgnoreReport;
   };
 }
 
@@ -269,10 +325,11 @@ export interface LintOptions {
   mcp: boolean;
   mcpOnly: boolean;
   mcpGlobal: boolean;
-  mcph: boolean;
-  mcphOnly: boolean;
-  mcphGlobal: boolean;
-  mcphStrictEnvToken: boolean;
   session: boolean;
   sessionOnly: boolean;
+  skills: boolean;
+  skillsOnly: boolean;
+  hooksGlobal: boolean;
+  /** When true, .ctxlintignore is not loaded. Use --no-ignore-file to see all findings. */
+  noIgnoreFile?: boolean;
 }

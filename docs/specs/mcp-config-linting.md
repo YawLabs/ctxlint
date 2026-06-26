@@ -358,11 +358,15 @@ This is the highest-value check. People routinely commit API keys in MCP configs
 | `hardcoded-bearer` | error | `headers` contains `Authorization: Bearer <literal>` (not `${...}`) in a git-tracked file | `Server "{name}" has a hardcoded Bearer token in a git-tracked file` |
 | `hardcoded-api-key` | error | `headers` or `env` values match known API key patterns in a git-tracked file | `Server "{name}" has a hardcoded API key in a git-tracked file` |
 | `secret-in-url` | error | URL contains query params that look like keys (`?key=`, `?token=`, `?api_key=`) in a git-tracked file | `Server "{name}" has a secret in the URL query string` |
-| `http-no-tls` | warning | URL uses `http://` for non-localhost targets | `Server "{name}" uses HTTP without TLS` |
+| `secret-scan-skipped` | info | Git-tracked status could not be determined (git unavailable/failing — not merely untracked), so the three git-gated secret rules were skipped | `Could not determine git-tracked status of {file}; hardcoded-secret rules were skipped` |
+| `http-no-tls` | warning | URL uses `http://` for non-loopback targets (loopback = `localhost`, `[::1]`, `127.0.0.0/8` — see `loopback.ts`) | `Server "{name}" uses HTTP without TLS` |
 
-**API key detection patterns** (high-entropy + known prefixes):
+**API key detection patterns** (known prefixes + name-gated high entropy):
 ```
-sk-[a-zA-Z0-9]{20,}          # OpenAI / generic
+sk-ant-[A-Za-z0-9_-]{20,}    # Anthropic
+sk-proj-[A-Za-z0-9_-]{20,}   # OpenAI project-scoped
+sk-[a-zA-Z0-9]{20,}          # OpenAI classic / generic (alphanumeric-only:
+                             # [-_] would swallow kebab-case identifiers)
 ghp_[a-zA-Z0-9]{36}          # GitHub PAT
 ghu_[a-zA-Z0-9]{36}          # GitHub user token
 github_pat_[a-zA-Z0-9_]{80,} # GitHub fine-grained PAT
@@ -374,13 +378,13 @@ glpat-[a-zA-Z0-9_-]{20}      # GitLab PAT
 sq0atp-[a-zA-Z0-9_-]{22}     # Square
 ```
 
-Also flag any string > 20 chars that is all alphanumeric/base64 AND is not an env var reference (`${...}`).
+Also flag any env value > 20 chars that is all alphanumeric/base64, is not an env var reference (`${...}`), AND whose variable name contains a secret-suggesting keyword (KEY, TOKEN, SECRET, PASSWORD, AUTH, CREDENTIAL, ...). The name gate keeps build IDs, commit SHAs, and version strings from false-positiving.
 
 **Auto-fix:**
 - Replace `"Bearer sk-abc123..."` with `"Bearer ${SERVER_NAME_API_KEY}"` (derive env var name from server name, uppercase + underscores).
 - Replace literal env values with `${SERVER_NAME_ENV_VAR}`.
 
-**Important:** Only flag in git-tracked files. If a file is in `.gitignore` or not in a git repo, secrets are the user's problem, not a linting concern.
+**Important:** The three secret rules (`hardcoded-bearer`, `hardcoded-api-key`, `secret-in-url`) only flag in git-tracked files. If a file is in `.gitignore` or not in a git repo, secrets are the user's problem, not a linting concern. `http-no-tls` is a transport concern and runs regardless of git tracking.
 
 ### 3. `mcp-commands` — stdio command validation
 
@@ -391,8 +395,8 @@ Also flag any string > 20 chars that is all alphanumeric/base64 AND is not an en
 | Rule ID | Severity | Condition | Message |
 |---|---|---|---|
 | `windows-npx-no-wrapper` | error | Platform is Windows, `command` is `npx` (not wrapped in `cmd /c`) | `Server "{name}": npx requires "cmd /c" wrapper on Windows` |
-| `command-not-found` | warning | `command` is a local path (starts with `./` or `../`) that doesn't exist | `Server "{name}": command "{command}" not found` |
-| `args-path-missing` | warning | An arg looks like a local file path and doesn't exist | `Server "{name}": arg "{arg}" looks like a file path but doesn't exist` |
+| `command-not-found` | warning | `command` is a local path (starts with `./` or `../`) that doesn't exist — project-scope configs only | `Server "{name}": command "{command}" not found` |
+| `args-path-missing` | warning | An arg looks like a local file path and doesn't exist (relative paths: project scope only; absolute paths: every scope) | `Server "{name}": arg "{arg}" looks like a file path but doesn't exist` |
 
 **Notes:**
 - For `windows-npx-no-wrapper`: detect Windows by `process.platform === 'win32'` or by presence of Windows-style paths in the config. Only flag project-level configs (global configs on Windows should already have the wrapper, and the user might be on macOS developing for Windows or vice versa). Consider a `--platform` flag override.
@@ -438,6 +442,7 @@ Also flag any string > 20 chars that is all alphanumeric/base64 AND is not an en
 
 **Notes:**
 - `unset-variable` should be `info` severity, not `warning`. Many env vars are set in CI or `.env` files that aren't available during linting. This is a best-effort check.
+- `unset-variable` is skipped entirely for Continue configs — their `${{ secrets.VAR }}` refs resolve from GitHub Actions secrets, not the local environment, so every correct Continue config would false-positive.
 - Scan `command`, `args`, `url`, `headers`, and `env` values for env var references.
 
 **Auto-fix:**
@@ -452,12 +457,12 @@ Also flag any string > 20 chars that is all alphanumeric/base64 AND is not an en
 | Rule ID | Severity | Condition | Message |
 |---|---|---|---|
 | `malformed-url` | error | URL is not parseable by `new URL()` (after env var expansion attempt) | `Server "{name}": invalid URL "{url}"` |
-| `localhost-in-project-config` | warning | `localhost` or `127.0.0.1` URL in a project-level (git-tracked) config | `Server "{name}": localhost URL in project config won't work for teammates` |
+| `localhost-in-project-config` | warning | Loopback URL (`localhost`, `[::1]`, `127.0.0.0/8` — shared `isLoopbackHost()` in `loopback.ts`) in a project-level config | `Server "{name}": loopback URL in project config won't work for teammates` |
 | `missing-path` | info | URL has no path component or just `/` | `Server "{name}": URL has no path — most MCP servers expect /mcp` |
 
 **Notes:**
 - If the URL contains env var references (`${...}`), skip `malformed-url` — it can't be validated statically.
-- `localhost-in-project-config` should only fire for project-scoped files (`.mcp.json`, `.cursor/mcp.json`, `.vscode/mcp.json`), not for global configs where localhost is fine.
+- `localhost-in-project-config` should only fire for project-scoped files (`.mcp.json`, `.cursor/mcp.json`, `.vscode/mcp.json`), not for global configs where loopback URLs are fine. The loopback set is the same one `http-no-tls` exempts, so a loopback URL in a committed config can't slip through both rules.
 
 ### 7. `mcp-consistency` — cross-file consistency
 
@@ -476,9 +481,9 @@ export async function checkMcpConsistency(
 
 | Rule ID | Severity | Condition | Message |
 |---|---|---|---|
-| `same-server-different-config` | warning | Server with same name exists in 2+ files with different URLs/commands/args | `Server "{name}" is configured differently in {file1} and {file2}` |
+| `same-server-different-config` | warning | Server with same name exists in 2+ same-scope files (project-project or user-user) with different URLs/commands/args — cross-scope pairs are client precedence, not drift | `Server "{name}" is configured differently in {file1} and {file2}` |
 | `duplicate-server-name` | warning | Same server name appears twice in one file (JSON last-write-wins) | `Duplicate server name "{name}" in {file} — only the last definition is used` |
-| `missing-from-client` | info | Server in `.mcp.json` not present in `.cursor/mcp.json` or `.vscode/mcp.json` (when those files exist) | `Server "{name}" is in .mcp.json but missing from {file}` |
+| `missing-from-client` | info | Server in `.mcp.json` not present in `.cursor/mcp.json`, `.vscode/mcp.json`, or `.amazonq/mcp.json` (when those files exist) | `Server "{name}" is in .mcp.json but missing from {file}` |
 
 **Notes:**
 - `missing-from-client` is low-severity. Teams may intentionally have different servers in different client configs. But it's useful as a reminder.
