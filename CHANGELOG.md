@@ -17,6 +17,37 @@ See [Versioning policy](#versioning-policy) below.
 ### Security
 - Cleared 4 Dependabot alerts (`vite` x2, `esbuild` x2) via `pnpm.overrides` pins plus a direct `vite` devDependency bump to `^8.0.16`, dropping the vulnerable transitive `esbuild@0.27.7` (pinned to `^0.28.1`). `pnpm audit` reports no known vulnerabilities. Both are build/test toolchain only -- `esbuild` is the bundler and `vite` is dev tooling, so neither ships in `dist/index.js`. No runtime API change.
 
+## [0.18.1] - 2026-06-19
+
+### Fixed
+- **Path-check false positives on `CLAUDE.md` references.** `@`-imports (`@./rules/x.md`) now resolve relative to the importing file's OWN directory (matching Claude Code / `combineClaudeMd` import semantics) instead of the repo root, so a subdirectory doc's import is no longer reported as a broken path or fuzzy-"fixed" into durable bundle source. A bare relative ref (`rules/manifest.json`) is tried against both the repo root and the doc's own directory before being flagged. Refs resolving outside the project root (`ln -s ../../` symlink targets, absolute system paths) are skipped rather than autofixed into another tree. `.git/` internals and macOS `.app/` bundle paths (e.g. `pkill -f` arguments) are no longer extracted as references, while `.github/` workflow paths still validate. Scoped npm package mentions (`@anthropic-ai/sdk`) are no longer treated as imports.
+
+## [0.18.0] - 2026-06-18
+
+### Added
+- **LSP server** (`src/lsp/server.ts`) -- ctxlint now exposes a language-server interface so editors can surface lint findings inline.
+- **`.ctxlintignore`** (`src/core/ignore-file.ts`) -- a project-level ignore file to exclude paths from scans.
+- **`ctxlint_fix` dry-run** -- the MCP fix tool can preview the changes it would write without touching files.
+- **Watch-mode cache** (`src/core/cache.ts`) -- incremental re-audits under `--watch` reuse cached results instead of re-scanning unchanged inputs.
+
+### Internal
+- Git rename detection is batched (`findRenamesBatch`): the rename log runs once per project root and is cached, distributing lookups across all referenced paths instead of spawning one `git log` per path.
+- `vitest` `testTimeout` raised to 30s (CLI/MCP integration tests spawn Node subprocesses that need headroom, especially on Windows); lint errors resolved (unused var in `audit.ts`, unused import in `lsp/server.ts`, `varsIgnorePattern` added to the eslint config).
+
+## [0.17.0] - 2026-06-18
+
+Two further full-pass rounds over the lint engine; all findings adversarially verified, full suite green (1002 tests at the time).
+
+### Fixed
+- **MCP secret-scan false negatives** -- a tool whose job is catching secrets was missing some: `server.args` is now scanned for hardcoded keys (was `headers`/`env`/`url` only), and the secret-in-url / hardcoded-bearer / api-key / env scans no longer whole-value-gate on `isEnvVarRef`, so a literal key sitting beside an unrelated `${VAR}` is scanned (against the env-ref-stripped residue) instead of skipped.
+- **Autofix corruption** -- the fixer now claims only the exact scanner-located column of a stale path (`FixAction.column`), so a substring that also appears inside a KEPT path on the same line (e.g. `src/old.ts` within `src/old.ts.bak`) is not corrupted, and column drift between scan and apply skips the fix rather than blind-replacing. The autofix `newText` is rebased into the reference's own coordinate space (a `./`-relative ref in a subdirectory doc is no longer rewritten to an unresolvable root-relative path); the `sse`->`http` fix is anchored to the full `"type": "sse"` pair; and the wrong-root-key fix is suppressed when the expected key already exists (a blind swap would duplicate the key and drop a block).
+- **Symlink / large-file safety** -- symlinks whose `realpathSync` target escapes the project root are excluded from `scanForContextFiles` and `scanForMcpConfigs` (prevents reading out-of-tree content like `~/.ssh/config` or `/etc/passwd` via a project-local symlink); files over 5 MB are excluded from project scans to avoid stalling the stdio MCP server. Neither gate applies to `scanGlobalMcpConfigs`, which already streams.
+- **Other false positives / negatives** -- `session/stale-memory` gained the `homedir()` fallback its sibling scanners have (so `~/` refs are not skipped when `HOME`/`USERPROFILE` are unset); `bun test` is treated as a builtin (no spurious `script-not-found`); frontmatter requires a column-0 closing fence (an indented fence is correctly reported unclosed); contradiction detection requires true cross-file disagreement (a file listing several options in one category is not flagged against a file that picks one); `~/.claude.json` is stream-scanned for the MCP root key so a config past 8 KB is no longer dropped from discovery; the catalog schema enforces `format: "uri"` on `repository`.
+- **CLI / MCP edge cases** -- `--version` degrades to a sentinel if the unbundled `package.json` read fails at module load (instead of throwing before the try-catch is set up); `ctxlint_validate_path` rejects empty / `.` / `./` (which previously reported the project root as an existing file); `--quiet` is honored on watch-mode reruns; the config JSON parse-error position is labeled "near" (it comes from a substring search, not the exact parser site); the no-tiktoken token fallback covers Thai and Brahmic scripts so dense-script docs are not under-counted.
+
+### Security
+- Updated vulnerable dependencies flagged by Dependabot (esbuild and transitive deps), and grouped Dependabot security updates so future bumps land together.
+
 ## [0.16.0] - 2026-06-10
 
 ### Added
