@@ -8,6 +8,15 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+### Internal
+- **Performance sweep (deferred full-pass items).** Three hot-path optimizations, no behavior or API change. `findClosestMatch` (paths check) resolves the common basename case through a per-audit `Map<basename, paths[]>` index -- an O(1) lookup plus a Levenshtein over the same-basename shortlist, instead of scanning every project file on each broken reference. `scanForMcpConfigs` issues a single batched `glob(patterns[])` call rather than one glob per pattern (mirroring `scanForContextFiles`), keeping the escaping-symlink / 5 MB-cap exclusion. `getCommitsSinceBatch` (staleness) passes referenced paths to `git log` as `-- <pathspec>` arguments so git filters commits server-side instead of buffering the entire `--since` history into memory; globs and repo-escaping refs are excluded from the pathspec and still count via the in-process pass, and win32 folds case with the `:(icase)` magic prefix to stay consistent with the in-process normalizer.
+- Test coverage for the above: graceful all-zero degradation when `git.raw` throws, out-of-repo pathspec exclusion, a real-git batch mixing a valid path with glob and escaping siblings, the basename index rebuilding when the project root changes, basename-match priority over a closer full-path fuzzy candidate, and the `scanForMcpConfigs` escaping-symlink exclusion.
+- Repaired a broken `pnpm-lock.yaml` (a duplicated `tinyglobby` mapping key plus a stale `vite` specifier left by concurrent Dependabot merges) that was failing every branch's `--frozen-lockfile` CI install on `main`; regenerated with no resolved dependency-version changes.
+- Dependency bumps: `commander` 14.0.3 -> 15.0.0 (bundled CLI parser; no CLI behavior change observed, full suite green), `@types/node` 25.9.3 -> 26.0.0 and `hono` 4.12.14 -> 4.12.18 (dev/build only).
+
+### Security
+- Cleared 4 Dependabot alerts (`vite` x2, `esbuild` x2) via `pnpm.overrides` pins plus a direct `vite` devDependency bump to `^8.0.16`, dropping the vulnerable transitive `esbuild@0.27.7` (pinned to `^0.28.1`). `pnpm audit` reports no known vulnerabilities. Both are build/test toolchain only -- `esbuild` is the bundler and `vite` is dev tooling, so neither ships in `dist/index.js`. No runtime API change.
+
 ## [0.16.0] - 2026-06-10
 
 ### Added
