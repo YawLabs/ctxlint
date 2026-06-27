@@ -55,6 +55,43 @@ function normalizePath(p: string, projectRoot?: string): string {
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
+/**
+ * Build a git pathspec for `p` so `git log -- <pathspec>` filters commits
+ * server-side instead of streaming the entire `--since` history back to be
+ * filtered in-process. Returns null when `p` must NOT become a pathspec:
+ *
+ *   - a glob ref (`src/*.ts`): getCommitsSinceBatch compares globs literally
+ *     in-process (they count 0), whereas git would expand `*` as a wildcard --
+ *     so a glob is kept out of the server-side filter entirely.
+ *   - a ref resolving outside the repo (`../shared/x.ts`, an absolute path
+ *     above projectRoot): it can never match a commit git logs from inside this
+ *     repo (it correctly counts 0 either way), and an outside-repo pathspec
+ *     makes git error, which would zero the WHOLE batch.
+ *
+ * A null result drops only THAT path from the server-side filter; the path is
+ * still returned in the caller-facing map and still counts 0 via the in-process
+ * pass. When every path returns null the caller omits `--` and falls back to
+ * the unfiltered log (correct, just without the memory win).
+ *
+ * Unlike normalizePath this does NOT lowercase on win32 -- git pathspec
+ * matching is case-sensitive against the stored tree, so casing is folded with
+ * the `:(icase)` magic prefix on win32 instead, mirroring normalizePath's
+ * win32 case-fold so the server-side filter and the in-process comparison
+ * agree on which commits count.
+ */
+function toGitPathspec(p: string, projectRoot: string): string | null {
+  if (p.includes('*')) return null;
+  let cleaned = p.replace(/\\/g, '/');
+  if (path.isAbsolute(p)) {
+    const rel = path.relative(projectRoot, p).replace(/\\/g, '/');
+    if (!rel || rel.startsWith('..')) return null;
+    cleaned = rel;
+  }
+  const normalized = path.posix.normalize(cleaned);
+  if (normalized === '..' || normalized.startsWith('../')) return null;
+  return process.platform === 'win32' ? `:(icase)${normalized}` : normalized;
+}
+
 let gitInstance: SimpleGit | null = null;
 let gitProjectRoot: string | null = null;
 
@@ -137,7 +174,20 @@ export async function getCommitsSinceBatch(
   try {
     const git = getGit(projectRoot);
     const SENTINEL = '___CTXLINT_COMMIT___';
-    const raw = await git.raw([
+
+    // Server-side path filter: pass the requested paths as `-- <pathspec>` args
+    // so git only logs commits that touch them, rather than streaming the whole
+    // `--since` history into memory to be filtered below. Globs and
+    // repo-escaping refs are dropped from the pathspec (see toGitPathspec) and
+    // still count via the in-process pass. When nothing is server-filterable we
+    // omit `--` and log unfiltered -- the in-process pass keeps counts correct.
+    const pathspecs: string[] = [];
+    for (const p of paths) {
+      const spec = toGitPathspec(p, projectRoot);
+      if (spec) pathspecs.push(spec);
+    }
+
+    const logArgs = [
       // Git's default core.quotePath=true wraps non-ASCII paths in quotes
       // with octal escapes ("src/f\303\266\303\266.txt"); nothing below
       // unquotes, so the leading `"` would break both the exact and the
@@ -151,7 +201,12 @@ export async function getCommitsSinceBatch(
       // what keeps git from rejecting the sentinel as an invalid --pretty
       // format ("fatal: invalid --pretty format: ___CTXLINT_COMMIT___").
       `--format=%n${SENTINEL}`,
-    ]);
+    ];
+    if (pathspecs.length > 0) {
+      logArgs.push('--', ...pathspecs);
+    }
+
+    const raw = await git.raw(logArgs);
 
     const requested = new Set(counts.keys());
 

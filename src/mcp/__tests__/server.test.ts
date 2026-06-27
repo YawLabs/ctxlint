@@ -187,6 +187,17 @@ describe('MCP server tools', () => {
       expect(String(result.error)).toMatch(/escape/i);
     });
 
+    it('rejects a deeper path-traversal attempt (../../../../etc/passwd)', () => {
+      // Lock in the defence-in-depth contract for a 4-level traversal alongside
+      // the 3-level case above -- resolveWithinRoot must still refuse.
+      const result = callMcpTool('ctxlint_validate_path', {
+        path: '../../../../etc/passwd',
+        projectPath: path.join(FIXTURES, 'broken-paths'),
+      }) as any;
+      expect(result.error).toBeDefined();
+      expect(String(result.error)).toMatch(/escape/i);
+    });
+
     it('accepts a legitimate nested relative path', () => {
       // Sanity check that the traversal guard doesn't block normal paths
       // that happen to contain segments resolvable inside the root.
