@@ -400,4 +400,78 @@ describe('checkPaths', () => {
       expect(notFound!.fix?.newText).toBe('./sub/moved.md');
     },
   );
+
+  // The basename index + project-file list are cached by projectRoot
+  // (getBasenameIndex / getProjectFiles check `cached?.root === projectRoot`).
+  // A second checkPaths call against a DIFFERENT root, with no resetPathsCache
+  // between, must rebuild both for that root -- otherwise root B would be linted
+  // against root A's cached index. Two independent temp roots, each with a
+  // broken ref whose basename matches a file that exists ONLY in that root.
+  it('rebuilds the basename index when projectRoot changes without a reset', async () => {
+    // Root A is the shared tmpRoot: ref basename `alpha.ts` exists only here.
+    seed({
+      'CLAUDE.md': 'See src/wrongdir/alpha.ts\n',
+      'lib/alpha.ts': 'x',
+    });
+    const parsedA = parseContextFile(discoveredIn('CLAUDE.md'));
+
+    // Root B is an independent temp dir (replicating seed/discoveredIn): ref
+    // basename `bravo.ts` exists only here, at a path absent from root A.
+    const rootB = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-paths-b-'));
+    try {
+      const writeB = (rel: string, content: string) => {
+        const full = path.join(rootB, rel);
+        fs.mkdirSync(path.dirname(full), { recursive: true });
+        fs.writeFileSync(full, content);
+      };
+      writeB('CLAUDE.md', 'See src/wrongdir/bravo.ts\n');
+      writeB('lib/bravo.ts', 'x');
+      const parsedB = parseContextFile({
+        absolutePath: path.join(rootB, 'CLAUDE.md'),
+        relativePath: 'CLAUDE.md',
+        isSymlink: false,
+        type: 'context',
+      });
+
+      // Populate the per-root caches for A, then switch to B with NO reset.
+      const issuesA = await checkPaths(parsedA, tmpRoot);
+      const notFoundA = issuesA.find((i) => i.ruleId === 'paths/not-found');
+      expect(notFoundA).toBeDefined();
+      expect(notFoundA!.fix!.newText.replace(/\\/g, '/')).toBe('lib/alpha.ts');
+
+      const issuesB = await checkPaths(parsedB, rootB);
+      const notFoundB = issuesB.find((i) => i.ruleId === 'paths/not-found');
+      expect(notFoundB).toBeDefined();
+      // Had the index served root A's cache, `bravo.ts` would be absent from it
+      // and the Pass-1 basename lookup would miss -- so a B-pointing fix proves
+      // the index rebuilt for root B.
+      expect(notFoundB!.fix!.newText.replace(/\\/g, '/')).toBe('lib/bravo.ts');
+    } finally {
+      for (let i = 0; i < 5; i++) {
+        try {
+          fs.rmSync(rootB, { recursive: true, force: true });
+          break;
+        } catch {
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      }
+    }
+  });
+
+  // Pass-1 priority: ANY basename-equal candidate wins over a Pass-2 full-path
+  // candidate, even when the Pass-2 candidate shares the same directory and is
+  // one character off. `other/bar.ts` (basename match, far path) beats
+  // `src/foo/baz.ts` (path-close, different basename).
+  it('prefers a basename match over a path-closer non-basename file', async () => {
+    seed({
+      'CLAUDE.md': 'See src/foo/bar.ts\n',
+      'other/bar.ts': 'x',
+      'src/foo/baz.ts': 'x',
+    });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    const notFound = issues.find((i) => i.ruleId === 'paths/not-found');
+    expect(notFound).toBeDefined();
+    expect(notFound!.fix!.newText.replace(/\\/g, '/')).toBe('other/bar.ts');
+  });
 });
