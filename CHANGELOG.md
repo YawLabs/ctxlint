@@ -8,6 +8,8 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.18.2] - 2026-06-26
+
 ### Internal
 - **Performance sweep (deferred full-pass items).** Three hot-path optimizations, no behavior or API change. `findClosestMatch` (paths check) resolves the common basename case through a per-audit `Map<basename, paths[]>` index -- an O(1) lookup plus a Levenshtein over the same-basename shortlist, instead of scanning every project file on each broken reference. `scanForMcpConfigs` issues a single batched `glob(patterns[])` call rather than one glob per pattern (mirroring `scanForContextFiles`), keeping the escaping-symlink / 5 MB-cap exclusion. `getCommitsSinceBatch` (staleness) passes referenced paths to `git log` as `-- <pathspec>` arguments so git filters commits server-side instead of buffering the entire `--since` history into memory; globs and repo-escaping refs are excluded from the pathspec and still count via the in-process pass, and win32 folds case with the `:(icase)` magic prefix to stay consistent with the in-process normalizer.
 - Test coverage for the above: graceful all-zero degradation when `git.raw` throws, out-of-repo pathspec exclusion, a real-git batch mixing a valid path with glob and escaping siblings, the basename index rebuilding when the project root changes, basename-match priority over a closer full-path fuzzy candidate, and the `scanForMcpConfigs` escaping-symlink exclusion.
