@@ -60,4 +60,18 @@ describe('getCommitsSinceBatch server-side pathspec filter', () => {
     expect(out.size).toBe(0);
     expect(rawMock).not.toHaveBeenCalled();
   });
+
+  it('returns zero counts and does not throw when git.raw rejects', async () => {
+    rawMock.mockReset();
+    rawMock.mockRejectedValueOnce(new Error('git failed'));
+    const out = await getCommitsSinceBatch(PROJECT, ['src/foo.ts', 'docs/bar.md'], new Date(0));
+    expect(out.get('src/foo.ts')).toBe(0);
+    expect(out.get('docs/bar.md')).toBe(0);
+  });
+
+  it('excludes an absolute path outside the project root from the pathspec', async () => {
+    const absOutside = process.platform === 'win32' ? 'C:\\other\\x.ts' : '/etc/passwd';
+    await getCommitsSinceBatch(PROJECT, ['src/foo.ts', absOutside], new Date(0));
+    expect(pathspecArgs()).toEqual(['src/foo.ts']);
+  });
 });

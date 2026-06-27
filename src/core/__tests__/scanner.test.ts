@@ -243,6 +243,28 @@ describe('scanForMcpConfigs', () => {
     expect(rel).toContain('.amazonq/mcp.json');
     expect(rel).toContain('.continue/mcpServers/my-server.json');
   });
+
+  // Symlink whose real target is outside the project root must be excluded
+  // (mirrors the context-scan guard) -- isExcludedScanTarget must fire on the
+  // MCP path too, not just the context path.
+  it('skips an MCP-config symlink whose target escapes the project root', async () => {
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-outside-'));
+    const outsideTarget = path.join(outsideDir, 'secret.json');
+    fs.writeFileSync(outsideTarget, '{"mcpServers":{}}');
+    const link = path.join(tmpDir, '.mcp.json');
+    try {
+      fs.symlinkSync(outsideTarget, link);
+    } catch {
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+      return; // symlinks unsupported in this env
+    }
+    try {
+      const files = await scanForMcpConfigs(tmpDir);
+      expect(files.find((f) => f.relativePath === '.mcp.json')).toBeUndefined();
+    } finally {
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('scanGlobalMcpConfigs', () => {

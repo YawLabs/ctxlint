@@ -161,6 +161,25 @@ describe('getCommitsSinceBatch path normalization', { timeout: 30000 }, () => {
     expect(counts.get('src/föö.txt')).toBe(2);
   });
 
+  it('still counts a valid path when glob and escaping siblings are in the same batch', async () => {
+    const before = new Date(Date.now() - 60 * 1000);
+    await commit('add foo', [{ rel: 'src/foo.ts', body: 'export const a = 1;' }]);
+    await commit('touch foo', [{ rel: 'src/foo.ts', body: 'export const a = 2;' }]);
+
+    // The glob (`src/*.ts`) and the repo-escaping ref (`../escape.ts`) are both
+    // dropped from the server-side `--` pathspec; a raw `-- ../escape.ts` would
+    // make git error and zero the whole batch. The valid sibling must still get
+    // its real count from the in-process pass.
+    const counts = await getCommitsSinceBatch(
+      realTmpDir,
+      ['src/foo.ts', 'src/*.ts', '../escape.ts'],
+      before,
+    );
+    expect(counts.get('src/foo.ts')).toBe(2);
+    expect(counts.get('src/*.ts')).toBe(0);
+    expect(counts.get('../escape.ts')).toBe(0);
+  });
+
   it.runIf(process.platform === 'win32')(
     'matches a differently-cased ref on win32 (case-insensitive filesystem)',
     async () => {
