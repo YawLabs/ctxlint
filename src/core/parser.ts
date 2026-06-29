@@ -69,6 +69,8 @@ const PATH_FIRST_SEGMENTS = new Set([
   'config',
   'bin',
   'cmd',
+  'core',
+  'services',
   'internal',
   'public',
   'static',
