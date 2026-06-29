@@ -1,0 +1,3 @@
+Placeholder so `apps/` resolves as a real top-level directory.
+The diagram's non-indented parent lines (apps/ packages/ scripts/) are
+validated as real dirs; only the INDENTED children are phantom tree nodes.

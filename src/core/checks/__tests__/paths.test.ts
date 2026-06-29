@@ -474,4 +474,114 @@ describe('checkPaths', () => {
     expect(notFound).toBeDefined();
     expect(notFound!.fix!.newText.replace(/\\/g, '/')).toBe('other/bar.ts');
   });
+
+  // ---- Fix A2 (bare-fence directory-diagram tree children) + Fix B
+  // (lowercase slash-prose). See parser.ts extractPathReferences. ----
+
+  // The full reproduction fixture: a bare-fence nested directory diagram plus
+  // lowercase slash-prose. The diagram's non-indented parents (apps/ packages/
+  // scripts/) are seeded as real dirs and resolve; every indented child and the
+  // prose phrases are suppressed -> zero findings.
+  it('reports zero path findings for the diagram-and-prose fixture', async () => {
+    const parsed = parseContextFile(makeDiscovered('diagram-and-prose', 'CLAUDE.md'));
+    const projectRoot = path.join(FIXTURES, 'diagram-and-prose');
+    const issues = await checkPaths(parsed, projectRoot);
+    const pathIssues = issues.filter((i) => i.check === 'paths');
+    // Spell out the tokens the maintainer cares about, then assert total zero.
+    const msgs = pathIssues.map((i) => i.message);
+    for (const tok of ['api/', 'indexer/', 'db/', 'retrieval/', 'unit/integration', 'skill/agent']) {
+      expect(msgs.some((m) => m.includes(tok))).toBe(false);
+    }
+    expect(pathIssues).toHaveLength(0);
+  });
+
+  // Fix A2: an INDENTED single-segment `name/` child inside a bare fence is a
+  // phantom root-relative ref and must not be reported. Non-indented parents
+  // are seeded and resolve.
+  it('does NOT report indented single-segment dir children in a bare-fence diagram', async () => {
+    seed({
+      'CLAUDE.md': [
+        '# Layout',
+        '',
+        '```',
+        'apps/',
+        '  api/        the api service',
+        '  indexer/    the worker',
+        'packages/',
+        '  db/         drizzle schema',
+        '```',
+        '',
+      ].join('\n'),
+      'apps/placeholder.ts': 'x',
+      'packages/placeholder.ts': 'x',
+    });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    expect(issues).toHaveLength(0);
+  });
+
+  // Fix A2 negative control: a genuinely broken MULTI-segment path in a bare
+  // fence (a real flat file-tree, the documented use case) is STILL reported.
+  it('STILL reports a broken multi-segment path in a bare-fence flat file-tree', async () => {
+    seed({
+      'CLAUDE.md': ['# Files', '', '```', 'src/index.ts', 'src/does-not-exist.ts', '```', ''].join(
+        '\n',
+      ),
+      'src/index.ts': 'x',
+    });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    expect(issues.some((i) => i.message.includes('src/does-not-exist.ts'))).toBe(true);
+    // The real file on the line above is not falsely reported.
+    expect(issues.some((i) => i.message.includes('src/index.ts'))).toBe(false);
+  });
+
+  // Fix B: lowercase `word/word` prose is suppressed, but a real top-level ref
+  // (allow-listed first segment) is still validated in BOTH directions --
+  // existing dir resolves, broken dir is reported.
+  it('suppresses lowercase slash-prose but still validates real top-level refs', async () => {
+    seed({
+      'CLAUDE.md': [
+        '- Vitest for unit/integration tests.',
+        '- Maintaining skill/agent path references.',
+        '- The content/length router.',
+        '- See src/core for the core.',
+        '- See src/missing for the missing one.',
+        '',
+      ].join('\n'),
+      'src/core/index.ts': 'x',
+    });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    const msgs = issues.map((i) => i.message);
+    // Prose phrases are not reported.
+    expect(msgs.some((m) => m.includes('unit/integration'))).toBe(false);
+    expect(msgs.some((m) => m.includes('skill/agent'))).toBe(false);
+    expect(msgs.some((m) => m.includes('content/length'))).toBe(false);
+    // src/core exists -> not falsely suppressed into a finding (it resolves).
+    expect(msgs.some((m) => m.includes('src/core'))).toBe(false);
+    // src/missing has an allow-listed first segment -> still validated + broken.
+    expect(msgs.some((m) => m.includes('src/missing'))).toBe(true);
+  });
+
+  // Fix B must not fire OUTSIDE a 2-segment lowercase shape: a `word/word.ext`
+  // (extension) and a Capitalized/Capitalized token keep their existing
+  // behavior, and a multi-segment lowercase token (build/seed/probe/lint) is
+  // NOT covered by Fix B (documented residual).
+  it('does NOT suppress extension-bearing or allow-listed two-segment refs', async () => {
+    seed({
+      'CLAUDE.md': [
+        '- The apps/api service is the proxy.',
+        '- Config lives at config/database.yml.',
+        '',
+      ].join('\n'),
+      'apps/api/index.ts': 'x',
+      'config/database.yml': 'x',
+    });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    // Both resolve, so neither is reported; but crucially neither was silently
+    // suppressed (apps/ is allow-listed; the .yml carries an extension).
+    expect(issues).toHaveLength(0);
+  });
 });

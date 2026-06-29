@@ -39,6 +39,50 @@ const PATH_PATTERN =
 const PATH_EXCLUDE =
   /^(https?:\/\/|ftp:\/\/|mailto:|n\/a|w\/o|I\/O|i\/o|e\.g\.|N\/A|\.deb\/|\.rpm[.\/]|\.tar[.\/]|\.zip[.\/])/i;
 
+// Recognized top-level / source directory names. Used by the lowercase
+// slash-prose guard (Fix B in extractPathReferences): a 2-segment `word/word`
+// token whose FIRST segment is one of these is treated as a real path ref and
+// still validated, so `apps/api`, `src/utils`, `packages/db`, and a genuinely
+// broken `src/missing` keep being reported. Anything else lowercase + 2-segment
+// + extension-less is treated as prose (`unit/integration`, `skill/agent`,
+// `content/length`). Deliberately excludes prose-ambiguous words that commonly
+// START an "X/Y" phrase (`client/server`, `input/output`, `read/write`) so they
+// are NOT pulled back into validation. Dot-leading dirs (`.github`, `.claude`)
+// are omitted on purpose: the guard's regex anchors the first segment to a
+// lowercase letter, so a `.github/workflows` ref never reaches this set and is
+// always validated.
+const PATH_FIRST_SEGMENTS = new Set([
+  'src',
+  'app',
+  'apps',
+  'lib',
+  'libs',
+  'pkg',
+  'packages',
+  'scripts',
+  'docs',
+  'test',
+  'tests',
+  'dist',
+  'build',
+  'infra',
+  'config',
+  'bin',
+  'cmd',
+  'internal',
+  'public',
+  'static',
+  'assets',
+  'components',
+  'pages',
+  'migrations',
+  'modules',
+  'vendor',
+  'examples',
+  'e2e',
+  'node_modules',
+]);
+
 // Command patterns. The tool list mirrors spec 2.2's "common command
 // patterns to recognize" and the validator's PKG_DEPENDENT_TOOL_PATTERN in
 // checks/commands.ts -- a tool listed there but missing here is never
@@ -185,6 +229,45 @@ function extractPathReferences(lines: string[], sections: Section[]): PathRefere
         cleanValue = cleanValue.slice(0, -1);
       }
       if (!cleanValue.includes('/')) continue;
+
+      // Fix A2 -- ASCII directory-DIAGRAM tree children in a bare/unlabeled
+      // fence. A layout diagram writes an indented child RELATIVE to its parent
+      // line (`apps/` then `  api/`, meaning `apps/api/` -- NOT a root-level
+      // `api/`), so the extracted root-relative `api/` is a phantom that the
+      // paths check then reports as a missing directory. Inside a bare fence
+      // ONLY, drop an INDENTED line whose entire extracted token is a lone
+      // single-segment directory name (`name/`, no interior slash). This is
+      // narrow on purpose: NON-indented entries (the diagram's real top-level
+      // parents, `apps/` `packages/`) and any multi-segment / extension-bearing
+      // token (`src/utils/helpers.ts`) are still validated, so a genuine FLAT
+      // file-tree in a bare fence keeps being checked (the documented intent at
+      // isExampleCodeBlock below). Reuses the existing inCodeBlock/codeBlockLang
+      // tracking; path-extraction only -- isExampleCodeBlock is untouched.
+      if (
+        inCodeBlock &&
+        codeBlockLang === '' &&
+        /^\s/.test(line) &&
+        /^[\w@.-]+\/$/.test(cleanValue)
+      ) {
+        continue;
+      }
+
+      // Fix B -- lowercase slash-prose. Phrases like "unit/integration tests",
+      // "skill/agent path references", and "content/length router" yield tokens
+      // (`unit/integration`, `skill/agent`, `content/length`) that match
+      // PATH_PATTERN but name no file. Mirror the Capitalized/Capitalized guard
+      // above, case-relaxed: skip a lowercase single-slash `word/word` with no
+      // extension and no `./ ../ /` prefix. Conservative against false
+      // negatives -- a token whose FIRST segment is a recognized top-level /
+      // source directory (PATH_FIRST_SEGMENTS) is NOT suppressed, so real
+      // 2-segment refs (`apps/api`, `src/utils`) and a genuinely broken
+      // `src/missing` are still validated. The segment char class excludes `.`
+      // (so an extension or version like `foo.bar/baz` is not suppressed) and
+      // the leading `[a-z]` excludes `./`, `../`, `/`, and Capitalized tokens.
+      const lowerProse = /^([a-z][\w-]*)\/[a-z][\w-]*$/.exec(cleanValue);
+      if (lowerProse && !PATH_FIRST_SEGMENTS.has(lowerProse[1])) {
+        continue;
+      }
 
       // Skip VCS internals (`.git/hooks/pre-push`) and macOS app-bundle
       // internals (`yaw.app/Contents/MacOS/yaw`, a common `pkill -f` argument):
