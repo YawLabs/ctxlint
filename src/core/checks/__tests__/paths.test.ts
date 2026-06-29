@@ -564,6 +564,29 @@ describe('checkPaths', () => {
     expect(msgs.some((m) => m.includes('src/missing'))).toBe(true);
   });
 
+  // `core` and `services` are recognized top-level dirs (PATH_FIRST_SEGMENTS):
+  // a 2-segment lowercase ref under them is a real path ref, not prose, so a
+  // broken one is still reported and an existing one resolves.
+  it('validates core/ and services/ as real top-level refs (allow-list)', async () => {
+    seed({
+      'CLAUDE.md': [
+        '- The core/registry module.',
+        '- The services/missing worker.',
+        '- See services/api for the api.',
+        '',
+      ].join('\n'),
+      'services/api/index.ts': 'x',
+    });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    const msgs = issues.map((i) => i.message);
+    // Broken refs under allow-listed first segments are still reported...
+    expect(msgs.some((m) => m.includes('core/registry'))).toBe(true);
+    expect(msgs.some((m) => m.includes('services/missing'))).toBe(true);
+    // ...and an existing one resolves (not falsely suppressed into a finding).
+    expect(msgs.some((m) => m.includes('services/api'))).toBe(false);
+  });
+
   // Fix B must not fire OUTSIDE a 2-segment lowercase shape: a `word/word.ext`
   // (extension) and a Capitalized/Capitalized token keep their existing
   // behavior, and a multi-segment lowercase token (build/seed/probe/lint) is
