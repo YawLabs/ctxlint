@@ -1,0 +1,1 @@
+Placeholder so `packages/` resolves as a real top-level directory.
