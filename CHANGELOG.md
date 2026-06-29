@@ -13,7 +13,7 @@ See [Versioning policy](#versioning-policy) below.
 - **`paths` allow-list: added `core` and `services`** to `PATH_FIRST_SEGMENTS`, so 2-segment refs under those common top-level directories (`core/registry`, `services/api`) are validated as real paths rather than suppressed as lowercase slash-prose. Locked by a focused `paths.test.ts` case.
 
 ### Internal
-- **Windows-only vitest fork cap.** The git-heavy suites (`paths`, `integration`, `git`) spawn real `git` subprocesses per test; with vitest's default fork-per-CPU parallelism this oversubscribed a contended Windows box (worst under `release.sh`, which runs the full suite locally after lint+build) and those tests blew past even the 30s timeout -- a flake that aborted the local release test step. `vitest.config.ts` now caps `forks` to `maxForks: 4` on `win32` only; Linux CI keeps full parallelism and stays the authoritative gate. No behavior or API change.
+- **Windows-only vitest fork cap.** The git-heavy suites (`paths`, `integration`, `git`) spawn real `git` subprocesses per test; with vitest's default fork-per-CPU parallelism this oversubscribed a contended Windows box (worst under `release.sh`, which runs the full suite locally after lint+build) and those tests blew past even the 30s timeout -- a flake that aborted the local release test step. `vitest.config.ts` now caps `forks` to `maxForks: 4` on `win32` only and raises the per-test timeout to 60s on Windows (even capped, the git rename-provenance tests graze the 30s ceiling under release.sh's sequential install+lint+build+test load on a slow Windows box); Linux CI keeps full parallelism and the 30s timeout and stays the authoritative gate. No behavior or API change.
 
 ## [0.18.2] - 2026-06-26
 

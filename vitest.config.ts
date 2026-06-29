@@ -7,10 +7,18 @@ import { defineConfig, configDefaults } from 'vitest/config';
 // tests blow past even the 30s timeout, the flake that aborted the release.
 // Cap fork concurrency on Windows only; Linux CI keeps full parallelism and
 // stays the authoritative gate. `forks` (not threads) is required: the git /
-// path tests change cwd, which throws in worker threads.
+// path tests change cwd, which throws in worker threads. Also raise the
+// per-test timeout to 60s on Windows: even capped, the git rename-provenance
+// tests (real `git log`/rename detection per test) graze the 30s ceiling under
+// release.sh's sequential install+lint+build+test load on a slow Windows box.
+// 60s gives margin without masking a real hang (a true hang still fails at 60s).
 const windowsForkCap =
   process.platform === 'win32'
-    ? { pool: 'forks' as const, poolOptions: { forks: { maxForks: 4, minForks: 1 } } }
+    ? {
+        pool: 'forks' as const,
+        poolOptions: { forks: { maxForks: 4, minForks: 1 } },
+        testTimeout: 60000,
+      }
     : {};
 
 export default defineConfig({
