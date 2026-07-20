@@ -201,6 +201,11 @@ function extractCommandPaths(
     // MSYS `//FLAG` tokens (e.g. `taskkill //F`) are Windows command flags, not
     // paths -- drop them so they aren't reported as missing files.
     if (isMsysFlag(pathToken)) continue;
+    // A wildcard surviving the trailing-matcher strip is a mid-token glob
+    // (e.g. `/logs/*.json`, `/c/foo/*.sh`), not a single file we can stat --
+    // skip rather than report a phantom "missing file" (false negative is
+    // safer than a false positive, per the module contract above).
+    if (pathToken.includes('*')) continue;
     if (!looksLikePath(pathToken)) continue;
     // Keep the original token in `raw` for the message; resolve the stripped form.
     out.push({ raw: token, resolved: expandPath(pathToken, projectRoot, homeDir, platform) });

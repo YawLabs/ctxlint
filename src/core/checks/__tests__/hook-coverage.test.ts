@@ -226,6 +226,14 @@ describe('hook-coverage/dead-hook', () => {
     expect(issues).toEqual([]);
   });
 
+  it('does not flag a path with a mid-token glob (unstat-able, not a single file)', async () => {
+    // The `*` here is not the trailing permission wildcard -- it is a glob
+    // inside the path, so there is no single file to check for existence.
+    writeSettings({ permissions: { allow: ['Bash(cat ./logs/*.json)'] } });
+    const issues = await checkHookCoverage(tmpDir, homeDir);
+    expect(issues).toEqual([]);
+  });
+
   it.skipIf(process.platform !== 'win32')(
     'resolves an MSYS /c/ drive path and does not flag an existing script (win32)',
     async () => {
