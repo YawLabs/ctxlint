@@ -271,6 +271,9 @@ describe('repo policy', () => {
     expect(releaseSh).toMatch(/npx tsc --noEmit/);
     expect(releaseSh).toMatch(/pnpm run build/);
     expect(releaseSh).toMatch(/pnpm run test:run/);
-    expect(releaseSh).toMatch(/npm publish --access public/);
+    // The workstation publish path specifically -- a plain `npm publish --access
+    // public` NOT followed by --provenance. Guards against the local branch
+    // being removed while the (now dead) CI `--provenance` line lingers.
+    expect(releaseSh).toMatch(/npm publish --access public(?! --provenance)/);
   });
 });
