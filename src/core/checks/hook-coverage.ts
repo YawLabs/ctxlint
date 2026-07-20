@@ -94,7 +94,12 @@ function loadSettingsSources(
  * we must not flag a path we can't actually resolve (that would be a false
  * "dead hook" report).
  */
-function expandPath(raw: string, projectRoot: string, homeDir: string): string | null {
+function expandPath(
+  raw: string,
+  projectRoot: string,
+  homeDir: string,
+  platform: NodeJS.Platform,
+): string | null {
   let s = raw;
   // Leading ~ -> home dir.
   if (s === '~' || s.startsWith('~/') || s.startsWith('~\\')) {
@@ -120,6 +125,9 @@ function expandPath(raw: string, projectRoot: string, homeDir: string): string |
   // false-positive a path we can't actually check).
   if (/\$\{?[A-Za-z_]/.test(s)) return null;
   if (/%[A-Za-z_][A-Za-z0-9_]*%/.test(s)) return null;
+  // MSYS / Git Bash drive path (`/c/Users/x`) -> Win32 (`c:/Users/x`) so the
+  // existence check resolves. Must run before isAbsolute / resolve.
+  s = translateMsysDrivePath(s, platform);
   if (!path.isAbsolute(s)) s = path.resolve(projectRoot, s);
   return s;
 }
@@ -139,6 +147,39 @@ function looksLikePath(token: string): boolean {
 }
 
 /**
+ * Claude Code permission matchers end in a prefix wildcard -- a bare `*`
+ * (`Bash(bash /path/gate.sh*)`) or `:*` (`Bash(node gate.js:*)`). The wildcard
+ * belongs to the matcher, never the filename, so strip it before deciding
+ * path-ness and resolving. Without this, a permission entry that references a
+ * real script reads as a missing file purely because of the trailing `*`.
+ */
+export function stripMatcherWildcard(token: string): string {
+  return token.replace(/:?\*+$/, '');
+}
+
+/**
+ * Git Bash renders a native `/FLAG` argument as `//FLAG` to suppress MSYS path
+ * translation, so Windows-authored settings carry tokens like `tasklist //FI`
+ * and `taskkill //F`. These are command flags, not filesystem paths: `//`
+ * followed by letters with no further separator. A real UNC path
+ * (`//host/share`) has a later `/` and is deliberately left alone.
+ */
+export function isMsysFlag(token: string): boolean {
+  return /^\/\/[A-Za-z]+$/.test(token);
+}
+
+/**
+ * Translate a Git Bash / MSYS drive path (`/c/Users/x`) to its Win32 form
+ * (`c:/Users/x`) so the existence check resolves. Windows-only: on POSIX
+ * `/c/...` is a genuine absolute path and must never be rewritten.
+ */
+export function translateMsysDrivePath(s: string, platform: NodeJS.Platform): string {
+  if (platform !== 'win32') return s;
+  const m = /^\/([A-Za-z])\/(.*)$/.exec(s);
+  return m ? `${m[1]}:/${m[2]}` : s;
+}
+
+/**
  * Pull script-path candidates out of a hook command line. A command can be a
  * bare path ("./.claude/hooks/gate.sh") or an interpreter invocation
  * ("bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/gate.sh\" --flag"). We tokenize on
@@ -148,13 +189,21 @@ function extractCommandPaths(
   command: string,
   projectRoot: string,
   homeDir: string,
+  platform: NodeJS.Platform,
 ): PathCandidate[] {
   const tokens = command.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
   const out: PathCandidate[] = [];
   for (const t of tokens) {
     const token = t.replace(/^['"]|['"]$/g, '');
-    if (!looksLikePath(token)) continue;
-    out.push({ raw: token, resolved: expandPath(token, projectRoot, homeDir) });
+    // Strip the trailing matcher wildcard first: it belongs to the permission
+    // rule, not the filename, and would otherwise fail the existence check.
+    const pathToken = stripMatcherWildcard(token);
+    // MSYS `//FLAG` tokens (e.g. `taskkill //F`) are Windows command flags, not
+    // paths -- drop them so they aren't reported as missing files.
+    if (isMsysFlag(pathToken)) continue;
+    if (!looksLikePath(pathToken)) continue;
+    // Keep the original token in `raw` for the message; resolve the stripped form.
+    out.push({ raw: token, resolved: expandPath(pathToken, projectRoot, homeDir, platform) });
   }
   return out;
 }
@@ -169,10 +218,11 @@ function extractPermissionPaths(
   entry: string,
   projectRoot: string,
   homeDir: string,
+  platform: NodeJS.Platform,
 ): PathCandidate[] {
   // Unwrap a single Tool(...) wrapper if present, e.g. "Bash(./x.sh)".
   const inner = entry.replace(/^[A-Za-z]+\((.*)\)$/, '$1');
-  return extractCommandPaths(inner, projectRoot, homeDir);
+  return extractCommandPaths(inner, projectRoot, homeDir, platform);
 }
 
 function lineForPath(source: SettingsSource, jsonPath: (string | number)[]): number {
@@ -190,7 +240,12 @@ interface SettingsShape {
   >;
 }
 
-function checkSource(source: SettingsSource, projectRoot: string, homeDir: string): LintIssue[] {
+function checkSource(
+  source: SettingsSource,
+  projectRoot: string,
+  homeDir: string,
+  platform: NodeJS.Platform,
+): LintIssue[] {
   if (!source.tree) return [];
   const data = getNodeValue(source.tree) as SettingsShape | undefined;
   if (!data || typeof data !== 'object') return [];
@@ -224,7 +279,7 @@ function checkSource(source: SettingsSource, projectRoot: string, homeDir: strin
       subHooks.forEach((h, hi) => {
         if (!h || typeof h.command !== 'string') return;
         const line = lineForPath(source, ['hooks', event, mi, 'hooks', hi, 'command']);
-        for (const cand of extractCommandPaths(h.command, projectRoot, homeDir)) {
+        for (const cand of extractCommandPaths(h.command, projectRoot, homeDir, platform)) {
           report(cand, line, `${event} hook`);
         }
       });
@@ -239,7 +294,7 @@ function checkSource(source: SettingsSource, projectRoot: string, homeDir: strin
     list.forEach((entry, i) => {
       if (typeof entry !== 'string') return;
       const line = lineForPath(source, ['permissions', listName, i]);
-      for (const cand of extractPermissionPaths(entry, projectRoot, homeDir)) {
+      for (const cand of extractPermissionPaths(entry, projectRoot, homeDir, platform)) {
         report(cand, line, `permissions.${listName} entry`);
       }
     });
@@ -269,11 +324,15 @@ export async function checkHookCoverage(
   // ~/.claude/settings.json. Production callers omit it (defaults to the OS home).
   homeDir: string = os.homedir(),
   options: HookCoverageOptions = {},
+  // platform is injectable so tests can exercise the Windows-only MSYS drive-path
+  // translation deterministically. Production callers omit it (defaults to the
+  // running OS).
+  platform: NodeJS.Platform = process.platform,
 ): Promise<LintIssue[]> {
   const sources = loadSettingsSources(projectRoot, homeDir, options.userGlobal ?? false);
   const issues: LintIssue[] = [];
   for (const source of sources) {
-    issues.push(...checkSource(source, projectRoot, homeDir));
+    issues.push(...checkSource(source, projectRoot, homeDir, platform));
   }
   return issues;
 }

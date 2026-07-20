@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { checkHookCoverage } from '../hook-coverage.js';
+import {
+  checkHookCoverage,
+  isMsysFlag,
+  stripMatcherWildcard,
+  translateMsysDrivePath,
+} from '../hook-coverage.js';
 
 let tmpDir: string;
 // Isolated home dir so the check never reads the real user-global
@@ -192,5 +197,73 @@ describe('hook-coverage/dead-hook', () => {
     expect(issues).toHaveLength(1);
     expect(issues[0].message).toContain('dead.sh');
     expect(issues[0].message).toContain('~/.claude/settings.json');
+  });
+
+  // --- Windows / MSYS false-positive regressions ---
+  // Permission entries authored in Git Bash on Windows carry a trailing `*`
+  // matcher wildcard, double-slash command flags (`//FI`, `//F`), and `/c/`
+  // drive paths. Before the fix each of these was reported as a dead hook.
+
+  it('does NOT flag a permissions entry whose script exists despite a trailing * wildcard', async () => {
+    writeHookScript('scripts/gate.sh');
+    writeSettings({ permissions: { allow: ['Bash(bash ./scripts/gate.sh*)'] } });
+    const issues = await checkHookCoverage(tmpDir, homeDir);
+    expect(issues).toEqual([]);
+  });
+
+  it('still flags a genuinely missing script even with a trailing * wildcard', async () => {
+    writeSettings({ permissions: { allow: ['Bash(bash ./scripts/dead.sh*)'] } });
+    const issues = await checkHookCoverage(tmpDir, homeDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('dead.sh');
+  });
+
+  it('does not flag MSYS //FLAG tokens (Windows command flags, not paths)', async () => {
+    writeSettings({
+      permissions: { allow: ['Bash(tasklist //FI*)', 'Bash(taskkill //F*)'] },
+    });
+    const issues = await checkHookCoverage(tmpDir, homeDir);
+    expect(issues).toEqual([]);
+  });
+
+  it.skipIf(process.platform !== 'win32')(
+    'resolves an MSYS /c/ drive path and does not flag an existing script (win32)',
+    async () => {
+      const abs = writeHookScript('scripts/smoke.sh');
+      // Convert the real Win32 path (C:\...\smoke.sh) to its Git Bash form
+      // (/c/.../smoke.sh) and append the permission matcher wildcard.
+      const msys = `/${abs[0].toLowerCase()}${abs.slice(2).replace(/\\/g, '/')}`;
+      writeSettings({ permissions: { allow: [`Bash(bash ${msys}*)`] } });
+      const issues = await checkHookCoverage(tmpDir, homeDir);
+      expect(issues).toEqual([]);
+    },
+  );
+});
+
+describe('hook-coverage helpers', () => {
+  it('stripMatcherWildcard removes a trailing * or :* matcher wildcard', () => {
+    expect(stripMatcherWildcard('/path/gate.sh*')).toBe('/path/gate.sh');
+    expect(stripMatcherWildcard('gate.js:*')).toBe('gate.js');
+    expect(stripMatcherWildcard('//FI*')).toBe('//FI');
+    // No wildcard -> unchanged.
+    expect(stripMatcherWildcard('/path/gate.sh')).toBe('/path/gate.sh');
+  });
+
+  it('isMsysFlag recognizes Git Bash //FLAG tokens but not UNC or drive paths', () => {
+    expect(isMsysFlag('//FI')).toBe(true);
+    expect(isMsysFlag('//F')).toBe(true);
+    // Real UNC path (later separator) and MSYS drive path are NOT flags.
+    expect(isMsysFlag('//host/share')).toBe(false);
+    expect(isMsysFlag('/c/Users/x')).toBe(false);
+    expect(isMsysFlag('./gate.sh')).toBe(false);
+  });
+
+  it('translateMsysDrivePath rewrites /c/ to c:/ only on win32', () => {
+    expect(translateMsysDrivePath('/c/Users/x/gate.sh', 'win32')).toBe('c:/Users/x/gate.sh');
+    expect(translateMsysDrivePath('/d/repo/gate.sh', 'win32')).toBe('d:/repo/gate.sh');
+    // POSIX: /c/... is a genuine absolute path, never rewritten.
+    expect(translateMsysDrivePath('/c/Users/x/gate.sh', 'linux')).toBe('/c/Users/x/gate.sh');
+    // Multi-letter first segment is not a drive -- unchanged on win32.
+    expect(translateMsysDrivePath('/Users/x/gate.sh', 'win32')).toBe('/Users/x/gate.sh');
   });
 });
