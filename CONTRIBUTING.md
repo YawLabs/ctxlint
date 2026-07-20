@@ -25,7 +25,7 @@ npm test
 
 1. **One PR per change.** Keep PRs focused — a bug fix, a new feature, or a refactor, not all three.
 2. **Branch from `main`** (or `master` if that's the default branch).
-3. **Run `npm run format && npm run lint`** before committing — formatting drift fails CI (`.github/workflows/ci.yml` lints every push/PR) and the release flow (`release.sh` runs the same checks).
+3. **Run `npm run format && npm run lint && npx tsc --noEmit && npm test`** before committing. This repo has no CI — `release.sh` is the single quality gate (lint, type-check, build, tests) and it only runs at release time, so run the checks locally before opening a PR.
 4. **Run `npm test`** and confirm all tests pass.
 5. **Write a clear PR title and description** — explain _what_ changed and _why_.
 6. **All PRs require approval** from a maintainer before merging.

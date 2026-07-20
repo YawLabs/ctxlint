@@ -247,37 +247,30 @@ describe('repo policy', () => {
     }
   });
 
-  // release.sh step 6 path 2 (workstation hands publish off to CI) activates
-  // on this file existing + containing npm publish/NODE_AUTH_TOKEN, and looks
-  // the run up via `gh run list --workflow=Release`.
-  it('CI and Release workflows exist with the shape release.sh hands off to', () => {
-    const release = fs.readFileSync(
-      path.join(ROOT, '.github', 'workflows', 'release.yml'),
-      'utf-8',
-    );
-    expect(release).toMatch(/^name: Release$/m);
-    expect(release).toContain('NODE_AUTH_TOKEN');
-    expect(release).toContain('npm publish');
-
-    const ci = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf-8');
-    expect(ci).toContain('pull_request');
-    expect(ci).toContain('tsc --noEmit');
+  // Org policy (GitHub Actions removed 2026-07): ctxlint runs no CI. release.sh
+  // is the sole pipeline. Guard against a workflow being reintroduced without
+  // revisiting the local-only release flow (release.sh step 6 would then try to
+  // hand the publish back off to CI).
+  it('has no GitHub Actions workflows (release.sh is the sole pipeline)', () => {
+    const workflowsDir = path.join(ROOT, '.github', 'workflows');
+    const present = fs.existsSync(workflowsDir)
+      ? fs.readdirSync(workflowsDir).filter((f) => /\.ya?ml$/.test(f))
+      : [];
+    expect(present).toEqual([]);
   });
 
-  // The pretest:run hook (pinned in the package.json consistency suite)
-  // already builds dist before vitest, so a dedicated Build step in a test
-  // job runs the full build.mjs (catalog drift gate + esbuild bundle) twice
-  // per matrix leg.
-  it('workflow test jobs rely on pretest:run, not a duplicate Build step', () => {
-    const ci = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf-8');
-    expect(ci).not.toContain('name: Build');
-
-    // release.yml keeps exactly ONE Build step: the publish job's, where no
-    // pre-hook fires before `npm publish` and dist must exist in the tarball.
-    const release = fs.readFileSync(
-      path.join(ROOT, '.github', 'workflows', 'release.yml'),
-      'utf-8',
-    );
-    expect(release.match(/name: Build/g)).toHaveLength(1);
+  // Nothing-lost guarantee for the removed ci.yml / release.yml: every gate
+  // those workflows ran (lint, `tsc --noEmit`, build, the test suite) plus the
+  // npm publish must live in release.sh, which now runs on the workstation.
+  // The type-check especially -- it was a distinct workflow step release.sh
+  // previously lacked, and its loss would be silent (tsc doesn't run under
+  // vitest).
+  it('release.sh carries every gate the removed workflows ran, and publishes locally', () => {
+    const releaseSh = fs.readFileSync(path.join(ROOT, 'release.sh'), 'utf-8');
+    expect(releaseSh).toMatch(/pnpm run lint/);
+    expect(releaseSh).toMatch(/npx tsc --noEmit/);
+    expect(releaseSh).toMatch(/pnpm run build/);
+    expect(releaseSh).toMatch(/pnpm run test:run/);
+    expect(releaseSh).toMatch(/npm publish --access public/);
   });
 });

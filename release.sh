@@ -99,7 +99,7 @@ fi
 if [ "$IS_CI" != "true" ] && [ "$RESUMING" != "true" ]; then
   echo ""
   echo -e "${YELLOW}About to release v${VERSION}. This will:${NC}"
-  echo "  1. Lint"
+  echo "  1. Lint & type-check"
   echo "  2. Build"
   echo "  3. Test"
   echo "  4. Bump version in package.json"
@@ -121,12 +121,19 @@ if [ "$IS_CI" != "true" ] && [ "$RESUMING" != "true" ]; then
 fi
 
 # =============================================================================
-# Step 1: Lint
+# Step 1: Lint & type-check
 # =============================================================================
-step 1 "Lint"
+step 1 "Lint & type-check"
 
 pnpm run lint
 info "Lint passed"
+
+# Type-check. Previously a distinct step in the (now removed) GitHub Actions
+# ci.yml / release.yml -- release.sh is the sole quality gate now, so it runs
+# here. Invoked as `npx tsc` (not `pnpm run`) so neither the SKIP_LINT wrapper
+# nor the MINGW64-ARM `pnpm run` exit-segfault (platform-windows.md) touches it.
+npx tsc --noEmit
+info "Type-check passed"
 
 # =============================================================================
 # Step 2: Build
