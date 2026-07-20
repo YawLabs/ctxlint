@@ -3,8 +3,6 @@
 [![npm version](https://img.shields.io/npm/v/@yawlabs/ctxlint)](https://www.npmjs.com/package/@yawlabs/ctxlint)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![GitHub stars](https://img.shields.io/github/stars/YawLabs/ctxlint)](https://github.com/YawLabs/ctxlint/stargazers)
-[![CI](https://github.com/YawLabs/ctxlint/actions/workflows/ci.yml/badge.svg)](https://github.com/YawLabs/ctxlint/actions/workflows/ci.yml)
-[![Release](https://github.com/YawLabs/ctxlint/actions/workflows/release.yml/badge.svg)](https://github.com/YawLabs/ctxlint/actions/workflows/release.yml)
 [![MCP Compliance](https://raw.githubusercontent.com/YawLabs/ctxlint/main/compliance-badge.svg)](https://github.com/YawLabs/mcp-compliance)
 
 **Lint your AI agent context files, MCP server configs, and session data against your actual codebase.** Context linting + MCP config linting + session auditing. 16 AI tools, 8 MCP clients, cross-project consistency, auto-fix. Works as a CLI, CI step, pre-commit hook, or MCP server.
