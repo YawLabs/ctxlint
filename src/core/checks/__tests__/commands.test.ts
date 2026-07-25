@@ -178,6 +178,94 @@ describe('checkCommands', () => {
     expect(issues.find((i) => i.ruleId === 'commands/npx-not-in-deps')).toBeUndefined();
   });
 
+  // ---- permissions.deny cross-check: an npx command the user has explicitly
+  // DENIED in .claude/settings.json[.local] is one they've told the agent never
+  // to run, so the "add to devDependencies" nudge is noise for it. ----
+
+  it('does NOT flag an npx command that matches a permissions.deny entry', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nnpx netlify deploy\n```\n',
+        '.claude/settings.json': JSON.stringify({
+          permissions: { deny: ['Bash(npx netlify deploy:*)'] },
+        }),
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/npx-not-in-deps')).toBeUndefined();
+  });
+
+  // Control: the SAME command with no deny entry is still flagged, proving the
+  // deny match -- not some other change -- is what suppressed it above.
+  it('DOES flag the same npx command when no deny entry covers it', async () => {
+    seed(
+      { 'CLAUDE.md': '# Commands\n\n```bash\nnpx netlify deploy\n```\n' },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    const byRule = issues.find((i) => i.ruleId === 'commands/npx-not-in-deps');
+    expect(byRule).toBeDefined();
+    expect(byRule!.message).toContain('netlify');
+  });
+
+  // The deny is specific: a DIFFERENT npx command not covered by it is still
+  // validated -- the cross-check narrows false positives without blinding npx.
+  it('still flags a different npx command not covered by the deny entry', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nnpx some-rare-tool\n```\n',
+        '.claude/settings.json': JSON.stringify({
+          permissions: { deny: ['Bash(npx netlify deploy:*)'] },
+        }),
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    const byRule = issues.find((i) => i.ruleId === 'commands/npx-not-in-deps');
+    expect(byRule).toBeDefined();
+    expect(byRule!.message).toContain('some-rare-tool');
+  });
+
+  // A broader deny prefix (`npx netlify:*`) in settings.local.json suppresses a
+  // more specific invocation (`npx netlify deploy --prod`).
+  it('honors a broader deny prefix from settings.local.json', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nnpx netlify deploy --prod\n```\n',
+        '.claude/settings.local.json': JSON.stringify({
+          permissions: { deny: ['Bash(npx netlify:*)'] },
+        }),
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/npx-not-in-deps')).toBeUndefined();
+  });
+
+  // Word-boundary: a command that only shares a TEXTUAL prefix with a deny
+  // matcher (`npx netlifyctl` vs deny `npx netlify`) is NOT over-suppressed.
+  it('does NOT over-suppress a command that only shares a textual prefix', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nnpx netlifyctl\n```\n',
+        '.claude/settings.json': JSON.stringify({
+          permissions: { deny: ['Bash(npx netlify:*)'] },
+        }),
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    const byRule = issues.find((i) => i.ruleId === 'commands/npx-not-in-deps');
+    expect(byRule).toBeDefined();
+    expect(byRule!.message).toContain('netlifyctl');
+  });
+
   it('flags common tool missing from deps (tool-not-found)', async () => {
     seed(
       {

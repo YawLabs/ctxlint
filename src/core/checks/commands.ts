@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { parse as parseJsonc } from 'jsonc-parser';
 import { loadPackageJson, stripBom } from '../../utils/fs.js';
 import type { ParsedContextFile, LintIssue } from '../types.js';
 
@@ -170,6 +171,55 @@ function wouldNeedPackageJson(cmd: string): boolean {
   return /^npx\b/.test(cmd) || PKG_DEPENDENT_TOOL_PATTERN.test(cmd);
 }
 
+/**
+ * Load the Bash command prefixes DENIED in the project's
+ * `.claude/settings.json` / `.claude/settings.local.json`. Claude Code deny
+ * entries are tool matchers (`Bash(npx netlify deploy:*)`); we unwrap the
+ * `Tool(...)` wrapper and strip the trailing `:*` / `*` matcher wildcard,
+ * leaving the command prefix. A command the user has explicitly DENIED is one
+ * they've told the agent never to run, so the "add it to devDependencies"
+ * nudge from npx-not-in-deps is noise for it -- these prefixes let
+ * checkCommands suppress that finding. Project-scoped only (never the
+ * user-global settings), matching the posture of the other command checks; a
+ * missing or unparseable file yields no prefixes (no suppression, behavior
+ * unchanged for the common no-settings case).
+ */
+function loadDeniedCommandPrefixes(projectRoot: string): string[] {
+  const prefixes: string[] = [];
+  for (const rel of ['settings.json', 'settings.local.json']) {
+    let content: string;
+    try {
+      content = stripBom(fs.readFileSync(path.join(projectRoot, '.claude', rel), 'utf-8'));
+    } catch {
+      continue; // missing file is expected
+    }
+    const data = parseJsonc(content, [], { allowTrailingComma: true }) as
+      | { permissions?: { deny?: unknown } }
+      | undefined;
+    const deny = data?.permissions?.deny;
+    if (!Array.isArray(deny)) continue;
+    for (const entry of deny) {
+      if (typeof entry !== 'string') continue;
+      // Unwrap a single Tool(...) wrapper, then strip the trailing :* / * matcher.
+      const inner = entry.replace(/^[A-Za-z]+\((.*)\)$/, '$1');
+      const prefix = inner.replace(/:?\*+$/, '').trim();
+      if (prefix) prefixes.push(prefix);
+    }
+  }
+  return prefixes;
+}
+
+/**
+ * A command is DENIED when it exactly matches, or extends at a word boundary, a
+ * deny prefix -- mirroring Claude Code's `Bash(prefix:*)` prefix semantics.
+ * `npx netlify deploy --prod` is denied by the prefix `npx netlify deploy`;
+ * `npx netlifyctl` is NOT (no space boundary), so an unrelated command sharing
+ * a textual prefix keeps being validated.
+ */
+function isDeniedCommand(cmd: string, deniedPrefixes: string[]): boolean {
+  return deniedPrefixes.some((p) => cmd === p || cmd.startsWith(`${p} `));
+}
+
 export async function checkCommands(
   file: ParsedContextFile,
   projectRoot: string,
@@ -177,6 +227,7 @@ export async function checkCommands(
   const issues: LintIssue[] = [];
   const pkgJson = loadPackageJson(projectRoot);
   const makefile = loadMakefile(projectRoot);
+  const deniedPrefixes = loadDeniedCommandPrefixes(projectRoot);
 
   // When package.json can't be loaded, all the script/shorthand/npx/tool
   // branches below silently skip. Surface that ONCE if any reference would
@@ -251,6 +302,10 @@ export async function checkCommands(
       // Common mappings: tsc -> typescript, prettier -> prettier, etc.
       // Only warn if the package isn't in deps AND isn't in node_modules/.bin
       if (!(pkgName in allDeps)) {
+        // A command the user has explicitly DENIED in .claude/settings.json is
+        // one they've told the agent never to run -- the "add it to
+        // devDependencies for reproducibility" nudge is noise for it, so skip.
+        if (isDeniedCommand(cmd, deniedPrefixes)) continue;
         const binPath = path.join(projectRoot, 'node_modules', '.bin', pkgName);
         try {
           fs.accessSync(binPath);
