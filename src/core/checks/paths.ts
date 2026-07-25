@@ -67,6 +67,14 @@ export async function checkPaths(
   // Resolve relative paths from the context file's directory
   const contextDir = path.dirname(file.filePath);
 
+  // Whether the doc is a ROOT-LEVEL agent-config doc: it sits directly inside a
+  // dot-prefixed child of the project root (`<root>/.claude/CLAUDE.md`). Such a
+  // doc's ./-relative refs conventionally mean "from the project root" (see the
+  // baseDirs decision in the ref loop below). Loop-invariant -- depends only on
+  // contextDir and projectRoot -- so compute once here, not per ref.
+  const inRootDotConfigDir =
+    path.dirname(contextDir) === projectRoot && path.basename(contextDir).startsWith('.');
+
   // Accumulator for refs that need rename lookups (not-found, non-glob, non-dir).
   // These are batched into a single findRenamesBatch call after the synchronous
   // pass so the rename log is fetched at most once per projectRoot per tick.
@@ -106,17 +114,15 @@ export async function checkPaths(
     // path resolves nowhere. Resolution uses the slash-normalized form so a
     // Windows-authored ref still validates when the lint host is POSIX.
     const explicitRel = /^\.\.?\//.test(normalizedRef);
-    // A ./-relative ref in a ROOT-LEVEL agent-config doc (`<root>/.claude/CLAUDE.md`)
-    // conventionally means "from the project root", not from `.claude/` -- authors
-    // treat CLAUDE.md as the project's instructions even though it physically lives
-    // in a dot-config dir. So when the doc sits directly inside a dot-prefixed child
-    // of the project root, add projectRoot as a SECONDARY base for explicit-relative
-    // refs. contextDir stays PRIMARY (baseDirs[0]) so @-import/./ autofix coordinates
-    // and rename provenance are unchanged; a secondary base can only turn a false
-    // positive into a pass, never create one. @-imports keep strict Claude-Code
-    // import semantics (contextDir only) and are excluded.
-    const inRootDotConfigDir =
-      path.dirname(contextDir) === projectRoot && path.basename(contextDir).startsWith('.');
+    // A ./-relative ref in a ROOT-LEVEL agent-config doc (`<root>/.claude/CLAUDE.md`,
+    // detected once as inRootDotConfigDir above) conventionally means "from the
+    // project root", not from `.claude/` -- authors treat CLAUDE.md as the project's
+    // instructions even though it physically lives in a dot-config dir. So for such a
+    // doc, add projectRoot as a SECONDARY base for explicit-relative refs. contextDir
+    // stays PRIMARY (baseDirs[0]) so @-import/./ autofix coordinates and rename
+    // provenance are unchanged; a secondary base can only turn a false positive into a
+    // pass, never create one. @-imports keep strict Claude-Code import semantics
+    // (contextDir only) and are excluded.
     const baseDirs = isImport
       ? [contextDir]
       : explicitRel
