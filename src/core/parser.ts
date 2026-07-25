@@ -271,6 +271,49 @@ function extractPathReferences(lines: string[], sections: Section[]): PathRefere
         continue;
       }
 
+      // Fix B2 -- 3+ segment lowercase slash-prose. Extends the 2-segment guard
+      // above: a slash-joined list written in prose ("build, seed, probe, lint
+      // scripts" -> `build/seed/probe/lint`, "read/write/execute perms") yields a
+      // token that matches PATH_PATTERN but names no file. An all-lowercase,
+      // extension-less, no-prefix, no-trailing-slash, no-glob token of 3+ word
+      // segments is almost always prose. Unlike the 2-segment guard this does NOT
+      // rescue a recognized first segment (`build` IS in PATH_FIRST_SEGMENTS, yet
+      // `build/seed/probe/lint` is prose): a genuine 3+ segment path almost
+      // always carries an extension (`src/core/checks/paths.ts`) or a trailing
+      // slash (`src/core/checks/`) -- both excluded by the segment class (no `.`)
+      // and the `$` anchor (no trailing `/`) -- so a real, resolvable ref is not
+      // lost. A broken extension-less 3+ segment ref is the accepted tradeoff
+      // (rare, low-value) mirroring the 2-segment guard's own tradeoff.
+      if (/^[a-z][\w-]*(?:\/[a-z][\w-]*){2,}$/.test(cleanValue)) continue;
+
+      // Fix C -- repeated-uppercase placeholder segment (`meta/NNNN_snapshot.json`
+      // is doc shorthand for a migration NUMBER, not a literal filename: `NNNN`
+      // stands in for 0000/0001/...). A run of 3+ identical uppercase letters is a
+      // placeholder convention real committed filenames don't use, so emitting a
+      // "does not exist" error on it is always a false positive. Bracket / percent
+      // placeholders (`logs/<date>/x`, `builds/{id}/y`, `out/%s.log`) can't reach
+      // here -- PATH_PATTERN's segment class excludes `< > { } %` -- so the
+      // repeated-letter form is the only placeholder shape that needs guarding.
+      if (/([A-Z])\1{2,}/.test(cleanValue)) continue;
+
+      // Fix D -- unanchored single-`*` glob shorthand in prose. A glob like
+      // `meta/*_snapshot.json` (shorthand for the real, nested
+      // `packages/db/migrations/meta/*_snapshot.json`) has a `*` but no path
+      // anchor. A glob a doc genuinely wants validated is anchored: explicitly
+      // relative (`./ ../`) or absolute (leading `/`), recursive (`**`), or rooted
+      // at a recognized top-level dir (`src/**/*.ts`, `packages/*`). An unanchored
+      // single-`*` glob whose first segment is NOT a known top-level dir is almost
+      // always a nested-path shorthand mentioned in prose, so suppress it rather
+      // than emit a confident-but-wrong glob-no-match. Anchored globs (including
+      // a genuinely broken `src/*.fakext`) keep being validated.
+      if (cleanValue.includes('*')) {
+        const anchored =
+          /^\.{0,2}\//.test(cleanValue) ||
+          cleanValue.includes('**') ||
+          PATH_FIRST_SEGMENTS.has(cleanValue.split('/')[0]);
+        if (!anchored) continue;
+      }
+
       // Skip VCS internals (`.git/hooks/pre-push`) and macOS app-bundle
       // internals (`yaw.app/Contents/MacOS/yaw`, a common `pkill -f` argument):
       // neither is a project source reference, and resolving them produces

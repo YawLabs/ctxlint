@@ -489,7 +489,14 @@ describe('checkPaths', () => {
     const pathIssues = issues.filter((i) => i.check === 'paths');
     // Spell out the tokens the maintainer cares about, then assert total zero.
     const msgs = pathIssues.map((i) => i.message);
-    for (const tok of ['api/', 'indexer/', 'db/', 'retrieval/', 'unit/integration', 'skill/agent']) {
+    for (const tok of [
+      'api/',
+      'indexer/',
+      'db/',
+      'retrieval/',
+      'unit/integration',
+      'skill/agent',
+    ]) {
       expect(msgs.some((m) => m.includes(tok))).toBe(false);
     }
     expect(pathIssues).toHaveLength(0);
@@ -589,8 +596,9 @@ describe('checkPaths', () => {
 
   // Fix B must not fire OUTSIDE a 2-segment lowercase shape: a `word/word.ext`
   // (extension) and a Capitalized/Capitalized token keep their existing
-  // behavior, and a multi-segment lowercase token (build/seed/probe/lint) is
-  // NOT covered by Fix B (documented residual).
+  // behavior. (A multi-segment lowercase token like `build/seed/probe/lint` is
+  // now covered by Fix B2 below -- see the issue-41 cases at the end of this
+  // describe.)
   it('does NOT suppress extension-bearing or allow-listed two-segment refs', async () => {
     seed({
       'CLAUDE.md': [
@@ -606,5 +614,119 @@ describe('checkPaths', () => {
     // Both resolve, so neither is reported; but crucially neither was silently
     // suppressed (apps/ is allow-listed; the .yml carries an extension).
     expect(issues).toHaveLength(0);
+  });
+
+  // ---- Issue #41: inline-code / prose extraction false positives. Four token
+  // shapes pulled out of backtick prose, slash-prose, and placeholder text that
+  // name no real file. See parser.ts (Fix B2 / Fix C / Fix D) + the .claude/
+  // root-dot-config resolution in paths.ts. ----
+
+  // End-to-end: all four false positives in one root-level .claude/CLAUDE.md,
+  // every underlying path present on disk -> zero path findings (the reported
+  // bug). This is the strongest guard; the focused cases below pin each shape.
+  it('reports zero path findings for the issue-41 inline-code/prose CLAUDE.md', async () => {
+    seed({
+      '.claude/CLAUDE.md': [
+        '# typed',
+        '',
+        'The root script builds `./packages/*` first.',
+        'The `meta/*_snapshot.json` chain must be committed.',
+        '',
+        '```',
+        'apps/',
+        '  api/        the api service',
+        'scripts/   release.sh + build/seed/probe/lint scripts',
+        '```',
+        '',
+        'Migrations follow the `meta/NNNN_snapshot.json` chain by number.',
+        '',
+      ].join('\n'),
+      // Real backing paths so the refs are genuinely valid.
+      'apps/api/index.ts': 'x',
+      'packages/db/index.ts': 'x',
+      'packages/retrieval/index.ts': 'x',
+      'packages/db/migrations/meta/0000_snapshot.json': '{}',
+      'scripts/release.sh': 'x',
+    });
+    const parsed = parseContextFile(discoveredIn('.claude/CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    expect(issues.filter((i) => i.check === 'paths')).toHaveLength(0);
+  });
+
+  // Fix B2: a 3+ segment all-lowercase slash-prose token (build/seed/probe/lint
+  // from "build, seed, probe, lint scripts") is suppressed even though its first
+  // segment `build` is an allow-listed top-level dir -- prose lists frequently
+  // open with a real-looking word.
+  it('suppresses 3+ segment lowercase slash-prose (build/seed/probe/lint)', async () => {
+    seed({ 'CLAUDE.md': '- scripts/ holds the release + build/seed/probe/lint scripts.\n' });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    expect(issues.some((i) => i.message.includes('build/seed/probe/lint'))).toBe(false);
+  });
+
+  // Fix B2 negative control: a 3+ segment ref that carries an EXTENSION is a
+  // real ref and is still validated -- a broken one is still reported.
+  it('STILL reports a broken 3+ segment path that carries an extension', async () => {
+    seed({ 'CLAUDE.md': '- See src/core/checks/missing.ts for the check.\n' });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    expect(issues.some((i) => i.message.includes('src/core/checks/missing.ts'))).toBe(true);
+  });
+
+  // Fix C: a repeated-uppercase placeholder segment (meta/NNNN_snapshot.json,
+  // where NNNN stands in for a migration number) is doc shorthand, not a literal
+  // filename, and must not be reported as missing.
+  it('suppresses a repeated-uppercase placeholder ref (meta/NNNN_snapshot.json)', async () => {
+    seed({ 'CLAUDE.md': '- Migrations follow the meta/NNNN_snapshot.json chain.\n' });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    expect(issues.some((i) => i.message.includes('NNNN'))).toBe(false);
+  });
+
+  // Fix D: an unanchored single-* glob whose first segment is not a recognized
+  // top-level dir (meta/*_snapshot.json, shorthand for the nested
+  // packages/db/migrations/meta/*_snapshot.json) is prose shorthand, not a glob
+  // to validate.
+  it('suppresses an unanchored single-* glob shorthand (meta/*_snapshot.json)', async () => {
+    seed({ 'CLAUDE.md': '- The meta/*_snapshot.json chain must be committed.\n' });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    expect(issues.some((i) => i.ruleId === 'paths/glob-no-match')).toBe(false);
+  });
+
+  // Fix D negative control: an ANCHORED glob (recognized top-level first
+  // segment) with zero matches is STILL reported.
+  it('STILL reports an anchored glob with no matches (known first segment)', async () => {
+    seed({ 'CLAUDE.md': '- See packages/*.nonexistent for config.\n', 'packages/db.ts': 'x' });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    expect(issues.some((i) => i.ruleId === 'paths/glob-no-match')).toBe(true);
+  });
+
+  // Resolution fix: a ./-relative glob in a ROOT-LEVEL .claude/CLAUDE.md
+  // resolves against the PROJECT ROOT (not .claude/), matching author intent --
+  // `./packages/*` means "packages/ from the repo root".
+  it('resolves a ./-relative glob in .claude/CLAUDE.md against the project root', async () => {
+    seed({
+      '.claude/CLAUDE.md': '- The root script builds ./packages/* first.\n',
+      'packages/db/index.ts': 'x',
+    });
+    const parsed = parseContextFile(discoveredIn('.claude/CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    expect(issues.some((i) => i.ruleId === 'paths/glob-no-match')).toBe(false);
+  });
+
+  // Resolution fix stays SCOPED: a ./-relative ref in a NON-dot subdir doc
+  // (docs/) still resolves against the doc's OWN dir only -- a coincidental
+  // root-level match must NOT rescue it (that would mask a real broken
+  // doc-relative ref).
+  it('does NOT resolve a ./-relative ref in docs/CLAUDE.md against the project root', async () => {
+    seed({
+      'docs/CLAUDE.md': '- See ./helpers/util.ts for helpers.\n',
+      'helpers/util.ts': 'x', // exists at ROOT, not under docs/
+    });
+    const parsed = parseContextFile(discoveredIn('docs/CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    expect(issues.some((i) => i.message.includes('helpers/util.ts'))).toBe(true);
   });
 });
