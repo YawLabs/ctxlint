@@ -729,4 +729,76 @@ describe('checkPaths', () => {
     const issues = await checkPaths(parsed, tmpRoot);
     expect(issues.some((i) => i.message.includes('helpers/util.ts'))).toBe(true);
   });
+
+  // ---- Issue #41 coverage: branch edges of the four guards not exercised by
+  // the cases above. ----
+
+  // Fix B2 excludes trailing-slash tokens (the `$` anchor rejects a final `/`),
+  // so a 3+ segment DIRECTORY ref is still validated -- a broken one is
+  // reported. Guards against a B2 tweak that starts swallowing dir refs.
+  it('STILL reports a broken 3+ segment directory ref (trailing slash escapes Fix B2)', async () => {
+    seed({ 'CLAUDE.md': '- Components live in src/core/deleted/ now.\n' });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    expect(
+      issues.some(
+        (i) => i.ruleId === 'paths/directory-not-found' && i.message.includes('src/core/deleted/'),
+      ),
+    ).toBe(true);
+  });
+
+  // Fix C fires only on 3+ identical uppercase letters; a 2-repeat run (`AA`) is
+  // NOT a placeholder, so the ref keeps being validated and a broken one is
+  // reported. Boundary control against the placeholder guard over-firing on
+  // legitimate short uppercase runs in real filenames.
+  it('does NOT suppress a 2-repeat uppercase segment (Fix C needs 3+ repeats)', async () => {
+    seed({ 'CLAUDE.md': '- Schema at db/AAconfig.json is loaded at boot.\n' });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    expect(issues.some((i) => i.message.includes('db/AAconfig.json'))).toBe(true);
+  });
+
+  // Resolution fix, plain (non-glob) FILE ref: a ./-relative file ref in a
+  // root-level .claude/CLAUDE.md that exists only at the project root resolves
+  // via the secondary base. This is the common real case and a different branch
+  // (fileExists) than the glob branch covered above.
+  it('resolves a ./-relative FILE ref in .claude/CLAUDE.md against the project root', async () => {
+    seed({
+      '.claude/CLAUDE.md': '- The release script is ./scripts/release.sh at the root.\n',
+      'scripts/release.sh': 'x',
+    });
+    const parsed = parseContextFile(discoveredIn('.claude/CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    // Does not exist under .claude/, but the secondary project-root base resolves it.
+    expect(issues).toHaveLength(0);
+  });
+
+  // Resolution fix keeps contextDir PRIMARY: a genuinely broken ./-ref in
+  // .claude/CLAUDE.md still reports not-found, and its autofix newText stays in
+  // the doc's coordinate space (../lib/util.ts from .claude/), NOT the
+  // root-relative form a projectRoot primaryBase would emit. Confirms the added
+  // secondary base did not shift the fix coordinate.
+  it('keeps the fix coordinate in contextDir space for a broken ./-ref in .claude/CLAUDE.md', async () => {
+    seed({
+      '.claude/CLAUDE.md': '- See ./helpers/util.ts for the helper.\n',
+      'lib/util.ts': 'x', // basename match at the project root
+    });
+    const parsed = parseContextFile(discoveredIn('.claude/CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    const notFound = issues.find((i) => i.ruleId === 'paths/not-found');
+    expect(notFound).toBeDefined();
+    expect(notFound!.fix?.newText).toBe('../lib/util.ts');
+  });
+
+  // Fix D anchoring via the ./ branch (independent of the known-first-segment
+  // branch): a ./-prefixed glob whose first segment is unknown (`meta`) is kept
+  // and, matching nothing, still emits glob-no-match.
+  it('STILL reports a broken ./-anchored glob with an unknown first segment', async () => {
+    seed({ 'CLAUDE.md': '- Snapshots match ./meta/*.snap here.\n' });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    expect(
+      issues.some((i) => i.ruleId === 'paths/glob-no-match' && i.message.includes('./meta/*.snap')),
+    ).toBe(true);
+  });
 });
