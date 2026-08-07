@@ -112,6 +112,7 @@ const SESSION_IMPL_RULE_IDS: Record<string, string[]> = {
     'session-memory-index-overflow/line-overflow',
     'session-memory-index-overflow/byte-overflow',
   ],
+  'session/shared-temp-path': ['session-shared-temp-path/shared-temp-path'],
 };
 
 describe('session catalog ids map onto implementation ruleIds', () => {
