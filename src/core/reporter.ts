@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import chalk from 'chalk';
 import {
   SESSION_AUDIT_PATH_MARKER,
@@ -77,11 +79,53 @@ function isSyntheticBucket(p: string): boolean {
   );
 }
 
+/**
+ * When the project being scanned IS a ctxlint checkout, report its declared
+ * version if it differs from the binary doing the scanning.
+ *
+ * The failure this prevents: a globally-installed CLI several patches behind
+ * the working tree silently reports findings that the checkout has already
+ * fixed. Because the output is what an agent acts on at session start, the
+ * stale result gets treated as current and someone re-investigates a closed
+ * bug. Returns the checkout's version when they disagree, else `null`.
+ *
+ * Deliberately no network call and no registry lookup -- this only fires on a
+ * self-scan, where the comparison is free and unambiguous.
+ */
+function detectVersionSkew(projectRoot: string, runningVersion: string): string | null {
+  try {
+    const pkgPath = join(projectRoot, 'package.json');
+    if (!existsSync(pkgPath)) return null;
+    // Strip a UTF-8 BOM before parsing. `JSON.parse` throws on a leading BOM,
+    // and BOM-prefixed JSON is routine on Windows (PowerShell's `Out-File
+    // -Encoding utf8` emits one), so without this the check silently
+    // self-disables on the platform where it is most likely to be needed.
+    const raw = readFileSync(pkgPath, 'utf8').replace(/^\uFEFF/, '');
+    const pkg = JSON.parse(raw) as { name?: string; version?: string };
+    const name = pkg.name ?? '';
+    if (name !== 'ctxlint' && name !== '@yawlabs/ctxlint') return null;
+    if (!pkg.version || pkg.version === runningVersion) return null;
+    return pkg.version;
+  } catch {
+    // A malformed or unreadable package.json is not worth failing a lint over.
+    return null;
+  }
+}
+
 export function formatText(result: LintResult, verbose: boolean = false): string {
   const lines: string[] = [];
 
   lines.push('');
   lines.push(chalk.bold(`ctxlint v${result.version}`));
+  const skew = detectVersionSkew(result.projectRoot, result.version);
+  if (skew !== null) {
+    lines.push(
+      chalk.yellow(
+        `  note: this checkout is v${skew} -- you are running v${result.version}. ` +
+          'Rebuild or reinstall before trusting a result against it.',
+      ),
+    );
+  }
   lines.push('');
   lines.push(`Scanning ${result.projectRoot}...`);
   lines.push('');

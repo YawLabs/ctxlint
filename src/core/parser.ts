@@ -254,20 +254,28 @@ function extractPathReferences(lines: string[], sections: Section[]): PathRefere
         continue;
       }
 
-      // Fix B -- lowercase slash-prose. Phrases like "unit/integration tests",
-      // "skill/agent path references", and "content/length router" yield tokens
-      // (`unit/integration`, `skill/agent`, `content/length`) that match
-      // PATH_PATTERN but name no file. Mirror the Capitalized/Capitalized guard
-      // above, case-relaxed: skip a lowercase single-slash `word/word` with no
-      // extension and no `./ ../ /` prefix. Conservative against false
-      // negatives -- a token whose FIRST segment is a recognized top-level /
-      // source directory (PATH_FIRST_SEGMENTS) is NOT suppressed, so real
-      // 2-segment refs (`apps/api`, `src/utils`) and a genuinely broken
-      // `src/missing` are still validated. The segment char class excludes `.`
-      // (so an extension or version like `foo.bar/baz` is not suppressed) and
-      // the leading `[a-z]` excludes `./`, `../`, `/`, and Capitalized tokens.
-      const lowerProse = /^([a-z][\w-]*)\/[a-z][\w-]*$/.exec(cleanValue);
-      if (lowerProse && !PATH_FIRST_SEGMENTS.has(lowerProse[1])) {
+      // Fix B -- 2-segment slash-prose, ANY case. Phrases like "unit/integration
+      // tests", "skill/agent path references", "content/length router", "no
+      // push/PR CI", and "the CI/build step" yield tokens (`unit/integration`,
+      // `skill/agent`, `content/length`, `push/PR`, `CI/build`) that match
+      // PATH_PATTERN but name no file.
+      //
+      // Case-AGNOSTIC on purpose. The original guard matched `[a-z]/[a-z]` and
+      // the Capitalized/Capitalized guard above matched `[A-Z]/[A-Z]`, so the
+      // two MIXED-case forms fell through the gap between them and were the
+      // last reported prose false positives (`push/PR`, `CI/build`). Case tells
+      // us nothing about whether a token is a path; the first segment does.
+      //
+      // Conservative against false negatives -- a token whose FIRST segment is a
+      // recognized top-level / source directory (PATH_FIRST_SEGMENTS) is NOT
+      // suppressed, so real 2-segment refs (`apps/api`, `src/utils`) and a
+      // genuinely broken `src/missing` are still validated. The lookup is
+      // lowercased so a capitalized real ref (`Src/utils`, `Docs/api`) is
+      // rescued too. The segment char class excludes `.` (so an extension or
+      // version like `foo.bar/baz` is not suppressed) and the leading
+      // `[A-Za-z]` still excludes `./`, `../`, and `/` prefixes.
+      const twoSegmentProse = /^([A-Za-z][\w-]*)\/[A-Za-z][\w-]*$/.exec(cleanValue);
+      if (twoSegmentProse && !PATH_FIRST_SEGMENTS.has(twoSegmentProse[1].toLowerCase())) {
         continue;
       }
 

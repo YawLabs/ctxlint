@@ -9,6 +9,7 @@ import { countTokens } from '../utils/tokens.js';
 import { checkPaths } from './checks/paths.js';
 import { checkCommands } from './checks/commands.js';
 import { checkStaleness } from './checks/staleness.js';
+import { collectSuppressions, isSuppressed } from './suppressions.js';
 import {
   checkTokens,
   checkAggregateTokens,
@@ -264,7 +265,14 @@ export async function runAudit(
           checkPromises.push(checkContentSecrets(parseResult, projectRoot));
 
         const results = await Promise.all(checkPromises);
-        const singleFileIssues = results.flat();
+        // Apply inline `<!-- ctxlint-ignore-... -->` directives here rather than
+        // inside each check: this is the single point every single-file check's
+        // output passes through, so a newly added check inherits suppression
+        // support instead of having to remember to honour it.
+        const suppressions = collectSuppressions(parseResult.content);
+        const singleFileIssues = results
+          .flat()
+          .filter((issue) => !isSuppressed(suppressions, issue));
 
         if (stat !== null) {
           setCacheEntry(absPath, {
