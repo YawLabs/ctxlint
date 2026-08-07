@@ -68,40 +68,55 @@ describe('approximateTokens (no-tiktoken fallback)', () => {
   });
 });
 
+// Resolve tiktoken OUTSIDE the test body so its absence becomes a reported
+// SKIP rather than a silent pass. The previous shape (`return` inside the
+// test when resolve() threw) made vitest report this as passing on a machine
+// without tiktoken -- a green tick for a test that never executed a single
+// assertion. `it.skipIf` is the pattern used elsewhere in this repo
+// (skill-scanner.test.ts, hook-coverage.test.ts); this was the one outlier.
+const tiktokenPath = (() => {
+  try {
+    return createRequire(import.meta.url).resolve('tiktoken');
+  } catch {
+    return null; // not installed -- the char-based fallback is already in effect
+  }
+})();
+
 describe('encoder construction failure', () => {
-  it('falls back to the char-based estimate and does not retry the throwing constructor', async () => {
-    const req = createRequire(import.meta.url);
-    let resolved: string;
-    try {
-      resolved = req.resolve('tiktoken');
-    } catch {
-      return; // tiktoken not installed -- the fallback is already in effect
-    }
-    req(resolved); // ensure the CJS cache entry exists before poisoning it
-    const mod = req.cache[resolved];
-    if (!mod) return;
-    const originalExports = mod.exports;
-    let constructorCalls = 0;
-    mod.exports = {
-      encoding_for_model: () => {
-        constructorCalls++;
-        throw new Error('encoder construction failed');
-      },
-    };
-    try {
-      // Fresh module instance so its lazy loader sees the poisoned require.
-      vi.resetModules();
-      const fresh = await import('../tokens.js');
-      // countTokens must not throw -- it falls back to the estimate...
-      expect(fresh.countTokens('hello world!')).toBe(fresh.approximateTokens('hello world!'));
-      fresh.countTokens('second call');
-      // ...and the throwing constructor is attempted once, not per call.
-      expect(constructorCalls).toBe(1);
-    } finally {
-      mod.exports = originalExports;
-      vi.resetModules();
-    }
-  });
+  it.skipIf(!tiktokenPath)(
+    'falls back to the char-based estimate and does not retry the throwing constructor',
+    async () => {
+      const req = createRequire(import.meta.url);
+      const resolved = tiktokenPath as string;
+      req(resolved); // ensure the CJS cache entry exists before poisoning it
+      const mod = req.cache[resolved];
+      // Assert rather than return: we just require()'d it, so a missing cache
+      // entry is a broken assumption worth failing on, not a reason to no-op.
+      expect(mod, 'tiktoken should be in the CJS require cache after req()').toBeTruthy();
+      if (!mod) return;
+      const originalExports = mod.exports;
+      let constructorCalls = 0;
+      mod.exports = {
+        encoding_for_model: () => {
+          constructorCalls++;
+          throw new Error('encoder construction failed');
+        },
+      };
+      try {
+        // Fresh module instance so its lazy loader sees the poisoned require.
+        vi.resetModules();
+        const fresh = await import('../tokens.js');
+        // countTokens must not throw -- it falls back to the estimate...
+        expect(fresh.countTokens('hello world!')).toBe(fresh.approximateTokens('hello world!'));
+        fresh.countTokens('second call');
+        // ...and the throwing constructor is attempted once, not per call.
+        expect(constructorCalls).toBe(1);
+      } finally {
+        mod.exports = originalExports;
+        vi.resetModules();
+      }
+    },
+  );
 });
 
 describe('freeEncoder', () => {
