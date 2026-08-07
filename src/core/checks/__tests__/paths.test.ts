@@ -571,6 +571,50 @@ describe('checkPaths', () => {
     expect(msgs.some((m) => m.includes('src/missing'))).toBe(true);
   });
 
+  // Fix B (case-agnostic): the two MIXED-case 2-segment forms used to fall
+  // through the gap between the lowercase guard (`[a-z]/[a-z]`) and the
+  // Capitalized/Capitalized guard (`[A-Z]/[A-Z]`). Observed in the wild on a
+  // real CLAUDE.md: "There is also no push/PR CI, no Dependabot" reported
+  // `push/PR does not exist`, which taught the author to reword correct prose.
+  it('suppresses MIXED-case slash-prose (lower/UPPER and UPPER/lower)', async () => {
+    seed({
+      'CLAUDE.md': [
+        '- There is also no push/PR CI, no Dependabot.',
+        '- The CI/build step runs on every tag.',
+        '- Handles the request/Response cycle.',
+        '',
+      ].join('\n'),
+    });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    const msgs = issues.map((i) => i.message);
+    expect(msgs.some((m) => m.includes('push/PR'))).toBe(false);
+    expect(msgs.some((m) => m.includes('CI/build'))).toBe(false);
+    expect(msgs.some((m) => m.includes('request/Response'))).toBe(false);
+  });
+
+  // Negative control for the case-agnostic widening: making the guard
+  // case-blind must NOT stop validating a real ref whose first segment is
+  // allow-listed but capitalized. Without the `.toLowerCase()` on the
+  // PATH_FIRST_SEGMENTS lookup, `Src/missing` would be silently suppressed.
+  it('still validates an allow-listed first segment regardless of its case', async () => {
+    seed({
+      'CLAUDE.md': [
+        '- See Src/missing for the missing one.',
+        '- See Docs/absent for the other.',
+        '- See src/core for the core.',
+        '',
+      ].join('\n'),
+      'src/core/index.ts': 'x',
+    });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    const msgs = issues.map((i) => i.message);
+    expect(msgs.some((m) => m.includes('Src/missing'))).toBe(true);
+    expect(msgs.some((m) => m.includes('Docs/absent'))).toBe(true);
+    expect(msgs.some((m) => m.includes('src/core'))).toBe(false);
+  });
+
   // `core` and `services` are recognized top-level dirs (PATH_FIRST_SEGMENTS):
   // a 2-segment lowercase ref under them is a real path ref, not prose, so a
   // broken one is still reported and an existing one resolves.
