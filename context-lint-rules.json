@@ -426,9 +426,9 @@
       "id": "hook-coverage/dead-hook",
       "category": "hook-coverage",
       "severity": "warning",
-      "description": "A PreToolUse (or other) hook command, or a permissions entry, in .claude/settings.json references a script/path that does not exist on disk. The gate silently no-ops -- Claude Code cannot run a missing script, so the protection the user believes is in place does nothing.",
-      "trigger": "A hooks.<Event>[].hooks[].command or permissions.{allow,deny,ask}[] entry contains a path-shaped token (resolved through ~, $CLAUDE_PROJECT_DIR, $CLAUDE_CONFIG_DIR, $HOME) that does not exist on disk. Entries with unresolvable env vars are skipped (cannot be verified). Scans project .claude/settings.json + settings.local.json; the user-global ~/.claude/settings.json is scanned only on explicit opt-in (--hooks-global).",
-      "message": "{origin} references \"{path}\" which does not exist on disk -- the gate silently no-ops",
+      "description": "A PreToolUse (or other) hook command, or a permissions entry, in .claude/settings.json references a script/path that does not exist on disk. The gate silently no-ops -- Claude Code cannot run a missing script, so the protection the user believes is in place does nothing. Two distinct findings share this rule: the target is genuinely absent (restore or remove the entry), or the target EXISTS but the path form does not resolve (rewrite the entry -- do not delete it). The wording and suggestion differ so the two opposite remedies are never confused.",
+      "trigger": "A hooks.<Event>[].hooks[].command or permissions.{allow,deny,ask}[] entry contains a path-shaped token (resolved through ~, $CLAUDE_PROJECT_DIR, $CLAUDE_CONFIG_DIR, $HOME) that does not exist on disk. Entries with unresolvable env vars are skipped (cannot be verified). Before reporting, alternate readings of the token are tried (MSYS drive paths with one OR two leading slashes, a stray leading slash on a repo-relative path, backslash/forward-slash flips); if one of them exists, the finding is reported as a path-form problem rather than a missing target. Scans project .claude/settings.json + settings.local.json; the user-global ~/.claude/settings.json is scanned only on explicit opt-in (--hooks-global).",
+      "message": "{origin} references \"{path}\" which does not exist on disk -- the gate silently no-ops | {origin} references \"{path}\" which does not resolve, but \"{variant}\" exists -- the path form is wrong, so the gate silently no-ops",
       "fixable": false,
       "stability": "experimental"
     },

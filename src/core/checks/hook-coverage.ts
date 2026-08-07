@@ -172,11 +172,65 @@ export function isMsysFlag(token: string): boolean {
  * Translate a Git Bash / MSYS drive path (`/c/Users/x`) to its Win32 form
  * (`c:/Users/x`) so the existence check resolves. Windows-only: on POSIX
  * `/c/...` is a genuine absolute path and must never be rewritten.
+ *
+ * A DOUBLED leading slash (`//c/Users/x`) is accepted too. Git Bash renders a
+ * drive path that way when suppressing MSYS translation, and Claude Code writes
+ * the form into settings verbatim, so it shows up in real `permissions.allow`
+ * entries. Left untranslated it looks like a UNC path, `fileExists` fails, and
+ * a live directory gets reported as a dead gate -- which has led to correct
+ * entries being deleted on the linter's advice.
+ *
+ * The single-letter capture is what keeps this safe for genuine UNC paths: a
+ * real `//host/share` has a multi-character hostname, and a one-letter UNC host
+ * is not a thing in practice. `//FLAG` tokens are handled earlier by
+ * `isMsysFlag` (no second slash, so they never reach here).
  */
 export function translateMsysDrivePath(s: string, platform: NodeJS.Platform): string {
   if (platform !== 'win32') return s;
-  const m = /^\/([A-Za-z])\/(.*)$/.exec(s);
+  const m = /^\/{1,2}([A-Za-z])\/(.*)$/.exec(s);
   return m ? `${m[1]}:/${m[2]}` : s;
+}
+
+/**
+ * A candidate did not exist as resolved. Try the small set of alternate
+ * readings of the same token; if one of them IS on disk, this is not a dead
+ * gate -- the target is present and the path FORM is wrong, which is a
+ * different fix (correct the spelling) from the dead-hook fix (restore the
+ * script or drop the entry).
+ *
+ * Reporting "does not exist on disk" for a target that is plainly there is the
+ * expensive failure mode: it reads as authoritative, and the suggested remedy
+ * ("remove the dead entry") destroys a working permission grant.
+ *
+ * Returns the first variant that exists, or null when the target really is
+ * absent under every reading.
+ */
+function findExistingVariant(
+  raw: string,
+  projectRoot: string,
+  homeDir: string,
+  platform: NodeJS.Platform,
+): string | null {
+  const token = stripMatcherWildcard(raw);
+  const variants = new Set<string>();
+
+  // Collapse or add a leading slash on drive-shaped paths, so `//c/x` and
+  // `/c/x` are each tried in the other's form.
+  if (/^\/{2}[A-Za-z]\//.test(token)) variants.add(token.slice(1));
+  if (/^\/[A-Za-z]\//.test(token)) variants.add(`/${token}`);
+  // An absolute-looking token that is really repo-relative (a leading slash
+  // typo on `.claude/hooks/gate.sh`).
+  if (token.startsWith('/') && !/^\/{1,2}[A-Za-z]\//.test(token)) {
+    variants.add(token.replace(/^\/+/, ''));
+  }
+  // Separator flip -- settings authored on the other platform.
+  if (token.includes('\\')) variants.add(token.replace(/\\/g, '/'));
+
+  for (const v of variants) {
+    const resolved = expandPath(v, projectRoot, homeDir, platform);
+    if (resolved !== null && fileExists(resolved)) return resolved;
+  }
+  return null;
 }
 
 /**
@@ -262,6 +316,23 @@ function checkSource(
     if (cand.resolved === null) return;
     if (fileExists(cand.resolved)) return;
     const where = source.isUserGlobal ? ` (in ${source.displayPath})` : '';
+
+    // The target may be present under a different spelling. Say so instead of
+    // asserting it is gone -- the fix is to correct the path, NOT to delete the
+    // entry, and the two remedies are opposites.
+    const variant = findExistingVariant(cand.raw, projectRoot, homeDir, platform);
+    if (variant !== null) {
+      issues.push({
+        severity: 'warning',
+        check: 'hook-coverage',
+        ruleId: 'hook-coverage/dead-hook',
+        line,
+        message: `${origin} references "${cand.raw}" which does not resolve${where}, but "${variant}" exists — the path form is wrong, so the gate silently no-ops`,
+        suggestion: `Rewrite the entry to use "${variant}". Do NOT delete it — the target exists; only the path form is unresolvable.`,
+      });
+      return;
+    }
+
     issues.push({
       severity: 'warning',
       check: 'hook-coverage',
