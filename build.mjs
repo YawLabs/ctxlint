@@ -71,7 +71,14 @@ await build({
   // Prefer ESM entry points when present (jsonc-parser ships UMD as `main`,
   // which uses extensionless require() that breaks inside an ESM bundle).
   mainFields: ['module', 'main'],
-  sourcemap: true,
+  // "external" writes dist/index.js.map but does NOT append a
+  // //# sourceMappingURL comment to the bundle. With plain `true` the published
+  // dist/index.js references a map that package.json `files` does not ship, so
+  // every install carries a dangling sourceMappingURL. Adding the map to
+  // `files` would fix the reference but inflates the tarball that `npx` pulls
+  // on every cold start; external keeps the map on disk for local debugging and
+  // out of the published artifact.
+  sourcemap: 'external',
   // Keep readable for debugging
   minify: false,
 });
