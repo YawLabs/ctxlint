@@ -1,0 +1,6 @@
+{
+  "name": "claim-total-vs-parts",
+  "scripts": {
+    "build": "tsc"
+  }
+}

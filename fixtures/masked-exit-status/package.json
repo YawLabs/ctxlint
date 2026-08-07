@@ -1,0 +1,12 @@
+{
+  "name": "masked-exit-status",
+  "scripts": {
+    "test": "vitest run",
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "eslint": "^9.0.0",
+    "vitest": "^2.0.0"
+  }
+}
