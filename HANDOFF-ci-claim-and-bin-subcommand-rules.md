@@ -160,28 +160,43 @@ Step 3 is the hard part and determines whether this ships. Two viable sources, i
 
 ---
 
-## Finding 4 (bug, no new rule) — catalog IDs that are never emitted
+## Finding 4 — WITHDRAWN. The premise was wrong.
 
-> **CORRECTION (later pass): this is 11 ids, not 2.** The section below was
-> written from the two `ci/*` ids found by hand. A full static scan of
-> `src/core/checks/**` against all four catalogs found **11 of 72 emitted ids
-> published nowhere** — the two `ci/*` ones plus the entire session namespace:
-> the catalogs publish eight `session/<slug>` ids under a single `session`
-> category while the checks emit nine `session-<check>/<slug>` ids. It is not a
-> pure rename: catalog `session/memory-index-overflow` is emitted as two
-> distinct ids (`line-overflow`, `byte-overflow`), so reconciling needs a shape
-> decision rather than a string swap.
+> **RETRACTED.** This section originally claimed the catalog was wrong because
+> it publishes `ci/no-release-docs` while the checks emit
+> `ci-coverage/no-release-docs`, and a later pass escalated it to "11 of 72
+> emitted ids are published nowhere" after finding the same shape across the
+> session pillar.
 >
-> `src/core/__tests__/catalog-emitter-parity.test.ts` now enforces this, with
-> the 11 frozen in a `KNOWN_DIVERGENCES` ratchet so NEW drift fails immediately
-> while the published-API decision stays open. A second test asserts the
-> ratchet only shrinks, and a third guards the static scan from silently
-> matching nothing. Entries should only ever be removed.
+> **Both claims were wrong.** The two-level scheme is deliberate and
+> documented. `AGENT_SESSION_LINT_SPEC.md` section 3 ("Catalog rule IDs vs.
+> reference-implementation ruleIds", line 352) states it outright: catalog IDs
+> use the pillar-stable `session/<slug>` form and are "the cross-tool names to
+> use in documentation, configuration, and issue reports", while the reference
+> implementation namespaces the `ruleId` it emits in `--format json` by check
+> module. The spec publishes the full correspondence table, and
+> `src/core/__tests__/catalog-consistency.test.ts:94-137` pins it in both
+> directions — catalog-to-map and map-to-emitted-literals — so neither side can
+> drift silently. That test is exactly the guard I thought was missing.
 >
-> The reconciliation itself is deliberately NOT done here — it changes
-> published rule IDs, and this repo had concurrent agent work in flight.
+> A `catalog-emitter-parity.test.ts` was added on this premise and has been
+> removed; the catalog edits it motivated were reverted. Anyone reading the
+> earlier version of this section should ignore it.
+>
+> **The one real (and small) residue:** the `ci` pillar uses the same two-level
+> scheme as `session` but has no published correspondence table. The session
+> mapping is documented in its spec and pinned by a test; the `ci/*` pair is
+> only described as a "legacy" prefix exception in `CONTRIBUTING.md:72` and
+> `catalog-schema.test.ts:20-29`, with nothing stating that
+> `ci/no-release-docs` corresponds to the emitted `ci-coverage/no-release-docs`.
+> That is a documentation gap worth closing — add the pair to
+> `CONTEXT_LINT_SPEC.md` in the same shape as the session table — not a bug.
+>
+> Lesson for the next agent: a rule ID appearing in a catalog but not in
+> `grep -r "ruleId:" src/` is NOT evidence of drift in this repo. Check the
+> pillar's spec section 3 and `catalog-consistency.test.ts` first.
 
-**The shipped catalog is wrong for these ids.**
+**Original text follows, retained only so the retraction has context. Do not act on it.**
 
 | Catalog `id` | Emitted `ruleId` |
 |---|---|
