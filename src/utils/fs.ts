@@ -2,6 +2,13 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 export interface PackageJson {
+  name?: string;
+  /**
+   * npm `bin`: the string form is named after the package, the object form
+   * maps on-PATH command names to entry paths. Read by
+   * `commands/unknown-subcommand` to learn which binaries a project owns.
+   */
+  bin?: string | Record<string, string>;
   scripts?: Record<string, string>;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;

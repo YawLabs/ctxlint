@@ -120,6 +120,7 @@ const SESSION_IMPL_RULE_IDS: Record<string, string[]> = {
   'session/default-branch-accumulation': [
     'session-default-branch-accumulation/default-branch-accumulation',
   ],
+  'session/unresolvable-sha': ['session-unresolvable-sha/unresolvable-sha'],
 };
 
 describe('session catalog ids map onto implementation ruleIds', () => {

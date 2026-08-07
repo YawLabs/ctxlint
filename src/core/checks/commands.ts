@@ -2,6 +2,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parse as parseJsonc } from 'jsonc-parser';
 import { loadPackageJson, stripBom } from '../../utils/fs.js';
+import { analyzeMaskedExitStatus, pipefailInScope } from './exit-status.js';
+import { findBinInvocations, knownSubcommands, ownedBins } from './cli-subcommands.js';
 import type { ParsedContextFile, LintIssue } from '../types.js';
 
 // Match npm/pnpm/yarn/bun script invocations. `run` is required for npm
@@ -194,8 +196,7 @@ function loadDeniedCommandPrefixes(projectRoot: string): string[] {
       continue; // missing file is expected
     }
     const data = parseJsonc(content, [], { allowTrailingComma: true }) as
-      | { permissions?: { deny?: unknown } }
-      | undefined;
+      { permissions?: { deny?: unknown } } | undefined;
     const deny = data?.permissions?.deny;
     if (!Array.isArray(deny)) continue;
     for (const entry of deny) {
@@ -247,8 +248,33 @@ export async function checkCommands(
     }
   }
 
+  issues.push(...checkUnknownSubcommand(file, projectRoot, pkgJson));
+
   for (const ref of file.references.commands) {
     const cmd = ref.value;
+
+    // commands/exit-status-masked -- runs BEFORE the dispatch below and does
+    // not `continue`, because the masked pipelines are also npx/script/tool
+    // references and every one of those branches short-circuits the loop.
+    // A finding here is about the command's SHAPE, not its resolvability, so
+    // the two are independent and may both fire on one line.
+    const masked = analyzeMaskedExitStatus(cmd, pkgJson?.scripts);
+    if (masked && !pipefailInScope(file.content, ref.line)) {
+      const why =
+        masked.kind === 'success-claim'
+          ? 'the success claim cannot fail'
+          : '`$?` reports the filter, not the verifier';
+      issues.push({
+        severity: 'warning',
+        check: 'commands',
+        ruleId: 'commands/exit-status-masked',
+        line: ref.line,
+        message: `"${cmd}" — exit status comes from "${masked.filter}", not "${masked.verifier}"; ${why}`,
+        suggestion:
+          'Add `set -o pipefail` before the pipeline, drop the filter, or read ' +
+          '`${PIPESTATUS[0]}` instead of `$?`.',
+      });
+    }
 
     // Check npm/pnpm/yarn script references
     const scriptMatch = cmd.match(NPM_SCRIPT_PATTERN);
@@ -378,6 +404,54 @@ export async function checkCommands(
     }
   }
 
+  return issues;
+}
+
+/**
+ * commands/unknown-subcommand -- a documented invocation of THIS project's own
+ * binary using a subcommand the CLI does not implement.
+ *
+ * Emits nothing unless the CLI's subcommand set resolved with confidence (see
+ * cli-subcommands.ts for the tiered resolver and its bail-outs). Severity is
+ * `error`: unlike a missing npm script, which fails loudly, an unknown
+ * subcommand on an MCP server binary falls through to stdio startup and hangs.
+ */
+function checkUnknownSubcommand(
+  file: ParsedContextFile,
+  projectRoot: string,
+  pkgJson: ReturnType<typeof loadPackageJson>,
+): LintIssue[] {
+  const bins = ownedBins(pkgJson);
+  if (bins.length === 0) return [];
+
+  const invocations = findBinInvocations(file.content, new Set(bins.map((b) => b.name)));
+  if (invocations.length === 0) return [];
+
+  // Resolve each bin's dispatch table at most once per file.
+  const resolved = new Map<string, Set<string> | null>();
+  const issues: LintIssue[] = [];
+
+  for (const inv of invocations) {
+    if (!resolved.has(inv.bin)) {
+      const bin = bins.find((b) => b.name === inv.bin);
+      resolved.set(inv.bin, bin ? knownSubcommands(projectRoot, bin.entry) : null);
+    }
+    const known = resolved.get(inv.bin);
+    // null = the dispatch could not be read as a closed set. Silence beats a
+    // confident-but-wrong "that subcommand does not exist".
+    if (!known || known.size === 0) continue;
+    if (known.has(inv.sub)) continue;
+
+    const listed = [...known].sort().join(', ');
+    issues.push({
+      severity: 'error',
+      check: 'commands',
+      ruleId: 'commands/unknown-subcommand',
+      line: inv.line,
+      message: `"${inv.cmd}" — "${inv.sub}" is not a subcommand of ${inv.bin} (known: ${listed})`,
+      suggestion: `Use one of the subcommands ${inv.bin} implements, or remove the invocation.`,
+    });
+  }
   return issues;
 }
 

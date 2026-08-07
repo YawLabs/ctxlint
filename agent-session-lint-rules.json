@@ -134,6 +134,16 @@
       "message": "{count} files edited on '{branch}' with no intervening commit",
       "fixable": false,
       "stability": "stable"
+    },
+    {
+      "id": "session/unresolvable-sha",
+      "category": "session",
+      "severity": "warning",
+      "description": "A memory cites a git SHA that does not resolve in the repository.",
+      "trigger": "A 7-40 character hex token outside code fences, preceded on the same line by a commit-citation cue (commit, SHA, HEAD, landed in, reverted, ...), does not resolve via git cat-file. UUID members, digest prefixes, decimal ids and version fragments are excluded before resolution; without a git repository the rule reports nothing.",
+      "message": "cited commit {sha} does not resolve in this repository",
+      "fixable": false,
+      "stability": "experimental"
     }
   ],
   "dataSources": [

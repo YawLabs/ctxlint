@@ -171,6 +171,26 @@
       "stability": "stable"
     },
     {
+      "id": "commands/exit-status-masked",
+      "category": "commands",
+      "severity": "warning",
+      "description": "A verification command's exit status is discarded by a pipe into a filter, so the success claim that follows cannot fail.",
+      "trigger": "A verifier (tsc, eslint, biome, vitest, pytest, cargo test, or an npm/pnpm/yarn/bun script resolving to one) heads a pipeline whose last stage is a filter or pager (head, tail, grep, sed, awk, less, cat, tee, wc), and the pipeline is followed by && plus a success-announcing echo/printf, or by an echo of $?, with no set -o pipefail in scope.",
+      "message": "\"{cmd}\" — exit status comes from \"{filter}\", not \"{verifier}\"; the success claim cannot fail",
+      "fixable": false,
+      "stability": "experimental"
+    },
+    {
+      "id": "commands/unknown-subcommand",
+      "category": "commands",
+      "severity": "error",
+      "description": "A documented invocation of the project's own binary uses a subcommand the CLI does not implement.",
+      "trigger": "A command invokes a name declared in package.json#bin with a leading non-flag argument that is not in the CLI's known subcommand set, where that set was statically resolved as closed from the entry file.",
+      "message": "\"{cmd}\" — \"{sub}\" is not a subcommand of {bin} (known: {known})",
+      "fixable": false,
+      "stability": "experimental"
+    },
+    {
       "id": "staleness/stale",
       "category": "staleness",
       "severity": "warning",

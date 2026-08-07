@@ -15,7 +15,7 @@ This specification defines a standard set of lint rules for validating AI agent 
 
 The specification includes:
 - A complete reference of context file formats across 16 AI coding clients (21+ file patterns)
-- 39 lint rules organized into 12 categories with defined severities
+- 41 lint rules organized into 12 categories with defined severities
 - A machine-readable rule and format catalog ([`context-lint-rules.json`](./context-lint-rules.json))
 - Auto-fix definitions for rules that support automated correction
 - Frontmatter schema requirements per client
@@ -305,7 +305,7 @@ Context files consume an agent's context window. Counting tokens helps teams und
 
 ## 3. Lint Rules
 
-39 rules organized into 12 categories.
+41 rules organized into 12 categories.
 
 Severity levels:
 - **error** — the context file has a verifiably incorrect reference or invalid metadata. Should fail CI.
@@ -340,12 +340,48 @@ Validates that commands referenced in context files are actually available in th
 | `commands/npx-not-in-deps` | warning | `npx` package is not in dependencies or `node_modules/.bin` | `"{cmd}" — "{pkg}" not found in dependencies` |
 | `commands/tool-not-found` | warning | Common tool (`vitest`, `jest`, `eslint`, etc.) is not in dependencies or `node_modules/.bin` | `"{cmd}" — "{tool}" not found in dependencies or node_modules/.bin` |
 | `commands/package-json-missing` | info | `package.json` is missing or unparseable AND the file references at least one command that would otherwise have been validated | `package.json missing or unparseable — command checks skipped` |
+| `commands/exit-status-masked` | warning | A verifier heads a pipeline whose last stage is a filter, and the pipeline is followed by a success claim that reads the filter's status | `"{cmd}" — exit status comes from "{filter}", not "{verifier}"; the success claim cannot fail` |
+| `commands/unknown-subcommand` | error | A documented invocation of a `package.json#bin` binary uses a subcommand the CLI does not dispatch | `"{cmd}" — "{sub}" is not a subcommand of {bin} (known: {known})` |
 
 **Notes:**
 - For `script-not-found`, include available scripts in the suggestion when possible.
 - For `npx-not-in-deps`, suggest adding to `devDependencies`.
 - Shorthand commands (`npm test`, `pnpm build`) should be validated against scripts as well.
 - When `package.json` can't be loaded, all script/shorthand/npx/tool validation silently skips. Surface that once per file via `package-json-missing` so the skip isn't invisible.
+
+#### `commands/exit-status-masked`
+
+A shell pipeline's exit status is the **last** command's. So `npx tsc --noEmit | head -20 && echo "tsc clean"` reports `head`'s success: the `&&` fires and prints `tsc clean` over a real type error. The same discard happens with `npx biome check src/ 2>&1 | tail -5; echo "exit=$?"` — that `$?` is `tail`'s status, not biome's. Context files and skills are full of copy-paste verification snippets, and this class converts "prove it works" into "print that it works."
+
+All four conditions must hold, which is what keeps the rule quiet:
+
+1. The pipeline's **first** command is a verifier: `tsc`, `eslint`, `biome`, `vitest`, `jest`, `pytest`, `mypy`, `ruff`, `oxlint`, `cargo test|clippy|check`, `go test|vet|build`, or an `npm|pnpm|yarn|bun [run] <script>` whose script body starts with one. Wrappers (`npx`, `pnpm exec`, `sudo`, leading `VAR=value` assignments) are stripped first.
+2. The pipeline's **last** stage is a filter or pager: `head`, `tail`, `grep`, `egrep`, `fgrep`, `sed`, `awk`, `less`, `more`, `cat`, `tee`, `wc`.
+3. The pipeline is followed by either `&&` plus a success-announcing `echo`/`printf` (matching `ok`, `clean`, `pass`, `green`, `success`, `done`, ...), or by an `echo`/`printf` of `$?` after `&&` or `;`. A read of `${PIPESTATUS[0]}` is the documented fix and is exempt.
+4. No `set -o pipefail` (in any spelling: `-o`, `-eo`, `-euo`) earlier in the same fenced code block, or earlier in the same command line.
+
+`grep` is in the filter set even though `... | grep -q x && echo found` is a deliberate gate: piping a *verifier* into grep and then announcing success inverts the meaning, since grep exits 0 when it **finds** something — `tsc | grep error && echo clean` prints "clean" precisely when there are errors.
+
+Reading output through a pager with no success claim (`npm test | tail -50`) is normal and must stay silent. **Suggested fix:** `set -o pipefail`, drop the filter, or read `${PIPESTATUS[0]}`.
+
+Sibling rule: [`session/unverified-gate-claimed-clean`](./AGENT_SESSION_LINT_SPEC.md#210-sessionunverified-gate-claimed-clean) is the *dynamic* half — it reads a transcript where a structurally-fine gate crashed and the session signed off on it anyway.
+
+#### `commands/unknown-subcommand`
+
+`commands/*` validates `npm run` script names, make targets and npx packages. It does not validate subcommands of the binary the repo itself ships. Two MCP server projects independently shipped a release script telling operators to verify a freshly built binary with `<bin> doctor --json` — no such subcommand existed. Worse than a no-op: unknown args fall through to stdio server startup, so the verification step blocks forever and reads as a hang. Hence `error`, not `warning`.
+
+**Detection algorithm:**
+
+1. Build the owned-binary set from `package.json#bin` — the keys (object form), or the unscoped package name (string form).
+2. Scan the context file for invocations of those names. Implementations should do this **independently of the general command extractor** described in §2.2: that extractor gates on a fixed tool list, so `./bin/tailscale-mcp doctor` is never extracted and a rule built on it ships inert. Recognize the bin name at the head of a command in a shell-tagged or untagged fence, after a `$`/`>` prompt, or inside inline backticks; strip path prefixes, a `.exe`/`.cmd`/`.js` extension, and delegating runners (`npx`, `bunx`, `pnpm exec`). HTML comments are skipped — they carry commentary *about* commands.
+3. Take the first following argument that is not flag-shaped. It must be a bareword (`[a-z][a-z0-9:_-]*`); a path or filename means the binary takes a positional argument, not a subcommand.
+4. Resolve the CLI's known subcommand set by statically scanning the bin's entry file, tiered:
+   - **Commander** — `.command('<name>')` string literals.
+   - **Hand-rolled `process.argv[2]` dispatch** — accepted only when the set is **closed**: every comparison against the argv token (or a variable directly assigned from it) is against a string literal, a `switch` `case` literal, or a literal-array `.includes()`. Comparisons against `undefined`/`null` don't open the set.
+   - **Bail silently** the moment the dispatch is open: the token compared against a variable, used as a lookup key, passed through `Object.keys`, tested with `in` / `hasOwnProperty`, or `.includes()`d on a non-literal receiver.
+5. **Emit nothing** when the set could not be resolved, when the entry file is missing, or when the entry looks bundled or minified (size or line-length threshold). A wrong "that subcommand does not exist" is worse than silence, because the reader's correct doc looks broken. A thin `bin/foo.js` shim may be followed one hop to the real entry.
+
+**Never execute the binary** with `--help` to discover subcommands. The motivating bug is a CLI that *hangs* on unrecognized input; shelling out to it is how a linter inherits that hang.
 
 ### 3.3 staleness — freshness detection
 
