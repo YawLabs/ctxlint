@@ -518,3 +518,58 @@ describe('mcpFileHasMcpKey peek (fix 2)', () => {
     expect(files.map((f) => f.relativePath)).not.toContain('~/.claude.json');
   });
 });
+
+describe('scanForContextFiles exclude option', () => {
+  // Root CLAUDE.md plus two files under fixtures/ -- one at the top level of
+  // that dir and one nested, so a `fixtures/**` glob has to match both depths.
+  beforeEach(() => {
+    fs.writeFileSync(path.join(tmpDir, 'CLAUDE.md'), '# Root\n');
+    fs.mkdirSync(path.join(tmpDir, 'fixtures', 'nested'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'fixtures', 'AGENTS.md'), '# Fixture\n');
+    fs.writeFileSync(path.join(tmpDir, 'fixtures', 'nested', 'CLAUDE.md'), '# Nested fixture\n');
+  });
+
+  it('drops every file under an excluded glob, at any depth', async () => {
+    const files = await scanForContextFiles(tmpDir, { exclude: ['fixtures/**'] });
+    expect(files.map((f) => f.relativePath)).toEqual(['CLAUDE.md']);
+  });
+
+  it('keeps everything when exclude is omitted', async () => {
+    const files = await scanForContextFiles(tmpDir);
+    expect(files.map((f) => f.relativePath).sort()).toEqual([
+      'CLAUDE.md',
+      'fixtures/AGENTS.md',
+      'fixtures/nested/CLAUDE.md',
+    ]);
+  });
+
+  it('treats an empty exclude array as no exclusion', async () => {
+    const files = await scanForContextFiles(tmpDir, { exclude: [] });
+    expect(files.length).toBe(3);
+  });
+
+  it('excludes only what the glob matches', async () => {
+    // Negative control: a glob aimed at the nested dir must leave the sibling
+    // fixture file alone, so a broad `fixtures/**` is not the only thing tested.
+    const files = await scanForContextFiles(tmpDir, { exclude: ['fixtures/nested/**'] });
+    expect(files.map((f) => f.relativePath).sort()).toEqual(['CLAUDE.md', 'fixtures/AGENTS.md']);
+  });
+
+  it('matches dotted directories (picomatch dot:true)', async () => {
+    // Without { dot: true } inside matchesGlob, `.claude/**` silently matches
+    // nothing and the exclusion looks configured but does nothing.
+    fs.mkdirSync(path.join(tmpDir, '.claude', 'rules'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.claude', 'rules', 'a.md'), '# Rule\n');
+    const withExclude = await scanForContextFiles(tmpDir, { exclude: ['.claude/**'] });
+    expect(withExclude.map((f) => f.relativePath)).not.toContain('.claude/rules/a.md');
+    const without = await scanForContextFiles(tmpDir);
+    expect(without.map((f) => f.relativePath)).toContain('.claude/rules/a.md');
+  });
+
+  it('accepts multiple globs', async () => {
+    const files = await scanForContextFiles(tmpDir, {
+      exclude: ['fixtures/AGENTS.md', 'fixtures/nested/**'],
+    });
+    expect(files.map((f) => f.relativePath)).toEqual(['CLAUDE.md']);
+  });
+});

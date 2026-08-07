@@ -149,6 +149,7 @@ server.tool(
       const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_CHECKS;
       const config = safeLoadConfig(root);
       const result = await runAudit(root, activeChecks, {
+        exclude: config?.exclude,
         ignoreRules: config?.ignoreRules,
       });
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
@@ -304,6 +305,7 @@ server.tool(
       const activeChecks = checks?.length ? (checks as CheckName[]) : ALL_CHECKS;
       const config = safeLoadConfig(root);
       const result = await runAudit(root, activeChecks, {
+        exclude: config?.exclude,
         ignoreRules: config?.ignoreRules,
       });
       const fixSummary = applyFixes(result, { quiet: true, dryRun: dryRun ?? false });
@@ -321,6 +323,7 @@ server.tool(
         resetPathsCache();
         resetPackageJsonCache();
         const postFix = await runAudit(root, activeChecks, {
+          exclude: config?.exclude,
           ignoreRules: config?.ignoreRules,
         });
         remaining = postFix.summary;

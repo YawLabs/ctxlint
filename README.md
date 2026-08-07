@@ -386,11 +386,16 @@ Create a `.ctxlintrc` or `.ctxlintrc.json` in your project root:
     "tierBreakdown": 1000,
     "tierAggregate": 4000
   },
-  "contextFiles": ["CONVENTIONS.md", "docs/ai-rules.md"]
+  "contextFiles": ["CONVENTIONS.md", "docs/ai-rules.md"],
+  "exclude": ["fixtures/**", "examples/**"]
 }
 ```
 
 The `contextFiles` array adds custom file patterns to scan alongside the built-in list. Useful for project-specific context files like `CONVENTIONS.md`.
+
+The `exclude` array is its counterpart: globs of context files to drop from the scan entirely. Use it for files that are not this project's agent context at all — test fixtures, example projects, vendored templates.
+
+`exclude` removes **files**, where `ignore` / `ignoreRules` / `.ctxlintignore` suppress **findings**. That distinction matters for the cross-file checks: `contradictions` and `redundancy/duplicate-content` compare the discovered set and report against the literal `(project)` path, which no per-file glob can match. Excluding the files is the only way to silence a conflict between two files you never wanted linted. Reach for `.ctxlintignore` when a real context file has one noisy finding; reach for `exclude` when the file shouldn't be in the corpus.
 
 ### Config Reference
 
@@ -407,6 +412,7 @@ The `contextFiles` array adds custom file patterns to scan alongside the built-i
 | `tokenThresholds.tierBreakdown` | `number`   | `1000`     | Always-loaded file threshold for `tier-tokens/section-breakdown`.                                                                                                                                         |
 | `tokenThresholds.tierAggregate` | `number`   | `4000`     | Combined always-loaded threshold for `tier-tokens/aggregate`.                                                                                                                                             |
 | `contextFiles`                  | `string[]` | `[]`       | Extra glob patterns to scan alongside the built-in list.                                                                                                                                                  |
+| `exclude`                       | `string[]` | `[]`       | Globs of context files to drop from the scan entirely, matched against each file's project-relative path. Removes files rather than suppressing findings, so excluded files are also invisible to the cross-file checks. |
 | `mcp`                           | `boolean`  | `false`    | Enable MCP config checks by default (same as `--mcp`).                                                                                                                                                    |
 | `mcpOnly`                       | `boolean`  | `false`    | Run only MCP config checks, skip context-file checks (same as `--mcp-only`).                                                                                                                              |
 | `mcpGlobal`                     | `boolean`  | `false`    | Also scan user/global MCP configs (same as `--mcp-global`).                                                                                                                                               |

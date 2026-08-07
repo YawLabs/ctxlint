@@ -110,6 +110,7 @@ export async function runCli() {
         const auditOptions = {
           depth: options.depth,
           extraPatterns: config?.contextFiles,
+          exclude: config?.exclude,
           mcp: options.mcp,
           mcpGlobal: options.mcpGlobal,
           mcpOnly: options.mcpOnly,
@@ -325,6 +326,7 @@ export async function runCli() {
               const result = await runAudit(resolvedPath, liveActiveChecks, {
                 depth: liveOptions.depth,
                 extraPatterns: liveConfig?.contextFiles,
+                exclude: liveConfig?.exclude,
                 mcp: liveOptions.mcp,
                 mcpGlobal: liveOptions.mcpGlobal,
                 mcpOnly: liveOptions.mcpOnly,

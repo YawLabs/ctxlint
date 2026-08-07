@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { glob } from 'glob';
 import { isSymlink, readSymlinkTarget } from '../utils/fs.js';
+import { matchesGlob } from './ignore-file.js';
 
 const CONTEXT_FILE_PATTERNS = [
   // Claude Code
@@ -99,6 +100,19 @@ const ALLOWED_DOT_DIRS = new Set([
 export interface ScanOptions {
   depth?: number;
   extraPatterns?: string[];
+  /**
+   * Globs matched against each discovered file's project-relative path. A match
+   * drops the file from the corpus entirely, so it produces no findings AND is
+   * invisible to the cross-file checks (contradictions, duplicate-content),
+   * which compare only what discovery returned.
+   *
+   * That corpus-level drop is the point, and it is why exclusion lives here
+   * rather than in `.ctxlintignore`: an ignore-file rule is `checkName
+   * [fileGlob]`, so it can suppress per-file findings but cannot reach a
+   * project-level finding, whose FileResult path is the literal `(project)`
+   * and matches no path glob.
+   */
+  exclude?: string[];
 }
 
 export interface DiscoveredFile {
@@ -157,6 +171,17 @@ function isExcludedScanTarget(
   return false;
 }
 
+/**
+ * True when `relativePath` (forward-slash form) matches any of the `exclude`
+ * globs. Deliberately shares `matchesGlob` with the .ctxlintignore path so both
+ * surfaces agree on glob semantics -- notably `{ dot: true }`, without which
+ * `.claude/**` would silently match nothing.
+ */
+function isExcludedByGlob(relativePath: string, exclude: string[] | undefined): boolean {
+  if (!exclude || exclude.length === 0) return false;
+  return exclude.some((pattern) => matchesGlob(relativePath, pattern));
+}
+
 export async function scanForContextFiles(
   projectRoot: string,
   options: ScanOptions = {},
@@ -208,6 +233,10 @@ export async function scanForContextFiles(
       const relativePath = path.relative(projectRoot, normalized);
       const symlink = isSymlink(normalized);
       if (isExcludedScanTarget(normalized, realRoot, symlink)) continue;
+      // Match the exclude globs against the forward-slash form, the same shape
+      // stored on DiscoveredFile.relativePath -- `path.relative` yields
+      // backslashes on Windows, and a `fixtures/**` glob would never match them.
+      if (isExcludedByGlob(relativePath.replace(/\\/g, '/'), options.exclude)) continue;
       const target = symlink ? readSymlinkTarget(normalized) : undefined;
 
       found.push({

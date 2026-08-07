@@ -114,6 +114,17 @@ export const ALL_SKILL_CHECKS: SkillCheckName[] = [
 export interface AuditOptions {
   depth?: number;
   extraPatterns?: string[];
+  /**
+   * Globs of context files to drop before any check runs (config key
+   * `exclude`). Removes files from the corpus rather than suppressing their
+   * findings, so excluded files are also invisible to the cross-file checks.
+   * See ScanOptions.exclude for why this is not expressible as an ignore rule.
+   *
+   * Consulted only when context checks run. The `mcpOnly` / `sessionOnly` /
+   * `skillsOnly` modes never reach context discovery, so callers in those modes
+   * deliberately do not forward it.
+   */
+  exclude?: string[];
   mcp?: boolean;
   mcpGlobal?: boolean;
   mcpOnly?: boolean;
@@ -219,6 +230,7 @@ export async function runAudit(
     const discovered = await scanForContextFiles(projectRoot, {
       depth: options.depth,
       extraPatterns: options.extraPatterns,
+      exclude: options.exclude,
     });
 
     // Incremental file cache: stat each discovered file and reuse cached

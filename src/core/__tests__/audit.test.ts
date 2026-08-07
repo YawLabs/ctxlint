@@ -1,4 +1,6 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { runAudit } from '../audit.js';
 import { _resetRedundancyCachesForTesting } from '../checks/redundancy.js';
@@ -85,5 +87,63 @@ describe('runAudit ignoreRules partitioning', () => {
     );
     expect(expressAnywhere).toHaveLength(0);
     expect(result._meta?.ignoreReport?.dropped).toBeGreaterThan(0);
+  });
+});
+
+describe('runAudit exclude', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    _resetRedundancyCachesForTesting();
+    resetPathsCache();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-exclude-'));
+    // Two context files that contradict each other, both under fixtures/.
+    // Their conflict is reported project-wide, against the literal '(project)'
+    // path -- the finding class that no per-file suppression can reach.
+    fs.mkdirSync(path.join(tmpDir, 'fixtures', 'contradicting'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, 'fixtures', 'contradicting', 'AGENTS.md'),
+      '# A\n\nUse Jest for testing.\n',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, 'fixtures', 'contradicting', 'CLAUDE.md'),
+      '# B\n\nUse Vitest for testing.\n',
+    );
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const contradictionsIn = (result: Awaited<ReturnType<typeof runAudit>>) =>
+    result.files.flatMap((f) => f.issues.filter((i) => i.check === 'contradictions'));
+
+  it('control: without exclude the cross-file conflict is reported at (project)', async () => {
+    const result = await runAudit(tmpDir, ['contradictions']);
+    expect(contradictionsIn(result).length).toBeGreaterThan(0);
+    expect(result.files.some((f) => f.path === '(project)')).toBe(true);
+  });
+
+  it('removes excluded files from the corpus, silencing the (project) finding', async () => {
+    // The point of excluding at SCAN time rather than suppressing findings:
+    // the cross-file checks compare only what discovery returned, so dropping
+    // both operands is what makes the project-level conflict go away.
+    const result = await runAudit(tmpDir, ['contradictions'], { exclude: ['fixtures/**'] });
+    expect(contradictionsIn(result)).toHaveLength(0);
+    const norm = (p: string) => p.replace(/\\/g, '/');
+    expect(result.files.some((f) => norm(f.path).startsWith('fixtures/'))).toBe(false);
+  });
+
+  it('still reports a conflict when only one operand is excluded', async () => {
+    // Negative control: exclusion must not be a blanket off-switch for the
+    // check. A file left in the corpus that conflicts with a NON-excluded
+    // sibling is still reported.
+    fs.writeFileSync(path.join(tmpDir, 'CLAUDE.md'), '# Root\n\nUse Vitest for testing.\n');
+    fs.writeFileSync(
+      path.join(tmpDir, 'AGENTS.md'),
+      '# Root agents\n\nUse Jest for testing.\n',
+    );
+    const result = await runAudit(tmpDir, ['contradictions'], { exclude: ['fixtures/**'] });
+    expect(contradictionsIn(result).length).toBeGreaterThan(0);
   });
 });

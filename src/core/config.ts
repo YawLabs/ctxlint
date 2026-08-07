@@ -21,6 +21,21 @@ export interface CtxlintConfig {
     tierAggregate?: number;
   };
   contextFiles?: string[];
+  /**
+   * Globs of context files to drop from the corpus before any check runs.
+   * The counterpart to `contextFiles`, which ADDS discovery patterns.
+   *
+   * Unlike `ignore` / `ignoreRules` / `.ctxlintignore` -- all of which suppress
+   * FINDINGS after the fact -- this removes the FILES, so an excluded file is
+   * also invisible to the cross-file checks (contradictions, duplicate-content)
+   * that compare the discovered set. Those report against the literal
+   * `(project)` path and so cannot be silenced by any per-file suppression.
+   *
+   * The motivating case is a repo whose fixtures are deliberately-broken
+   * context files: linting them is noise, but they are not this project's
+   * agent context in the first place.
+   */
+  exclude?: string[];
   mcp?: boolean;
   mcpOnly?: boolean;
   mcpGlobal?: boolean;
@@ -46,6 +61,7 @@ const KNOWN_CONFIG_KEYS = [
   'strict',
   'tokenThresholds',
   'contextFiles',
+  'exclude',
   'mcp',
   'mcpOnly',
   'mcpGlobal',
