@@ -39,6 +39,7 @@ import { checkMemoryIndexOverflow } from './checks/session/memory-index-overflow
 import { checkSharedTempPath } from './checks/session/shared-temp-path.js';
 import { checkUnverifiedGateClaimedClean } from './checks/session/unverified-gate-claimed-clean.js';
 import { checkDefaultBranchAccumulation } from './checks/session/default-branch-accumulation.js';
+import { checkUnresolvableSha } from './checks/session/unresolvable-sha.js';
 import { checkCiCoverage } from './checks/ci-coverage.js';
 import { checkCiSecrets } from './checks/ci-secrets.js';
 import { checkContentSecrets } from './checks/content-secrets.js';
@@ -99,6 +100,7 @@ export const ALL_SESSION_CHECKS: SessionCheckName[] = [
   'session-shared-temp-path',
   'session-unverified-gate-claimed-clean',
   'session-default-branch-accumulation',
+  'session-unresolvable-sha',
 ];
 
 export const ALL_SKILL_CHECKS: SkillCheckName[] = [
@@ -252,7 +254,8 @@ export async function runAudit(
 
         // Run single-file checks now and cache the results.
         const checkPromises: Promise<LintIssue[]>[] = [];
-        if (activeChecks.includes('paths')) checkPromises.push(checkPaths(parseResult, projectRoot));
+        if (activeChecks.includes('paths'))
+          checkPromises.push(checkPaths(parseResult, projectRoot));
         if (activeChecks.includes('commands'))
           checkPromises.push(checkCommands(parseResult, projectRoot));
         if (activeChecks.includes('staleness'))
@@ -457,6 +460,8 @@ export async function runAudit(
         sessionPromises.push(checkUnverifiedGateClaimedClean(sessionCtx));
       if (sessionChecksToRun.includes('session-default-branch-accumulation'))
         sessionPromises.push(checkDefaultBranchAccumulation(sessionCtx));
+      if (sessionChecksToRun.includes('session-unresolvable-sha'))
+        sessionPromises.push(checkUnresolvableSha(sessionCtx));
 
       const sessionResults = await Promise.all(sessionPromises);
       const sessionIssues = sessionResults.flat();
@@ -512,9 +517,7 @@ export async function runAudit(
   // applyIgnoreRules() pass. Glob-scoped rules are pre-filtered per FileResult:
   // each rule is applied only to the file(s) whose path matches the glob,
   // suppressing matching issues before they reach the flat pass.
-  const fileIgnoreRules: IgnoreFileRule[] = options.noIgnoreFile
-    ? []
-    : loadIgnoreFile(projectRoot);
+  const fileIgnoreRules: IgnoreFileRule[] = options.noIgnoreFile ? [] : loadIgnoreFile(projectRoot);
   const globScopedRules = fileIgnoreRules.filter((r) => r._fileGlob !== undefined);
   const globalFileRules: IgnoreRule[] = fileIgnoreRules
     .filter((r) => r._fileGlob === undefined)
@@ -560,10 +563,7 @@ export async function runAudit(
   // pass across the whole audit -- so apply rules to the flattened issue
   // stream once, then partition kept issues back per FileResult by position.
   // Merge config-based rules with global (non-glob) file rules from .ctxlintignore.
-  const allIgnoreRules: IgnoreRule[] = [
-    ...(options.ignoreRules ?? []),
-    ...globalFileRules,
-  ];
+  const allIgnoreRules: IgnoreRule[] = [...(options.ignoreRules ?? []), ...globalFileRules];
   let ignoreReport: IgnoreReport | undefined;
   if (allIgnoreRules.length > 0 || globDropped > 0) {
     let flatDropped = 0;
@@ -679,25 +679,25 @@ export async function runAuditOnContent(
     // extraPatterns mechanism and point projectRoot at the temp dir so the
     // scanner's depth-1 walk resolves the file.
     const tmpRelative = path.relative(tmpDir, tmpFile);
-    const rawResult = await runAudit(tmpDir, options.depth !== undefined
-      ? (ALL_CHECKS as CheckName[])
-      : (ALL_CHECKS as CheckName[]), {
-      ...options,
-      extraPatterns: [tmpRelative],
-      // Disable cross-project checks that need the real project tree.
-      session: false,
-      sessionOnly: false,
-      skills: false,
-      skillsOnly: false,
-    });
+    const rawResult = await runAudit(
+      tmpDir,
+      options.depth !== undefined ? (ALL_CHECKS as CheckName[]) : (ALL_CHECKS as CheckName[]),
+      {
+        ...options,
+        extraPatterns: [tmpRelative],
+        // Disable cross-project checks that need the real project tree.
+        session: false,
+        sessionOnly: false,
+        skills: false,
+        skillsOnly: false,
+      },
+    );
 
     // Remap the temp path back to the original filePath so the LSP client sees
     // diagnostics on the real document URI.
     const remapped: typeof rawResult.files = rawResult.files.map((fr) => {
       const isTmp =
-        fr.path === tmpRelative ||
-        fr.path === tmpFile ||
-        path.resolve(tmpDir, fr.path) === tmpFile;
+        fr.path === tmpRelative || fr.path === tmpFile || path.resolve(tmpDir, fr.path) === tmpFile;
       return isTmp ? { ...fr, path: filePath } : fr;
     });
 

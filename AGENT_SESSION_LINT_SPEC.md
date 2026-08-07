@@ -15,7 +15,7 @@ This specification defines a standard set of lint rules for validating agent ses
 
 The specification includes:
 - A reference of session data locations across 8 AI coding agents
-- 11 lint rules in the `session` category with defined severities
+- 12 lint rules in the `session` category with defined severities
 - A machine-readable rule catalog ([`agent-session-lint-rules.json`](./agent-session-lint-rules.json))
 - Sibling-repo detection for cross-project checks
 
@@ -50,6 +50,7 @@ This is the third pillar alongside context file linting (`CLAUDE.md`, `.cursorru
   - [2.9 session/shared-temp-path](#29-sessionshared-temp-path)
   - [2.10 session/unverified-gate-claimed-clean](#210-sessionunverified-gate-claimed-clean)
   - [2.11 session/default-branch-accumulation](#211-sessiondefault-branch-accumulation)
+  - [2.12 session/unresolvable-sha](#212-sessionunresolvable-sha)
 - [3. Rule Catalog (machine-readable)](#3-rule-catalog-machine-readable)
 - [4. Implementing This Specification](#4-implementing-this-specification)
 - [5. Contributing](#5-contributing)
@@ -131,7 +132,7 @@ Skip hidden directories (starting with `.`) and `node_modules`.
 
 ## 2. Lint Rules
 
-11 rules in 1 category (`session`). All rules in this category perform cross-project checks using sibling detection or per-project history analysis.
+12 rules in 1 category (`session`). All rules in this category perform cross-project checks using sibling detection or per-project history analysis.
 
 Severity levels:
 - **error** -- the session data reveals a verifiably missing configuration. Should fail CI.
@@ -428,6 +429,36 @@ Detects a session that accumulates edits on the repo's **default branch** withou
 
 ---
 
+### 2.12 session/unresolvable-sha
+
+Detects a memory that cites a git SHA which no longer resolves in the repository.
+
+| Field | Value |
+|---|---|
+| **Rule ID** | `session/unresolvable-sha` |
+| **Severity** | warning |
+| **Trigger** | A cue-preceded 7-40 character hex token outside code fences fails to resolve via `git cat-file -t` |
+| **Message** | `cited commit <sha> does not resolve in this repository` |
+| **Requires** | git |
+
+**Detection algorithm:**
+
+1. Scope to memories belonging to the current project (same scoping as §2.4).
+2. Strip fenced code blocks — a SHA inside a fence is sample input, not a claim.
+3. Remove full UUIDs before extraction, then match `\b[0-9a-f]{7,40}\b`.
+4. Drop tokens that are not commit citations: all-decimal (ids, timestamps, dates), `#`-prefixed (hex colours), `0x`-prefixed, digest-prefixed (`sha256:`, `md5=`), adjacent to a hyphen or dot between word characters (UUID remnants, hashed filenames, dotted version fragments), and interior path segments.
+5. Require a **citation cue** within 80 characters before the token on the same line — `commit`, `SHA`, `revision`, `HEAD`, `tag`, `branch`, `PR`, `landed`, `merged`, `shipped`, `introduced`, `reverted`, `cherry-picked`, `backported`, `fixed`, `removed`, `added`, `renamed`, `bumped`, `released`.
+6. Resolve each distinct surviving token with `git cat-file -t`. Report only the ones that do **not** resolve. Bound the number of resolutions per run; an undecided token stays silent.
+7. Without a git repository, report nothing.
+
+**Notes:**
+- `session/stale-memory` covers memories referencing dead *paths*. SHA citations rot faster: a squash-merge invalidates every SHA on the branch at once, and a rebase invalidates them silently. An agent that reads such a memory and runs `git show <sha>` gets `fatal: bad object` and has to re-derive the history it was told.
+- **Shape is not enough, and resolution alone is not enough either.** Real memory corpora are full of hex-shaped tokens that are not commits — `originSessionId: 77bde817-610b-4f82-971d-1c2452b07917`, `image sha256:7e7b3ab9`, decimal product ids, and words that happen to be hex (`beadfaced`). None of them resolve, so a resolve-only rule reports every one. The cue requirement in step 5 is what makes the rule quiet; the resolution in step 6 is what makes the finding true.
+- Do **not** try to filter by shape alone in the other direction either. A nine-character hex token that reads as an English word is indistinguishable from a short SHA by pattern; only resolution separates them.
+- **Misattribution is deliberately out of scope.** The motivating instance cited a SHA that *does* resolve but is not the commit that made the change. Detecting that means comparing the commit's diff against the surrounding prose claim — a genuinely different, much fuzzier rule that must not be smuggled in under this ID.
+
+---
+
 ## 3. Rule Catalog (machine-readable)
 
 A machine-readable JSON catalog of all rules is available at [`agent-session-lint-rules.json`](./agent-session-lint-rules.json). It conforms to the shared catalog schema ([`schemas/ctxlint-catalog.schema.json`](./schemas/ctxlint-catalog.schema.json)) used by all four pillars: each rule entry carries `id`, `category`, `severity`, `description`, `trigger`, `message`, `fixable`, and `stability`, plus rule-specific extras (e.g. `canonicalFiles` on `session/diverged-file`).
@@ -451,6 +482,7 @@ Catalog rule IDs use the pillar-stable `session/<slug>` form -- these are the cr
 | `session/shared-temp-path` | `session-shared-temp-path/shared-temp-path` |
 | `session/unverified-gate-claimed-clean` | `session-unverified-gate-claimed-clean/unverified-gate-claimed-clean` |
 | `session/default-branch-accumulation` | `session-default-branch-accumulation/default-branch-accumulation` |
+| `session/unresolvable-sha` | `session-unresolvable-sha/unresolvable-sha` |
 
 ### Data sources: history vs. transcript
 

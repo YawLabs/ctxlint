@@ -620,6 +620,13 @@ function buildRuleDescriptors(): SarifRule[] {
       helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
     },
     {
+      id: 'ctxlint/session-unresolvable-sha',
+      shortDescription: {
+        text: 'Memory cites a git SHA that no longer resolves in the repository',
+      },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
       id: 'ctxlint/skill-frontmatter',
       shortDescription: { text: 'Skill/agent definition missing required frontmatter' },
       helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',

@@ -3,7 +3,22 @@
 **Inspected at:** v0.18.7 (`HEAD 62c0da1`)
 **Derived from:** a full-pass review, fix, and release session on `@yawlabs/tailscale-mcp` (landed as `7d24203` on that repo's `main`). Every rule below traces to a defect that actually shipped, survived review, or wasted real time in that session — none are hypothetical.
 
-**Status: SPEC ONLY. No catalog entries, no spec-table rows, no implementations have been added.** See [Why nothing was added to the catalogs](#why-nothing-was-added-to-the-catalogs) — this is deliberate and is the whole point of one of the rules.
+> **STATUS UPDATE — three of the five have SHIPPED. Do not re-implement them.**
+>
+> | Section | Rule | State |
+> |---|---|---|
+> | 1 | `claims/total-vs-parts` | **open** — needs a new `claims` category in `context-lint-rules.json` |
+> | 2 | `commands/unknown-subcommand` | **shipped** — `src/core/checks/cli-subcommands.ts` + `commands.ts` |
+> | 3 | `commands/exit-status-masked` | **shipped** — `src/core/checks/exit-status.ts` + `commands.ts` |
+> | 4 | `contradictions/directive-conflict` | **open** — the handoff's own "highest-FP-risk of the five" |
+> | 5 | `session/unresolvable-sha` | **shipped** — `src/core/checks/session/unresolvable-sha.ts` |
+>
+> Two design notes the implementations added, worth reading before picking up 1 or 4:
+>
+> - **`fixtures/unknown-subcommand/` was inert against the shared command extractor.** `extractCommandReferences` gates on a fixed `COMMON_COMMANDS` list (npm/npx/make/cargo/...), so `./bin/tailscale-mcp doctor --json` yields ZERO command references and a rule reading `file.references.commands` would have shipped inert with a green unit suite. The check does its own scoped extraction instead, looking only for names the project declares in `package.json#bin`. Any future rule about a project-owned executable inherits this problem — verify extraction against the fixture before building on it.
+> - **Static analysis of an entry file must ignore comments and string bodies.** `fixtures/unknown-subcommand/cli.js` carries the comment "an unknown subcommand in the docs reads as a hang"; a raw scan reads that `in` as the `in` operator, decides the dispatch is open, and bails on a perfectly closed one. `stripComments()` in `cli-subcommands.ts` produces the two views the resolver needs.
+
+**Status of the remaining two: SPEC ONLY.** No catalog entries, no spec-table rows, no implementations. See [Why nothing was added to the catalogs](#why-nothing-was-added-to-the-catalogs) — for those two this is still deliberate and is the whole point of one of the rules.
 
 What *is* in this branch: this document, plus five ready-to-run fixture directories under `fixtures/`.
 

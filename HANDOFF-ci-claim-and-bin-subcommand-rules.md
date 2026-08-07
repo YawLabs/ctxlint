@@ -5,6 +5,12 @@
 
 Every claim cites `file:line` in THIS repo. Findings 1-3 are new rules; finding 4 is a bug in the shipped catalog and needs no new rule.
 
+> **STATUS UPDATE.** **Finding 3 has SHIPPED** as `commands/unknown-subcommand` (`src/core/checks/cli-subcommands.ts`); do not re-implement it. The open design question it records -- Commander-only versus hand-rolled argv -- was resolved as the sibling handoff proposed: **both, tiered, with an explicit bail-out**, because a Commander-only detector structurally cannot fire on the `@yawlabs/*-mcp` corpus that produced the defect twice. This handoff's minimum ask is honoured (no recognizable dispatcher, or any open one, emits nothing), and its gating suggestion was adopted in a stronger form: the entry is refused when it is missing OR looks bundled/minified, which is what keeps ctxlint from misfiring on its own 69k-line `dist/index.js`.
+>
+> **Findings 1 and 2 (`ci-coverage/workflow-not-found`, `ci-coverage/no-workflows`) remain open.** Since this handoff was written ctxlint deleted its own `.github/workflows/`, so this repo is now itself a candidate positive for finding 2 wherever its context files still assert hosted CI. The ordering advice below still holds.
+>
+> **Finding 4 is retracted** (see its own section) and needs no action.
+
 ---
 
 ## TL;DR
