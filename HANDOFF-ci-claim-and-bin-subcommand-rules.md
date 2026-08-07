@@ -160,9 +160,28 @@ Step 3 is the hard part and determines whether this ships. Two viable sources, i
 
 ---
 
-## Finding 4 (bug, no new rule) — two catalog IDs are never emitted
+## Finding 4 (bug, no new rule) — catalog IDs that are never emitted
 
-**This one is not a proposal; the shipped catalog is currently wrong.**
+> **CORRECTION (later pass): this is 11 ids, not 2.** The section below was
+> written from the two `ci/*` ids found by hand. A full static scan of
+> `src/core/checks/**` against all four catalogs found **11 of 72 emitted ids
+> published nowhere** — the two `ci/*` ones plus the entire session namespace:
+> the catalogs publish eight `session/<slug>` ids under a single `session`
+> category while the checks emit nine `session-<check>/<slug>` ids. It is not a
+> pure rename: catalog `session/memory-index-overflow` is emitted as two
+> distinct ids (`line-overflow`, `byte-overflow`), so reconciling needs a shape
+> decision rather than a string swap.
+>
+> `src/core/__tests__/catalog-emitter-parity.test.ts` now enforces this, with
+> the 11 frozen in a `KNOWN_DIVERGENCES` ratchet so NEW drift fails immediately
+> while the published-API decision stays open. A second test asserts the
+> ratchet only shrinks, and a third guards the static scan from silently
+> matching nothing. Entries should only ever be removed.
+>
+> The reconciliation itself is deliberately NOT done here — it changes
+> published rule IDs, and this repo had concurrent agent work in flight.
+
+**The shipped catalog is wrong for these ids.**
 
 | Catalog `id` | Emitted `ruleId` |
 |---|---|
