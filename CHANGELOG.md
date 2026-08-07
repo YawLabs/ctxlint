@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 See [Versioning policy](#versioning-policy) below.
 
+## [Unreleased]
+
+### Internal
+- **`release.sh` CHANGELOG gate moved from step 7 to step 1.** The guard that refuses to cut a release whose `## [Unreleased]` heading was never promoted was correct but fired too late: step 7 (`gh release create`) runs AFTER step 5 pushes the tag to origin and step 6 publishes to npm, so by the time it aborts the version is immutable and the release notes are the only thing still fixable. Both v0.19.0 and v0.20.0 tripped it in exactly that position, each needing a follow-up promote-and-resume. The check now runs as the first thing in step 1, ahead of the multi-minute lint/type-check/test legs, so the failure costs a re-run instead of a published version with an unpromoted heading. The awk extraction and the abort condition were lifted into three shared helpers (`changelog_section`, `changelog_nonempty`, `assert_changelog_promoted`) because the gate and step 7's notes lookup have to agree on what counts as an entry for this version -- two copies of that awk drifting apart is how a gate passes and its consumer then finds nothing. Step 7 keeps a backstop call: unreachable on a straight-through run, but `CHANGELOG.md` is mutable between the two steps and the script is designed to be re-entered. A CHANGELOG carrying neither a version entry nor `[Unreleased]` content is still not an error -- the commit-subject fallback stays the documented behavior -- and an `[Unreleased]` section coexisting with a promoted version entry passes, since accumulating the next release's notes during the current one is normal. Verified against fabricated CHANGELOGs covering all five shapes: entry present, unpromoted heading, empty `[Unreleased]`, no CHANGELOG at all, and both sections present.
+
 ## [0.20.0] - 2026-08-07
 
 ### Added

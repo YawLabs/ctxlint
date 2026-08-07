@@ -29,6 +29,39 @@ info() { echo -e "${GREEN}  ✓ $1${NC}"; }
 warn() { echo -e "${YELLOW}  ! $1${NC}"; }
 fail() { echo -e "${RED}  ✗ $1${NC}"; exit 1; }
 
+# ---- CHANGELOG helpers ----
+# Step 1's gate and step 7's release-notes lookup have to agree on what counts
+# as "an entry for this version". Two copies of this awk is exactly how a gate
+# passes and its consumer then finds nothing, so the extraction lives here once.
+# Prints the body of `## [<heading>]` up to the next `## [` heading.
+changelog_section() {
+  [ -f CHANGELOG.md ] || return 0
+  awk -v heading="$1" '
+    index($0, "## [" heading "]") == 1 { capture=1; next }
+    capture && /^## \[/ { exit }
+    capture { print }
+  ' CHANGELOG.md
+}
+
+# True when a section body carries any non-whitespace content.
+changelog_nonempty() { [ -n "$(echo "$1" | tr -d '[:space:]')" ]; }
+
+# No entry for this version PLUS a non-empty [Unreleased] section is the exact
+# signature of tagging without promoting the heading: the notes fall back to
+# commit subjects and silently drop everything documented there. A CHANGELOG
+# with neither is not an error -- the commit-subject fallback is the documented
+# behavior for a release nobody wrote notes for.
+assert_changelog_promoted() {
+  [ -f CHANGELOG.md ] || return 0
+  if changelog_nonempty "$(changelog_section "$VERSION")"; then
+    return 0
+  fi
+  if changelog_nonempty "$(changelog_section "Unreleased")"; then
+    fail "CHANGELOG.md has no '## [${VERSION}]' entry, but its [Unreleased] section has content. Rename that heading to '## [${VERSION}] - $(date +%F)' before releasing -- otherwise these release notes fall back to commit subjects and drop everything documented there."
+  fi
+  return 0
+}
+
 # SKIP_LINT=1 escape hatch -- wraps `npm`/`pnpm` so lint-related runs are
 # no-ops. Workaround for the MINGW64-ARM64 npm-run-script wrapper that
 # segfaults on exit-cleanup (platform-windows.md). Apply only when the
@@ -124,6 +157,20 @@ fi
 # Step 1: Lint & type-check
 # =============================================================================
 step 1 "Lint & type-check"
+
+# CHANGELOG gate -- deliberately the first thing the release does, ahead of the
+# multi-minute lint/type-check/test legs and well ahead of step 5's tag push and
+# step 6's npm publish. The identical condition is still checked at step 7, but
+# by then the tag is on origin and the version is on npm: the notes are the only
+# thing left that can still be fixed, and the version cannot be un-cut. v0.19.0
+# and v0.20.0 each tripped it there, after publishing. Failing here costs a
+# re-run instead.
+assert_changelog_promoted
+if changelog_nonempty "$(changelog_section "$VERSION")"; then
+  info "CHANGELOG.md has an entry for v${VERSION}"
+else
+  warn "CHANGELOG.md has no entry for v${VERSION} -- release notes will fall back to commit subjects"
+fi
 
 # A crashed linter is not a lint result. `pnpm run lint` on MINGW64-ARM can
 # segfault during exit (139 under bash, 3221225477 / 0xC0000005 under
@@ -381,30 +428,14 @@ else
   # narrative. Without this the notes are ALWAYS raw commit subjects, which is
   # how v0.18.3 through v0.18.7 each shipped while CHANGELOG.md still ended at
   # [0.18.2] and nobody noticed.
-  CHANGELOG=""
-  if [ -f CHANGELOG.md ]; then
-    CHANGELOG=$(awk -v ver="$VERSION" '
-      index($0, "## [" ver "]") == 1 { capture=1; next }
-      capture && /^## \[/ { exit }
-      capture { print }
-    ' CHANGELOG.md)
-  fi
+  CHANGELOG=$(changelog_section "$VERSION")
 
-  # No entry for this version PLUS a non-empty [Unreleased] section is the exact
-  # signature of tagging without promoting the heading. Falling through to commit
-  # subjects there publishes notes that silently omit everything documented.
-  if [ -z "$(echo "$CHANGELOG" | tr -d '[:space:]')" ] && [ -f CHANGELOG.md ]; then
-    UNRELEASED=$(awk '
-      index($0, "## [Unreleased]") == 1 { capture=1; next }
-      capture && /^## \[/ { exit }
-      capture { print }
-    ' CHANGELOG.md)
-    if [ -n "$(echo "$UNRELEASED" | tr -d '[:space:]')" ]; then
-      fail "CHANGELOG.md has no '## [${VERSION}]' entry, but its [Unreleased] section has content. Rename that heading to '## [${VERSION}] - $(date +%F)' before releasing -- otherwise these release notes fall back to commit subjects and drop everything documented there."
-    fi
-  fi
+  # Backstop for step 1's gate. Unreachable on a straight-through run, but
+  # CHANGELOG.md is mutable between the two steps and this script is built to be
+  # re-entered, so the check that protects the notes stays beside the notes.
+  assert_changelog_promoted
 
-  if [ -z "$(echo "$CHANGELOG" | tr -d '[:space:]')" ]; then
+  if ! changelog_nonempty "$CHANGELOG"; then
     PREV_TAG=$(git tag --sort=-v:refname | grep -A1 "^v${VERSION}$" | tail -1)
     if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "v${VERSION}" ]; then
       CHANGELOG=$(git log --oneline "${PREV_TAG}..v${VERSION}" --no-decorate | sed 's/^[a-f0-9]* /- /')
