@@ -57,9 +57,45 @@ assert_changelog_promoted() {
     return 0
   fi
   if changelog_nonempty "$(changelog_section "Unreleased")"; then
-    fail "CHANGELOG.md has no '## [${VERSION}]' entry, but its [Unreleased] section has content. Rename that heading to '## [${VERSION}] - $(date +%F)' before releasing -- otherwise these release notes fall back to commit subjects and drop everything documented there."
+    fail "CHANGELOG.md has no '## [${VERSION}]' entry, but its [Unreleased] section has content. Step 4 should have promoted that heading automatically -- promote_changelog did not run or did not land."
   fi
   return 0
+}
+
+# Rename `## [Unreleased]` to `## [<version>] - <today>`. The version and the
+# date are both things the script already knows, so this is the same kind of
+# mechanical version stamp as the package.json bump -- there is no reason to
+# make the human do it by hand and then abort the release when they forget.
+# Every release promoting its own heading is also what stops [Unreleased] from
+# silently accumulating across several tags, which is how v0.18.3 through
+# v0.18.7 all shipped with no sections of their own.
+#
+# Idempotent, and deliberately quiet in the two cases that are not defects:
+# an entry for this version already exists (a resume, or the author promoted by
+# hand), or there is nothing to promote (release notes fall back to commit
+# subjects, which is the documented behavior).
+promote_changelog() {
+  [ -f CHANGELOG.md ] || return 0
+  if changelog_nonempty "$(changelog_section "$VERSION")"; then
+    info "CHANGELOG.md already has an entry for v${VERSION}"
+    return 0
+  fi
+  if ! changelog_nonempty "$(changelog_section "Unreleased")"; then
+    warn "CHANGELOG.md has no [Unreleased] content to promote -- release notes will fall back to commit subjects"
+    return 0
+  fi
+  local today tmp
+  today=$(date +%F)
+  tmp=$(mktemp)
+  # Rewrite only the FIRST [Unreleased] heading: a stray later mention (a link
+  # reference, a quoted example in the versioning-policy section) must not be
+  # rewritten into a second, bogus version heading.
+  awk -v repl="## [${VERSION}] - ${today}" '
+    !promoted && index($0, "## [Unreleased]") == 1 { print repl; promoted=1; next }
+    { print }
+  ' CHANGELOG.md > "$tmp" || { rm -f "$tmp"; fail "CHANGELOG.md promotion failed"; }
+  mv "$tmp" CHANGELOG.md
+  info "CHANGELOG.md: promoted [Unreleased] -> [${VERSION}] - ${today}"
 }
 
 # SKIP_LINT=1 escape hatch -- wraps `npm`/`pnpm` so lint-related runs are
@@ -158,18 +194,16 @@ fi
 # =============================================================================
 step 1 "Lint & type-check"
 
-# CHANGELOG gate -- deliberately the first thing the release does, ahead of the
-# multi-minute lint/type-check/test legs and well ahead of step 5's tag push and
-# step 6's npm publish. The identical condition is still checked at step 7, but
-# by then the tag is on origin and the version is on npm: the notes are the only
-# thing left that can still be fixed, and the version cannot be un-cut. v0.19.0
-# and v0.20.0 each tripped it there, after publishing. Failing here costs a
-# re-run instead.
-assert_changelog_promoted
+# Say up front which release notes this run will publish. Purely informational
+# -- step 4 promotes the [Unreleased] heading itself, so an unpromoted CHANGELOG
+# is not a failure here and must not abort: aborting would block the script from
+# doing the one mechanical edit it is perfectly capable of making.
 if changelog_nonempty "$(changelog_section "$VERSION")"; then
-  info "CHANGELOG.md has an entry for v${VERSION}"
+  info "Release notes: existing CHANGELOG.md entry for v${VERSION}"
+elif changelog_nonempty "$(changelog_section "Unreleased")"; then
+  info "Release notes: [Unreleased] section, which step 4 will promote to [${VERSION}]"
 else
-  warn "CHANGELOG.md has no entry for v${VERSION} -- release notes will fall back to commit subjects"
+  warn "Release notes: no CHANGELOG.md entry and no [Unreleased] content -- will fall back to commit subjects"
 fi
 
 # A crashed linter is not a lint result. `pnpm run lint` on MINGW64-ARM can
@@ -265,6 +299,13 @@ if [ -f server.json ]; then
   fi
 fi
 
+# Same unconditional placement, and for the same reason as server.json above:
+# a resume run has CURRENT_VERSION == VERSION and skips the bump branch, but an
+# unpromoted CHANGELOG still needs promoting. That is exactly the state v0.20.0
+# was in when it failed -- the tag and the npm publish had already landed, and
+# the resume could not fix the heading because the promotion lived nowhere.
+promote_changelog
+
 # =============================================================================
 # Step 5: Commit, tag, and push
 # =============================================================================
@@ -276,6 +317,10 @@ else
   # Commit if there are changes
   BUMP_FILES="package.json pnpm-lock.yaml .pre-commit-hooks.yaml"
   [ -f server.json ] && BUMP_FILES="$BUMP_FILES server.json"
+  # promote_changelog rewrote the heading in step 4; without CHANGELOG.md here
+  # that edit is left uncommitted in the working tree and the next run's
+  # pre-flight clean-tree check refuses to start.
+  [ -f CHANGELOG.md ] && BUMP_FILES="$BUMP_FILES CHANGELOG.md"
   if [ -n "$(git status --porcelain $BUMP_FILES 2>/dev/null)" ]; then
     git add $BUMP_FILES
     git commit -m "v${VERSION}"
