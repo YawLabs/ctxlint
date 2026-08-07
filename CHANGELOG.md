@@ -8,6 +8,20 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-08-07
+
+> Scope note. `[Unreleased]` had been standing in for five tagged patch
+> releases -- v0.18.3 through v0.18.7 (2026-06-29 to 2026-07-25) -- that
+> shipped without sections of their own, so the entries below were written
+> cumulatively across that range rather than for this release alone. Several
+> `paths` and `hook-coverage` bullets describe a fix that landed in stages
+> across more than one of those tags: the `hook-coverage/dead-hook` entry's
+> MSYS drive-path clause shipped after v0.18.7, while the wildcard and
+> `//FLAG` clauses shipped in v0.18.5. They are grouped here rather than
+> split, because splitting a cumulatively-written bullet would invent per-tag
+> precision the history does not support. New in 0.19.0 specifically: the
+> four `session/*` additions and the three session fixes below them.
+
 ### Added
 - **Session transcript reading (`src/core/transcript.ts`).** The session pillar previously read only `~/.claude/history.jsonl`, which records what the USER typed -- no tool invocations, no command output, no git state. Every hazard that lives in what the AGENT did was therefore invisible to it. The new reader parses the per-project transcripts under `~/.claude/projects/<encoded>/*.jsonl`: `tool_use` blocks with their inputs, the matching `tool_result` (`is_error`, and whether the call produced any output at all), and the `gitBranch` stamp on assistant records. Scoped to the current project and bounded (5 most recent transcripts, 200,000 lines) because the corpus reaches hundreds of megabytes across 100+ project directories on a working machine; the bound is reported on the result rather than applied silently, so a check cannot report "clean" off a truncated read. Results are memoized per project so several checks can consume it without re-streaming tens of megabytes each.
 - **`session/shared-temp-path` (error).** Flags a fixed, non-session-scoped temp path that is WRITTEN and later READ BACK. `/tmp` is process-global, and under Git Bash on Windows it is shared across every concurrent agent session on the machine, so a backup/restore through a literal path races every other session that picked the same obvious name. From a real incident: an agent backed `package.json` up to `/tmp/pkg.bak`, ran `npm pack --dry-run`, then restored with `cp /tmp/pkg.bak package.json` -- a concurrent session working a sibling repo had used the same path in between, so the restore wrote a DIFFERENT package's manifest into the repo (wrong name, version, `bin`, dependencies). A release from that tree would have published under the wrong identity. The write/read PAIR is the signal, not either half: a scratch file nobody restores from cannot be clobbered into the workspace, and a read with no matching write is consuming something another tool produced deliberately. `mktemp` output and any path carrying a per-run component (`$$`, `$pid`, `$RANDOM`, a session id) are deliberately not flagged -- they are the correct form and appear constantly in the same transcripts, so flagging them would bury the real finding.
