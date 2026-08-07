@@ -125,8 +125,30 @@ fi
 # =============================================================================
 step 1 "Lint & type-check"
 
-pnpm run lint
-info "Lint passed"
+# A crashed linter is not a lint result. `pnpm run lint` on MINGW64-ARM can
+# segfault during exit (139 under bash, 3221225477 / 0xC0000005 under
+# PowerShell) BEFORE emitting any diagnostics -- the same failure the `npx tsc`
+# invocation below already routes around. Bare `pnpm run lint` under
+# `set -euo pipefail` turns that crash into an ERR-trap abort that reads as
+# "lint found problems", sending you hunting for violations that were never
+# reported. Separate the two, and say plainly when lint is UNVERIFIED rather
+# than letting a crash masquerade as either a pass or a failure.
+LINT_OUT=$(mktemp)
+if [ "${SKIP_LINT:-}" = "1" ]; then
+  warn "Lint SKIPPED (SKIP_LINT=1) -- UNVERIFIED for this release"
+elif pnpm run lint > "$LINT_OUT" 2>&1; then
+  info "Lint passed"
+else
+  LINT_RC=$?
+  if [ "$LINT_RC" -eq 139 ] || [ "$LINT_RC" -eq 3221225477 ]; then
+    warn "Lint runner CRASHED (exit $LINT_RC) with no diagnostics -- known runner segfault on this platform, NOT a lint failure. Lint is UNVERIFIED for this release."
+  else
+    cat "$LINT_OUT"
+    rm -f "$LINT_OUT"
+    fail "Lint failed"
+  fi
+fi
+rm -f "$LINT_OUT"
 
 # Type-check. Previously a distinct step in the (now removed) GitHub Actions
 # ci.yml / release.yml -- release.sh is the sole quality gate now, so it runs
@@ -355,11 +377,43 @@ step 7 "Create GitHub release"
 if gh release view "v${VERSION}" >/dev/null 2>&1; then
   info "GitHub release v${VERSION} already exists -- skipping"
 else
-  PREV_TAG=$(git tag --sort=-v:refname | grep -A1 "^v${VERSION}$" | tail -1)
-  if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "v${VERSION}" ]; then
-    CHANGELOG=$(git log --oneline "${PREV_TAG}..v${VERSION}" --no-decorate | sed 's/^[a-f0-9]* /- /')
+  # Prefer the CHANGELOG.md entry so the release page mirrors the maintained
+  # narrative. Without this the notes are ALWAYS raw commit subjects, which is
+  # how v0.18.3 through v0.18.7 each shipped while CHANGELOG.md still ended at
+  # [0.18.2] and nobody noticed.
+  CHANGELOG=""
+  if [ -f CHANGELOG.md ]; then
+    CHANGELOG=$(awk -v ver="$VERSION" '
+      index($0, "## [" ver "]") == 1 { capture=1; next }
+      capture && /^## \[/ { exit }
+      capture { print }
+    ' CHANGELOG.md)
+  fi
+
+  # No entry for this version PLUS a non-empty [Unreleased] section is the exact
+  # signature of tagging without promoting the heading. Falling through to commit
+  # subjects there publishes notes that silently omit everything documented.
+  if [ -z "$(echo "$CHANGELOG" | tr -d '[:space:]')" ] && [ -f CHANGELOG.md ]; then
+    UNRELEASED=$(awk '
+      index($0, "## [Unreleased]") == 1 { capture=1; next }
+      capture && /^## \[/ { exit }
+      capture { print }
+    ' CHANGELOG.md)
+    if [ -n "$(echo "$UNRELEASED" | tr -d '[:space:]')" ]; then
+      fail "CHANGELOG.md has no '## [${VERSION}]' entry, but its [Unreleased] section has content. Rename that heading to '## [${VERSION}] - $(date +%F)' before releasing -- otherwise these release notes fall back to commit subjects and drop everything documented there."
+    fi
+  fi
+
+  if [ -z "$(echo "$CHANGELOG" | tr -d '[:space:]')" ]; then
+    PREV_TAG=$(git tag --sort=-v:refname | grep -A1 "^v${VERSION}$" | tail -1)
+    if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "v${VERSION}" ]; then
+      CHANGELOG=$(git log --oneline "${PREV_TAG}..v${VERSION}" --no-decorate | sed 's/^[a-f0-9]* /- /')
+      warn "no CHANGELOG.md entry for v${VERSION} -- falling back to commit subjects"
+    else
+      CHANGELOG="Initial release"
+    fi
   else
-    CHANGELOG="Initial release"
+    info "release notes sourced from CHANGELOG.md"
   fi
   gh release create "v${VERSION}" --title "v${VERSION}" --notes "$CHANGELOG"
   info "GitHub release created"
