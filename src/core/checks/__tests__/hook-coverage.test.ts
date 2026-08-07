@@ -274,4 +274,64 @@ describe('hook-coverage helpers', () => {
     // Multi-letter first segment is not a drive -- unchanged on win32.
     expect(translateMsysDrivePath('/Users/x/gate.sh', 'win32')).toBe('/Users/x/gate.sh');
   });
+
+  it('translateMsysDrivePath rewrites a DOUBLED leading slash too (//c/ -> c:/)', () => {
+    // Git Bash renders a drive path this way to suppress MSYS translation and
+    // Claude Code writes the form into settings verbatim. Observed in a real
+    // permissions.allow entry: untranslated it reads as a UNC path, fails the
+    // existence check, and reports a live directory as a dead gate.
+    expect(translateMsysDrivePath('//c/Users/x/gate.sh', 'win32')).toBe('c:/Users/x/gate.sh');
+    expect(translateMsysDrivePath('//d/repo/gate.sh', 'win32')).toBe('d:/repo/gate.sh');
+    // POSIX untouched in the doubled form too.
+    expect(translateMsysDrivePath('//c/Users/x/gate.sh', 'linux')).toBe('//c/Users/x/gate.sh');
+    // A genuine UNC path has a multi-character host and must survive intact.
+    expect(translateMsysDrivePath('//host/share/gate.sh', 'win32')).toBe('//host/share/gate.sh');
+    expect(translateMsysDrivePath('//server/c/gate.sh', 'win32')).toBe('//server/c/gate.sh');
+  });
+});
+
+describe('hook-coverage/dead-hook path-form vs missing target', () => {
+  it.skipIf(process.platform !== 'win32')(
+    'resolves a DOUBLED-slash MSYS drive path without flagging it (win32)',
+    async () => {
+      // Regression for the false positive this rule produced on a real repo:
+      // `Read(//c/Users/.../dir/**)` named an existing directory and was
+      // reported as "does not exist on disk".
+      const abs = writeHookScript('scripts/smoke.sh');
+      const msys = `//${abs[0].toLowerCase()}${abs.slice(2).replace(/\\/g, '/')}`;
+      writeSettings({ permissions: { allow: [`Bash(bash ${msys}*)`] } });
+      const issues = await checkHookCoverage(tmpDir, homeDir);
+      expect(issues).toEqual([]);
+    },
+  );
+
+  it('says the path FORM is wrong when the target exists under another spelling', async () => {
+    // A leading-slash typo on a repo-relative path: the script is present, so
+    // the remedy is to fix the spelling, NOT to delete the entry.
+    writeHookScript('.claude/hooks/gate.sh');
+    writeSettings({
+      hooks: {
+        PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'bash /.claude/hooks/gate.sh' }] }],
+      },
+    });
+    const issues = await checkHookCoverage(tmpDir, homeDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('does not resolve');
+    expect(issues[0].message).toContain('the path form is wrong');
+    expect(issues[0].message).not.toContain('does not exist on disk');
+    expect(issues[0].suggestion).toContain('Do NOT delete it');
+  });
+
+  it('still reports a genuinely absent target as missing on disk', async () => {
+    // No variant of this path exists -- the original wording must stand.
+    writeSettings({
+      hooks: {
+        PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'bash ./.claude/hooks/absent.sh' }] }],
+      },
+    });
+    const issues = await checkHookCoverage(tmpDir, homeDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('does not exist on disk');
+    expect(issues[0].message).not.toContain('path form');
+  });
 });
