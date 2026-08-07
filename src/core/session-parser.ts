@@ -70,6 +70,29 @@ export function encodeProjectDir(fsPath: string): string {
 }
 
 /**
+ * Every project-directory name Claude Code may have used for this path, most
+ * canonical first.
+ *
+ * `encodeProjectDir` leaves `_` intact; Claude Code's CURRENT encoding folds it
+ * to `-`. Both forms are present on a machine with any history -- on the
+ * authoring machine `C--Users-x-yaw-mcp_servers-npmjs-mcp` and
+ * `C--Users-x-yaw-mcp-servers-npmjs-mcp` both exist, while
+ * `C--Users-x-yaw-oam_js_runtime-oam` does NOT and only the folded form does.
+ * So the scheme changed at some version rather than one form being wrong.
+ *
+ * Any lookup that resolves a real directory must therefore try both, or it
+ * silently finds nothing for every project path containing an underscore.
+ * `encodeProjectDir` itself is deliberately unchanged: it is parity-matched to
+ * Claude Code's layout and `projectDirMatchesPath` consumers compare against
+ * its exact output, so folding there would strand projects on the older form.
+ */
+export function projectDirCandidates(fsPath: string): string[] {
+  const encoded = encodeProjectDir(fsPath);
+  const folded = encoded.replace(/_/g, '-');
+  return folded === encoded ? [encoded] : [encoded, folded];
+}
+
+/**
  * Check whether an encoded Claude project directory name matches a filesystem path.
  * Avoids the ambiguity of trying to decode `-` back to `/`, `-`, or `.`.
  *

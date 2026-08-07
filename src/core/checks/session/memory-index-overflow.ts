@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { LintIssue, SessionContext } from '../../types.js';
-import { encodeProjectDir } from '../../session-parser.js';
+import { projectDirCandidates } from '../../session-parser.js';
 import { stripBom } from '../../../utils/fs.js';
 
 /**
@@ -24,14 +24,25 @@ export async function checkMemoryIndexOverflow(ctx: SessionContext): Promise<Lin
   const home = process.env.HOME || process.env.USERPROFILE || homedir();
   if (!home) return [];
 
-  const encoded = encodeProjectDir(ctx.currentProject);
-  const memoryFile = join(home, '.claude', 'projects', encoded, 'memory', 'MEMORY.md');
-
-  let content: string;
-  try {
-    content = stripBom(await readFile(memoryFile, 'utf-8'));
-  } catch {
-    return [];
+  // Try every encoding Claude Code may have used for this path. With only the
+  // `encodeProjectDir` form this check silently never fired for a project whose
+  // path contains an underscore -- `~/yaw/mcp_servers/x` looked for a directory
+  // Claude Code no longer creates.
+  let content = '';
+  let memoryFile = '';
+  for (const encoded of projectDirCandidates(ctx.currentProject)) {
+    const candidate = join(home, '.claude', 'projects', encoded, 'memory', 'MEMORY.md');
+    try {
+      content = stripBom(await readFile(candidate, 'utf-8'));
+    } catch {
+      continue;
+    }
+    if (content) {
+      // Report the path actually read -- with two candidate encodings, naming
+      // the wrong one sends the reader to a file that does not exist.
+      memoryFile = candidate;
+      break;
+    }
   }
   if (!content) return [];
 
