@@ -3,7 +3,7 @@ import { readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
-import { encodeProjectDir } from './session-parser.js';
+import { projectDirCandidates } from './session-parser.js';
 
 /**
  * Reader for Claude Code session TRANSCRIPTS, as distinct from `history.jsonl`.
@@ -129,25 +129,15 @@ export function clearTranscriptCache(): void {
 }
 
 /**
- * Project directories Claude Code may have used for this path.
- *
- * `encodeProjectDir` maps `: \ / .` to `-` but leaves `_` intact. Claude Code's
- * own encoding ALSO folds `_`, and both forms are present on a machine with any
- * history -- `C--Users-x-yaw-mcp_servers-npmjs-mcp` and
- * `C--Users-x-yaw-mcp-servers-npmjs-mcp` both exist, so the scheme changed at
- * some version rather than one form simply being wrong.
- *
- * So try both and read whichever exist. Fixing `encodeProjectDir` itself is NOT
- * the move: it is documented as deliberately parity-matched to Claude Code's
- * layout, and several other checks match on its exact output, so changing it
- * would strand every project still using the underscore-preserving form.
+ * Transcript directories that exist for this project. Claude Code has used more
+ * than one project-dir encoding (see `projectDirCandidates`), and a session's
+ * transcripts can be split across both, so read every form that is present.
  */
 function candidateDirs(project: string, home: string): string[] {
   const root = join(home, '.claude', 'projects');
-  const encoded = encodeProjectDir(project);
-  const folded = encoded.replace(/_/g, '-');
-  const names = folded === encoded ? [encoded] : [encoded, folded];
-  return names.map((n) => join(root, n)).filter((d) => existsSync(d));
+  return projectDirCandidates(project)
+    .map((n) => join(root, n))
+    .filter((d) => existsSync(d));
 }
 
 async function readUncached(project: string, home: string): Promise<TranscriptRead> {
