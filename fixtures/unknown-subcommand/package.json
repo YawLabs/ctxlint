@@ -1,0 +1,9 @@
+{
+  "name": "unknown-subcommand",
+  "bin": {
+    "tailscale-mcp": "cli.js"
+  },
+  "scripts": {
+    "build": "tsc"
+  }
+}

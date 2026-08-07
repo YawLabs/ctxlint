@@ -1,0 +1,6 @@
+{
+  "name": "directive-conflict",
+  "scripts": {
+    "build": "tsc"
+  }
+}
