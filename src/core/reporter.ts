@@ -606,6 +606,20 @@ function buildRuleDescriptors(): SarifRule[] {
       helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
     },
     {
+      id: 'ctxlint/session-unverified-gate-claimed-clean',
+      shortDescription: {
+        text: 'A quality gate asserted as passing while its invocation failed or emitted nothing',
+      },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
+      id: 'ctxlint/session-default-branch-accumulation',
+      shortDescription: {
+        text: 'Many files edited on the default branch with no intervening commit',
+      },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
       id: 'ctxlint/skill-frontmatter',
       shortDescription: { text: 'Skill/agent definition missing required frontmatter' },
       helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',

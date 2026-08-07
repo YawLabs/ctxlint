@@ -1,4 +1,11 @@
-import type { HistoryEntry, LintIssue, SessionContext } from '../../types.js';
+import { readProjectTranscript } from '../../transcript.js';
+import type { LintIssue, SessionContext } from '../../types.js';
+
+/** One scanned line: a command string plus where it came from. */
+interface Scanned {
+  display: string;
+  timestamp: number;
+}
 
 /**
  * Flag a fixed, non-session-scoped temp path that is WRITTEN and later READ back.
@@ -86,11 +93,31 @@ const READ_PATTERNS = [
   /\btype\s+(\S+)/,
   /\bsource\s+(\S+)/,
   /\breadFileSync\(\s*['"`]([^'"`]+)/,
-  /<\s*(\S+)/,
+  // Input redirect. `(?!<)` excludes heredocs (`<<'EOF'`), and the leading
+  // boundary plus the restricted character class keep it from matching a `<`
+  // that is part of a comparison, an HTML fragment, or another operator --
+  // a bare /<\s*(\S+)/ matched unrelated text in real transcripts.
+  /(?:^|\s)<(?!<)\s*([^\s<>|&;]+)/,
 ];
 
+/**
+ * Strip surrounding quotes and normalize separators. Quotes are stripped
+ * REPEATEDLY: a token lifted out of an already-quoted command arrives as
+ * `""$TMPDIR/x""`, and trimming a single layer leaves the stray pair in the
+ * reported path.
+ */
+function unquote(raw: string): string {
+  let s = raw;
+  let prev: string;
+  do {
+    prev = s;
+    s = s.replace(/^['"`]|['"`]$/g, '');
+  } while (s !== prev);
+  return s;
+}
+
 function normalize(raw: string): string {
-  return raw.replace(/^['"]|['"]$/g, '').replace(/\\/g, '/').toLowerCase();
+  return unquote(raw).replace(/\\/g, '/').toLowerCase();
 }
 
 /** True when the path sits under a shared temp root with no per-run component. */
@@ -119,12 +146,25 @@ export async function checkSharedTempPath(ctx: SessionContext): Promise<LintIssu
   // Written paths, keyed by normalized path -> the entry that wrote it. A later
   // write just refreshes the origin; what matters is that a write PRECEDED the
   // read, which is what makes the value clobberable by another session.
-  const written = new Map<string, HistoryEntry>();
+  const written = new Map<string, Scanned>();
   const reported = new Set<string>();
 
-  // History is scanned in order so "written, then read" is a real ordering
-  // rather than mere co-occurrence.
-  const ordered = [...ctx.history].sort((a, b) => a.timestamp - b.timestamp);
+  // The commands that matter are the ones the AGENT ran, and those live in the
+  // session transcript -- `history.jsonl` records only what the user typed, so
+  // scanning it alone would leave this rule inert against the very incident it
+  // was written for. User-typed lines are still included: a `!`-prefixed shell
+  // command carries exactly the same hazard.
+  const transcript = await readProjectTranscript(ctx.currentProject);
+  const scanned: Scanned[] = [
+    ...transcript.events
+      .filter((e) => e.kind === 'command')
+      .map((e) => ({ display: e.text, timestamp: e.timestamp })),
+    ...ctx.history.map((h) => ({ display: h.display, timestamp: h.timestamp })),
+  ];
+
+  // Scanned in order so "written, then read" is a real ordering rather than
+  // mere co-occurrence.
+  const ordered = scanned.sort((a, b) => a.timestamp - b.timestamp);
 
   for (const entry of ordered) {
     const line = entry.display;
@@ -143,7 +183,7 @@ export async function checkSharedTempPath(ctx: SessionContext): Promise<LintIssu
         check: 'session-shared-temp-path',
         ruleId: 'session-shared-temp-path/shared-temp-path',
         line: 0,
-        message: `Fixed temp path "${candidate}" is written and later read back`,
+        message: `Fixed temp path "${unquote(candidate)}" is written and later read back`,
         detail:
           `Written by: ${origin.display.trim().slice(0, 120)}\n` +
           `Read by:    ${line.trim().slice(0, 120)}`,

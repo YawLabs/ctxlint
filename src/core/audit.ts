@@ -37,6 +37,8 @@ import { checkDuplicateMemory } from './checks/session/duplicate-memory.js';
 import { checkLoopDetection } from './checks/session/loop-detection.js';
 import { checkMemoryIndexOverflow } from './checks/session/memory-index-overflow.js';
 import { checkSharedTempPath } from './checks/session/shared-temp-path.js';
+import { checkUnverifiedGateClaimedClean } from './checks/session/unverified-gate-claimed-clean.js';
+import { checkDefaultBranchAccumulation } from './checks/session/default-branch-accumulation.js';
 import { checkCiCoverage } from './checks/ci-coverage.js';
 import { checkCiSecrets } from './checks/ci-secrets.js';
 import { checkContentSecrets } from './checks/content-secrets.js';
@@ -94,6 +96,9 @@ export const ALL_SESSION_CHECKS: SessionCheckName[] = [
   'session-duplicate-memory',
   'session-loop-detection',
   'session-memory-index-overflow',
+  'session-shared-temp-path',
+  'session-unverified-gate-claimed-clean',
+  'session-default-branch-accumulation',
 ];
 
 export const ALL_SKILL_CHECKS: SkillCheckName[] = [
@@ -448,6 +453,10 @@ export async function runAudit(
         sessionPromises.push(checkMemoryIndexOverflow(sessionCtx));
       if (sessionChecksToRun.includes('session-shared-temp-path'))
         sessionPromises.push(checkSharedTempPath(sessionCtx));
+      if (sessionChecksToRun.includes('session-unverified-gate-claimed-clean'))
+        sessionPromises.push(checkUnverifiedGateClaimedClean(sessionCtx));
+      if (sessionChecksToRun.includes('session-default-branch-accumulation'))
+        sessionPromises.push(checkDefaultBranchAccumulation(sessionCtx));
 
       const sessionResults = await Promise.all(sessionPromises);
       const sessionIssues = sessionResults.flat();

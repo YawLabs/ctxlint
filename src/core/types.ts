@@ -33,7 +33,9 @@ export type SessionCheckName =
   | 'session-duplicate-memory'
   | 'session-loop-detection'
   | 'session-memory-index-overflow'
-  | 'session-shared-temp-path';
+  | 'session-shared-temp-path'
+  | 'session-unverified-gate-claimed-clean'
+  | 'session-default-branch-accumulation';
 
 // --- Agent-skill check types (fourth pillar) ---
 

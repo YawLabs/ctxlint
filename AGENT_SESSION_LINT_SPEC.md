@@ -15,7 +15,7 @@ This specification defines a standard set of lint rules for validating agent ses
 
 The specification includes:
 - A reference of session data locations across 8 AI coding agents
-- 9 lint rules in the `session` category with defined severities
+- 11 lint rules in the `session` category with defined severities
 - A machine-readable rule catalog ([`agent-session-lint-rules.json`](./agent-session-lint-rules.json))
 - Sibling-repo detection for cross-project checks
 
@@ -47,6 +47,9 @@ This is the third pillar alongside context file linting (`CLAUDE.md`, `.cursorru
   - [2.6 session/consecutive-repeat](#26-sessionconsecutive-repeat)
   - [2.7 session/cyclic-pattern](#27-sessioncyclic-pattern)
   - [2.8 session/memory-index-overflow](#28-sessionmemory-index-overflow)
+  - [2.9 session/shared-temp-path](#29-sessionshared-temp-path)
+  - [2.10 session/unverified-gate-claimed-clean](#210-sessionunverified-gate-claimed-clean)
+  - [2.11 session/default-branch-accumulation](#211-sessiondefault-branch-accumulation)
 - [3. Rule Catalog (machine-readable)](#3-rule-catalog-machine-readable)
 - [4. Implementing This Specification](#4-implementing-this-specification)
 - [5. Contributing](#5-contributing)
@@ -128,7 +131,7 @@ Skip hidden directories (starting with `.`) and `node_modules`.
 
 ## 2. Lint Rules
 
-9 rules in 1 category (`session`). All rules in this category perform cross-project checks using sibling detection or per-project history analysis.
+11 rules in 1 category (`session`). All rules in this category perform cross-project checks using sibling detection or per-project history analysis.
 
 Severity levels:
 - **error** -- the session data reveals a verifiably missing configuration. Should fail CI.
@@ -370,6 +373,61 @@ Detects a fixed, non-session-scoped temp path that the agent **writes** and late
 
 ---
 
+### 2.10 session/unverified-gate-claimed-clean
+
+Detects a session that asserts a quality gate **passed** while that gate's own invocation failed or produced nothing.
+
+| Field | Value |
+|---|---|
+| **Rule ID** | `session/unverified-gate-claimed-clean` |
+| **Severity** | warning |
+| **Trigger** | A lint/typecheck/test/build command errors or emits no output, and nearby agent prose claims it passed |
+| **Message** | `'<gate>' asserted as passing, but the invocation produced no output` |
+| **Source** | Observed incident (see Notes) |
+
+**Detection algorithm:**
+
+1. Read the project transcript (see §3, "Data sources") and order events by timestamp.
+2. Find gate-shaped commands (`biome`/`eslint`/`ruff`/`clippy`/`lint`, `tsc`/`typecheck`, `vitest`/`jest`/`pytest`/`test`, `build`) whose result was flagged `is_error` **or** produced neither stdout nor stderr.
+3. Scan forward up to 12 events for agent prose asserting a pass (`clean`, `passing`, `all green`, `no violations`, `0 errors`).
+4. Stop the scan early if the same gate is re-run — a later invocation supersedes the failed one — or if the prose labels the state honestly.
+5. Emit a warning per gate when a claim is found.
+
+**Notes:**
+- The motivating session ran `biome check` roughly a dozen times. On that host (Windows ARM64) the binary segfaults during exit — via the npx wrapper, via the native `biome.exe`, and unchanged by shell — producing **zero bytes** every time. The agent twice reported this as "zero diagnostics emitted, which is consistent with a clean run." Disproving it took a deliberate experiment: the same binary against a file with an unused variable and mangled formatting *also* produced zero bytes. The crash precedes diagnostic emission, so empty output carries no information about cleanliness at all.
+- Prose that labels the state honestly — "unverified", "could not verify", "crashed", "blocked", "inconclusive" — is deliberately **not** flagged. A session saying "lint is UNVERIFIED because the runner crashed" reached the correct conclusion. The rule targets the false claim, not the failed gate.
+- Sibling to `commands/exit-status-masked`, which is the *static* half: it reads a documented command whose own shape discards the status (`npx tsc --noEmit | head -20 && echo "tsc clean"`). This rule is *dynamic* — it fires on a plain `pnpm lint` that crashed, a command with nothing structurally wrong with it.
+
+---
+
+### 2.11 session/default-branch-accumulation
+
+Detects a session that accumulates edits on the repo's **default branch** without an intervening commit.
+
+| Field | Value |
+|---|---|
+| **Rule ID** | `session/default-branch-accumulation` |
+| **Severity** | warning |
+| **Trigger** | Ten or more distinct files written while on `main`/`master` with no commit or branch-away in between |
+| **Message** | `<count> files edited on '<branch>' with no intervening commit` |
+| **Source** | Observed incident (see Notes) |
+
+**Detection algorithm:**
+
+1. Read the project transcript (see §3, "Data sources") and order events by timestamp.
+2. Track the branch from the `gitBranch` stamp the harness writes on each record.
+3. Accumulate distinct written paths (`Write`/`Edit`/`NotebookEdit`) while the branch is a default branch.
+4. Reset the accumulator on `git commit` (excluding `--dry-run`) or on a branch-away (`git checkout -b`, `git switch -c`, `git worktree add`).
+5. Emit a warning when the accumulated count reaches 10.
+
+**Notes:**
+- The motivating session ran for hours across review, fix, coverage and audit phases and edited 25 files. Every edit landed in the working tree of `main`, uncommitted, and it surfaced only during a ship-readiness audit at the very end — no git-shaped signal fired along the way.
+- Two things make that worse than untidy. Repo operating instructions commonly say to branch before committing on the default branch, so the end state is one the session was told to avoid. And on a machine running a fleet of agents — the sibling repo this came from had 11 locked worktrees and a `main` whose `HEAD` moved three times during a single audit — a large uncommitted delta on a shared default branch is one `git checkout --` or `git stash` away from being someone else's cleanup.
+- The defect is **accumulation**, not the first write. A one-line typo fix on `main` is normal, and flagging it would make the rule noise. Sessions that branch first or commit as they go stay clean.
+- Writes with no observed branch stamp are not counted: a finding pinned to a branch that was never actually observed is worse than a miss.
+
+---
+
 ## 3. Rule Catalog (machine-readable)
 
 A machine-readable JSON catalog of all rules is available at [`agent-session-lint-rules.json`](./agent-session-lint-rules.json). It conforms to the shared catalog schema ([`schemas/ctxlint-catalog.schema.json`](./schemas/ctxlint-catalog.schema.json)) used by all four pillars: each rule entry carries `id`, `category`, `severity`, `description`, `trigger`, `message`, `fixable`, and `stability`, plus rule-specific extras (e.g. `canonicalFiles` on `session/diverged-file`).
@@ -391,6 +449,18 @@ Catalog rule IDs use the pillar-stable `session/<slug>` form -- these are the cr
 | `session/cyclic-pattern` | `session-loop-detection/cyclic-pattern` |
 | `session/memory-index-overflow` | `session-memory-index-overflow/line-overflow`, `session-memory-index-overflow/byte-overflow` |
 | `session/shared-temp-path` | `session-shared-temp-path/shared-temp-path` |
+| `session/unverified-gate-claimed-clean` | `session-unverified-gate-claimed-clean/unverified-gate-claimed-clean` |
+| `session/default-branch-accumulation` | `session-default-branch-accumulation/default-branch-accumulation` |
+
+### Data sources: history vs. transcript
+
+Session rules read two distinct sources, and the difference decides what a rule can see.
+
+**`~/.claude/history.jsonl`** records only what the **user typed** — one entry per prompt, with `display`, `timestamp`, `project` and `sessionId`. It carries no tool invocations, no command output and no git state.
+
+**`~/.claude/projects/<encoded-project>/<uuid>.jsonl`** is the session **transcript**. It carries `tool_use` blocks with their inputs, the matching `tool_result` with `is_error` and output, and a `gitBranch` stamp on assistant records. Every rule whose signal is *what the agent did* — the command it ran, the gate that crashed, the branch the edits landed on — needs this source; a rule built on `history.jsonl` alone would be inert against them.
+
+Transcript reads are scoped to the **current project** and bounded (most recent 5 transcripts, 200,000 lines), because the corpus on a working machine reaches hundreds of megabytes across a hundred-plus project directories. The bound is reported rather than applied silently, so a check cannot report "clean" off a truncated read.
 
 Other implementations of this specification may emit either form; when interoperating, treat the catalog IDs as canonical and map implementation-specific ruleIds onto them as above.
 
