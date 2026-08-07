@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { describe, it, expect } from 'vitest';
+import { ALL_SESSION_CHECKS } from '../audit.js';
 import { CATALOGS, REPO_ROOT, readCatalog, ruleCount } from '../catalog-meta.js';
 // The prose generator (build.mjs's source of truth) keeps its OWN duplicate
 // CATALOGS list. Import it here so drift between the two hand-maintained lists
@@ -113,6 +114,12 @@ const SESSION_IMPL_RULE_IDS: Record<string, string[]> = {
     'session-memory-index-overflow/byte-overflow',
   ],
   'session/shared-temp-path': ['session-shared-temp-path/shared-temp-path'],
+  'session/unverified-gate-claimed-clean': [
+    'session-unverified-gate-claimed-clean/unverified-gate-claimed-clean',
+  ],
+  'session/default-branch-accumulation': [
+    'session-default-branch-accumulation/default-branch-accumulation',
+  ],
 };
 
 describe('session catalog ids map onto implementation ruleIds', () => {
@@ -122,6 +129,28 @@ describe('session catalog ids map onto implementation ruleIds', () => {
   it('every catalog session rule has a mapping entry (and no stale entries)', () => {
     const catalogIds = (readCatalog(sessionMeta).rules ?? []).map((r) => r.id).sort();
     expect(Object.keys(SESSION_IMPL_RULE_IDS).sort()).toEqual(catalogIds);
+  });
+
+  it('every session check module is listed in ALL_SESSION_CHECKS and dispatched', () => {
+    // A check can be fully implemented, catalogued, mapped and unit-tested and
+    // STILL never run: ALL_SESSION_CHECKS is what an audit iterates, and the
+    // dispatch block in audit.ts is what actually calls it. Both were missed for
+    // `session-shared-temp-path`, which shipped inert with a green suite --
+    // nothing here compared the check modules against the runner.
+    const checksDir = path.join(REPO_ROOT, 'src', 'core', 'checks', 'session');
+    const modules = fs
+      .readdirSync(checksDir)
+      .filter((n) => n.endsWith('.ts') && !n.endsWith('.test.ts'))
+      .map((n) => `session-${n.replace(/\.ts$/, '')}`);
+
+    const auditSrc = fs.readFileSync(path.join(REPO_ROOT, 'src', 'core', 'audit.ts'), 'utf-8');
+    for (const name of modules) {
+      expect(
+        ALL_SESSION_CHECKS as readonly string[],
+        `${name} missing from ALL_SESSION_CHECKS`,
+      ).toContain(name);
+      expect(auditSrc, `${name} is never dispatched in audit.ts`).toContain(`includes('${name}')`);
+    }
   });
 
   it('mapped impl ruleIds are exactly the ruleId literals in src/core/checks/session/', () => {

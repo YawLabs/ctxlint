@@ -114,6 +114,26 @@
       "message": "Fixed temp path \"{path}\" is written and later read back",
       "fixable": false,
       "stability": "stable"
+    },
+    {
+      "id": "session/unverified-gate-claimed-clean",
+      "category": "session",
+      "severity": "warning",
+      "description": "A quality gate is asserted as passing while its invocation failed or produced no output.",
+      "trigger": "A lint/typecheck/test/build command errors or emits nothing, and nearby agent prose claims it passed.",
+      "message": "'{gate}' asserted as passing, but the invocation produced no output",
+      "fixable": false,
+      "stability": "stable"
+    },
+    {
+      "id": "session/default-branch-accumulation",
+      "category": "session",
+      "severity": "warning",
+      "description": "Many files edited on the default branch with no intervening commit.",
+      "trigger": "Ten or more distinct files written while on main/master without a commit or branch-away in between.",
+      "message": "{count} files edited on '{branch}' with no intervening commit",
+      "fixable": false,
+      "stability": "stable"
     }
   ],
   "dataSources": [
