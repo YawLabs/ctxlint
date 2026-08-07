@@ -104,6 +104,16 @@
       "fixable": false,
       "source": "code.claude.com/docs/en/memory",
       "stability": "stable"
+    },
+    {
+      "id": "session/shared-temp-path",
+      "category": "session",
+      "severity": "error",
+      "description": "A fixed, non-session-scoped temp path is written and later read back.",
+      "trigger": "Agent history writes a literal path under /tmp, /var/tmp, $TMPDIR or %TEMP% with no per-run component, then reads the same path.",
+      "message": "Fixed temp path \"{path}\" is written and later read back",
+      "fixable": false,
+      "stability": "stable"
     }
   ],
   "dataSources": [

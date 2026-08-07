@@ -36,6 +36,7 @@ import { checkStaleMemory } from './checks/session/stale-memory.js';
 import { checkDuplicateMemory } from './checks/session/duplicate-memory.js';
 import { checkLoopDetection } from './checks/session/loop-detection.js';
 import { checkMemoryIndexOverflow } from './checks/session/memory-index-overflow.js';
+import { checkSharedTempPath } from './checks/session/shared-temp-path.js';
 import { checkCiCoverage } from './checks/ci-coverage.js';
 import { checkCiSecrets } from './checks/ci-secrets.js';
 import { checkContentSecrets } from './checks/content-secrets.js';
@@ -445,6 +446,8 @@ export async function runAudit(
         sessionPromises.push(checkLoopDetection(sessionCtx));
       if (sessionChecksToRun.includes('session-memory-index-overflow'))
         sessionPromises.push(checkMemoryIndexOverflow(sessionCtx));
+      if (sessionChecksToRun.includes('session-shared-temp-path'))
+        sessionPromises.push(checkSharedTempPath(sessionCtx));
 
       const sessionResults = await Promise.all(sessionPromises);
       const sessionIssues = sessionResults.flat();

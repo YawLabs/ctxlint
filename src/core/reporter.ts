@@ -599,6 +599,13 @@ function buildRuleDescriptors(): SarifRule[] {
       helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
     },
     {
+      id: 'ctxlint/session-shared-temp-path',
+      shortDescription: {
+        text: 'Fixed temp path written then read back -- clobberable by a concurrent session',
+      },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
       id: 'ctxlint/skill-frontmatter',
       shortDescription: { text: 'Skill/agent definition missing required frontmatter' },
       helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',

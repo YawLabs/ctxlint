@@ -15,7 +15,7 @@ This specification defines a standard set of lint rules for validating agent ses
 
 The specification includes:
 - A reference of session data locations across 8 AI coding agents
-- 8 lint rules in the `session` category with defined severities
+- 9 lint rules in the `session` category with defined severities
 - A machine-readable rule catalog ([`agent-session-lint-rules.json`](./agent-session-lint-rules.json))
 - Sibling-repo detection for cross-project checks
 
@@ -128,7 +128,7 @@ Skip hidden directories (starting with `.`) and `node_modules`.
 
 ## 2. Lint Rules
 
-8 rules in 1 category (`session`). All rules in this category perform cross-project checks using sibling detection or per-project history analysis.
+9 rules in 1 category (`session`). All rules in this category perform cross-project checks using sibling detection or per-project history analysis.
 
 Severity levels:
 - **error** -- the session data reveals a verifiably missing configuration. Should fail CI.
@@ -343,6 +343,33 @@ Detects when `MEMORY.md` exceeds Claude Code's session-load cap. Claude Code loa
 
 ---
 
+### 2.9 session/shared-temp-path
+
+Detects a fixed, non-session-scoped temp path that the agent **writes** and later **reads back**. `/tmp` is process-global, and under Git Bash on Windows it is shared across every concurrent agent session on the machine. An agent that backs a file up to a literal path, mutates the original, then restores from that path is racing every other session that picked the same obvious name.
+
+| Field | Value |
+|---|---|
+| **Rule ID** | `session/shared-temp-path` |
+| **Severity** | error |
+| **Trigger** | Session history writes a literal path under `/tmp`, `/var/tmp`, `$TMPDIR` or `%TEMP%` with no per-run component, then reads the same path |
+| **Message** | `Fixed temp path "<path>" is written and later read back` |
+| **Source** | Observed incident (see Notes) |
+
+**Detection algorithm:**
+
+1. Sort session history by timestamp so "written, then read" is a real ordering rather than mere co-occurrence.
+2. For each entry, extract write targets (shell redirect, `cp`/`mv`/`copy`/`move` destination, `tee`, `writeFileSync`, `curl -o`) and read sources (`cp`/`copy` source, `cat`, `type`, `source`, `readFileSync`, `<` redirect).
+3. A candidate qualifies only if it sits under a shared temp root AND carries no per-run component (`$$`, `$pid`, `$RANDOM`, a session id, or `mktemp` anywhere on the line).
+4. Emit an error when a qualifying read is preceded by a qualifying write of the same normalized path. Report each path once.
+
+**Notes:**
+- The motivating incident: an agent measuring a packaging change wrote `package.json` to `/tmp/pkg.bak`, ran `npm pack --dry-run`, then restored with `cp /tmp/pkg.bak package.json`. Between the write and the restore, a concurrent session working a sibling repo used the same `/tmp/pkg.bak`. The restore wrote a **different** package's manifest into the repo — wrong name, version, `bin` and dependencies. A release from that tree would have published under the wrong identity.
+- **The pair is the signal, not either half.** A scratch file that is never read back cannot be clobbered into the workspace, and a read with no matching write is consuming something another tool produced deliberately. Both are ignored.
+- `mktemp` output and any path carrying a per-run component are deliberately **not** flagged — those are the correct form and appear constantly in the same transcripts, so flagging them would bury the real finding.
+- Remediation is a per-run path (`T=$(mktemp)`) or a session-scoped scratch directory assigned by the harness.
+
+---
+
 ## 3. Rule Catalog (machine-readable)
 
 A machine-readable JSON catalog of all rules is available at [`agent-session-lint-rules.json`](./agent-session-lint-rules.json). It conforms to the shared catalog schema ([`schemas/ctxlint-catalog.schema.json`](./schemas/ctxlint-catalog.schema.json)) used by all four pillars: each rule entry carries `id`, `category`, `severity`, `description`, `trigger`, `message`, `fixable`, and `stability`, plus rule-specific extras (e.g. `canonicalFiles` on `session/diverged-file`).
@@ -363,6 +390,7 @@ Catalog rule IDs use the pillar-stable `session/<slug>` form -- these are the cr
 | `session/consecutive-repeat` | `session-loop-detection/consecutive-repeat` |
 | `session/cyclic-pattern` | `session-loop-detection/cyclic-pattern` |
 | `session/memory-index-overflow` | `session-memory-index-overflow/line-overflow`, `session-memory-index-overflow/byte-overflow` |
+| `session/shared-temp-path` | `session-shared-temp-path/shared-temp-path` |
 
 Other implementations of this specification may emit either form; when interoperating, treat the catalog IDs as canonical and map implementation-specific ruleIds onto them as above.
 
