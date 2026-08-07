@@ -137,6 +137,86 @@ describe('session catalog ids map onto implementation ruleIds', () => {
 });
 
 /**
+ * Context-pillar ruleId mapping. Only the `ci` rules diverge: the catalog
+ * publishes pillar-stable `ci/<slug>` IDs while the checks emit ruleIds
+ * namespaced by check module. Every other context rule's catalog ID and
+ * emitted ruleId are identical.
+ *
+ * This mirrors SESSION_IMPL_RULE_IDS above. The session pillar documented and
+ * pinned its correspondence; the ci pair had the same two-level scheme with
+ * neither, described only as a "legacy" prefix exception in CONTRIBUTING.md.
+ * That asymmetry is actively misleading -- a reader greps for
+ * `ci/no-release-docs` in src/, finds nothing, and concludes the catalog has
+ * drifted. It is now documented in CONTEXT_LINT_SPEC.md section 4 and pinned
+ * here.
+ */
+const CI_IMPL_RULE_IDS: Record<string, string> = {
+  'ci/no-release-docs': 'ci-coverage/no-release-docs',
+  'ci/undocumented-secret': 'ci-secrets/undocumented-secret',
+};
+
+describe('context catalog ids map onto implementation ruleIds', () => {
+  const contextMeta = CATALOGS.find((m) => m.key === 'context');
+  if (!contextMeta) throw new Error('context catalog meta missing');
+
+  /** Every `ruleId: '...'` literal in the context-pillar checks. */
+  function emittedContextRuleIds(): Set<string> {
+    const emitted = new Set<string>();
+    const skip = new Set(['__tests__', 'session', 'mcp']);
+    const walk = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (!skip.has(entry.name)) walk(full);
+          continue;
+        }
+        if (!entry.name.endsWith('.ts')) continue;
+        const src = fs.readFileSync(full, 'utf-8');
+        for (const m of src.matchAll(/ruleId:\s*'([^']+)'/g)) emitted.add(m[1]);
+      }
+    };
+    walk(path.join(REPO_ROOT, 'src', 'core', 'checks'));
+    return emitted;
+  }
+
+  it('the ci mapping has no stale entries and both sides still exist', () => {
+    const catalogIds = new Set((readCatalog(contextMeta).rules ?? []).map((r) => r.id));
+    const emitted = emittedContextRuleIds();
+    for (const [catalogId, emittedId] of Object.entries(CI_IMPL_RULE_IDS)) {
+      expect(catalogIds.has(catalogId), `${catalogId} missing from context-lint-rules.json`).toBe(
+        true,
+      );
+      expect(emitted.has(emittedId), `${emittedId} is no longer emitted by any check`).toBe(true);
+    }
+  });
+
+  it('ci is the ONLY context rule whose emitted ruleId differs from its catalog id', () => {
+    // Guards the claim CONTEXT_LINT_SPEC.md section 4 makes. A new check that
+    // namespaces its ruleId without documenting the correspondence fails here.
+    //
+    // skill/* ids are emitted from src/core/checks/skills.ts but belong to the
+    // agent-skill catalog, so they are matched against that one -- they are a
+    // different pillar sharing a directory, not a divergence.
+    const contextIds = new Set((readCatalog(contextMeta).rules ?? []).map((r) => r.id));
+    const skillMeta = CATALOGS.find((m) => m.key === 'agent-skill');
+    if (!skillMeta) throw new Error('agent-skill catalog meta missing');
+    const skillIds = new Set((readCatalog(skillMeta).rules ?? []).map((r) => r.id));
+
+    const known = new Set(Object.values(CI_IMPL_RULE_IDS));
+    const undocumented = [...emittedContextRuleIds()]
+      .filter((id) => !contextIds.has(id) && !skillIds.has(id) && !known.has(id))
+      .sort();
+
+    expect(
+      undocumented,
+      'These ruleIds are emitted but are neither published under the same id nor listed in ' +
+        'CI_IMPL_RULE_IDS. Either publish them under the emitted id, or add the correspondence ' +
+        'here and to CONTEXT_LINT_SPEC.md section 4.',
+    ).toEqual([]);
+  });
+});
+
+/**
  * README hand-maintained client/format counts. These aren't rewritten by the
  * prose generator (it only handles rule counts), so gate them here: the
  * family-table "across N clients" figures and the catalog-list "N supported

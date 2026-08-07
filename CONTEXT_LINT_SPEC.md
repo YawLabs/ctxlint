@@ -672,6 +672,17 @@ The catalog enables:
 
 See the JSON file for the full schema.
 
+### Catalog rule IDs vs. reference-implementation ruleIds
+
+For all but two rules the catalog ID and the emitted `ruleId` are identical. The `ci` rules are the exception: their catalog IDs use a pillar-stable `ci/<slug>` form -- these are the cross-tool names to use in documentation, configuration, and issue reports -- while the reference implementation namespaces the `ruleId` it emits (in `--format json` output) by check module. The full correspondence (pinned by a consistency test in the reference implementation):
+
+| Catalog rule ID | Emitted `ruleId` (reference implementation) |
+|---|---|
+| `ci/no-release-docs` | `ci-coverage/no-release-docs` |
+| `ci/undocumented-secret` | `ci-secrets/undocumented-secret` |
+
+Other implementations of this specification may emit either form; when interoperating, treat the catalog IDs as canonical and map implementation-specific ruleIds onto them as above. The same two-level arrangement is documented for the session pillar in [`AGENT_SESSION_LINT_SPEC.md`](./AGENT_SESSION_LINT_SPEC.md) section 3.
+
 ---
 
 ## 5. Implementing This Specification
