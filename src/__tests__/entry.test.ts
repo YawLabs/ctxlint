@@ -133,7 +133,14 @@ describe('package.json consistency', () => {
     expect(PKG.types).toBeUndefined();
     expect(PKG.exports['.']).toBeUndefined();
     expect(PKG.exports['./package.json']).toBe('./package.json');
-    expect(PKG.bin.ctxlint).toBe('dist/index.js');
+    // bin points at the oam runtime launcher, not straight at the CLI. The
+    // launcher prefers oam (https://oamjs.org) and falls back to running
+    // dist/index.js in its own process, so the public surface is unchanged --
+    // but it MUST stay a bin entry rather than becoming an export, which is
+    // what the assertions above pin. Both files ship: see the "files" check.
+    expect(PKG.bin.ctxlint).toBe('bin/ctxlint.mjs');
+    expect(PKG.files).toContain('bin/ctxlint.mjs');
+    expect(PKG.files).toContain('dist/index.js');
   });
 
   it('bare-specifier import fails to resolve instead of executing the CLI', () => {

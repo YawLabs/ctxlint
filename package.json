@@ -4,7 +4,7 @@
   "mcpName": "io.github.YawLabs/ctxlint",
   "description": "Lint your AI agent context files, MCP server configs, and session data against your actual codebase",
   "bin": {
-    "ctxlint": "dist/index.js"
+    "ctxlint": "bin/ctxlint.mjs"
   },
   "type": "module",
   "exports": {
@@ -59,6 +59,7 @@
   ],
   "files": [
     "dist/index.js",
+    "bin/ctxlint.mjs",
     ".pre-commit-hooks.yaml",
     "action.yml",
     "CONTEXT_LINT_SPEC.md",
