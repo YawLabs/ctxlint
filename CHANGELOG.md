@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 See [Versioning policy](#versioning-policy) below.
 
-## [Unreleased]
+## [0.23.0] - 2026-08-16
 
 ### Fixed
 - **`commands/npx-not-in-deps` no longer fires on prohibited commands.** A CLAUDE.md line whose only mention of a command is a prohibition ("**NEVER run `npx netlify deploy` directly.**") demanded the dep be installed -- backwards: the doc exists to tell the reader that command must not run here. Mentions are now skipped when a negation token (`never`, `don't`, `do not`, `must not`, `avoid`) precedes the command within the same clause. The scope is deliberately tight, tuned by adversarial probes: inline code spans are masked first (so `avoid-cycles` in an earlier span cannot suppress a later mention), clause boundaries include `;`, spaced `--`, and the em-dash (so "NEVER guess -- run `npx x` to check" still flags the mandated command), and the comparative framings `instead of` / `rather than` are NOT negation tokens ("Instead of clicking around the UI, run `npx x`" recommends x). One accepted false negative is pinned by test: "Don't forget to run `npx x`" stays suppressed -- flipping it needs verb analysis, and the module's documented posture is false-negative-over-false-positive.
