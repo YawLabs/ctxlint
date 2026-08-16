@@ -266,6 +266,200 @@ describe('checkCommands', () => {
     expect(byRule!.message).toContain('netlifyctl');
   });
 
+  // ---- Prose prohibition: a command a doc mentions only to FORBID running
+  // ("NEVER run `npx netlify deploy` directly.") must not demand the dep be
+  // installed -- even when no permissions.deny entry backs the prohibition.
+
+  it('does NOT flag an npx command mentioned under NEVER-run prohibition (no deny entry)', async () => {
+    // Verbatim from a real CLAUDE.md that misfired. No settings files seeded:
+    // the suppression must come from the prose negation alone.
+    seed(
+      {
+        'CLAUDE.md':
+          '# Release & Deploy Rules\n\n' +
+          '- **NEVER run `npx netlify deploy` directly.** Always use ' +
+          '`cd ~/yaw/yaw_terminal/yaw.sh && ./deploy.sh` (that repo carries `netlify-cli` as ' +
+          'a devDependency; this one does not). The deploy script downloads missing ' +
+          'cross-platform binaries from the GitHub release before deploying.\n',
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/npx-not-in-deps')).toBeUndefined();
+  });
+
+  it('does NOT flag npx commands under "Do not run" / "don\'t use" prohibitions', async () => {
+    seed(
+      {
+        'CLAUDE.md':
+          '# Rules\n\n' +
+          '- Do not run `npx some-cli deploy` from this repo.\n' +
+          "- Please don't use `npx other-cli` here; the wrapper script handles it.\n",
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.filter((i) => i.ruleId === 'commands/npx-not-in-deps')).toEqual([]);
+  });
+
+  // Control: an AFFIRMATIVE mention of the same command still flags, proving
+  // the negation context -- not some broader change -- is what suppressed it.
+  it('still flags the same npx command when mentioned affirmatively', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Deploy\n\nUse `npx netlify deploy` to ship the site.\n',
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    const byRule = issues.find((i) => i.ruleId === 'commands/npx-not-in-deps');
+    expect(byRule).toBeDefined();
+    expect(byRule!.message).toContain('netlify');
+  });
+
+  // Control: negation in a PREVIOUS sentence does not govern the command --
+  // the same-sentence boundary keeps the suppression from leaking.
+  it('still flags when the negation is in a previous sentence', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Deploy\n\nNever commit secrets. Deploy with `npx netlify deploy`.\n',
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/npx-not-in-deps')).toBeDefined();
+  });
+
+  // ---- Prohibition-scope tightening: four over-suppression shapes were
+  // empirically confirmed (each probed to 0 flags while the doc MANDATED the
+  // command, i.e. a genuine missing dep went unreported). Shapes 1-3 must
+  // flag; shape 4 is pinned as a deliberately accepted false negative. ----
+
+  // Shape 1a: "Instead of <bad way>, run `npx x`" RECOMMENDS the command --
+  // comparative framings were dropped from the prohibition token set.
+  it('flags a command recommended via "Instead of ..., run `npx x`"', async () => {
+    seed(
+      {
+        'CLAUDE.md':
+          '# Deploy\n\nInstead of clicking around the Netlify UI, run `npx netlify deploy`.\n',
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    const byRule = issues.find((i) => i.ruleId === 'commands/npx-not-in-deps');
+    expect(byRule).toBeDefined();
+    expect(byRule!.message).toContain('netlify');
+  });
+
+  // Shape 1b: same for "Rather than ..." framing.
+  it('flags a command recommended via "Rather than ..., use `npx x`"', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Deploy\n\nRather than the dashboard, use `npx netlify deploy` to ship.\n',
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/npx-not-in-deps')).toBeDefined();
+  });
+
+  // Shape 2: a negation-looking token INSIDE an earlier code span
+  // (`avoid-cycles`) is code, not prose -- spans are masked before the
+  // negation search, so the later npx mention still flags.
+  it('does NOT let `avoid-cycles` in an earlier code span suppress a later npx mention', async () => {
+    seed(
+      {
+        'CLAUDE.md':
+          '# Imports\n\nThe `avoid-cycles` rule requires `npx dep-graph-tool` to verify imports.\n',
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    const byRule = issues.find((i) => i.ruleId === 'commands/npx-not-in-deps');
+    expect(byRule).toBeDefined();
+    expect(byRule!.message).toContain('dep-graph-tool');
+  });
+
+  // Shape 3a: a spaced ` -- ` ends the prohibition clause -- the command
+  // after it is the recommended half of the line.
+  it('flags the command after "NEVER guess -- run `npx x`" (spaced -- ends the clause)', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Deploy\n\nNEVER guess about deploy state -- run `npx netlify status` to check.\n',
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/npx-not-in-deps')).toBeDefined();
+  });
+
+  // Shape 3b: a semicolon ends the prohibition clause.
+  it('flags the command after "Never use the UI; deploy with `npx x`" (semicolon ends the clause)', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Deploy\n\nNever use the web UI; deploy with `npx netlify deploy`.\n',
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/npx-not-in-deps')).toBeDefined();
+  });
+
+  // Shape 3c: an em-dash ends the prohibition clause, same as ` -- `.
+  it('flags the command after an em-dash clause boundary', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Deploy\n\nNEVER guess about deploy state — run `npx netlify status` to check.\n',
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/npx-not-in-deps')).toBeDefined();
+  });
+
+  // Control for 3a: a double-hyphen WITHOUT surrounding whitespace is a CLI
+  // flag, not a clause boundary -- the prohibition still reaches the command.
+  it('does not treat an unspaced --flag as a clause boundary', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Deploy\n\nNEVER pass --prod when testing `npx netlify deploy` locally.\n',
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/npx-not-in-deps')).toBeUndefined();
+  });
+
+  // Shape 4: known ACCEPTED false negative, pinned deliberately. "Don't
+  // forget to run `npx x`" suppresses even though the command is recommended:
+  // the negation binds to "forget", not the command, and telling those apart
+  // needs verb analysis this check deliberately avoids -- the module's
+  // documented posture is false-negative-over-false-positive for this
+  // warning-severity nudge. If this test starts failing because the mention
+  // now FLAGS, that's a posture change to make consciously, not a bug fix.
+  it('accepted false negative: "Don\'t forget to run `npx x`" stays suppressed', async () => {
+    seed(
+      {
+        'CLAUDE.md': "# Release\n\nDon't forget to run `npx changeset-tool` before releasing.\n",
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/npx-not-in-deps')).toBeUndefined();
+  });
+
   it('flags common tool missing from deps (tool-not-found)', async () => {
     seed(
       {

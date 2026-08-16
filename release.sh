@@ -306,6 +306,17 @@ fi
 # the resume could not fix the heading because the promotion lived nowhere.
 promote_changelog
 
+# Rebuild AFTER the bump: build.mjs bakes package.json's version into the
+# bundle (the __VERSION__ define), so the step-2 dist -- built while
+# package.json still held the PREVIOUS version -- carries that old version.
+# Publishing it is exactly how v0.22.0 shipped a dist whose --version
+# reported 0.21.0. Step 2 stays as the fail-early gate; THIS build produces
+# the artifact that ships. Unconditional so a resume run (which skips the
+# bump branch) also gets a dist that matches package.json. dist/ is
+# gitignored, so the rebuild leaves no working-tree dirt for step 5.
+pnpm run build
+info "Rebuilt dist with v${VERSION} baked"
+
 # =============================================================================
 # Step 5: Commit, tag, and push
 # =============================================================================
@@ -372,6 +383,17 @@ step 6 "Publish to npm"
 #                                       version. CI is authoritative.
 #   3. IS_CI=false + no CI publish   -> Workstation IS the publisher. Try locally
 #      path                             with EOTP retry for fresh WebAuthn sessions.
+
+# Fail-closed artifact gate: the dist about to ship must carry the version it
+# claims. Re-reads package.json at this step boundary rather than trusting
+# $VERSION from script start. The grep target is the JSON.stringify'd
+# __VERSION__ literal build.mjs injects; its absence means a stale build
+# escaped the step-4 post-bump rebuild (the v0.22.0-ships-0.21.0 failure).
+PKG_VERSION_NOW=$(node -p "require('./package.json').version")
+if ! grep -q "\"${PKG_VERSION_NOW}\"" dist/index.js 2>/dev/null; then
+  fail "dist/index.js lacks baked version \"${PKG_VERSION_NOW}\" -- stale build; step 4's post-bump rebuild should have refreshed it. Investigate before publishing."
+fi
+
 PUBLISHED_VERSION=$(npm view "@yawlabs/ctxlint@${VERSION}" version 2>/dev/null || echo "")
 if [ "$PUBLISHED_VERSION" = "$VERSION" ]; then
   info "v${VERSION} already published on npm — skipping"

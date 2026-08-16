@@ -246,6 +246,35 @@ describe('hook-coverage/dead-hook', () => {
       expect(issues).toEqual([]);
     },
   );
+
+  it.skipIf(process.platform !== 'win32')(
+    'resolves an MSYS /c/ DIRECTORY target in a cd entry (win32)',
+    async () => {
+      // Same shape as the observed `Bash(cd /c/Users/<user>/<repo>*)` entry:
+      // the target is a directory, not a script, and it exists. The existence
+      // check must accept directories after the drive-path translation.
+      const absDir = path.join(tmpDir, 'sub', 'project');
+      fs.mkdirSync(absDir, { recursive: true });
+      const msysDir = `/${absDir[0].toLowerCase()}${absDir.slice(2).replace(/\\/g, '/')}`;
+      writeSettings({ permissions: { allow: [`Bash(cd ${msysDir}*)`] } });
+      const issues = await checkHookCoverage(tmpDir, homeDir);
+      expect(issues).toEqual([]);
+    },
+  );
+
+  it.skipIf(process.platform !== 'win32')(
+    'still flags a genuinely missing MSYS /c/ directory target (win32)',
+    async () => {
+      // Control for the test above: the same cd-entry shape pointing at a
+      // directory that does NOT exist must keep flagging.
+      const absDir = path.join(tmpDir, 'no', 'such', 'dir');
+      const msysDir = `/${absDir[0].toLowerCase()}${absDir.slice(2).replace(/\\/g, '/')}`;
+      writeSettings({ permissions: { allow: [`Bash(cd ${msysDir}*)`] } });
+      const issues = await checkHookCoverage(tmpDir, homeDir);
+      expect(issues).toHaveLength(1);
+      expect(issues[0].message).toContain('does not exist on disk');
+    },
+  );
 });
 
 describe('hook-coverage helpers', () => {

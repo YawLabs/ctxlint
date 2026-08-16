@@ -4,7 +4,8 @@ import { parse as parseJsonc } from 'jsonc-parser';
 import { loadPackageJson, stripBom } from '../../utils/fs.js';
 import { analyzeMaskedExitStatus, pipefailInScope } from './exit-status.js';
 import { findBinInvocations, knownSubcommands, ownedBins } from './cli-subcommands.js';
-import type { ParsedContextFile, LintIssue } from '../types.js';
+import { inlineCodeSpans, maskCodeSpans } from './tier-tokens.js';
+import type { ParsedContextFile, LintIssue, CommandReference } from '../types.js';
 
 // Match npm/pnpm/yarn/bun script invocations. `run` is required for npm
 // (bare `npm install` is never a script reference), optional for
@@ -221,6 +222,53 @@ function isDeniedCommand(cmd: string, deniedPrefixes: string[]): boolean {
   return deniedPrefixes.some((p) => cmd === p || cmd.startsWith(`${p} `));
 }
 
+/**
+ * A negation governing the command mention -- "**NEVER run `npx netlify
+ * deploy` directly.**" -- means the doc cites the command to steer the agent
+ * AWAY from it. Demanding the package be installed for a command the file
+ * forbids running is backwards, so npx-not-in-deps skips these. The negation
+ * must PRECEDE the command within the same CLAUSE: scope ends at a sentence
+ * terminator (`.` `!` `?`) or a clause boundary (`;`, spaced ` -- `, or an
+ * em-dash), so "NEVER guess -- run `npx x` to check" and "Never use the UI;
+ * deploy with `npx x`" keep flagging -- there the command is the RECOMMENDED
+ * half of the line. Inline code spans in the prefix are masked (same-length
+ * `#` filler, shared with tier-tokens.ts) so a token like `avoid-cycles`
+ * inside backticks can't read as prose negation. Comparative framings
+ * ("instead of", "rather than") are deliberately NOT negation tokens: in
+ * "Instead of clicking around the UI, run `npx x`" the command is the
+ * recommendation, and "use `npx x` rather than y" places the command before
+ * the phrase anyway. Matching is case-insensitive because prohibition prose
+ * is ("Do not run", "don't use", "NEVER run") -- over-suppressing a
+ * warning-severity nudge is the cheap direction, per the module's
+ * false-negative-over-false-positive posture. Known accepted false negative
+ * under that posture: "Don't forget to run `npx x`" suppresses even though
+ * the command is recommended -- the negation binds to "forget", not the
+ * command, and telling those apart needs verb analysis this check
+ * deliberately avoids. Complements isDeniedCommand above: that credits an
+ * explicit permissions.deny entry, this covers repos that write the
+ * prohibition in prose without a matching deny rule.
+ */
+const PROHIBITION_TOKEN = /\b(?:never|don['’]?t|do\s+not|must\s+not|avoid)\b/i;
+
+// Ends a prohibition's scope: sentence terminators plus clause boundaries.
+// `\s--(?=\s|$)` is the spaced double-hyphen; requiring whitespace on both
+// sides keeps `--prod`-style flags from splitting a clause.
+const CLAUSE_TERMINATOR = /[.!?;—]|\s--(?=\s|$)/;
+
+function isProhibitedMention(lines: string[], ref: CommandReference): boolean {
+  const line = lines[ref.line - 1] ?? '';
+  // Mask inline code spans (length-preserving, so column indices stay valid)
+  // before the negation search -- span CONTENTS are code, not prose.
+  const masked = maskCodeSpans(line, inlineCodeSpans(line));
+  // ref.column is 1-based and points at the first char of the command, so
+  // this slice is everything before the command (opening backtick included,
+  // masked along with the rest of the command's own span).
+  const prefix = masked.slice(0, Math.max(0, ref.column - 1));
+  // Only the clause the command sits in can govern it.
+  const clause = prefix.split(CLAUSE_TERMINATOR).pop() ?? '';
+  return PROHIBITION_TOKEN.test(clause);
+}
+
 export async function checkCommands(
   file: ParsedContextFile,
   projectRoot: string,
@@ -229,6 +277,7 @@ export async function checkCommands(
   const pkgJson = loadPackageJson(projectRoot);
   const makefile = loadMakefile(projectRoot);
   const deniedPrefixes = loadDeniedCommandPrefixes(projectRoot);
+  const contentLines = file.content.split('\n');
 
   // When package.json can't be loaded, all the script/shorthand/npx/tool
   // branches below silently skip. Surface that ONCE if any reference would
@@ -331,7 +380,10 @@ export async function checkCommands(
         // A command the user has explicitly DENIED in .claude/settings.json is
         // one they've told the agent never to run -- the "add it to
         // devDependencies for reproducibility" nudge is noise for it, so skip.
+        // Same for a command the doc mentions only to PROHIBIT in prose
+        // ("NEVER run `npx netlify deploy` directly.").
         if (isDeniedCommand(cmd, deniedPrefixes)) continue;
+        if (isProhibitedMention(contentLines, ref)) continue;
         const binPath = path.join(projectRoot, 'node_modules', '.bin', pkgName);
         try {
           fs.accessSync(binPath);

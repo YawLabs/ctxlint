@@ -461,6 +461,119 @@ describe('checkTierTokens — hard-enforcement-missing', () => {
       warnSpy.mockRestore();
     }
   });
+
+  // --- Factual/mapping-prose regressions (each string observed verbatim in a
+  // real repo's always-loaded files, where the rule misfired). ---
+
+  it('does not fire on lowercase temporal "always" in a factual mapping line', async () => {
+    // "the specs have always lived in `e2e/`" is descriptive prose; the old
+    // case-insensitive scan read the adverb as inviolable framing and
+    // nominated the DIRECTORY `e2e/` for hook enforcement.
+    const content =
+      '# CLAUDE.md\n\n' +
+      '  - **`e2e.yml`** (Playwright) → the Phase-1 GUI test suite in `e2e/` + ' +
+      '`scripts/run-gui-tests-local.sh`. Run from a non-Yaw shell only (per ' +
+      '`feedback_no_e2e_from_inside_yaw.md`) -- the runner hard-refuses otherwise, detecting ' +
+      'the `YAW_VERSION` env var that a packaged yaw exports into every PTY shell. (There is ' +
+      'no `tests/gui/` directory; the specs have always lived in `e2e/`.)\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
+  });
+
+  it('does not fire on a hyphenated compound ("the always-on summary")', async () => {
+    const content =
+      '# CLAUDE.md\n\n' +
+      "Yaw Mode's default is ASCII output to the user's terminal. When `terminal-output.md` " +
+      'is loaded it expands the rationale and the full substitution table; this section is ' +
+      'the always-on summary so the discipline survives a session-limit downshift (which ' +
+      'drops `terminal-output.md` from the overlay).\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
+  });
+
+  it('does not fire on a framing word inside an inline code span', async () => {
+    // "always" here lives INSIDE `applies-when.always === true`. The old
+    // single-regex scan matched it and then captured the PROSE between that
+    // code span and the next one as "the command".
+    const content =
+      '# CLAUDE.md\n\n' +
+      'At overlay-build time `combineClaudeMd` (src/yaw-mode.ts) reads `rules/manifest.json` ' +
+      'and filters this list down to the rules whose `applies-when.always === true` -- plus ' +
+      'the active overlay profile\'s force-load set -- those load every turn, injected on ' +
+      'demand by the `rule-trigger-load.js` UserPromptSubmit hook\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
+  });
+
+  it('does not treat an UPPERCASE framing word inside a code span as framing', async () => {
+    // Pins the code-span masking on its own: the token is uppercase (so the
+    // case gate alone would not stop it) but sits inside backticks.
+    const content =
+      '# CLAUDE.md\n\nThe `applies-when.ALWAYS` key gates loading of `manifest.json` entries.\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
+  });
+
+  it('still fires on a capitalized "Never" bullet (genuine inviolable rule)', async () => {
+    const content =
+      '# CLAUDE.md\n\n' +
+      '- Never calling `process.kill()` on Windows ConPTY shells (write `\\x03\\nexit\\r\\n`)\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    const hard = issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing');
+    expect(hard).toBeDefined();
+    expect(hard!.suggestion).toContain('process.kill()');
+  });
+
+  it('still fires on sentence-initial "Always use" (directive, not prose)', async () => {
+    const content = '# CLAUDE.md\n\nAlways use `./deploy.sh` to ship.\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    const hard = issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing');
+    expect(hard).toBeDefined();
+    expect(hard!.suggestion).toContain('./deploy.sh');
+    // ALWAYS polarity: suggest a hook that runs/verifies, not a deny.
+    expect(hard!.suggestion).not.toContain('physically blocked');
+  });
+
+  it('still fires on emphasized mixed-case framing ("must NOT")', async () => {
+    const content =
+      '# CLAUDE.md\n\nThe release flow must NOT invoke `npm publish` from a laptop.\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    const hard = issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing');
+    expect(hard).toBeDefined();
+    expect(hard!.suggestion).toContain('npm publish');
+  });
+
+  it('does not manufacture "do ... not" framing across a masked code span', async () => {
+    // Masking `x` with spaces would turn "do `x` not" into "do     not" and
+    // match `do\s+not`; the non-space filler prevents that.
+    const content = '# CLAUDE.md\n\nWhat you do `x` not withstanding, run `npm test` often.\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
+  });
 });
 
 describe('checkAggregateTierTokens', () => {

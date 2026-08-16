@@ -159,8 +159,93 @@ function computeSectionCosts(file: ParsedContextFile): SectionCost[] {
  * appeared on the same line — but `npm test` was not the object of `Do not`.
  * The sentence boundary (period/exclamation/question mark) eliminates that
  * class of false positive.
+ *
+ * Two further constraints, each grounded in a real misfire on factual prose:
+ *
+ *  1. The framing token must carry visible directive weight — at least one
+ *     uppercase letter (NEVER, Never, do NOT, Must not). An all-lowercase
+ *     "always" / "never" mid-sentence is almost always descriptive prose,
+ *     not a rule: "the specs have always lived in `e2e/`" nominated a
+ *     DIRECTORY for hook enforcement, and "this section is the always-on
+ *     summary" nominated a filename. The lookarounds additionally reject
+ *     compound words ("always-on", "always-loaded") and dotted identifiers
+ *     ("applies-when.always"), which are never framing even when capitalized.
+ *     Trade-off: a genuinely imperative all-lowercase "don't use `x`" is no
+ *     longer nudged — an acceptable false negative for an info-severity rule
+ *     whose documented posture is conservative.
+ *
+ *  2. The framing token must sit OUTSIDE inline code spans. A backticked
+ *     `applies-when.always === true` contains the word "always", and the old
+ *     single-regex scan matched it, then captured the PROSE between that code
+ *     span and the next one as "the command". Code spans are masked before
+ *     the framing search; only their contents remain candidates for the
+ *     command capture.
  */
-const INVIOLABLE_WITH_COMMAND = /\b(NEVER|ALWAYS|DON'?T|DO NOT|MUST NOT)\b[^.!?`]{0,80}`([^`]+)`/i;
+const FRAMING_TOKEN = /(?<![\w'.-])(never|always|don'?t|do\s+not|must\s+not)(?![\w'.-])/gi;
+
+/** Max chars allowed between the framing token and the backticked command. */
+const FRAMING_COMMAND_GAP = 80;
+
+export interface CodeSpan {
+  start: number;
+  end: number;
+  content: string;
+}
+
+export function inlineCodeSpans(line: string): CodeSpan[] {
+  const spans: CodeSpan[] = [];
+  const re = /`([^`]+)`/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line)) !== null) {
+    spans.push({ start: m.index, end: m.index + m[0].length, content: m[1] });
+  }
+  return spans;
+}
+
+/**
+ * Blank out code spans (backticks included) so the framing search can't see
+ * them. The filler is `#`, not a space: a space filler would let "do `x` not"
+ * mask into "do     not" and MATCH `do\s+not`, manufacturing framing that
+ * isn't in the prose. `#` is non-word, non-space, and not a sentence
+ * terminator, so it can neither complete a framing token nor fail the
+ * same-sentence gap test. (Also reused by commands.ts's isProhibitedMention,
+ * which has the same masking need for its negation-token search.)
+ */
+export function maskCodeSpans(line: string, spans: CodeSpan[]): string {
+  let out = line;
+  for (const s of spans) {
+    out = out.slice(0, s.start) + '#'.repeat(s.end - s.start) + out.slice(s.end);
+  }
+  return out;
+}
+
+/**
+ * Find the first (framing token, backticked command) pair on a line under the
+ * constraints documented above, or null. Mirrors the old regex's "first match
+ * on the line" behavior.
+ */
+function findInviolableCommand(line: string): { framing: string; command: string } | null {
+  const spans = inlineCodeSpans(line);
+  if (spans.length === 0) return null;
+  const masked = maskCodeSpans(line, spans);
+
+  FRAMING_TOKEN.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = FRAMING_TOKEN.exec(masked)) !== null) {
+    const token = m[1];
+    // All-lowercase = prose ("have always lived in"), not directive framing.
+    if (token === token.toLowerCase()) continue;
+    const afterIdx = m.index + m[0].length;
+    // The command is the FIRST code span after the token, in the same
+    // sentence (no . ! ? between) and within the gap budget.
+    const span = spans.find((s) => s.start >= afterIdx);
+    if (!span) continue;
+    const gap = masked.slice(afterIdx, span.start);
+    if (gap.length > FRAMING_COMMAND_GAP || /[.!?]/.test(gap)) continue;
+    return { framing: token, command: span.content };
+  }
+  return null;
+}
 
 interface HookEntry {
   matcher?: string;
@@ -343,16 +428,16 @@ function checkHardEnforcement(file: ParsedContextFile, settings: Settings[]): Li
     // Match inviolable framing + backticked command within the same sentence
     // (no .!? between them). Limits false positives and scans the full
     // command content — no `/`-exclusion that previously dropped `./release.sh`.
-    const match = line.match(INVIOLABLE_WITH_COMMAND);
+    const match = findInviolableCommand(line);
     if (!match) continue;
-    const cmd = canonicalizeCommand(match[2]);
+    const cmd = canonicalizeCommand(match.command);
     if (!cmd) continue;
     if (commandIsEnforced(cmd, settings)) continue;
     // Blocking only makes sense for prohibitive framing (NEVER / DO NOT /
     // MUST NOT). An ALWAYS rule wants the inverse: a hook that runs or
     // verifies the command, not one that denies it.
     const suggestion =
-      match[1].toUpperCase() === 'ALWAYS'
+      match.framing.toUpperCase() === 'ALWAYS'
         ? `Rules in always-loaded files are advisory. For \`${cmd}\`, add a hook in .claude/settings.json (e.g. a PreToolUse or Stop hook that runs or verifies \`${cmd}\`) so the requirement doesn't depend on the agent remembering.`
         : `Rules in always-loaded files are advisory. For \`${cmd}\`, add a PreToolUse hook (or permissions.deny entry) in .claude/settings.json so the command is physically blocked.`;
     issues.push({

@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 See [Versioning policy](#versioning-policy) below.
 
+## [Unreleased]
+
+### Fixed
+- **`commands/npx-not-in-deps` no longer fires on prohibited commands.** A CLAUDE.md line whose only mention of a command is a prohibition ("**NEVER run `npx netlify deploy` directly.**") demanded the dep be installed -- backwards: the doc exists to tell the reader that command must not run here. Mentions are now skipped when a negation token (`never`, `don't`, `do not`, `must not`, `avoid`) precedes the command within the same clause. The scope is deliberately tight, tuned by adversarial probes: inline code spans are masked first (so `avoid-cycles` in an earlier span cannot suppress a later mention), clause boundaries include `;`, spaced `--`, and the em-dash (so "NEVER guess -- run `npx x` to check" still flags the mandated command), and the comparative framings `instead of` / `rather than` are NOT negation tokens ("Instead of clicking around the UI, run `npx x`" recommends x). One accepted false negative is pinned by test: "Don't forget to run `npx x`" stays suppressed -- flipping it needs verb analysis, and the module's documented posture is false-negative-over-false-positive.
+- **`tier-tokens/hard-enforcement-missing` no longer misfires on prose adverbs or code-span contents.** The framing search was a single case-insensitive regex over the raw line, so "the specs have always lived in `e2e/`" nominated a directory for a hook, "the always-on summary" matched a compound, and `applies-when.always === true` matched inside its own code span. Inline code spans are now masked before the search (length-preserving filler, so a masked span cannot bridge two prose fragments into a phantom `do not`), framing tokens must carry at least one uppercase letter (NEVER / Never / do NOT count; all-lowercase is prose), and lookarounds reject compounds and identifiers (`always-on`, `applies-when.always`). Genuine prohibitive framing ("Never calling `process.kill()`", "must NOT invoke `npm publish`") still fires, with ALWAYS-vs-prohibitive suggestion polarity preserved.
+
+### Internal
+- **`release.sh` rebuilds after the version bump and refuses to publish a dist that does not carry the version it claims.** Step 2 builds while `package.json` still holds the old version, and build.mjs bakes that version into the bundle via the `__VERSION__` define -- which is how the v0.22.0 publish shipped a dist reporting 0.21.0. Step 4 now rebuilds post-bump (step 2 stays as the fail-early gate; the post-bump build is the artifact that ships, and resume runs get a fresh dist too), step 6 gates publishing on `dist/index.js` containing the current `package.json` version's baked literal (re-read at the step boundary, not cached from script start), and a new `prepublishOnly` script backstops ANY `npm publish` -- including a manual one outside release.sh -- with a rebuild from the current tree.
+- Regression tests pinning the MSYS dead-hook false-positive fixes that landed in v0.19.0: `Bash(cd /c/<dir>*)` directory targets on win32 resolve through the MSYS drive translation (existing directory audits clean, missing directory still flags).
+
 ## [0.21.0] - 2026-08-07
 
 ### Added
