@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import { VERSION } from '../version.js';
 
 const CLI = path.resolve(__dirname, '../../dist/index.js');
@@ -282,5 +283,51 @@ describe('repo policy', () => {
     // public` NOT followed by --provenance. Guards against the local branch
     // being removed while the (now dead) CI `--provenance` line lingers.
     expect(releaseSh).toMatch(/npm publish --access public(?! --provenance)/);
+  });
+});
+
+describe('CLI error paths', () => {
+  // A path that does not exist used to print "No context files found." and exit
+  // 0 -- byte-identical to a genuinely empty project. A typo'd path in a CI step
+  // or pre-commit hook therefore reported success forever.
+  it('a nonexistent project path errors with exit 2, not a silent success', () => {
+    const missing = path.join(os.tmpdir(), 'ctxlint-definitely-not-a-real-directory-xyz');
+    const { stderr, exitCode } = run([missing]);
+    expect(exitCode).toBe(2);
+    expect(stderr).toContain('is not an existing directory');
+  });
+
+  // The control that gives the test above its meaning: an EXISTING empty
+  // directory must still be the quiet exit-0 case, so the two are now
+  // distinguishable rather than both reading as success.
+  it('an existing but empty directory is still a clean exit 0', () => {
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-empty-'));
+    try {
+      const { stdout, exitCode } = run([empty]);
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain('No context files found');
+    } finally {
+      fs.rmSync(empty, { recursive: true, force: true });
+    }
+  });
+
+  // A malformed auto-discovered .ctxlintrc threw past the action handler and
+  // printed a raw Node stack trace with internal dist frames. The explicit
+  // `--config` path already had the clean console.error + exit 2; this asserts
+  // the discovered path now fails identically.
+  it('a malformed .ctxlintrc exits 2 with a clean message and no stack trace', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-badcfg-'));
+    try {
+      fs.writeFileSync(path.join(dir, '.ctxlintrc'), '{ this is not json');
+      fs.writeFileSync(path.join(dir, 'CLAUDE.md'), '# P\n');
+      const { stderr, exitCode } = run([dir]);
+      expect(exitCode).toBe(2);
+      expect(stderr).toContain('Invalid JSON in');
+      // The actual regression: no thrown-exception presentation.
+      expect(stderr).not.toContain('dist/index.js:');
+      expect(stderr).not.toMatch(/^\s+at /m);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

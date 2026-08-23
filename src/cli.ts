@@ -27,6 +27,15 @@ const VALID_CHECKS = new Set<string>([
   ...ALL_SKILL_CHECKS,
 ]);
 
+/** True when `p` exists and is a directory (not a file, not a dangling link). */
+function existsAsDirectory(p: string): boolean {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 function validateCheckNames(names: string[], source: string): CheckName[] {
   const invalid = names.filter((n) => n && !VALID_CHECKS.has(n));
   if (invalid.length > 0) {
@@ -91,6 +100,21 @@ export async function runCli() {
     .option('--watch', 'Re-lint on context file changes', false)
     .action(async (projectPath: string, opts: Record<string, unknown>) => {
       const resolvedPath = path.resolve(projectPath as string);
+
+      // A path that does not exist must not read as a clean run. Without this
+      // the scan simply finds nothing and prints "No context files found." with
+      // exit 0 -- byte-identical to a genuinely empty project, so a typo'd path
+      // in a CI step or a pre-commit hook reports success forever. Exit 2 is
+      // the documented "invalid CLI option" code, matching validateCheckNames
+      // and the bad-`--config` path. The MCP server already rejects this at its
+      // own boundary (validateProjectPath); this closes the CLI side of the
+      // same gap.
+      if (!existsAsDirectory(resolvedPath)) {
+        console.error(
+          `Error: ${resolvedPath} is not an existing directory. Check the path argument.`,
+        );
+        process.exit(2);
+      }
 
       // Resolve the config + folded options + active-check list. Extracted so
       // watch mode can re-resolve on every rerun and pick up live edits to
@@ -538,7 +562,7 @@ function resolveSession(
   const configPath = opts.config ? path.resolve(opts.config as string) : undefined;
   const config = configPath
     ? loadConfigFromPath(configPath, throwOnConfigError)
-    : loadConfig(resolvedPath);
+    : loadDiscoveredConfig(resolvedPath, throwOnConfigError);
 
   // Fold config-sourced booleans into the local vars so everything
   // downstream (effectiveMcp/effectiveSession and the final `checks` array)
@@ -627,6 +651,26 @@ function resolveSession(
   const activeChecks = options.checks.filter((c) => !options.ignore.includes(c));
 
   return { config, options, activeChecks };
+}
+
+/**
+ * Auto-discovered `.ctxlintrc[.json]` loader. Mirrors loadConfigFromPath's
+ * error handling, which the explicit `--config` path has always had and this
+ * one never did: a malformed discovered config threw past the action handler
+ * and printed a raw Node stack trace with internal dist frames, even though
+ * the underlying message ("Invalid JSON in <path>: ... line 1 column 3") was
+ * already good. Same exit 2, same rethrow-on-watch contract, so the two config
+ * sources now fail identically.
+ */
+function loadDiscoveredConfig(resolvedPath: string, throwOnError = false) {
+  try {
+    return loadConfig(resolvedPath);
+  } catch (err) {
+    if (throwOnError) throw err;
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error(`Error: ${detail}`);
+    process.exit(2);
+  }
 }
 
 function loadConfigFromPath(configPath: string, throwOnError = false) {
