@@ -460,6 +460,110 @@ describe('checkCommands', () => {
     expect(issues.find((i) => i.ruleId === 'commands/npx-not-in-deps')).toBeUndefined();
   });
 
+  // Shape 5: the comma. English separates "don't do X" from "do Y" with a
+  // comma far more often than with a semicolon, and treating the comma as
+  // inert let the leading negation govern the RECOMMENDED command. The
+  // semicolon form of this exact sentence was already flagged, so the two
+  // differed only by punctuation.
+  it('flags a command recommended after a contrast comma ("Don\'t X, run `npx y`")', async () => {
+    seed(
+      {
+        'CLAUDE.md': "# Build\n\nDon't edit dist by hand, run `npx some-rare-tool` instead.\n",
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/npx-not-in-deps')).toBeDefined();
+  });
+
+  // The counterweight: a comma is equally how a prohibition LIST is written,
+  // so the comma must not become an unconditional clause boundary.
+  it('keeps suppressing every item of a comma-separated prohibition list', async () => {
+    seed(
+      {
+        'CLAUDE.md':
+          '# Deploy\n\nNEVER run `npx pkg-alpha`, `npx pkg-beta`, or `npx pkg-gamma` here.\n',
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.filter((i) => i.ruleId === 'commands/npx-not-in-deps')).toHaveLength(0);
+  });
+
+  // Narrowing at the comma is not the same as un-suppressing: the narrowed
+  // tail is still tested, so a second negation in it still governs.
+  it('stays suppressed when the post-comma clause carries its own negation', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Secrets\n\nNever commit secrets, and never run `npx leak-tool` here.\n',
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/npx-not-in-deps')).toBeUndefined();
+  });
+
+  // The prohibition gate used to guard only npx-not-in-deps. Every sibling
+  // rule reports the same "does not resolve" class and must honor it too.
+  it('does NOT flag a prohibited common tool (tool-not-found honors the gate)', async () => {
+    seed(
+      { 'CLAUDE.md': '# Rules\n\nNEVER run `tsc --noEmit` here. Use the build script.\n' },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/tool-not-found')).toBeUndefined();
+  });
+
+  it('does NOT flag a prohibited npm script (script-not-found honors the gate)', async () => {
+    seed({ 'CLAUDE.md': '# Rules\n\nNEVER run `npm run deploy` by hand.\n' }, { scripts: {} });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/script-not-found')).toBeUndefined();
+  });
+
+  it('does NOT flag a prohibited make target (no-makefile honors the gate)', async () => {
+    seed({ 'CLAUDE.md': '# Rules\n\nNEVER run `make deploy` locally.\n' }, { scripts: {} });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/no-makefile')).toBeUndefined();
+  });
+
+  // Control for the three above: without the prohibition the same references
+  // still fire, so the gate is what suppressed them and not a broken branch.
+  it('still flags the same references when mentioned affirmatively', async () => {
+    seed(
+      {
+        'CLAUDE.md':
+          '# Rules\n\nRun `tsc --noEmit` before committing.\n\nRun `npm run deploy` to ship.\n\nRun `make deploy` locally.\n',
+      },
+      { scripts: {}, dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/tool-not-found')).toBeDefined();
+    expect(issues.find((i) => i.ruleId === 'commands/script-not-found')).toBeDefined();
+    expect(issues.find((i) => i.ruleId === 'commands/no-makefile')).toBeDefined();
+  });
+
+  // exit-status-masked is deliberately OUTSIDE the gate: it reports the
+  // command's SHAPE, which is worth flagging even in a forbidden example.
+  it('still reports exit-status-masked on a prohibited command', async () => {
+    seed(
+      {
+        'CLAUDE.md':
+          '# Rules\n\nNEVER run `npm test | tail -1 && echo ok` -- it hides failures.\n',
+      },
+      { scripts: { test: 'vitest' } },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/exit-status-masked')).toBeDefined();
+  });
+
   it('flags common tool missing from deps (tool-not-found)', async () => {
     seed(
       {

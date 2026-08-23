@@ -255,4 +255,67 @@ describe('checkCommands — commands/unknown-subcommand', () => {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  // unknown-subcommand runs its own pass over the file, so it did not inherit
+  // the prohibition gate the dispatch loop applies. An invocation the doc cites
+  // only to forbid is not a broken doc -- "NEVER run `<bin> doctor`" is the doc
+  // working correctly.
+  describe('prohibition gate', () => {
+    const CLI = fs.readFileSync(path.join(FIXTURES, 'unknown-subcommand', 'cli.js'), 'utf-8');
+
+    async function runWith(markdown: string) {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-sub-proh-'));
+      try {
+        fs.writeFileSync(
+          path.join(tmp, 'package.json'),
+          JSON.stringify({ name: 'x', bin: { 'tailscale-mcp': 'cli.js' } }),
+        );
+        fs.writeFileSync(path.join(tmp, 'cli.js'), CLI);
+        fs.writeFileSync(path.join(tmp, 'CLAUDE.md'), markdown);
+        const parsed = parseContextFile({
+          absolutePath: path.join(tmp, 'CLAUDE.md'),
+          relativePath: 'CLAUDE.md',
+          isSymlink: false,
+          type: 'context',
+        });
+        return (await checkCommands(parsed, tmp)).filter((i) => i.ruleId === RULE);
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    }
+
+    it('does NOT flag an unknown subcommand cited under a prohibition', async () => {
+      expect(await runWith('# Ops\n\nNEVER run `tailscale-mcp doctor` -- it hangs.\n')).toEqual([]);
+    });
+
+    it('still flags the same invocation when mentioned affirmatively', async () => {
+      const found = await runWith('# Ops\n\nVerify the build with `tailscale-mcp doctor`.\n');
+      expect(found).toHaveLength(1);
+      expect(found[0].message).toContain('"doctor" is not a subcommand of tailscale-mcp');
+    });
+
+    // The invocation must be located by CODE SPAN identity, not by a substring
+    // search: an un-backticked prose mention earlier on the line used to win
+    // the indexOf and hand the check the wrong prefix.
+    it('uses the backticked occurrence, not an earlier bare prose mention', async () => {
+      expect(
+        await runWith(
+          '# Ops\n\nThe tailscale-mcp doctor check is gone; never run `tailscale-mcp doctor`.\n',
+        ),
+      ).toEqual([]);
+    });
+
+    // ...and a shorter command that is a PREFIX of a longer sibling invocation
+    // must not inherit the longer one's prohibition.
+    it('does not let a longer prohibited sibling suppress a shorter affirmative one', async () => {
+      const found = await runWith(
+        '# Ops\n\nNever run `tailscale-mcp doctor --json` in CI; run `tailscale-mcp doctor` locally instead.\n',
+      );
+      expect(found).toHaveLength(1);
+      // The surviving finding is the affirmative one, not the prohibited
+      // `--json` sibling.
+      expect(found[0].message).toContain('tailscale-mcp doctor');
+      expect(found[0].message).not.toContain('--json');
+    });
+  });
 });

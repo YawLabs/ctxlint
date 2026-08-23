@@ -343,6 +343,90 @@ describe('checkTierTokens — hard-enforcement-missing', () => {
     expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
   });
 
+  // A directive can only be written in PROSE. A fenced block SHOWING the
+  // reader what such a rule looks like is an illustration, and reporting it as
+  // this repo's own unenforced policy is a pure false positive. The reference
+  // extractors already track fences; this check scans raw content, so it has
+  // to as well.
+  it('does not flag inviolable framing inside a fenced code block', async () => {
+    const content =
+      '# CLAUDE.md\n\nExample of a rule you might write:\n\n```markdown\nNEVER run `terraform apply` without review.\n```\n\nThat is only an illustration.\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
+  });
+
+  // Regression pair for the comment mask. Both of these lost a REAL finding
+  // before the mask learned to (a) ignore comment markers inside code spans
+  // and (b) treat a self-contained comment as an annotation rather than as
+  // grounds for discarding the whole line.
+  it('still flags a rule after a line that merely mentions `<!--` in a code span', async () => {
+    const content =
+      '# CLAUDE.md\n\nUse `<!--` to start an HTML comment.\n\nNEVER run `terraform apply` without review.\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeDefined();
+  });
+
+  it('still flags a rule carrying a trailing self-contained HTML comment', async () => {
+    const content =
+      '# CLAUDE.md\n\nNEVER run `terraform apply` without review. <!-- reviewed 2026-08 -->\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeDefined();
+  });
+
+  // ...but the comment's OWN text must not be read as an instruction.
+  it('does not flag framing that exists only inside a self-contained comment', async () => {
+    const content = '# CLAUDE.md\n\nBuild notes. <!-- NEVER run `terraform apply` -->\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
+  });
+
+  it('does not flag inviolable framing inside an HTML comment', async () => {
+    const content =
+      '# CLAUDE.md\n\n<!--\nNEVER run `terraform apply` without review.\n-->\n\nNothing to enforce here.\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
+  });
+
+  // Control for the two above: the same sentence as prose still fires, so the
+  // fence/comment mask is what suppressed them and not a broken matcher.
+  it('still flags the same sentence when it is prose, not fenced', async () => {
+    const content = '# CLAUDE.md\n\nNEVER run `terraform apply` without review.\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    const hard = issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing');
+    expect(hard).toBeDefined();
+    expect(hard!.suggestion).toContain('terraform apply');
+  });
+
+  // A prose directive that FOLLOWS a closed fence must still fire -- the mask
+  // has to toggle off, not latch.
+  it('flags prose after a closed fence (mask toggles off)', async () => {
+    const content =
+      '# CLAUDE.md\n\n```bash\nnpm ci\n```\n\nNEVER run `npm login` locally.\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeDefined();
+  });
+
   it('treats a permissions.ask entry as enforcement (human prompt is a hard gate)', async () => {
     const dotClaude = path.join(tmpDir, '.claude');
     fs.mkdirSync(dotClaude, { recursive: true });

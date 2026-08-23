@@ -4,7 +4,8 @@ import { parse as parseJsonc } from 'jsonc-parser';
 import { loadPackageJson, stripBom } from '../../utils/fs.js';
 import { analyzeMaskedExitStatus, pipefailInScope } from './exit-status.js';
 import { findBinInvocations, knownSubcommands, ownedBins } from './cli-subcommands.js';
-import { inlineCodeSpans, maskCodeSpans } from './tier-tokens.js';
+import type { BinInvocation } from './cli-subcommands.js';
+import { inlineCodeSpans, maskCodeSpans } from '../../utils/markdown.js';
 import type { ParsedContextFile, LintIssue, CommandReference } from '../types.js';
 
 // Match npm/pnpm/yarn/bun script invocations. `run` is required for npm
@@ -225,8 +226,10 @@ function isDeniedCommand(cmd: string, deniedPrefixes: string[]): boolean {
 /**
  * A negation governing the command mention -- "**NEVER run `npx netlify
  * deploy` directly.**" -- means the doc cites the command to steer the agent
- * AWAY from it. Demanding the package be installed for a command the file
- * forbids running is backwards, so npx-not-in-deps skips these. The negation
+ * AWAY from it. Demanding that such a command RESOLVE (script exists, package
+ * is a dependency, make target is defined, tool is installed) is backwards:
+ * the doc's whole point is that nobody should run it. So every resolvability
+ * rule in checkCommands skips these, gated once in the main loop. The negation
  * must PRECEDE the command within the same CLAUSE: scope ends at a sentence
  * terminator (`.` `!` `?`) or a clause boundary (`;`, spaced ` -- `, or an
  * em-dash), so "NEVER guess -- run `npx x` to check" and "Never use the UI;
@@ -255,18 +258,98 @@ const PROHIBITION_TOKEN = /\b(?:never|don['’]?t|do\s+not|must\s+not|avoid)\b/i
 // sides keeps `--prod`-style flags from splitting a clause.
 const CLAUSE_TERMINATOR = /[.!?;—]|\s--(?=\s|$)/;
 
-function isProhibitedMention(lines: string[], ref: CommandReference): boolean {
-  const line = lines[ref.line - 1] ?? '';
+/**
+ * Verbs that introduce a RECOMMENDATION. Used only to decide whether a comma
+ * separates a prohibition from a following recommendation.
+ */
+const RECOMMENDATION_VERB = /\b(?:run|use|call|invoke|execute|prefer|deploy|install)\b/i;
+
+/**
+ * A comma is the most common way English separates "don't do X" from "do Y":
+ * "Don't edit dist by hand, run `npx build-tool` instead." Treating the comma
+ * as inert made the leading "Don't" govern the RECOMMENDED command and
+ * suppressed a legitimate finding -- the same sentence with a semicolon was
+ * flagged correctly, which is an indefensible split.
+ *
+ * A comma cannot simply join CLAUSE_TERMINATOR, because it is equally the way
+ * English writes a prohibition LIST: "NEVER run `npx a`, `npx b`, or `npx c`"
+ * must keep suppressing b and c. The discriminator is what follows the comma:
+ * a recommendation verb ("run", "use", ...) means contrast, and the clause is
+ * re-scoped to after the comma; anything else (a bare list continuation, "or",
+ * "and") leaves the clause -- and its prohibition -- intact.
+ *
+ * Narrowing is not the same as un-suppressing. The narrowed tail is still
+ * tested for its own prohibition, so "Never commit secrets, and never run
+ * `npx leak-tool`" stays suppressed on the strength of the SECOND "never".
+ *
+ * Accepted limits, consistent with this module's false-negative-over-false-
+ * positive posture -- closing any of them needs the verb/coordination analysis
+ * the check deliberately avoids:
+ *
+ *  - Only the LAST comma is considered, so in a post-contrast LIST ("Don't do
+ *    X, run `npx a`, `npx b`") the first item un-suppresses and later ones stay
+ *    suppressed. Inconsistent, but in the safe direction for the later items.
+ *  - A coordinated CONTINUATION of a prohibition whose tail happens to carry a
+ *    recommendation verb ("Never install X, or run `npx y`") un-suppresses,
+ *    because "or run" is indistinguishable from contrast by verb alone.
+ *  - Inherited from CLAUSE_TERMINATOR, not introduced here: any `.` ends a
+ *    clause, so a version or abbreviation mid-sentence ("Never run the v1.2
+ *    tool `npx x`") truncates the clause and drops the prohibition.
+ */
+function narrowAtContrastComma(clause: string): string {
+  const idx = clause.lastIndexOf(',');
+  if (idx === -1) return clause;
+  const tail = clause.slice(idx + 1);
+  return RECOMMENDATION_VERB.test(tail) ? tail : clause;
+}
+
+/**
+ * Core predicate: is the command starting at 0-based `offset` on `line`
+ * governed by a preceding prohibition?
+ */
+function isProhibitedAt(line: string, offset: number): boolean {
   // Mask inline code spans (length-preserving, so column indices stay valid)
   // before the negation search -- span CONTENTS are code, not prose.
   const masked = maskCodeSpans(line, inlineCodeSpans(line));
-  // ref.column is 1-based and points at the first char of the command, so
-  // this slice is everything before the command (opening backtick included,
-  // masked along with the rest of the command's own span).
-  const prefix = masked.slice(0, Math.max(0, ref.column - 1));
+  // Everything before the command (opening backtick included, masked along
+  // with the rest of the command's own span).
+  const prefix = masked.slice(0, Math.max(0, offset));
   // Only the clause the command sits in can govern it.
-  const clause = prefix.split(CLAUSE_TERMINATOR).pop() ?? '';
+  const clause = narrowAtContrastComma(prefix.split(CLAUSE_TERMINATOR).pop() ?? '');
   return PROHIBITION_TOKEN.test(clause);
+}
+
+/** `ref.column` is 1-based and points at the first char of the command. */
+function isProhibitedRef(lines: string[], ref: CommandReference): boolean {
+  return isProhibitedAt(lines[ref.line - 1] ?? '', ref.column - 1);
+}
+
+/**
+ * BinInvocation carries no column (its candidates are reconstructed from
+ * fenced lines and code spans), so locate the command text on its line. A
+ * miss yields `false` -- never suppress on a guess.
+ */
+function isProhibitedInvocation(lines: string[], inv: BinInvocation): boolean {
+  const line = lines[inv.line - 1] ?? '';
+  // findBinInvocations builds its non-fence candidates from inline code spans,
+  // so prefer the span whose content IS this invocation -- an exact identity,
+  // not a substring search. A plain indexOf picked the wrong occurrence in both
+  // directions whenever the text appears twice on a line:
+  //   "The `<bin> doctor` check is gone; never run `<bin> doctor`."
+  //     -> matched the UN-BACKTICKED prose mention at the head of the line, so
+  //        the prefix was "The " and the prohibition after the `;` was missed.
+  //   "Never run `<bin> doctor --json` in CI; run `<bin> doctor` locally."
+  //     -> for the second, AFFIRMATIVE invocation it matched inside the FIRST
+  //        span (the shorter command is a prefix of the longer one), inheriting
+  //        that span's prohibition and suppressing a finding that should fire.
+  // Fenced candidates have no prose prefix, and the `$`/`>` prompt form is a
+  // whole-line candidate; both fall through to the search, where a miss
+  // declines to suppress rather than guessing.
+  for (const span of inlineCodeSpans(line)) {
+    if (span.content.trim() === inv.cmd) return isProhibitedAt(line, span.start);
+  }
+  const idx = line.indexOf(inv.cmd);
+  return idx < 0 ? false : isProhibitedAt(line, idx);
 }
 
 export async function checkCommands(
@@ -283,7 +366,15 @@ export async function checkCommands(
   // branches below silently skip. Surface that ONCE if any reference would
   // otherwise have been validated, so the skip isn't invisible.
   if (!pkgJson) {
-    const skipped = file.references.commands.find((ref) => wouldNeedPackageJson(ref.value));
+    // Same gate as the dispatch loop: a command the doc only forbids would not
+    // have been validated even WITH a package.json, so it must not be the
+    // reference that triggers the "checks skipped" notice either.
+    const skipped = file.references.commands.find(
+      (ref) =>
+        wouldNeedPackageJson(ref.value) &&
+        !isDeniedCommand(ref.value, deniedPrefixes) &&
+        !isProhibitedRef(contentLines, ref),
+    );
     if (skipped) {
       issues.push({
         severity: 'info',
@@ -297,7 +388,9 @@ export async function checkCommands(
     }
   }
 
-  issues.push(...checkUnknownSubcommand(file, projectRoot, pkgJson));
+  issues.push(
+    ...checkUnknownSubcommand(file, projectRoot, pkgJson, deniedPrefixes, contentLines),
+  );
 
   for (const ref of file.references.commands) {
     const cmd = ref.value;
@@ -324,6 +417,20 @@ export async function checkCommands(
           '`${PIPESTATUS[0]}` instead of `$?`.',
       });
     }
+
+    // Every branch below reports the same thing in different words: this
+    // command does not RESOLVE. When the doc cites the command only to forbid
+    // it -- an explicit permissions.deny entry, or a prose prohibition -- there
+    // is nothing to resolve and the finding is noise. Gate all of them once,
+    // here, rather than per-branch: the previous code guarded only
+    // npx-not-in-deps, so "NEVER run `tsc --noEmit` here." still produced
+    // commands/tool-not-found.
+    //
+    // exit-status-masked above is deliberately NOT gated. It reports the
+    // command's SHAPE, which is worth flagging even in an example the reader is
+    // told never to run -- a doc that demonstrates a masked pipeline teaches the
+    // masked pipeline.
+    if (isDeniedCommand(cmd, deniedPrefixes) || isProhibitedRef(contentLines, ref)) continue;
 
     // Check npm/pnpm/yarn script references
     const scriptMatch = cmd.match(NPM_SCRIPT_PATTERN);
@@ -377,13 +484,8 @@ export async function checkCommands(
       // Common mappings: tsc -> typescript, prettier -> prettier, etc.
       // Only warn if the package isn't in deps AND isn't in node_modules/.bin
       if (!(pkgName in allDeps)) {
-        // A command the user has explicitly DENIED in .claude/settings.json is
-        // one they've told the agent never to run -- the "add it to
-        // devDependencies for reproducibility" nudge is noise for it, so skip.
-        // Same for a command the doc mentions only to PROHIBIT in prose
-        // ("NEVER run `npx netlify deploy` directly.").
-        if (isDeniedCommand(cmd, deniedPrefixes)) continue;
-        if (isProhibitedMention(contentLines, ref)) continue;
+        // Denied/prohibited commands were already skipped by the shared gate
+        // above the dispatch.
         const binPath = path.join(projectRoot, 'node_modules', '.bin', pkgName);
         try {
           fs.accessSync(binPath);
@@ -472,6 +574,8 @@ function checkUnknownSubcommand(
   file: ParsedContextFile,
   projectRoot: string,
   pkgJson: ReturnType<typeof loadPackageJson>,
+  deniedPrefixes: string[],
+  contentLines: string[],
 ): LintIssue[] {
   const bins = ownedBins(pkgJson);
   if (bins.length === 0) return [];
@@ -484,6 +588,10 @@ function checkUnknownSubcommand(
   const issues: LintIssue[] = [];
 
   for (const inv of invocations) {
+    // Same resolvability gate as the main dispatch loop: an invocation the doc
+    // cites only to forbid ("NEVER run `ctxlint doctor`") is not a broken doc.
+    if (isDeniedCommand(inv.cmd, deniedPrefixes)) continue;
+    if (isProhibitedInvocation(contentLines, inv)) continue;
     if (!resolved.has(inv.bin)) {
       const bin = bins.find((b) => b.name === inv.bin);
       resolved.set(inv.bin, bin ? knownSubcommands(projectRoot, bin.entry) : null);

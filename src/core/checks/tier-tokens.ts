@@ -4,6 +4,12 @@ import * as path from 'node:path';
 import { parse as parseJsonc, printParseErrorCode, type ParseError } from 'jsonc-parser';
 import { countTokens } from '../../utils/tokens.js';
 import { stripBom } from '../../utils/fs.js';
+import {
+  inlineCodeSpans,
+  maskCodeSpans,
+  nonProseLineMask,
+  stripInlineHtmlComments,
+} from '../../utils/markdown.js';
 import { DEFAULT_TOKEN_THRESHOLDS, type TokenThresholds } from './tokens.js';
 import type { ParsedContextFile, LintIssue, Section } from '../types.js';
 
@@ -185,39 +191,6 @@ const FRAMING_TOKEN = /(?<![\w'.-])(never|always|don'?t|do\s+not|must\s+not)(?![
 
 /** Max chars allowed between the framing token and the backticked command. */
 const FRAMING_COMMAND_GAP = 80;
-
-export interface CodeSpan {
-  start: number;
-  end: number;
-  content: string;
-}
-
-export function inlineCodeSpans(line: string): CodeSpan[] {
-  const spans: CodeSpan[] = [];
-  const re = /`([^`]+)`/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(line)) !== null) {
-    spans.push({ start: m.index, end: m.index + m[0].length, content: m[1] });
-  }
-  return spans;
-}
-
-/**
- * Blank out code spans (backticks included) so the framing search can't see
- * them. The filler is `#`, not a space: a space filler would let "do `x` not"
- * mask into "do     not" and MATCH `do\s+not`, manufacturing framing that
- * isn't in the prose. `#` is non-word, non-space, and not a sentence
- * terminator, so it can neither complete a framing token nor fail the
- * same-sentence gap test. (Also reused by commands.ts's isProhibitedMention,
- * which has the same masking need for its negation-token search.)
- */
-export function maskCodeSpans(line: string, spans: CodeSpan[]): string {
-  let out = line;
-  for (const s of spans) {
-    out = out.slice(0, s.start) + '#'.repeat(s.end - s.start) + out.slice(s.end);
-  }
-  return out;
-}
 
 /**
  * Find the first (framing token, backticked command) pair on a line under the
@@ -423,8 +396,19 @@ function commandIsEnforced(cmd: string, settings: Settings[]): boolean {
 function checkHardEnforcement(file: ParsedContextFile, settings: Settings[]): LintIssue[] {
   const issues: LintIssue[] = [];
   const lines = file.content.split('\n');
+  // A directive can only be written in PROSE. Fenced blocks and HTML comments
+  // are illustration and commentary, so scanning them produced findings about
+  // sample text -- a ```markdown fence demonstrating "NEVER run `terraform
+  // apply`" was reported as if it were this repo's own unenforced rule. The
+  // reference extractors in parser.ts and cli-subcommands.ts already track
+  // fences; this check scans raw content and so has to do it too.
+  const nonProse = nonProseLineMask(lines);
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+    if (nonProse[i]) continue;
+    // The mask is line-granular, so a prose line carrying a trailing
+    // `<!-- ... -->` annotation stays in scope; blank the annotation's own text
+    // so it cannot be read as an instruction.
+    const line = stripInlineHtmlComments(lines[i]);
     // Match inviolable framing + backticked command within the same sentence
     // (no .!? between them). Limits false positives and scans the full
     // command content — no `/`-exclusion that previously dropped `./release.sh`.
