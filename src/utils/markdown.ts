@@ -80,7 +80,36 @@ export function maskCodeSpans(line: string, spans: CodeSpan[]): string {
  * cli-subcommands.ts, the other two fence scanners in this codebase.
  */
 export function nonProseLineMask(lines: string[]): boolean[] {
-  const mask = new Array<boolean>(lines.length).fill(false);
+  return classifyLines(lines).map((c) => c.fence || c.comment);
+}
+
+/**
+ * Comment-only view of the same scan: true for lines inside (or opening) an
+ * HTML comment, false for everything else INCLUDING fenced code.
+ *
+ * Callers that legitimately read fenced content want this rather than
+ * nonProseLineMask. checkCommands is the case: the parser deliberately
+ * extracts command references from shell fences, so masking fences there would
+ * blind the whole check -- but a command written inside an HTML comment is
+ * commentary ABOUT a command, not one to run, and linting it produced findings
+ * on commented-out notes ("<!-- we used to run `npx old-tool` here -->").
+ * findBinInvocations reached the same conclusion independently.
+ */
+export function htmlCommentLineMask(lines: string[]): boolean[] {
+  return classifyLines(lines).map((c) => c.comment);
+}
+
+interface LineClass {
+  fence: boolean;
+  comment: boolean;
+}
+
+/**
+ * Single state machine behind both masks above, so the two can never disagree
+ * about where a fence or comment starts.
+ */
+function classifyLines(lines: string[]): LineClass[] {
+  const out: LineClass[] = lines.map(() => ({ fence: false, comment: false }));
   let inFence = false;
   let inHtmlComment = false;
 
@@ -91,12 +120,12 @@ export function nonProseLineMask(lines: string[]): boolean[] {
     // Fence state wins over comment state: a `<!--` written inside a fenced
     // block is sample text, not a comment opener.
     if (trimmed.startsWith('```')) {
-      mask[i] = true; // the delimiter line is not prose either
+      out[i].fence = true; // the delimiter line is not prose either
       inFence = !inFence;
       continue;
     }
     if (inFence) {
-      mask[i] = true;
+      out[i].fence = true;
       continue;
     }
 
@@ -107,7 +136,7 @@ export function nonProseLineMask(lines: string[]): boolean[] {
     const probe = maskCodeSpans(trimmed, inlineCodeSpans(trimmed));
 
     if (inHtmlComment) {
-      mask[i] = true;
+      out[i].comment = true;
       if (probe.includes('-->')) inHtmlComment = false;
       continue;
     }
@@ -120,11 +149,11 @@ export function nonProseLineMask(lines: string[]): boolean[] {
     // Callers that scan such a line should first blank the comment's own text
     // with stripInlineHtmlComments.
     if (HTML_COMMENT.test(probe.replace(HTML_COMMENT_PAIR, ''))) {
-      mask[i] = true;
+      out[i].comment = true;
       inHtmlComment = true;
     }
   }
-  return mask;
+  return out;
 }
 
 /** A complete, self-contained HTML comment. */
@@ -143,4 +172,27 @@ const HTML_COMMENT = /<!--/;
  */
 export function stripInlineHtmlComments(line: string): string {
   return line.replace(HTML_COMMENT_PAIR, (m) => '#'.repeat(m.length));
+}
+
+/**
+ * Character ranges of complete `<!-- ... -->` comments on a line, markers
+ * included.
+ *
+ * The third granularity, needed because the other two cannot express "this
+ * line is prose, but THIS position on it is not". htmlCommentLineMask
+ * deliberately leaves a self-contained comment's line unmasked (the prose
+ * around it still counts), so a caller holding a column -- a command reference,
+ * say -- has to ask whether that specific offset falls inside a comment.
+ *
+ * Uses its own regex instance: the module-level one carries the `g` flag, and
+ * sharing `lastIndex` across callers makes results depend on call order.
+ */
+export function htmlCommentSpans(line: string): Array<{ start: number; end: number }> {
+  const re = /<!--[\s\S]*?-->/g;
+  const spans: Array<{ start: number; end: number }> = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line)) !== null) {
+    spans.push({ start: m.index, end: m.index + m[0].length });
+  }
+  return spans;
 }

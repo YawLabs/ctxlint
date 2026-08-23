@@ -549,6 +549,117 @@ describe('checkCommands', () => {
     expect(issues.find((i) => i.ruleId === 'commands/no-makefile')).toBeDefined();
   });
 
+  // A deny entry now silences the newly-gated rules too, not just the npx one
+  // it was originally written for. That is an error/warning-severity behavior
+  // change and it is the half of the gate least likely to be noticed if it
+  // regresses, since every other deny test is an npx test.
+  it('honors a permissions.deny entry for tool-not-found, not just npx', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\ntsc --noEmit\n```\n',
+        '.claude/settings.json': JSON.stringify({ permissions: { deny: ['Bash(tsc:*)'] } }),
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/tool-not-found')).toBeUndefined();
+  });
+
+  it('honors a permissions.deny entry for script-not-found', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nnpm run deploy\n```\n',
+        '.claude/settings.json': JSON.stringify({
+          permissions: { deny: ['Bash(npm run deploy:*)'] },
+        }),
+      },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/script-not-found')).toBeUndefined();
+  });
+
+  // A command written inside an HTML comment is commentary ABOUT a command,
+  // not one to run. The parser has no comment handling, so a commented-out
+  // note was linted as if it were live documentation.
+  it('does NOT flag a command that sits inside an HTML comment', async () => {
+    seed(
+      {
+        'CLAUDE.md':
+          '# Notes\n\n<!-- TODO: we used to run `npx some-rare-tool` here, removed in v2 -->\n',
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.filter((i) => i.check === 'commands')).toHaveLength(0);
+  });
+
+  // The mirror image: a prohibition INSIDE a comment is commentary too, and
+  // must not govern a live command sitting outside it on the same line.
+  it('does not let a negation inside an HTML comment suppress a live command', async () => {
+    seed(
+      { 'CLAUDE.md': '# Notes\n\n<!-- never --> run `npx some-rare-tool` to build.\n' },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/npx-not-in-deps')).toBeDefined();
+  });
+
+  // package-json-missing is an info about work that was SKIPPED. A command the
+  // doc only forbids would not have been validated even with a package.json,
+  // so it must not be the reference that triggers the notice.
+  it('does NOT emit the missing-package.json info when the only command is prohibited', async () => {
+    seed({ 'CLAUDE.md': '# Release\n\nNEVER run `npx some-rare-tool` here.\n' }, null);
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/package-json-missing')).toBeUndefined();
+  });
+
+  // ---- Accepted limits of the contrast-comma heuristic, pinned deliberately.
+  // Each is a documented false negative/positive in the module's stated
+  // false-negative-preferred posture; closing any needs verb/coordination
+  // analysis this check avoids. If one of these starts behaving differently,
+  // that is a posture change to make consciously, not a bug fix. ----
+
+  it('accepted limit: only the LAST comma is considered, so a post-contrast list is split', async () => {
+    seed(
+      { 'CLAUDE.md': "# Build\n\nDon't edit dist, run `npx pkg-alpha`, `npx pkg-beta`.\n" },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const messages = (await checkCommands(parsed, tmpRoot))
+      .filter((i) => i.ruleId === 'commands/npx-not-in-deps')
+      .map((i) => i.message)
+      .join(' ');
+    // pkg-alpha un-suppresses (a verb follows its comma); pkg-beta does not.
+    expect(messages).toContain('pkg-alpha');
+    expect(messages).not.toContain('pkg-beta');
+  });
+
+  it('accepted limit: a coordinated continuation with a recommendation verb un-suppresses', async () => {
+    seed(
+      { 'CLAUDE.md': '# Build\n\nNever install it globally, or run `npx pkg-gamma` here.\n' },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/npx-not-in-deps')).toBeDefined();
+  });
+
+  it('accepted limit: a `.` inside a version truncates the clause and drops the prohibition', async () => {
+    seed(
+      { 'CLAUDE.md': '# Build\n\nNever run the v1.2 tool `npx pkg-delta` here.\n' },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/npx-not-in-deps')).toBeDefined();
+  });
+
   // exit-status-masked is deliberately OUTSIDE the gate: it reports the
   // command's SHAPE, which is worth flagging even in a forbidden example.
   it('still reports exit-status-masked on a prohibited command', async () => {

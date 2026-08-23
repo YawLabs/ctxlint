@@ -392,6 +392,20 @@ describe('checkTierTokens — hard-enforcement-missing', () => {
     expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
   });
 
+  // The split case: framing in PROSE but the only backticked command inside a
+  // comment. Blanking the comment removes the span, so findInviolableCommand
+  // finds no command to name and stays silent rather than reaching past it to
+  // an unrelated span. Currently an accidental interaction of two functions;
+  // pinned so it stays deliberate.
+  it('does not flag prose framing whose only command sits inside a comment', async () => {
+    const content = '# CLAUDE.md\n\nNEVER run <!-- `terraform apply` --> in prod.\n';
+    const issues = await checkTierTokens(
+      makeFile({ content, sections: [], totalTokens: 50 }),
+      tmpDir,
+    );
+    expect(issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing')).toBeUndefined();
+  });
+
   it('does not flag inviolable framing inside an HTML comment', async () => {
     const content =
       '# CLAUDE.md\n\n<!--\nNEVER run `terraform apply` without review.\n-->\n\nNothing to enforce here.\n';

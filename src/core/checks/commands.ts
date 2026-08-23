@@ -5,7 +5,13 @@ import { loadPackageJson, stripBom } from '../../utils/fs.js';
 import { analyzeMaskedExitStatus, pipefailInScope } from './exit-status.js';
 import { findBinInvocations, knownSubcommands, ownedBins } from './cli-subcommands.js';
 import type { BinInvocation } from './cli-subcommands.js';
-import { inlineCodeSpans, maskCodeSpans } from '../../utils/markdown.js';
+import {
+  htmlCommentLineMask,
+  htmlCommentSpans,
+  inlineCodeSpans,
+  maskCodeSpans,
+  stripInlineHtmlComments,
+} from '../../utils/markdown.js';
 import type { ParsedContextFile, LintIssue, CommandReference } from '../types.js';
 
 // Match npm/pnpm/yarn/bun script invocations. `run` is required for npm
@@ -307,9 +313,15 @@ function narrowAtContrastComma(clause: string): string {
  * Core predicate: is the command starting at 0-based `offset` on `line`
  * governed by a preceding prohibition?
  */
-function isProhibitedAt(line: string, offset: number): boolean {
-  // Mask inline code spans (length-preserving, so column indices stay valid)
-  // before the negation search -- span CONTENTS are code, not prose.
+function isProhibitedAt(rawLine: string, offset: number): boolean {
+  // Blank any self-contained HTML comment first: its text is commentary, not
+  // prose governing the command. Without this, "<!-- never --> run `npx foo`"
+  // put "never" in the prefix and suppressed a legitimate finding. Both this
+  // and the code-span mask below are length-preserving, so `offset` -- computed
+  // against the raw line -- stays valid throughout.
+  const line = stripInlineHtmlComments(rawLine);
+  // Mask inline code spans before the negation search -- span CONTENTS are
+  // code, not prose.
   const masked = maskCodeSpans(line, inlineCodeSpans(line));
   // Everything before the command (opening backtick included, masked along
   // with the rest of the command's own span).
@@ -361,6 +373,24 @@ export async function checkCommands(
   const makefile = loadMakefile(projectRoot);
   const deniedPrefixes = loadDeniedCommandPrefixes(projectRoot);
   const contentLines = file.content.split('\n');
+  // Commands written inside an HTML comment are commentary ABOUT a command,
+  // not commands to run -- "<!-- we used to run `npx old-tool` here -->" was
+  // reported as a missing dependency. The parser has no comment handling, so
+  // the filter lives here. Comment lines ONLY: the parser deliberately extracts
+  // commands from shell fences, so fenced content must keep flowing through.
+  // findBinInvocations already applies the same rule to its own scan.
+  // Two granularities, because a self-contained comment does NOT make its line
+  // non-prose (a real rule may carry a trailing annotation). The line mask
+  // catches multi-line comment bodies; the span check catches a reference whose
+  // own column sits inside a single-line comment.
+  const commentLines = htmlCommentLineMask(contentLines);
+  const inHtmlComment = (line: number, column: number): boolean => {
+    if (commentLines[line - 1] === true) return true;
+    const offset = column - 1;
+    return htmlCommentSpans(contentLines[line - 1] ?? '').some(
+      (s) => offset >= s.start && offset < s.end,
+    );
+  };
 
   // When package.json can't be loaded, all the script/shorthand/npx/tool
   // branches below silently skip. Surface that ONCE if any reference would
@@ -372,6 +402,7 @@ export async function checkCommands(
     const skipped = file.references.commands.find(
       (ref) =>
         wouldNeedPackageJson(ref.value) &&
+        !inHtmlComment(ref.line, ref.column) &&
         !isDeniedCommand(ref.value, deniedPrefixes) &&
         !isProhibitedRef(contentLines, ref),
     );
@@ -393,6 +424,9 @@ export async function checkCommands(
   );
 
   for (const ref of file.references.commands) {
+    // Above the exit-status check too: a command inside a comment should
+    // produce NO finding of any kind, not just no resolvability finding.
+    if (inHtmlComment(ref.line, ref.column)) continue;
     const cmd = ref.value;
 
     // commands/exit-status-masked -- runs BEFORE the dispatch below and does
