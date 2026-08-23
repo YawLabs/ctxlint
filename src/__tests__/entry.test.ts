@@ -14,7 +14,13 @@ function run(args: string[]): { stdout: string; stderr: string; exitCode: number
   try {
     const stdout = execFileSync('node', [CLI, ...args], {
       encoding: 'utf-8',
-      timeout: 15000,
+      // 60s to match vitest.config.ts's Windows testTimeout. This inner
+      // ceiling was left at 15s when that was raised, so a real `node`
+      // spawn on a contended Windows box was killed at 15s and surfaced
+      // as ETIMEDOUT / exitCode 1 -- a load artifact indistinguishable
+      // from a genuine failure. The outer testTimeout still catches a
+      // true hang.
+      timeout: 60000,
     });
     return { stdout, stderr: '', exitCode: 0 };
   } catch (err: any) {

@@ -38,7 +38,13 @@ function callMcpTool(toolName: string, args: Record<string, unknown>): Record<st
     const stdout = execFileSync('node', [SERVER_JS, '--mcp-server'], {
       input,
       encoding: 'utf-8',
-      timeout: 15000,
+      // 60s to match vitest.config.ts's Windows testTimeout. This inner
+      // ceiling was left at 15s when that was raised, so a real `node`
+      // spawn on a contended Windows box was killed at 15s and surfaced
+      // as ETIMEDOUT / exitCode 1 -- a load artifact indistinguishable
+      // from a genuine failure. The outer testTimeout still catches a
+      // true hang.
+      timeout: 60000,
     });
 
     // Parse the last JSON-RPC response (the tool call result)
@@ -95,7 +101,7 @@ function listMcpTools(): string[] {
     stdout = execFileSync('node', [SERVER_JS, '--mcp-server'], {
       input,
       encoding: 'utf-8',
-      timeout: 15000,
+      timeout: 60000,
     });
   } catch (err: any) {
     // Process exits when stdin closes — parse whatever output we got
