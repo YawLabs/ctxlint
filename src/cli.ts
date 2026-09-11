@@ -3,6 +3,7 @@ import { Command, Option } from 'commander';
 import ora from 'ora';
 import { resetPathsCache } from './core/checks/paths.js';
 import { clearFileCache } from './core/cache.js';
+import { clearTranscriptCache } from './core/transcript.js';
 import { formatText, formatJson, formatTokenReport, formatSarif } from './core/reporter.js';
 import { applyFixes } from './core/fixer.js';
 import { freeEncoder } from './utils/tokens.js';
@@ -274,6 +275,9 @@ export async function runCli() {
         resetGit();
         resetPathsCache();
         resetPackageJsonCache();
+        // Memoized transcript read: a watch rerun must see transcripts that
+        // grew since this run, not this run's snapshot.
+        clearTranscriptCache();
       }
 
       // Watch mode: re-lint when context files, MCP configs, or package.json change
@@ -388,6 +392,7 @@ export async function runCli() {
               resetPathsCache();
               resetPackageJsonCache();
               clearFileCache();
+              clearTranscriptCache();
             }
             console.log(chalk.dim('\nWatching for changes... (Ctrl+C to stop)\n'));
           }, 300);

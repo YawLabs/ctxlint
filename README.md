@@ -202,6 +202,8 @@ Session checks are **opt-in** because they access files outside the project dire
 | Claude Code | `~/.claude/history.jsonl` | `~/.claude/projects/*/memory/*.md` |
 | Codex CLI   | `~/.codex/history.jsonl`  | —                                  |
 
+Checks whose signal is what the agent did (commands run, files written or read) also read the current project's Claude Code session transcripts, `~/.claude/projects/<encoded-project>/*.jsonl`, bounded to the 5 most recent.
+
 ### What session checks catch
 
 | Check                     | What it finds                                                                                                                                    |
@@ -213,6 +215,11 @@ Session checks are **opt-in** because they access files outside the project dire
 | **Duplicate memory**      | Near-duplicate memory entries across projects (>60% overlap)                                                                                     |
 | **Loop detection**        | Agent stuck in a loop — 3+ consecutive identical commands, or cyclic A,B,A,B patterns                                                            |
 | **Memory index overflow** | `MEMORY.md` exceeds Claude Code's documented 200-line / 25KB session-load cap, so entries past the cap are invisible to the agent                |
+| **Shared temp path**      | A fixed temp path (e.g. `/tmp/pkg.bak`) the agent writes and later reads back — any concurrent session can overwrite it in between               |
+| **Unverified gate**       | A lint/typecheck/test/build run that errored or printed nothing, followed by agent prose claiming it passed                                      |
+| **Default-branch edits**  | 10+ files edited on `main`/`master` with no intervening commit or branch-away                                                                    |
+| **Unresolvable SHA**      | A memory cites a commit SHA that does not resolve in this repository                                                                             |
+| **Large reads**           | Whole-file Reads of 4,000+ tokens, with an estimate of the tokens they re-send as cached context on later turns (an info-level baseline)         |
 
 ### Session Linting Specification
 
@@ -283,7 +290,7 @@ Commands:
   init                 Set up a git pre-commit hook
 ```
 
-**Available checks:** `paths`, `commands`, `staleness`, `tokens`, `tier-tokens`, `redundancy`, `contradictions`, `frontmatter`, `ci-coverage`, `ci-secrets`, `content-secrets`, `hook-coverage`, `mcp-schema`, `mcp-security`, `mcp-commands`, `mcp-deprecated`, `mcp-env`, `mcp-urls`, `mcp-consistency`, `mcp-redundancy`, `session-missing-secret`, `session-diverged-file`, `session-missing-workflow`, `session-stale-memory`, `session-duplicate-memory`, `session-loop-detection`, `session-memory-index-overflow`, `skill-frontmatter`, `skill-broken-ref`, `skill-trigger-collision`, `skill-orphaned`, `skill-dead-tool-restriction`
+**Available checks:** `paths`, `commands`, `staleness`, `tokens`, `tier-tokens`, `redundancy`, `contradictions`, `frontmatter`, `ci-coverage`, `ci-secrets`, `content-secrets`, `hook-coverage`, `mcp-schema`, `mcp-security`, `mcp-commands`, `mcp-deprecated`, `mcp-env`, `mcp-urls`, `mcp-consistency`, `mcp-redundancy`, `session-missing-secret`, `session-diverged-file`, `session-missing-workflow`, `session-stale-memory`, `session-duplicate-memory`, `session-loop-detection`, `session-memory-index-overflow`, `session-shared-temp-path`, `session-unverified-gate-claimed-clean`, `session-default-branch-accumulation`, `session-unresolvable-sha`, `session-large-read`, `skill-frontmatter`, `skill-broken-ref`, `skill-trigger-collision`, `skill-orphaned`, `skill-dead-tool-restriction`
 
 Passing any `mcp-*` check name implies `--mcp`. Passing any `session-*` check name implies `--session`. Passing any `skill-*` check name implies `--skills`.
 
@@ -520,7 +527,7 @@ ctxlint is the reference implementation of four open specifications for linting 
 | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **[AI Context File Linting Spec](./CONTEXT_LINT_SPEC.md)**     | 41 rules for validating context files (CLAUDE.md, .cursorrules, AGENTS.md, etc.) across 16 clients. Covers file formats, frontmatter schemas, path/command validation, staleness, token budgets, redundancy, and contradictions.          |
 | **[MCP Config Linting Spec](./MCP_CONFIG_LINT_SPEC.md)**       | 29 rules for validating MCP server configs (.mcp.json, .cursor/mcp.json, .vscode/mcp.json, etc.) across 8 clients. Covers schema validation, hardcoded secrets, env var syntax, deprecated transports, and cross-file consistency.        |
-| **[Agent Session Linting Spec](./AGENT_SESSION_LINT_SPEC.md)** | 12 rules for auditing agent session data (history, memory) across 8 agents. Covers cross-project secret consistency, config drift, stale memory, and loop detection.                                                                       |
+| **[Agent Session Linting Spec](./AGENT_SESSION_LINT_SPEC.md)** | 13 rules for auditing agent session data (history, memory) across 8 agents. Covers cross-project secret consistency, config drift, stale memory, and loop detection.                                                                       |
 | **[Agent Skill Linting Spec](./AGENT_SKILL_LINT_SPEC.md)**     | 5 rules for auditing Claude Code skill (`SKILL.md`) and agent (`.md`) definitions under `~/.claude`. Covers frontmatter presence, broken refs, trigger-phrase collisions, orphaned skills, and dead tool restrictions. (v1, experimental) |
 
 All specs include machine-readable rule catalogs for programmatic consumption:

@@ -144,6 +144,16 @@
       "message": "cited commit {sha} does not resolve in this repository",
       "fixable": false,
       "stability": "experimental"
+    },
+    {
+      "id": "session/large-read",
+      "category": "session",
+      "severity": "info",
+      "description": "Measures session context spent on whole-file Reads of large files. Each result is re-sent as prompt context (cache reads) on every later turn of its session; the finding is a baseline for judging read-routing changes, reported as one summary per project.",
+      "trigger": "One or more whole-file Read calls (no offset, limit or pages) in the current project's transcripts whose result is 4,000 tokens or more. Carry is each result's tokens times the later turns of its session that re-sent it, up to the session's end or its next /compact boundary; a turn is a distinct assistant message id.",
+      "message": "{count} whole-file Reads of 4,000+ tokens ({tokens} tokens); est. {carry} tokens of cache-read carry on later turns",
+      "fixable": false,
+      "stability": "experimental"
     }
   ],
   "dataSources": [

@@ -40,6 +40,7 @@ import { checkSharedTempPath } from './checks/session/shared-temp-path.js';
 import { checkUnverifiedGateClaimedClean } from './checks/session/unverified-gate-claimed-clean.js';
 import { checkDefaultBranchAccumulation } from './checks/session/default-branch-accumulation.js';
 import { checkUnresolvableSha } from './checks/session/unresolvable-sha.js';
+import { checkLargeRead } from './checks/session/large-read.js';
 import { checkCiCoverage } from './checks/ci-coverage.js';
 import { checkCiSecrets } from './checks/ci-secrets.js';
 import { checkContentSecrets } from './checks/content-secrets.js';
@@ -101,6 +102,7 @@ export const ALL_SESSION_CHECKS: SessionCheckName[] = [
   'session-unverified-gate-claimed-clean',
   'session-default-branch-accumulation',
   'session-unresolvable-sha',
+  'session-large-read',
 ];
 
 export const ALL_SKILL_CHECKS: SkillCheckName[] = [
@@ -474,6 +476,8 @@ export async function runAudit(
         sessionPromises.push(checkDefaultBranchAccumulation(sessionCtx));
       if (sessionChecksToRun.includes('session-unresolvable-sha'))
         sessionPromises.push(checkUnresolvableSha(sessionCtx));
+      if (sessionChecksToRun.includes('session-large-read'))
+        sessionPromises.push(checkLargeRead(sessionCtx));
 
       const sessionResults = await Promise.all(sessionPromises);
       const sessionIssues = sessionResults.flat();

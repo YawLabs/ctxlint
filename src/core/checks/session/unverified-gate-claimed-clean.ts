@@ -92,7 +92,12 @@ export async function checkUnverifiedGateClaimedClean(ctx: SessionContext): Prom
   const { events } = await readProjectTranscript(ctx.currentProject);
   if (events.length === 0) return [];
 
-  const ordered = [...events].sort((a, b) => a.timestamp - b.timestamp);
+  // Reads are left out of the walk. ADJACENCY counts events, so a burst of
+  // Reads between a failed gate and the claim about it would push a genuine
+  // claim out of the window.
+  const ordered = events
+    .filter((e) => e.kind !== 'file-read')
+    .sort((a, b) => a.timestamp - b.timestamp);
   const issues: LintIssue[] = [];
   const reported = new Set<string>();
 
@@ -114,7 +119,9 @@ export async function checkUnverifiedGateClaimedClean(ctx: SessionContext): Prom
 
       if (reported.has(gate)) break;
       reported.add(gate);
-      const why = ev.isError ? 'the invocation reported an error' : 'the invocation produced no output';
+      const why = ev.isError
+        ? 'the invocation reported an error'
+        : 'the invocation produced no output';
       issues.push({
         severity: 'warning',
         check: 'session-unverified-gate-claimed-clean',

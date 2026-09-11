@@ -51,7 +51,12 @@ export async function checkDefaultBranchAccumulation(ctx: SessionContext): Promi
   const { events } = await readProjectTranscript(ctx.currentProject);
   if (events.length === 0) return [];
 
-  const ordered = [...events].sort((a, b) => a.timestamp - b.timestamp);
+  // Reads are left out of the walk. The branch tracker below takes the stamp of
+  // EVERY event it passes, so interleaving Reads would let a Read's stamp decide
+  // which branch a later unstamped write is attributed to.
+  const ordered = events
+    .filter((e) => e.kind !== 'file-read')
+    .sort((a, b) => a.timestamp - b.timestamp);
 
   // Distinct paths written since the last commit / branch-away, while the
   // session was on a default branch.

@@ -36,7 +36,8 @@ export type SessionCheckName =
   | 'session-shared-temp-path'
   | 'session-unverified-gate-claimed-clean'
   | 'session-default-branch-accumulation'
-  | 'session-unresolvable-sha';
+  | 'session-unresolvable-sha'
+  | 'session-large-read';
 
 // --- Agent-skill check types (fourth pillar) ---
 
@@ -145,7 +146,13 @@ export type CheckName =
 // can never classify one. Cline's `.clinerules` context files are handled by
 // the context pillar, not here.
 export type McpClient =
-  'claude-code' | 'claude-desktop' | 'vscode' | 'cursor' | 'windsurf' | 'amazonq' | 'continue';
+  | 'claude-code'
+  | 'claude-desktop'
+  | 'vscode'
+  | 'cursor'
+  | 'windsurf'
+  | 'amazonq'
+  | 'continue';
 
 export type McpTransport = 'stdio' | 'http' | 'sse' | 'unknown';
 

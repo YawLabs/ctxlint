@@ -627,6 +627,13 @@ function buildRuleDescriptors(): SarifRule[] {
       helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
     },
     {
+      id: 'ctxlint/session-large-read',
+      shortDescription: {
+        text: 'Whole-file Reads of large files re-sent as context on every later turn',
+      },
+      helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    },
+    {
       id: 'ctxlint/skill-frontmatter',
       shortDescription: { text: 'Skill/agent definition missing required frontmatter' },
       helpUri: 'https://github.com/yawlabs/ctxlint#what-it-checks',

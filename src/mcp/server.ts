@@ -17,6 +17,7 @@ import { findRenames } from '../utils/git.js';
 import { freeEncoder, keepEncoderAlive } from '../utils/tokens.js';
 import { resetGit } from '../utils/git.js';
 import { resetPathsCache } from '../core/checks/paths.js';
+import { clearTranscriptCache } from '../core/transcript.js';
 import type { CheckName, McpCheckName, SessionCheckName, SkillCheckName } from '../core/types.js';
 import * as path from 'node:path';
 import { VERSION } from '../version.js';
@@ -410,7 +411,7 @@ server.tool(
 
 server.tool(
   'ctxlint_session_audit',
-  'Audit AI agent session data for cross-project consistency. Checks for missing GitHub secrets, diverged config files, missing workflows, stale memory entries, and duplicate memories across sibling repositories.',
+  'Audit AI agent session data for cross-project consistency and session hazards. Checks for missing GitHub secrets, diverged config files and missing workflows across sibling repositories; stale, duplicate or overflowing memory entries; command loops; and, from Claude Code transcripts, shared temp paths, gates claimed clean after failing, edits piling up on the default branch, unresolvable commit SHAs in memory, and large whole-file Reads re-sent as context on later turns.',
   {
     projectPath: z
       .string()
@@ -449,6 +450,10 @@ server.tool(
       resetGit();
       resetPathsCache();
       resetPackageJsonCache();
+      // The transcript read is memoized; without this, every later session
+      // audit in this long-lived process would see the transcripts as they
+      // stood at the first call.
+      clearTranscriptCache();
     }
   },
 );

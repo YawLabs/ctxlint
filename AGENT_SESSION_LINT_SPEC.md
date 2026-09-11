@@ -15,7 +15,7 @@ This specification defines a standard set of lint rules for validating agent ses
 
 The specification includes:
 - A reference of session data locations across 8 AI coding agents
-- 12 lint rules in the `session` category with defined severities
+- 13 lint rules in the `session` category with defined severities
 - A machine-readable rule catalog ([`agent-session-lint-rules.json`](./agent-session-lint-rules.json))
 - Sibling-repo detection for cross-project checks
 
@@ -51,6 +51,7 @@ This is the third pillar alongside context file linting (`CLAUDE.md`, `.cursorru
   - [2.10 session/unverified-gate-claimed-clean](#210-sessionunverified-gate-claimed-clean)
   - [2.11 session/default-branch-accumulation](#211-sessiondefault-branch-accumulation)
   - [2.12 session/unresolvable-sha](#212-sessionunresolvable-sha)
+  - [2.13 session/large-read](#213-sessionlarge-read)
 - [3. Rule Catalog (machine-readable)](#3-rule-catalog-machine-readable)
 - [4. Implementing This Specification](#4-implementing-this-specification)
 - [5. Contributing](#5-contributing)
@@ -106,7 +107,7 @@ Session data varies enormously in size and format. This specification targets on
 
 **What we explicitly DO NOT scan:**
 
-- **Full session transcripts** -- too large. Active projects can accumulate hundreds of megabytes of transcript data. Scanning these would be slow and yield low-signal results.
+- **Full session transcripts** -- too large. Active projects can accumulate hundreds of megabytes of transcript data. Scanning these would be slow and yield low-signal results. Rules whose signal is what the agent *did* read a bounded, project-scoped slice instead -- see §3, "Data sources".
 - **SQLite databases** -- Goose's `sessions.db` requires a SQLite dependency. Out of scope for v1. Future versions may add opt-in SQLite support.
 - **File history or shell snapshots** -- some agents capture filesystem state or shell output. These are agent-internal data and not useful for cross-project linting.
 
@@ -132,7 +133,7 @@ Skip hidden directories (starting with `.`) and `node_modules`.
 
 ## 2. Lint Rules
 
-12 rules in 1 category (`session`). All rules in this category perform cross-project checks using sibling detection or per-project history analysis.
+13 rules in 1 category (`session`). All rules in this category perform cross-project checks using sibling detection or per-project history analysis.
 
 Severity levels:
 - **error** -- the session data reveals a verifiably missing configuration. Should fail CI.
@@ -459,6 +460,36 @@ Detects a memory that cites a git SHA which no longer resolves in the repository
 
 ---
 
+### 2.13 session/large-read
+
+Measures how much of a project's session context goes to **whole-file Reads of large files**. It is a baseline, not a defect report.
+
+| Field | Value |
+|---|---|
+| **Rule ID** | `session/large-read` |
+| **Severity** | info |
+| **Trigger** | One or more whole-file `Read` calls (no `offset`, `limit` or `pages`) in the project transcript whose result is 4,000 tokens or more |
+| **Message** | `<count> whole-file Read(s) of 4,000+ tokens (<tokens> tokens); est. <carry> tokens of cache-read carry on later turns` |
+| **Source** | Claude Code transcript format; measured corpus (see Notes) |
+
+**Detection algorithm:**
+
+1. Read the project transcript (see §3, "Data sources"). For each `Read` tool_use, record whether it was partial (`offset`, `limit` or `pages` set), and pair it with its tool_result to count the result's tokens.
+2. Count each session's turns as distinct assistant `message.id`s, falling back to `requestId`, then to one turn per record. Claude Code writes one API response as several records that share an id. Harness-written `<synthetic>` records and sidechain records are not turns. Record the turn count at each `compact_boundary`.
+3. Keep whole-file, non-error Reads whose result is at least 4,000 tokens. A Read that appears twice -- a continued session copies earlier records into its own file under a new session id -- is counted once, by its `tool_use` id.
+4. For each, carry = result tokens × the later turns of its session that re-sent it: from the turn after the Read to the session's last turn or its next compaction, whichever comes first.
+5. When anything qualified, emit ONE info finding per project with the count, total tokens, summed carry, and the top three files by tokens with their read counts. Emit nothing otherwise. When the transcript read was capped, say so in the finding.
+
+**Notes:**
+- Why it matters: a tool_result stays in the prompt of every later turn. With prompt caching each re-send bills as a cache read -- cheap per token, but paid per turn for the rest of the session. A large file read whole early in a long session is re-sent hundreds of times, when `grep -n` plus a ranged Read would have carried the few lines needed.
+- It is a baseline for judging read-routing changes against, which is why it is one summary at `info` severity rather than a finding per Read. Reading a file whole is often correct.
+- The threshold: across 202 whole-file Reads in a real corpus, Read output (line-number prefixes included) ran at a median 12.5 tokens per line, so 4,000 tokens is roughly 320 lines.
+- Turn counting matters: counting records instead of message ids roughly doubles every carry (one measured transcript held 1,338 assistant records for 640 ids), and ignoring compaction overstates any session that compacted (25 of 150 transcripts in the same corpus did).
+- The carry is an estimate. Tokens come from a proxy tokenizer (cl100k), a result's first re-send is a cache write rather than a read, and a Read copied into a continued session is counted with the smaller of its two carries. Figures are not converted to cost, since token prices vary by model and change.
+- Remediation: find the region with `grep -n` (or the Grep tool) and Read it with `offset`/`limit`, or delegate the whole-file question to a subagent, whose reads stay in its own context.
+
+---
+
 ## 3. Rule Catalog (machine-readable)
 
 A machine-readable JSON catalog of all rules is available at [`agent-session-lint-rules.json`](./agent-session-lint-rules.json). It conforms to the shared catalog schema ([`schemas/ctxlint-catalog.schema.json`](./schemas/ctxlint-catalog.schema.json)) used by all four pillars: each rule entry carries `id`, `category`, `severity`, `description`, `trigger`, `message`, `fixable`, and `stability`, plus rule-specific extras (e.g. `canonicalFiles` on `session/diverged-file`).
@@ -483,6 +514,7 @@ Catalog rule IDs use the pillar-stable `session/<slug>` form -- these are the cr
 | `session/unverified-gate-claimed-clean` | `session-unverified-gate-claimed-clean/unverified-gate-claimed-clean` |
 | `session/default-branch-accumulation` | `session-default-branch-accumulation/default-branch-accumulation` |
 | `session/unresolvable-sha` | `session-unresolvable-sha/unresolvable-sha` |
+| `session/large-read` | `session-large-read/large-read` |
 
 ### Data sources: history vs. transcript
 

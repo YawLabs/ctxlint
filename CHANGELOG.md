@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 See [Versioning policy](#versioning-policy) below.
 
+## [Unreleased]
+
+### Added
+- **`session/large-read` (info).** A baseline of how much session context goes to whole-file Reads of large files, for anyone weighing read-routing before adopting it. A Read's result stays in the prompt of every later turn of its session; with prompt caching each re-send bills as a cache read, cheap per token but paid once per turn for the rest of the session. The check finds whole-file Reads (no `offset`, `limit` or `pages`) whose result is at least 4,000 tokens -- about 320 lines, at the median 12.5 tokens per line of Read output measured across 202 real whole-file Reads -- and emits ONE info-level summary per project: how many there were, their total tokens, an estimated cache-read carry (each result's tokens times the later turns of its session that re-sent it), the top three files by tokens with their read counts, and the fix (`grep -n`, then Read just that range with `offset`/`limit`; or delegate the question to a subagent). It emits nothing when no Read qualifies, reports no dollar figures, and never fails CI. Three details keep the carry honest. Turns are distinct assistant `message.id`s, not records: Claude Code writes one API response as several records sharing an id (one measured transcript: 1,338 assistant records, 640 ids), so counting records would roughly double every carry, and harness-written `<synthetic>` records are not turns at all. The carry stops at the session's next `/compact` boundary, since a compacted history no longer holds the result -- 25 of 150 transcripts on the authoring machine compacted at least once. And a Read that a continued session copied into its own file under a new session id is counted once, with the smaller of its two carries. When the transcript read hit its cap, the finding says its figures cover only what was read.
+
+### Fixed
+- **Watch mode and the MCP server reused the first transcript read for the life of the process.** `readProjectTranscript` memoizes per project, and nothing outside the tests ever cleared it. The CLI's `--watch` reruns and the `ctxlint_session_audit` tool reset the git, paths, package.json and tokenizer caches between audits but not this one, so every later session audit in the same process judged the transcripts as they stood at the first. Both now clear it alongside the others.
+
+### Changed
+- The `ctxlint_session_audit` MCP tool description names the transcript-based checks, this one included. It previously listed only the first five sibling and memory checks.
+
+### Internal
+- **The transcript reader records Reads, result sizes and turns.** `TranscriptEvent` gains a `file-read` kind with `partial`, plus `toolUseId`, `outputChars`, `outputTokens`, `outputLines` and a per-session `turn` ordinal; `TranscriptRead` gains `sessionTurns` and `sessionCompactions`, and `turnsCarried` returns the later turns that re-sent a result. Every Read result is tokenized as it is paired, because the text is not kept on the memoized read; a probe doing the same tokenization over the five most recent transcripts of the slowest project directory on the authoring machine took 842ms. `session/default-branch-accumulation` and `session/unverified-gate-claimed-clean` walk the whole event stream -- one takes the branch stamp of every event it passes, the other counts a 12-event adjacency window -- so both now exclude `file-read` events and behave exactly as before; a regression test pins each.
+- README: the session-checks table and the "Available checks" list were missing `session-shared-temp-path`, `session-unverified-gate-claimed-clean`, `session-default-branch-accumulation` and `session-unresolvable-sha`. All four are listed now, alongside `session-large-read`.
+
 ## [0.24.1] - 2026-08-23
 
 ### Fixed

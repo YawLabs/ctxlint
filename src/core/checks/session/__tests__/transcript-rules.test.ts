@@ -34,7 +34,9 @@ function bash(command: string, branch = 'main') {
       type: 'user',
       timestamp: stamp(),
       sessionId: 's1',
-      message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'ok', is_error: false }] },
+      message: {
+        content: [{ type: 'tool_result', tool_use_id: id, content: 'ok', is_error: false }],
+      },
     },
   ];
 }
@@ -54,7 +56,9 @@ function silentGate(command: string, branch = 'main') {
       type: 'user',
       timestamp: stamp(),
       sessionId: 's1',
-      message: { content: [{ type: 'tool_result', tool_use_id: id, content: '', is_error: false }] },
+      message: {
+        content: [{ type: 'tool_result', tool_use_id: id, content: '', is_error: false }],
+      },
     },
   ];
 }
@@ -85,12 +89,39 @@ function edit(path: string, branch = 'main') {
   ];
 }
 
+/** A Read call and its result. */
+function readFile(path: string, branch = 'main') {
+  const id = `r${++seq}`;
+  return [
+    {
+      type: 'assistant',
+      timestamp: stamp(),
+      sessionId: 's1',
+      gitBranch: branch,
+      message: {
+        content: [{ type: 'tool_use', name: 'Read', id, input: { file_path: path } }],
+      },
+    },
+    {
+      type: 'user',
+      timestamp: stamp(),
+      sessionId: 's1',
+      message: {
+        content: [{ type: 'tool_result', tool_use_id: id, content: 'contents', is_error: false }],
+      },
+    },
+  ];
+}
+
 function edits(n: number, branch = 'main', from = 0) {
   return Array.from({ length: n }, (_, i) => edit(`/repo/x/file${from + i}.ts`, branch)).flat();
 }
 
 /** Write a fixture transcript and point HOME at it for the duration of `run`. */
-async function withProject<T>(records: unknown[], run: (ctx: SessionContext) => Promise<T>): Promise<T> {
+async function withProject<T>(
+  records: unknown[],
+  run: (ctx: SessionContext) => Promise<T>,
+): Promise<T> {
   const project = `/repo/proj-${++seq}`;
   const home = mkdtempSync(join(tmpdir(), 'ctxlint-tr-'));
   roots.push(home);
@@ -162,7 +193,9 @@ describe('session/unverified-gate-claimed-clean', () => {
           sessionId: 's1',
           gitBranch: 'main',
           message: {
-            content: [{ type: 'tool_use', name: 'Bash', id, input: { command: 'npx tsc --noEmit' } }],
+            content: [
+              { type: 'tool_use', name: 'Bash', id, input: { command: 'npx tsc --noEmit' } },
+            ],
           },
         },
         {
@@ -191,6 +224,21 @@ describe('session/unverified-gate-claimed-clean', () => {
       checkUnverifiedGateClaimedClean,
     );
     expect(issues).toHaveLength(0);
+  });
+
+  it('still flags the claim when Reads sit between the failed gate and it', async () => {
+    // The reader began emitting Read events after this rule shipped. Its
+    // adjacency window counts events, so without excluding them fifteen Reads
+    // would push this claim out of range and silence a real finding.
+    const issues = await withProject(
+      [
+        ...silentGate('npx biome check src/'),
+        ...Array.from({ length: 15 }, (_, i) => readFile(`/repo/x/f${i}.ts`)).flat(),
+        ...say('Lint is clean.'),
+      ],
+      checkUnverifiedGateClaimedClean,
+    );
+    expect(issues).toHaveLength(1);
   });
 
   it('does not flag a claim far away from the failed gate', async () => {
@@ -245,6 +293,21 @@ describe('session/default-branch-accumulation', () => {
       checkDefaultBranchAccumulation,
     );
     expect(issues).toHaveLength(1);
+  });
+
+  it("does not let a Read's branch stamp decide where an unstamped write lands", async () => {
+    // Pins pre-Read behaviour: the branch tracker takes the stamp of every
+    // event it walks, so a Read stamped `main` would otherwise pull these
+    // unstamped writes (last observed branch: feat/x) onto the default branch.
+    const issues = await withProject(
+      [
+        ...bash('git status', 'feat/x'),
+        ...readFile('/repo/x/README.md', 'main'),
+        ...Array.from({ length: 12 }, (_, i) => edit(`/repo/x/u${i}.ts`, '')).flat(),
+      ],
+      checkDefaultBranchAccumulation,
+    );
+    expect(issues).toHaveLength(0);
   });
 
   it('counts distinct files, not repeated edits to one file', async () => {
