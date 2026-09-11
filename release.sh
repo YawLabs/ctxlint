@@ -99,9 +99,16 @@ promote_changelog() {
 }
 
 # SKIP_LINT=1 escape hatch -- wraps `npm`/`pnpm` so lint-related runs are
-# no-ops. Workaround for the MINGW64-ARM64 npm-run-script wrapper that
-# segfaults on exit-cleanup (platform-windows.md). Apply only when the
-# lint runner is broken on the host; CI catches lint regressions anyway.
+# no-ops. It does NOT route around a broken runner. Lint here is `eslint src/`:
+# pure JS on node, with no native binary to crash, and it exits 0 on
+# MINGW64-ARM64 (measured 2026-09-11). The thing that segfaults on that host is
+# biome's native arm64 executable, which this repo does not use.
+#
+# So setting this skips a WORKING gate, and nothing else re-checks it: there is
+# no CI (no .github/workflows, and GitHub Actions is disabled on the repo), so
+# this script is the only thing that ever runs eslint. What it really buys is a
+# release whose lint findings were never looked at. Explicit last resort only,
+# and needing it is a bug to fix rather than a step to skip.
 if [ "${SKIP_LINT:-}" = "1" ]; then
   npm() {
     if [ "$1" = "run" ] && [[ "$2" == lint* ]]; then
@@ -207,28 +214,30 @@ else
   warn "Release notes: no CHANGELOG.md entry and no [Unreleased] content -- will fall back to commit subjects"
 fi
 
-# A crashed linter is not a lint result. `pnpm run lint` on MINGW64-ARM can
-# segfault during exit (139 under bash, 3221225477 / 0xC0000005 under
-# PowerShell) BEFORE emitting any diagnostics -- the same failure the `npx tsc`
-# invocation below already routes around. Bare `pnpm run lint` under
-# `set -euo pipefail` turns that crash into an ERR-trap abort that reads as
-# "lint found problems", sending you hunting for violations that were never
-# reported. Separate the two, and say plainly when lint is UNVERIFIED rather
-# than letting a crash masquerade as either a pass or a failure.
+# A crashed linter is not a lint result -- and it is not a pass either. Lint
+# here is `eslint src/`: pure JS on node, with no native binary to segfault,
+# and it exits 0 on MINGW64-ARM64 (measured 2026-09-11). So a 139 / 3221225477
+# from this command is not a known platform quirk to wave through; it means no
+# verdict was produced. Nothing downstream re-checks it either -- there is no
+# CI (no .github/workflows, and GitHub Actions is disabled on the repo) -- so
+# continuing would publish on a gate that never ran. It fails the release.
+#
+# The output is still captured to a file rather than streamed, so that a crash
+# cannot masquerade as "lint found problems" under `set -euo pipefail`; the
+# captured text is printed before failing, whichever way the run failed.
 LINT_OUT=$(mktemp)
 if [ "${SKIP_LINT:-}" = "1" ]; then
-  warn "Lint SKIPPED (SKIP_LINT=1) -- UNVERIFIED for this release"
+  warn "Lint SKIPPED (SKIP_LINT=1) -- UNVERIFIED for this release, and there is no CI that will re-check it"
 elif pnpm run lint > "$LINT_OUT" 2>&1; then
   info "Lint passed"
 else
   LINT_RC=$?
+  cat "$LINT_OUT"
+  rm -f "$LINT_OUT"
   if [ "$LINT_RC" -eq 139 ] || [ "$LINT_RC" -eq 3221225477 ]; then
-    warn "Lint runner CRASHED (exit $LINT_RC) with no diagnostics -- known runner segfault on this platform, NOT a lint failure. Lint is UNVERIFIED for this release."
-  else
-    cat "$LINT_OUT"
-    rm -f "$LINT_OUT"
-    fail "Lint failed"
+    fail "Lint runner CRASHED (exit $LINT_RC) -- no lint verdict was produced, so the release stops here. eslint is pure JS and is not expected to crash on this platform, so investigate rather than skip. As an explicit last resort, SKIP_LINT=1 ./release.sh ${VERSION} releases with lint unverified -- and there is no CI to catch what that misses."
   fi
+  fail "Lint failed (exit $LINT_RC)"
 fi
 rm -f "$LINT_OUT"
 
