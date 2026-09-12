@@ -208,6 +208,28 @@ describe('package.json consistency', () => {
     expect(PKG.devDependencies?.tiktoken).toBeDefined();
     expect(PKG.dependencies?.tiktoken).toBeUndefined();
   });
+
+  // Canary for the REPO_ROOT hazard documented at catalog-meta.ts. That module
+  // resolves the repo root two levels up from its own file, which is correct
+  // for <repo>/src/core/ and WRONG for the published <pkg>/dist/index.js --
+  // there it lands on the parent of the installed package. It is safe today
+  // only because nothing in the runtime graph imports it, so esbuild drops it.
+  //
+  // Wiring a catalog reader into the CLI (a `ctxlint rules` subcommand, an
+  // --explain flag) would pull it in and break silently: no build error, just
+  // a read one directory too high. Asserting on the literals rather than the
+  // symbol names because build.mjs sets minify:false, so a bundled string
+  // survives verbatim while an identifier could in principle be renamed.
+  it('catalog readers stay out of the shipped bundle', () => {
+    const bundle = fs.readFileSync(CLI, 'utf-8');
+    for (const literal of [
+      'schemas/ctxlint-catalog.schema.json',
+      'agent-session-lint-rules.json',
+      'context-lint-rules.json',
+    ]) {
+      expect(bundle).not.toContain(literal);
+    }
+  });
 });
 
 describe('CLI --depth flag', () => {
