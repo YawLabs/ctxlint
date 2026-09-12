@@ -2,7 +2,7 @@
   "name": "@yawlabs/ctxlint",
   "version": "0.25.0",
   "mcpName": "io.github.YawLabs/ctxlint",
-  "description": "Lint your AI agent context files, MCP server configs, and session data against your actual codebase",
+  "description": "Linter for AI agent context files: CLAUDE.md, AGENTS.md, .cursorrules, .mcp.json - catches broken paths, wrong commands, leaked secrets",
   "bin": {
     "ctxlint": "bin/ctxlint.mjs"
   },
@@ -27,36 +27,33 @@
     "mcp": "node dist/index.js --mcp-server"
   },
   "keywords": [
-    "claude",
-    "agents",
-    "context",
-    "lint",
-    "linter",
     "claude-md",
     "agents-md",
+    "cursorrules",
+    "windsurfrules",
+    "copilot-instructions",
+    "context-lint",
+    "linter",
+    "lint",
+    "ai-agents",
     "ai-coding",
     "context-engineering",
     "mcp",
-    "cursorrules",
-    "copilot-instructions",
-    "windsurfrules",
-    "pre-commit",
-    "agentic",
-    "codex",
-    "sarif",
     "mcp-server",
     "model-context-protocol",
-    "context-lint",
+    "claude-code",
+    "cursor",
+    "windsurf",
+    "github-copilot",
     "gemini",
     "cline",
-    "windsurf",
-    "session",
-    "cross-project",
-    "agent-session",
     "aider",
-    "vibe-cli",
     "amazon-q",
-    "goose"
+    "goose",
+    "codex",
+    "sarif",
+    "pre-commit",
+    "agent-session"
   ],
   "files": [
     "dist/index.js",
@@ -83,7 +80,7 @@
   "bugs": {
     "url": "https://github.com/YawLabs/ctxlint/issues"
   },
-  "homepage": "https://github.com/YawLabs/ctxlint",
+  "homepage": "https://yaw.sh/mcp-servers/ctxlint/",
   "author": "Yaw Labs <contact@yaw.sh>",
   "engines": {
     "node": ">=20"
