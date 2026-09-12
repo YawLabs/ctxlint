@@ -22,6 +22,7 @@ See [Versioning policy](#versioning-policy) below.
 - README: the session-checks table and the "Available checks" list were missing `session-shared-temp-path`, `session-unverified-gate-claimed-clean`, `session-default-branch-accumulation` and `session-unresolvable-sha`. All four are listed now, alongside `session-large-read`.
 - `AGENT_SESSION_LINT_SPEC.md` gains section 2.13 for `session/large-read` -- trigger, message, the five-step detection algorithm, the threshold and turn-counting notes, and a catalog rule-ID table row. The spec's rule count moves 12 to 13 in three places: the intro summary, the section 2 header, and the spec-family table row in the README.
 - README: an X follow badge joins the badge row at the top of the file (#62). Unrelated to the large-read work -- it landed in this release's commit range and is user-visible on the GitHub and npm landing pages, so it is recorded here rather than left out.
+- README: the "What It Checks" table -- a different table from the session one above, and the anchor every SARIF descriptor's `helpUri` points at -- listed none of the five transcript-based session checks, so a code-scanning alert linked to a table that never mentioned its rule. All five are listed now. The two `v0.9.10` pins are also current: the pre-commit `rev:` snippet, which had users running a 15-versions-old ctxlint, and the example-output banner. A paragraph under the session-data table names the transcript source and its bound.
 
 ## [0.24.1] - 2026-08-23
 
