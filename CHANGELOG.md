@@ -20,6 +20,8 @@ See [Versioning policy](#versioning-policy) below.
 ### Internal
 - **The transcript reader records Reads, result sizes and turns.** `TranscriptEvent` gains a `file-read` kind with `partial`, plus `toolUseId`, `outputChars`, `outputTokens`, `outputLines` and a per-session `turn` ordinal; `TranscriptRead` gains `sessionTurns` and `sessionCompactions`, and `turnsCarried` returns the later turns that re-sent a result. Every Read result is tokenized as it is paired, because the text is not kept on the memoized read; a probe doing the same tokenization over the five most recent transcripts of the slowest project directory on the authoring machine took 842ms. `session/default-branch-accumulation` and `session/unverified-gate-claimed-clean` walk the whole event stream -- one takes the branch stamp of every event it passes, the other counts a 12-event adjacency window -- so both now exclude `file-read` events and behave exactly as before; a regression test pins each.
 - README: the session-checks table and the "Available checks" list were missing `session-shared-temp-path`, `session-unverified-gate-claimed-clean`, `session-default-branch-accumulation` and `session-unresolvable-sha`. All four are listed now, alongside `session-large-read`.
+- `AGENT_SESSION_LINT_SPEC.md` gains section 2.13 for `session/large-read` -- trigger, message, the five-step detection algorithm, the threshold and turn-counting notes, and a catalog rule-ID table row. The spec's rule count moves 12 to 13 in three places: the intro summary, the section 2 header, and the spec-family table row in the README.
+- README: an X follow badge joins the badge row at the top of the file (#62). Unrelated to the large-read work -- it landed in this release's commit range and is user-visible on the GitHub and npm landing pages, so it is recorded here rather than left out.
 
 ## [0.24.1] - 2026-08-23
 
@@ -578,7 +580,7 @@ ctxlint follows Semantic Versioning. For this project, the semantics map as:
   - JSON / SARIF output shape change that breaks downstream consumers.
   - Minimum Node.js version bumped.
 - **MINOR** — additive or backward-compatible change:
-  - New **stable** check or new **stable** rule ID.
+  - New check name or new rule ID, **experimental or stable**. A new check is additive public surface whatever its stability: a new `--checks` value, a new SARIF rule descriptor, a new catalog entry.
   - New CLI flag or new config field.
   - New severity demotion (warning → info).
   - New output field in JSON / SARIF.
@@ -587,6 +589,8 @@ ctxlint follows Semantic Versioning. For this project, the semantics map as:
   - Default threshold adjustment (unless it breaks existing CI).
   - Bug fix, performance improvement, documentation-only change.
   - Dependency upgrade that doesn't change behavior.
-  - New **experimental** rule (`stability: "experimental"` in the catalog). Experimental rules may evolve their matching logic without a major bump, so adding one is closer to a fix than a stable-surface commitment.
+  - Changed matching logic on an **existing experimental** rule (`stability: "experimental"` in the catalog). Retuning what such a rule matches is exactly what its stability marker reserves the right to do, and it adds no surface — which is the case the earlier wording was really protecting.
+
+The experimental-rule line is a correction, not a restatement: from the 0.9.4 entry above until 0.25.0, this policy placed a NEW experimental rule under PATCH. 0.25.0 shipped the experimental `session/large-read` under a minor bump on the reasoning above, and the wording here is corrected to match that practice; releases cut before 0.25.0 are not retroactively reclassified.
 
 The rule catalogs (`context-lint-rules.json`, `mcp-config-lint-rules.json`, `agent-session-lint-rules.json`) are the canonical public surface for rule IDs. A rule with `"stability": "experimental"` in the catalog may change without a major bump; rules default to `"stability": "stable"`.
