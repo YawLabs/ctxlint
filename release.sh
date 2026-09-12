@@ -174,8 +174,9 @@ if [ "$IS_CI" != "true" ] && [ "$RESUMING" != "true" ]; then
   echo "  4. Bump version in package.json"
   echo "  5. Commit, tag, and push"
   echo "  6. Publish to npm"
-  echo "  7. Publish to MCP Registry"
-  echo "  8. Verify"
+  echo "  7. Create GitHub release"
+  echo "  8. Publish to MCP Registry"
+  echo "  9. Verify"
   echo ""
   if [ -t 0 ]; then
     read -p "Continue? (y/N) " -n 1 -r
@@ -283,7 +284,7 @@ else
   info "Version bumped"
 fi
 
-# server.json is published to the MCP Registry in step 7 and must match the
+# server.json is published to the MCP Registry in step 8 and must match the
 # tag's version. This runs UNCONDITIONALLY (not inside the bump else above)
 # so a resume run where package.json was bumped in a prior invocation still
 # syncs server.json -- otherwise mcp-publisher tries to re-publish the
@@ -566,9 +567,89 @@ else
   fi
   "$MP" login github -token "$MCP_REGISTRY_TOKEN" >/dev/null 2>&1 \
     || fail "mcp-publisher login failed -- check MCP_REGISTRY_TOKEN scopes (needs read:org for YawLabs)"
-  "$MP" publish \
-    || fail "mcp-publisher publish failed -- npm + GitHub release succeeded, but the MCP Registry did not. Retry the step (re-run the script) once the cause is identified."
-  info "Published to MCP Registry"
+
+  # True when the npm registry ITSELF serves this version.
+  #
+  # Deliberately NOT `npm view`: npm answers from its own on-disk HTTP cache,
+  # and step 6 primed that cache with a packument fetched BEFORE the publish
+  # (the lookup that decides "already published -- skipping"). Measured on the
+  # v0.25.0 run: a cache-busted registry read saw the new version while
+  # `npm view` was still serving the stale packument. `--prefer-online` is the
+  # no-curl fallback -- it forces revalidation instead of trusting the cache.
+  #
+  # registry.npmjs.org is hardcoded on purpose: server.json declares
+  # registryType "npm" with no registryBaseUrl, so public npm is exactly the
+  # source the MCP Registry resolves against. A local .npmrc pointing at a
+  # mirror would make this gate answer about the wrong registry.
+  npm_version_live() {
+    local code
+    if command -v curl >/dev/null 2>&1; then
+      code=$(curl -sS -o /dev/null -w '%{http_code}' \
+        -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
+        "https://registry.npmjs.org/@yawlabs%2fctxlint/${VERSION}" 2>/dev/null || echo "000")
+      [ "$code" = "200" ]
+    else
+      [ "$(npm view "@yawlabs/ctxlint@${VERSION}" version --prefer-online 2>/dev/null || echo "")" = "$VERSION" ]
+    fi
+  }
+
+  # npm propagation gate. npm accepts a publish and then takes ~30-90s to serve
+  # the new version ("Your package is being processed and may take a few
+  # minutes to become available"). Until it does, the MCP Registry rejects the
+  # publish with HTTP 400 "NPM package '@yawlabs/ctxlint' exists, but version
+  # 'X.Y.Z' was not found (status: 404)" -- which is what killed the v0.25.0
+  # run with npm AND the GitHub release already landed, and step 9 never
+  # reached.
+  #
+  # Same 10 x 6s shape as the CI-publish poll in step 6, and placed HERE rather
+  # than in one of step 6's branches so it covers every path into step 8:
+  # workstation publish, CI publish, and a resume run whose publish happened in
+  # an earlier invocation. A poll that runs out does not fail -- it warns and
+  # lets the publish speak, since the retry below is the real backstop.
+  NPM_SERVING=false
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    if npm_version_live; then NPM_SERVING=true; break; fi
+    [ "$i" -eq 1 ] && info "Waiting for npm to serve v${VERSION} before registering it (up to 60s)"
+    sleep 6
+  done
+  if [ "$NPM_SERVING" = "true" ]; then
+    info "npm registry serves @yawlabs/ctxlint@${VERSION} -- safe to register"
+  else
+    warn "npm registry still does not serve @yawlabs/ctxlint@${VERSION} after 60s -- attempting the registry publish anyway"
+  fi
+
+  # Both failure exits say the same thing, so the message is built once. It has
+  # to name what ALREADY landed: at this point npm and the GitHub release are
+  # both live, and re-running the whole script to retry one HTTP call is how a
+  # released version gets touched again for no reason.
+  # The \$( ) is escaped so the printed command carries the literal
+  # `$(gh auth token)` for the reader to run -- expanding it here would print a
+  # live GitHub token into the terminal (and into whatever log captures it).
+  MCP_FIX_CMD="cd '$SCRIPT_DIR' && '$MP' login github -token \"\$(gh auth token)\" && '$MP' publish"
+  MCP_FAIL_MSG="mcp-publisher publish failed for v${VERSION}. ALREADY LANDED: npm @yawlabs/ctxlint@${VERSION} and GitHub release v${VERSION} -- ONLY the MCP Registry entry is missing, so do NOT re-run this script. Fix the cause, then complete just this step with: ${MCP_FIX_CMD}"
+
+  # Exactly ONE retry, and only for the propagation shape. Every other 400
+  # (duplicate version, bad server.json schema, namespace not owned) and every
+  # auth failure will fail identically after any wait, so they fail loudly on
+  # the first attempt instead of buying a silent 30s.
+  MCP_PUBLISH_LOG=$(mktemp)
+  if "$MP" publish 2>&1 | tee "$MCP_PUBLISH_LOG"; then
+    rm -f "$MCP_PUBLISH_LOG"
+    info "Published to MCP Registry"
+  elif grep -qE 'was not found|status: *404' "$MCP_PUBLISH_LOG" && grep -qF "$VERSION" "$MCP_PUBLISH_LOG"; then
+    warn "MCP Registry cannot see @yawlabs/ctxlint@${VERSION} on npm yet -- waiting 30s and retrying ONCE"
+    sleep 30
+    if "$MP" publish 2>&1 | tee "$MCP_PUBLISH_LOG"; then
+      rm -f "$MCP_PUBLISH_LOG"
+      info "Published to MCP Registry (second attempt, after npm propagation)"
+    else
+      rm -f "$MCP_PUBLISH_LOG"
+      fail "$MCP_FAIL_MSG"
+    fi
+  else
+    rm -f "$MCP_PUBLISH_LOG"
+    fail "$MCP_FAIL_MSG"
+  fi
 fi
 
 # =============================================================================
