@@ -26,10 +26,18 @@ import type { LintIssue, SessionContext } from '../../types.js';
  */
 
 /**
- * A whole-file Read whose result reaches this many tokens counts. Across 202
- * real whole-file Reads, Read output (line-number prefixes included) ran at a
- * median 12.5 tokens per line, interquartile 11.2-15.9, which puts this at
- * roughly 320 lines, 250-360 across that range.
+ * A whole-file Read whose result reaches this many tokens counts. Measured over
+ * 739 whole-file Reads across 149 transcripts, Read output (line-number
+ * prefixes included) ran at a median 13.5 tokens per line, interquartile
+ * 10.9-20.0, which puts this at roughly 300 lines, 200-370 across that range.
+ *
+ * WHICH counter runs changes that. `countTokens` uses tiktoken when it
+ * resolves and a chars/4 estimate otherwise -- and an INSTALLED ctxlint is
+ * always the latter, because esbuild leaves tiktoken's `createRequire` lookup
+ * unbundled and the published tarball ships no `node_modules`. The same corpus
+ * runs at 12.2 tokens per line under the estimate, so a released build crosses
+ * this threshold at roughly 330 lines rather than 300. The finding says its
+ * tokens are an estimate for this reason.
  */
 export const LARGE_READ_TOKENS = 4000;
 

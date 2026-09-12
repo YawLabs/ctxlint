@@ -90,6 +90,11 @@ Useful if you want `ctxlint` available in every project without per-project setu
 | **Duplicate memory**  | Near-duplicate memories across projects (>60% content overlap)                                                                                                                                                                                                                   |
 | **Loop detection**    | Agent stuck in loops — repeated commands or cyclic patterns in session history                                                                                                                                                                                                   |
 | **Memory overflow**   | `MEMORY.md` past Claude Code's 200-line / 25KB session-load cap — entries beyond it are invisible to the agent                                                                                                                                                                   |
+| **Shared temp path**  | A fixed temp path (e.g. `/tmp/pkg.bak`) the agent writes and later reads back — any concurrent session can overwrite it in between                                                                                                                                               |
+| **Unverified gate**   | A lint/typecheck/test/build run that errored or printed nothing, followed by agent prose claiming it passed                                                                                                                                                                      |
+| **Default-branch edits** | 10+ files edited on `main`/`master` with no intervening commit or branch-away                                                                                                                                                                                                 |
+| **Unresolvable SHA**  | A memory cites a commit SHA that does not resolve in this repository                                                                                                                                                                                                             |
+| **Large reads**       | Whole-file Reads of 4,000+ tokens, with an estimate of the tokens they re-send as cached context on later turns (an info-level baseline)                                                                                                                                         |
 
 ## Supported Context Files
 
@@ -229,7 +234,7 @@ Checks whose signal is what the agent did (commands run, files written or read) 
 ## Example Output
 
 ```
-ctxlint v0.9.10
+ctxlint v0.25.0
 
 Scanning /Users/you/my-app...
 
@@ -372,7 +377,7 @@ Add to your `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/yawlabs/ctxlint
-    rev: v0.9.10
+    rev: v0.25.0
     hooks:
       - id: ctxlint
 ```

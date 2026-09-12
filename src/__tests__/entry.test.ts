@@ -198,7 +198,13 @@ describe('package.json consistency', () => {
     expect(PKG.files).toContain('.pre-commit-hooks.yaml');
   });
 
-  it('tiktoken is a dev dependency (bundled at build time)', () => {
+  // NOT bundled: tokens.ts loads tiktoken through createRequire, which esbuild
+  // leaves as a runtime lookup, and the published tarball ships no
+  // node_modules. So an installed ctxlint counts tokens with the chars/4
+  // fallback in utils/tokens.ts, not cl100k. Keeping it a devDependency is the
+  // deliberate trade (a 5.5 MB wasm encoder for an estimate), but the
+  // parenthetical that used to sit here claimed the opposite.
+  it('tiktoken is a dev dependency (the published bundle estimates instead)', () => {
     expect(PKG.devDependencies?.tiktoken).toBeDefined();
     expect(PKG.dependencies?.tiktoken).toBeUndefined();
   });
