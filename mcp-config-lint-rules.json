@@ -55,9 +55,7 @@
       "trigger": "JSON.parse fails on the file content.",
       "message": "MCP config is not valid JSON: {parseError}",
       "fixable": false,
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -69,9 +67,7 @@
       "message": "{file} must use \"{expected}\" as root key, not \"{actual}\"",
       "fixable": true,
       "fixDescription": "Rename the root key to match the expected key for the client.",
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -82,9 +78,7 @@
       "trigger": "The parsed JSON object has neither \"mcpServers\" nor \"servers\" as a key.",
       "message": "MCP config has no \"{expected}\" key",
       "fixable": false,
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -95,9 +89,7 @@
       "trigger": "Server has type \"stdio\" (or no type with no url) and no \"command\" field.",
       "message": "Server \"{name}\" has no \"command\" field",
       "fixable": false,
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -108,9 +100,7 @@
       "trigger": "Server has type \"http\" or \"sse\" and no \"url\" field.",
       "message": "Server \"{name}\" has no \"url\" field",
       "fixable": false,
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -121,9 +111,7 @@
       "trigger": "A key in the mcpServers/servers object is the empty string.",
       "message": "Server name cannot be empty",
       "fixable": false,
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -134,9 +122,7 @@
       "trigger": "The parser could not classify the server's transport — a string \"type\" outside stdio/http/sse, a non-string \"type\", or an entry with neither \"command\" nor \"url\". The no-recognizable-transport case emits the message variant: Server \"{name}\" has no recognizable transport — expected \"command\", \"url\", or a valid \"type\".",
       "message": "Server \"{name}\" has unknown transport type \"{type}\"",
       "fixable": false,
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -147,9 +133,7 @@
       "trigger": "Server entry has both \"command\" and \"url\" fields.",
       "message": "Server \"{name}\" has both \"command\" and \"url\" — transport is ambiguous",
       "fixable": false,
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -160,9 +144,7 @@
       "trigger": "Root key exists but the object is empty.",
       "message": "MCP config has no server entries",
       "fixable": false,
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -174,9 +156,7 @@
       "message": "Server \"{name}\" has a hardcoded Bearer token in a git-tracked file",
       "fixable": true,
       "fixDescription": "Replace the literal token with an env var reference derived from the server name.",
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -188,9 +168,7 @@
       "message": "Server \"{name}\" has a hardcoded API key in a git-tracked file",
       "fixable": true,
       "fixDescription": "Replace the literal value with an env var reference.",
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -201,9 +179,7 @@
       "trigger": "URL contains query params like ?key=, ?token=, ?api_key= with literal values in a git-tracked file.",
       "message": "Server \"{name}\" has a secret in the URL query string",
       "fixable": false,
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -214,9 +190,7 @@
       "trigger": "git ls-files fails for a reason other than \"untracked\" or \"not a repository\" (git unavailable, permissions, timeout). A determined \"untracked\" does not fire this rule.",
       "message": "Could not determine git-tracked status of {file}; hardcoded-secret rules were skipped",
       "fixable": false,
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "experimental"
     },
     {
@@ -227,9 +201,7 @@
       "trigger": "URL scheme is http:// and host is not a loopback address (localhost, [::1], 127.0.0.0/8).",
       "message": "Server \"{name}\" uses HTTP without TLS",
       "fixable": false,
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -241,9 +213,7 @@
       "message": "Server \"{name}\": npx requires \"cmd /c\" wrapper on Windows",
       "fixable": true,
       "fixDescription": "Rewrite command from \"npx\" to \"cmd\" with [\"/c\", \"npx\", ...] args.",
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -254,9 +224,7 @@
       "trigger": "Command starts with ./ or ../ and the resolved path does not exist. Project-scope configs only — a global config's relative command resolves against that client's own working directory.",
       "message": "Server \"{name}\": command \"{command}\" not found",
       "fixable": false,
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -267,9 +235,7 @@
       "trigger": "An arg matches a file path pattern (contains / with extension, or starts with ./) and the file does not exist. Relative paths are checked in project-scope configs only — a global config's relative paths resolve against that client's own working directory. Absolute paths are cwd-independent and are checked at every scope.",
       "message": "Server \"{name}\": arg \"{arg}\" looks like a file path but doesn't exist",
       "fixable": false,
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -281,9 +247,7 @@
       "message": "Server \"{name}\" uses deprecated SSE transport — use \"http\" (Streamable HTTP) instead",
       "fixable": true,
       "fixDescription": "Replace \"sse\" with \"http\" in the type field.",
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -295,12 +259,7 @@
       "message": "Server \"{name}\": {client} uses {expected}, not {actual}",
       "fixable": true,
       "fixDescription": "Rewrite env var references to the correct syntax for the target client.",
-      "clients": [
-        "claude-code",
-        "cursor",
-        "continue",
-        "windsurf"
-      ],
+      "clients": ["claude-code", "cursor", "continue", "windsurf"],
       "stability": "stable"
     },
     {
@@ -330,9 +289,7 @@
       "trigger": "\"env\" key is present but the object is empty ({}).",
       "message": "Server \"{name}\": empty \"env\" block can be removed",
       "fixable": false,
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -343,9 +300,7 @@
       "trigger": "URL cannot be parsed by standard URL parser and does not contain env var placeholders.",
       "message": "Server \"{name}\": invalid URL \"{url}\"",
       "fixable": false,
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -356,9 +311,7 @@
       "trigger": "URL host is a loopback address (localhost, [::1], 127.0.0.0/8 — the same set http-no-tls exempts) and the file is a project-level config.",
       "message": "Server \"{name}\": loopback URL in project config won't work for teammates",
       "fixable": false,
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -369,9 +322,7 @@
       "trigger": "URL path is empty or just \"/\".",
       "message": "Server \"{name}\": URL has no path — most MCP servers expect /mcp",
       "fixable": false,
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -382,9 +333,7 @@
       "trigger": "Server name exists in 2+ same-scope config files (project-project or user-user) with different url or command/args values. Cross-scope pairs are skipped — a user/global config differing from the project one is documented client precedence (project overrides user), not drift.",
       "message": "Server \"{name}\" is configured differently in {file1} and {file2}",
       "fixable": false,
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -395,9 +344,7 @@
       "trigger": "Duplicate key in the mcpServers/servers object.",
       "message": "Duplicate server name \"{name}\" in {file} — only the last definition is used",
       "fixable": false,
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -408,9 +355,7 @@
       "trigger": "Server exists in .mcp.json but is absent from .cursor/mcp.json, .vscode/mcp.json, or .amazonq/mcp.json (when those files exist).",
       "message": "Server \"{name}\" is in .mcp.json but missing from {file}",
       "fixable": false,
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -421,9 +366,7 @@
       "trigger": "Server has \"disabled\": true (any client's config).",
       "message": "Server \"{name}\" is disabled — consider removing it if no longer needed",
       "fixable": false,
-      "clients": [
-        "all"
-      ],
+      "clients": ["all"],
       "stability": "stable"
     },
     {
@@ -434,11 +377,7 @@
       "trigger": "Server with same name and identical config (command/args/url/env) exists at both project and global scope.",
       "message": "Server \"{name}\" is identically configured in both {projectFile} and {globalFile}",
       "fixable": false,
-      "clients": [
-        "claude-code",
-        "cursor",
-        "amazonq"
-      ],
+      "clients": ["claude-code", "cursor", "amazonq"],
       "stability": "stable"
     }
   ],
@@ -447,23 +386,12 @@
       "id": "claude-code",
       "name": "Claude Code",
       "projectConfig": ".mcp.json",
-      "globalConfig": [
-        "~/.claude.json",
-        "~/.claude/settings.json"
-      ],
+      "globalConfig": ["~/.claude.json", "~/.claude/settings.json"],
       "rootKey": "mcpServers",
       "envVarSyntax": "${VAR}",
       "envVarDefaultSyntax": "${VAR:-default}",
-      "transports": [
-        "stdio",
-        "http",
-        "sse"
-      ],
-      "scopePrecedence": [
-        "local",
-        "project",
-        "user"
-      ]
+      "transports": ["stdio", "http", "sse"],
+      "scopePrecedence": ["local", "project", "user"]
     },
     {
       "id": "claude-desktop",
@@ -475,14 +403,8 @@
       },
       "rootKey": "mcpServers",
       "envVarSyntax": null,
-      "transports": [
-        "stdio",
-        "http",
-        "sse"
-      ],
-      "scopePrecedence": [
-        "global"
-      ]
+      "transports": ["stdio", "http", "sse"],
+      "scopePrecedence": ["global"]
     },
     {
       "id": "vscode",
@@ -491,15 +413,8 @@
       "globalConfig": null,
       "rootKey": "servers",
       "envVarSyntax": "${VAR}",
-      "transports": [
-        "stdio",
-        "http",
-        "sse"
-      ],
-      "scopePrecedence": [
-        "workspace",
-        "user"
-      ]
+      "transports": ["stdio", "http", "sse"],
+      "scopePrecedence": ["workspace", "user"]
     },
     {
       "id": "cursor",
@@ -508,15 +423,8 @@
       "globalConfig": "~/.cursor/mcp.json",
       "rootKey": "mcpServers",
       "envVarSyntax": "${env:VAR}",
-      "transports": [
-        "stdio",
-        "http",
-        "sse"
-      ],
-      "scopePrecedence": [
-        "project",
-        "global"
-      ]
+      "transports": ["stdio", "http", "sse"],
+      "scopePrecedence": ["project", "global"]
     },
     {
       "id": "windsurf",
@@ -525,14 +433,8 @@
       "globalConfig": "~/.codeium/windsurf/mcp_config.json",
       "rootKey": "mcpServers",
       "envVarSyntax": "${env:VAR}",
-      "transports": [
-        "stdio",
-        "http",
-        "sse"
-      ],
-      "scopePrecedence": [
-        "global"
-      ]
+      "transports": ["stdio", "http", "sse"],
+      "scopePrecedence": ["global"]
     },
     {
       "id": "cline",
@@ -541,14 +443,8 @@
       "globalConfig": "VS Code globalStorage: saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
       "rootKey": "mcpServers",
       "envVarSyntax": null,
-      "transports": [
-        "stdio",
-        "http",
-        "sse"
-      ],
-      "scopePrecedence": [
-        "global"
-      ]
+      "transports": ["stdio", "http", "sse"],
+      "scopePrecedence": ["global"]
     },
     {
       "id": "amazonq",
@@ -557,14 +453,8 @@
       "globalConfig": "~/.aws/amazonq/mcp.json",
       "rootKey": "mcpServers",
       "envVarSyntax": null,
-      "transports": [
-        "stdio",
-        "http"
-      ],
-      "scopePrecedence": [
-        "workspace",
-        "global"
-      ]
+      "transports": ["stdio", "http"],
+      "scopePrecedence": ["workspace", "global"]
     },
     {
       "id": "continue",
@@ -573,15 +463,8 @@
       "globalConfig": "~/.continue/config.yaml",
       "rootKey": "mcpServers",
       "envVarSyntax": "${{ secrets.VAR }}",
-      "transports": [
-        "stdio",
-        "http",
-        "sse"
-      ],
-      "scopePrecedence": [
-        "workspace",
-        "global"
-      ]
+      "transports": ["stdio", "http", "sse"],
+      "scopePrecedence": ["workspace", "global"]
     }
   ]
 }

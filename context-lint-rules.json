@@ -353,11 +353,7 @@
       "trigger": "Cursor .mdc, Copilot instruction, or Windsurf rule file has no --- frontmatter block.",
       "message": "{format} file is missing frontmatter",
       "fixable": false,
-      "appliesTo": [
-        "cursor-mdc",
-        "copilot-instructions",
-        "windsurf-rules"
-      ],
+      "appliesTo": ["cursor-mdc", "copilot-instructions", "windsurf-rules"],
       "severityByFormat": {
         "cursor-mdc": "warning",
         "copilot-instructions": "info",
@@ -373,11 +369,7 @@
       "trigger": "Frontmatter exists but is missing a key field (description for Cursor, applyTo for Copilot, trigger for Windsurf).",
       "message": "Missing \"{field}\" field in {format} frontmatter",
       "fixable": false,
-      "appliesTo": [
-        "cursor-mdc",
-        "copilot-instructions",
-        "windsurf-rules"
-      ],
+      "appliesTo": ["cursor-mdc", "copilot-instructions", "windsurf-rules"],
       "stability": "stable"
     },
     {
@@ -388,10 +380,7 @@
       "trigger": "alwaysApply is not true/false (error), trigger is not a valid enum value (error), or globs has unbalanced brackets/quotes (warning).",
       "message": "Invalid {field} value: \"{value}\"",
       "fixable": false,
-      "appliesTo": [
-        "cursor-mdc",
-        "windsurf-rules"
-      ],
+      "appliesTo": ["cursor-mdc", "windsurf-rules"],
       "stability": "stable"
     },
     {
@@ -402,11 +391,7 @@
       "trigger": "File opens with a --- line but no matching closing --- line follows (typical cause: the closing fence typo'd as -- or ___, or indented).",
       "message": "Frontmatter opens with `---` but is never closed",
       "fixable": false,
-      "appliesTo": [
-        "cursor-mdc",
-        "copilot-instructions",
-        "windsurf-rules"
-      ],
+      "appliesTo": ["cursor-mdc", "copilot-instructions", "windsurf-rules"],
       "stability": "stable"
     },
     {
@@ -417,9 +402,7 @@
       "trigger": "Cursor .mdc has frontmatter with neither globs nor alwaysApply set.",
       "message": "No activation field — rule may not be applied automatically",
       "fixable": false,
-      "appliesTo": [
-        "cursor-mdc"
-      ],
+      "appliesTo": ["cursor-mdc"],
       "stability": "stable"
     },
     {
@@ -547,11 +530,7 @@
     {
       "id": "claude-code",
       "client": "Claude Code",
-      "patterns": [
-        "CLAUDE.md",
-        "CLAUDE.local.md",
-        ".claude/rules/*.md"
-      ],
+      "patterns": ["CLAUDE.md", "CLAUDE.local.md", ".claude/rules/*.md"],
       "type": "markdown",
       "frontmatter": "none",
       "scope": "project-wide and rule-based"
@@ -559,11 +538,7 @@
     {
       "id": "aaif",
       "client": "AAIF / Multi-agent standard",
-      "patterns": [
-        "AGENTS.md",
-        "AGENT.md",
-        "AGENTS.override.md"
-      ],
+      "patterns": ["AGENTS.md", "AGENT.md", "AGENTS.override.md"],
       "type": "markdown",
       "frontmatter": "none",
       "scope": "project-wide"
@@ -616,23 +591,14 @@
     {
       "id": "windsurf",
       "client": "Windsurf",
-      "patterns": [
-        ".windsurfrules",
-        ".windsurf/rules/*.md"
-      ],
+      "patterns": [".windsurfrules", ".windsurf/rules/*.md"],
       "type": "markdown",
       "frontmatter": "recommended for rules",
       "frontmatterFields": {
         "trigger": {
           "required": true,
           "type": "enum",
-          "values": [
-            "always_on",
-            "glob",
-            "manual",
-            "model",
-            "model_decision"
-          ]
+          "values": ["always_on", "glob", "manual", "model", "model_decision"]
         }
       },
       "scope": "project-wide and rule-based"
@@ -640,9 +606,7 @@
     {
       "id": "gemini",
       "client": "Gemini CLI",
-      "patterns": [
-        "GEMINI.md"
-      ],
+      "patterns": ["GEMINI.md"],
       "type": "markdown",
       "frontmatter": "none",
       "scope": "project-wide"
@@ -650,9 +614,7 @@
     {
       "id": "cline",
       "client": "Cline",
-      "patterns": [
-        ".clinerules"
-      ],
+      "patterns": [".clinerules"],
       "type": "plain text",
       "frontmatter": "none",
       "scope": "project-wide"
@@ -660,9 +622,7 @@
     {
       "id": "aider",
       "client": "Aider",
-      "patterns": [
-        ".aiderules"
-      ],
+      "patterns": [".aiderules"],
       "type": "plain text",
       "frontmatter": "none",
       "scope": "project-wide"
@@ -670,9 +630,7 @@
     {
       "id": "aide",
       "client": "Aide / Codestory",
-      "patterns": [
-        ".aide/rules/*.md"
-      ],
+      "patterns": [".aide/rules/*.md"],
       "type": "markdown",
       "frontmatter": "none",
       "scope": "rule-based"
@@ -680,9 +638,7 @@
     {
       "id": "amazonq",
       "client": "Amazon Q Developer",
-      "patterns": [
-        ".amazonq/rules/*.md"
-      ],
+      "patterns": [".amazonq/rules/*.md"],
       "type": "markdown",
       "frontmatter": "none",
       "scope": "rule-based"
@@ -690,10 +646,7 @@
     {
       "id": "goose",
       "client": "Goose (Block)",
-      "patterns": [
-        ".goose/instructions.md",
-        ".goosehints"
-      ],
+      "patterns": [".goose/instructions.md", ".goosehints"],
       "type": "markdown",
       "frontmatter": "none",
       "scope": "project-wide"
@@ -701,10 +654,7 @@
     {
       "id": "junie",
       "client": "JetBrains Junie",
-      "patterns": [
-        ".junie/guidelines.md",
-        ".junie/AGENTS.md"
-      ],
+      "patterns": [".junie/guidelines.md", ".junie/AGENTS.md"],
       "type": "markdown",
       "frontmatter": "none",
       "scope": "project-wide"
@@ -712,9 +662,7 @@
     {
       "id": "jetbrains-ai",
       "client": "JetBrains AI Assistant",
-      "patterns": [
-        ".aiassistant/rules/*.md"
-      ],
+      "patterns": [".aiassistant/rules/*.md"],
       "type": "markdown",
       "frontmatter": "none",
       "scope": "rule-based"
@@ -722,10 +670,7 @@
     {
       "id": "continue",
       "client": "Continue",
-      "patterns": [
-        ".continuerules",
-        ".continue/rules/*.md"
-      ],
+      "patterns": [".continuerules", ".continue/rules/*.md"],
       "type": "markdown",
       "frontmatter": "none",
       "scope": "project-wide and rule-based"
@@ -733,9 +678,7 @@
     {
       "id": "zed",
       "client": "Zed",
-      "patterns": [
-        ".rules"
-      ],
+      "patterns": [".rules"],
       "type": "plain text",
       "frontmatter": "none",
       "scope": "project-wide"
@@ -743,9 +686,7 @@
     {
       "id": "replit",
       "client": "Replit",
-      "patterns": [
-        "replit.md"
-      ],
+      "patterns": ["replit.md"],
       "type": "markdown",
       "frontmatter": "none",
       "scope": "project-wide"

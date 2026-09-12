@@ -14,11 +14,11 @@ Read `HANDOFF-session-derived-rules.md` and `HANDOFF-ci-claim-and-bin-subcommand
 
 ## TL;DR
 
-| Proposed rule | Catalog | Severity | Motivating real defect |
-|---|---|---|---|
-| `session/shared-temp-path` | session | error | An agent backed a file up to a fixed `/tmp` path and restored from it; a concurrent session on another repo had overwritten it, and the restore wrote a *different package's* `package.json` into the repo |
-| `session/unverified-gate-claimed-clean` | session | warning | An agent reported lint as "consistent with clean" from a tool that had segfaulted and emitted zero diagnostics |
-| `session/default-branch-accumulation` | session | warning | 25 files of unrelated work accumulated uncommitted on `main` across a multi-hour session, in a repo with 11 concurrent agent worktrees |
+| Proposed rule                           | Catalog | Severity | Motivating real defect                                                                                                                                                                                     |
+| --------------------------------------- | ------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `session/shared-temp-path`              | session | error    | An agent backed a file up to a fixed `/tmp` path and restored from it; a concurrent session on another repo had overwritten it, and the restore wrote a _different package's_ `package.json` into the repo |
+| `session/unverified-gate-claimed-clean` | session | warning  | An agent reported lint as "consistent with clean" from a tool that had segfaulted and emitted zero diagnostics                                                                                             |
+| `session/default-branch-accumulation`   | session | warning  | 25 files of unrelated work accumulated uncommitted on `main` across a multi-hour session, in a repo with 11 concurrent agent worktrees                                                                     |
 
 ---
 
@@ -53,7 +53,7 @@ Do not flag `mktemp` / `mktemp -d` output, or paths containing a session id, PID
 
 ### Why existing rules miss it
 
-`session/stale-memory` and `paths/not-found` are about references that do not resolve. This path resolves fine -- that is the problem. Nothing in the session catalog models *concurrency* hazards.
+`session/stale-memory` and `paths/not-found` are about references that do not resolve. This path resolves fine -- that is the problem. Nothing in the session catalog models _concurrency_ hazards.
 
 ---
 
@@ -63,7 +63,7 @@ Do not flag `mktemp` / `mktemp -d` output, or paths containing a session id, PID
 
 The source session ran `biome check` roughly a dozen times across several turns. On this host (Windows ARM64) the biome binary segfaults during exit -- exit `139` under bash, `0xC0000005` under PowerShell -- via the npx wrapper, via the native `node_modules/@biomejs/cli-win32-arm64/biome.exe`, and unchanged by shell. It produced **zero bytes** of output every time.
 
-The agent twice reported this as "zero diagnostics emitted, which is consistent with a clean run." That inference was wrong, and it took a deliberate experiment to disprove: running the same binary against a file with an unused variable and mangled formatting *also* produced zero bytes. The crash precedes diagnostic emission, so empty output carries no information about cleanliness at all.
+The agent twice reported this as "zero diagnostics emitted, which is consistent with a clean run." That inference was wrong, and it took a deliberate experiment to disprove: running the same binary against a file with an unused variable and mangled formatting _also_ produced zero bytes. The crash precedes diagnostic emission, so empty output carries no information about cleanliness at all.
 
 The generalisable defect: **an agent treating a non-zero exit or an empty result as evidence of a passing gate.** In a session that ends "typecheck clean, tests pass, lint clean", the third clause was unsupported.
 
@@ -87,9 +87,9 @@ Deliberately **not** flagged: prose that labels the state honestly -- "unverifie
 
 They are siblings on different surfaces and both are worth having.
 
-`commands/exit-status-masked` (context catalog, owned by the other handoff) is static: it reads a *documented command* whose own shape discards the status, e.g. `npx tsc --noEmit | head -20 && echo "tsc clean"`.
+`commands/exit-status-masked` (context catalog, owned by the other handoff) is static: it reads a _documented command_ whose own shape discards the status, e.g. `npx tsc --noEmit | head -20 && echo "tsc clean"`.
 
-This rule is dynamic: it compares a *claim in the session* against the *observed result*. It fires on a plain `pnpm lint` that crashed -- a command with nothing structurally wrong with it.
+This rule is dynamic: it compares a _claim in the session_ against the _observed result_. It fires on a plain `pnpm lint` that crashed -- a command with nothing structurally wrong with it.
 
 Independent confirmation of the other rule, from this same session: the agent ran
 
@@ -117,7 +117,7 @@ Flag a session that **accumulates edits to a checkout on its default branch with
 - count distinct files written in the session,
 - flag when the count crosses a threshold (start around 10) with no commit recorded in between.
 
-Do not flag: sessions that branch first, sessions that commit as they go, or single-file edits on the default branch -- a one-line typo fix on `main` is normal and flagging it would make the rule noise. The defect is *accumulation*, not the first write.
+Do not flag: sessions that branch first, sessions that commit as they go, or single-file edits on the default branch -- a one-line typo fix on `main` is normal and flagging it would make the rule noise. The defect is _accumulation_, not the first write.
 
 **Severity: warning.** Nothing is corrupted; the risk is exposure -- reviewability, and collision in a fleet.
 
@@ -125,7 +125,7 @@ Do not flag: sessions that branch first, sessions that commit as they go, or sin
 
 ### Why existing rules miss it
 
-Nothing in the session catalog models git state. This is the third rule here whose signal is *where the work landed* rather than *what it said*, which may argue for a small shared git-context extractor rather than three independent ones -- worth deciding before the first of them is implemented.
+Nothing in the session catalog models git state. This is the third rule here whose signal is _where the work landed_ rather than _what it said_, which may argue for a small shared git-context extractor rather than three independent ones -- worth deciding before the first of them is implemented.
 
 ---
 

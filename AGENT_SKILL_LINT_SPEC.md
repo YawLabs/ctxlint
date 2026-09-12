@@ -18,12 +18,12 @@ These definition files have the same failure modes as context files: their front
 
 This specification defines a standard set of lint rules for validating agent-skill definitions. It is the **fourth pillar** alongside context-file linting, MCP-config linting, and session-data linting:
 
-| Pillar | What it checks | Specification |
-|---|---|---|
-| Context files | Instructions the agent reads | [CONTEXT_LINT_SPEC.md](./CONTEXT_LINT_SPEC.md) |
-| MCP configs | Tools the agent can use | [MCP_CONFIG_LINT_SPEC.md](./MCP_CONFIG_LINT_SPEC.md) |
-| Session data | History and memory the agent carries | [AGENT_SESSION_LINT_SPEC.md](./AGENT_SESSION_LINT_SPEC.md) |
-| Agent skills | Skills and subagents the agent loads | This document |
+| Pillar        | What it checks                       | Specification                                              |
+| ------------- | ------------------------------------ | ---------------------------------------------------------- |
+| Context files | Instructions the agent reads         | [CONTEXT_LINT_SPEC.md](./CONTEXT_LINT_SPEC.md)             |
+| MCP configs   | Tools the agent can use              | [MCP_CONFIG_LINT_SPEC.md](./MCP_CONFIG_LINT_SPEC.md)       |
+| Session data  | History and memory the agent carries | [AGENT_SESSION_LINT_SPEC.md](./AGENT_SESSION_LINT_SPEC.md) |
+| Agent skills  | Skills and subagents the agent loads | This document                                              |
 
 **v1 scope is deliberately tight: Claude Code only** (`~/.claude/skills/<name>/SKILL.md` and `~/.claude/agents/*.md`). Other agents' skill/subagent formats may be added in later spec versions.
 
@@ -35,10 +35,10 @@ This specification defines a standard set of lint rules for validating agent-ski
 
 ### 1.1 Data sources (v1)
 
-| Kind | Location | Required frontmatter |
-|---|---|---|
-| Skill | `~/.claude/skills/<name>/SKILL.md` | `name`, `description` |
-| Agent (subagent) | `~/.claude/agents/<name>.md` | `name`, `description` (optional `tools` / `allowed-tools`) |
+| Kind             | Location                           | Required frontmatter                                       |
+| ---------------- | ---------------------------------- | ---------------------------------------------------------- |
+| Skill            | `~/.claude/skills/<name>/SKILL.md` | `name`, `description`                                      |
+| Agent (subagent) | `~/.claude/agents/<name>.md`       | `name`, `description` (optional `tools` / `allowed-tools`) |
 
 The skill `<name>` is the directory name; the agent `<name>` is the filename without `.md`. A `~/.claude/skills/<name>/` directory with no `SKILL.md` is an **orphaned skill** -- the directory exists but Claude Code has nothing to load.
 
@@ -53,25 +53,26 @@ Skill/agent definitions live in the user-global `~/.claude/` tree, NOT inside th
 5 rules in 1 category (`skill`). All rules audit Claude Code skill (`SKILL.md`) and agent (`.md`) definition files.
 
 Severity levels:
+
 - **error** -- the definition is structurally broken (e.g. unclosed or absent frontmatter). The skill/agent will not load as intended.
 - **warning** -- the definition has a likely problem worth investigating (missing field, broken reference, trigger collision, dead tool restriction).
 - **info** -- reserved for future advisory rules.
 
 ### 2.1 skill — agent skill audit
 
-| Rule ID | Severity | Trigger | Message |
-|---|---|---|---|
-| `skill/missing-frontmatter` | warning (error when frontmatter absent/unclosed) | A SKILL.md / agent .md has no `---`-delimited frontmatter, has unclosed frontmatter, or is missing a required field (`name`, `description`) | `{file}: missing required frontmatter field "{field}"` |
-| `skill/broken-ref` | warning | A `./` or `../` path reference in the body (outside example code blocks) does not exist relative to the skill directory | `{file}: references "{path}" which does not exist relative to the skill directory` |
-| `skill/trigger-collision` | warning | A normalized trigger phrase (quoted phrase in the description, or a `trigger`/`triggers` field) is declared by more than one distinct skill/agent | `Trigger phrase "{trigger}" is declared by {count} skills/agents — only one will win` |
-| `skill/orphaned` | warning | A `~/.claude/skills/<name>/` directory contains no `SKILL.md` | `{dir}: skill directory has no SKILL.md — Claude Code has nothing to load` |
-| `skill/dead-tool-restriction` | warning (info when the unknown name is PascalCase) | An agent's `tools` / `allowed-tools` frontmatter lists a non-MCP, non-wildcard tool name that is not a known Claude Code built-in tool | `{file}: tool restriction lists "{tool}" which is not a known Claude Code tool` |
+| Rule ID                       | Severity                                           | Trigger                                                                                                                                           | Message                                                                               |
+| ----------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `skill/missing-frontmatter`   | warning (error when frontmatter absent/unclosed)   | A SKILL.md / agent .md has no `---`-delimited frontmatter, has unclosed frontmatter, or is missing a required field (`name`, `description`)       | `{file}: missing required frontmatter field "{field}"`                                |
+| `skill/broken-ref`            | warning                                            | A `./` or `../` path reference in the body (outside example code blocks) does not exist relative to the skill directory                           | `{file}: references "{path}" which does not exist relative to the skill directory`    |
+| `skill/trigger-collision`     | warning                                            | A normalized trigger phrase (quoted phrase in the description, or a `trigger`/`triggers` field) is declared by more than one distinct skill/agent | `Trigger phrase "{trigger}" is declared by {count} skills/agents — only one will win` |
+| `skill/orphaned`              | warning                                            | A `~/.claude/skills/<name>/` directory contains no `SKILL.md`                                                                                     | `{dir}: skill directory has no SKILL.md — Claude Code has nothing to load`            |
+| `skill/dead-tool-restriction` | warning (info when the unknown name is PascalCase) | An agent's `tools` / `allowed-tools` frontmatter lists a non-MCP, non-wildcard tool name that is not a known Claude Code built-in tool            | `{file}: tool restriction lists "{tool}" which is not a known Claude Code tool`       |
 
 **Notes:**
 
 - **`skill/broken-ref`** reuses the path-reference detection shape from the context-file pillar. Only explicitly-relative references (`./`, `../`) are verified, resolved against the skill/agent file's own directory; bare `foo/bar` tokens in prose are too ambiguous to resolve without false positives, so they are skipped. References inside example code blocks (`ts`, `py`, `json`, ...) are excluded.
 - **`skill/trigger-collision`** extracts triggers from quoted phrases inside the `description` (e.g. `"ship 1.3.X"`) and from an optional `trigger`/`triggers` field. Phrases are lowercased and whitespace-collapsed before comparison.
-- **`skill/dead-tool-restriction`** validates only against the known built-in tool set. MCP-namespaced tools (`mcp__server__tool`) and wildcard entries are skipped because their validity depends on the loaded MCP servers, which the linter cannot see statically. Severity is split by name shape: an unknown **PascalCase** name is reported as *info* -- it may be a built-in newer than the linter's known-tool list, which drifts across Claude Code versions; anything else (lowercase, separators) doesn't match Claude Code's tool naming and keeps the *warning* (far more likely a typo).
+- **`skill/dead-tool-restriction`** validates only against the known built-in tool set. MCP-namespaced tools (`mcp__server__tool`) and wildcard entries are skipped because their validity depends on the loaded MCP servers, which the linter cannot see statically. Severity is split by name shape: an unknown **PascalCase** name is reported as _info_ -- it may be a built-in newer than the linter's known-tool list, which drifts across Claude Code versions; anything else (lowercase, separators) doesn't match Claude Code's tool naming and keeps the _warning_ (far more likely a typo).
 
 All v1 rules are marked **experimental** in the catalog -- the heuristics are conservative and may broaden as more skill/agent shapes are observed. Experimental rules bump patch; promotion to stable bumps minor (see `CHANGELOG.md` versioning policy).
 
@@ -95,6 +96,7 @@ Rule IDs use the ctxlint `category/slug` format (see [CONTRIBUTING.md](./CONTRIB
 ### Versioning
 
 This spec follows semver:
+
 - **Patch** (1.0.x): Typo fixes, clarifications, no rule changes.
 - **Minor** (1.x.0): New rules added, new agents/skill formats documented.
 - **Major** (x.0.0): Rules removed or semantics changed in breaking ways.

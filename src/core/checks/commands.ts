@@ -204,7 +204,8 @@ function loadDeniedCommandPrefixes(projectRoot: string): string[] {
       continue; // missing file is expected
     }
     const data = parseJsonc(content, [], { allowTrailingComma: true }) as
-      { permissions?: { deny?: unknown } } | undefined;
+      | { permissions?: { deny?: unknown } }
+      | undefined;
     const deny = data?.permissions?.deny;
     if (!Array.isArray(deny)) continue;
     for (const entry of deny) {
@@ -419,9 +420,7 @@ export async function checkCommands(
     }
   }
 
-  issues.push(
-    ...checkUnknownSubcommand(file, projectRoot, pkgJson, deniedPrefixes, contentLines),
-  );
+  issues.push(...checkUnknownSubcommand(file, projectRoot, pkgJson, deniedPrefixes, contentLines));
 
   for (const ref of file.references.commands) {
     // Above the exit-status check too: a command inside a comment should

@@ -15,6 +15,7 @@ MCP server configuration files (`.mcp.json`, `.cursor/mcp.json`, `.vscode/mcp.js
 This specification defines a standard set of lint rules for validating MCP server configurations across all major AI coding clients. It is tool-agnostic: any linter, IDE extension, CI check, or AI agent can implement these rules.
 
 The specification includes:
+
 - A complete reference of MCP config file locations, formats, and client-specific behaviors
 - 29 lint rules organized into 8 categories with defined severities
 - A machine-readable rule catalog ([`mcp-config-lint-rules.json`](./mcp-config-lint-rules.json))
@@ -28,10 +29,10 @@ The specification includes:
 
 This spec is part of a family of open specifications maintained by Yaw Labs for MCP tooling:
 
-| Spec | Scope | Input |
-|---|---|---|
-| **mcp-config-lint** (this spec) | Static analysis of MCP client config files | `.cursor/mcp.json`, `.vscode/mcp.json`, `.mcp.json`, etc. |
-| [**mcp-compliance**](https://github.com/YawLabs/mcp-compliance/blob/master/MCP_COMPLIANCE_SPEC.md) | Runtime testing of live MCP servers | A live server URL + transport |
+| Spec                                                                                               | Scope                                      | Input                                                     |
+| -------------------------------------------------------------------------------------------------- | ------------------------------------------ | --------------------------------------------------------- |
+| **mcp-config-lint** (this spec)                                                                    | Static analysis of MCP client config files | `.cursor/mcp.json`, `.vscode/mcp.json`, `.mcp.json`, etc. |
+| [**mcp-compliance**](https://github.com/YawLabs/mcp-compliance/blob/master/MCP_COMPLIANCE_SPEC.md) | Runtime testing of live MCP servers        | A live server URL + transport                             |
 
 The two are **complementary, not overlapping**. `mcp-config-lint` catches problems before deploy by reading JSON on disk; `mcp-compliance` catches problems after deploy by speaking the protocol to a running server. A production setup typically runs both.
 
@@ -107,19 +108,19 @@ There are two active transport types:
 
 ### 1.2 Server entry fields
 
-| Field | Type | Transport | Required | Description |
-|---|---|---|---|---|
-| `type` | `"stdio"` \| `"http"` \| `"sse"` | All | No | Transport protocol. Defaults to `stdio` if `command` is present. |
-| `command` | string | stdio | Yes | Executable to launch as a subprocess. |
-| `args` | string[] | stdio | No | Arguments passed to the command. |
-| `env` | Record<string, string> | stdio | No | Environment variables for the subprocess. |
-| `url` | string | http, sse | Yes | Remote endpoint URL. |
-| `headers` | Record<string, string> | http, sse | No | HTTP headers sent with every request. |
-| `disabled` | boolean | All | No | Whether the server is disabled. (Cline-specific) |
-| `autoApprove` | string[] | All | No | Tool names to auto-approve without user confirmation. (Cline-specific) |
-| `timeout` | number (ms) | All | No | Max response wait time. Default: 60000. (Amazon Q-specific) |
-| `oauth` | object | http | No | OAuth 2.0 configuration. (Claude Code-specific) |
-| `headersHelper` | string | http | No | Shell command that outputs JSON headers to stdout. (Claude Code-specific) |
+| Field           | Type                             | Transport | Required | Description                                                               |
+| --------------- | -------------------------------- | --------- | -------- | ------------------------------------------------------------------------- |
+| `type`          | `"stdio"` \| `"http"` \| `"sse"` | All       | No       | Transport protocol. Defaults to `stdio` if `command` is present.          |
+| `command`       | string                           | stdio     | Yes      | Executable to launch as a subprocess.                                     |
+| `args`          | string[]                         | stdio     | No       | Arguments passed to the command.                                          |
+| `env`           | Record<string, string>           | stdio     | No       | Environment variables for the subprocess.                                 |
+| `url`           | string                           | http, sse | Yes      | Remote endpoint URL.                                                      |
+| `headers`       | Record<string, string>           | http, sse | No       | HTTP headers sent with every request.                                     |
+| `disabled`      | boolean                          | All       | No       | Whether the server is disabled. (Cline-specific)                          |
+| `autoApprove`   | string[]                         | All       | No       | Tool names to auto-approve without user confirmation. (Cline-specific)    |
+| `timeout`       | number (ms)                      | All       | No       | Max response wait time. Default: 60000. (Amazon Q-specific)               |
+| `oauth`         | object                           | http      | No       | OAuth 2.0 configuration. (Claude Code-specific)                           |
+| `headersHelper` | string                           | http      | No       | Shell command that outputs JSON headers to stdout. (Claude Code-specific) |
 
 ### 1.3 File locations by client
 
@@ -127,41 +128,41 @@ There are two active transport types:
 
 These live relative to the project root and are typically committed to version control.
 
-| File path | Client | Root key | Notes |
-|---|---|---|---|
-| `.mcp.json` | Claude Code | `mcpServers` | The universal project-level convention. |
-| `.cursor/mcp.json` | Cursor | `mcpServers` | |
-| `.vscode/mcp.json` | VS Code / GitHub Copilot | **`servers`** | Only client that uses `servers` instead of `mcpServers`. |
-| `.amazonq/mcp.json` | Amazon Q Developer | `mcpServers` | Server names must be unique across project + global. |
-| `.continue/mcpServers/*.json` | Continue.dev | varies | Accepts config files from any client format. |
+| File path                     | Client                   | Root key      | Notes                                                    |
+| ----------------------------- | ------------------------ | ------------- | -------------------------------------------------------- |
+| `.mcp.json`                   | Claude Code              | `mcpServers`  | The universal project-level convention.                  |
+| `.cursor/mcp.json`            | Cursor                   | `mcpServers`  |                                                          |
+| `.vscode/mcp.json`            | VS Code / GitHub Copilot | **`servers`** | Only client that uses `servers` instead of `mcpServers`. |
+| `.amazonq/mcp.json`           | Amazon Q Developer       | `mcpServers`  | Server names must be unique across project + global.     |
+| `.continue/mcpServers/*.json` | Continue.dev             | varies        | Accepts config files from any client format.             |
 
 #### User/global-level configs
 
 These are user-specific and not committed to version control.
 
-| File path | Client | Root key | Platform |
-|---|---|---|---|
-| `~/.claude.json` | Claude Code | `mcpServers` | All |
-| `~/.claude/settings.json` | Claude Code | `mcpServers` | All |
-| `~/.cursor/mcp.json` | Cursor | `mcpServers` | All |
-| `~/Library/Application Support/Claude/claude_desktop_config.json` | Claude Desktop | `mcpServers` | macOS |
-| `%APPDATA%\Claude\claude_desktop_config.json` | Claude Desktop | `mcpServers` | Windows |
-| `~/.codeium/windsurf/mcp_config.json` | Windsurf | `mcpServers` | All |
-| `~/.aws/amazonq/mcp.json` | Amazon Q | `mcpServers` | All |
-| VS Code globalStorage `saoudrizwan.claude-dev/settings/cline_mcp_settings.json` | Cline | `mcpServers` | All |
+| File path                                                                       | Client         | Root key     | Platform |
+| ------------------------------------------------------------------------------- | -------------- | ------------ | -------- |
+| `~/.claude.json`                                                                | Claude Code    | `mcpServers` | All      |
+| `~/.claude/settings.json`                                                       | Claude Code    | `mcpServers` | All      |
+| `~/.cursor/mcp.json`                                                            | Cursor         | `mcpServers` | All      |
+| `~/Library/Application Support/Claude/claude_desktop_config.json`               | Claude Desktop | `mcpServers` | macOS    |
+| `%APPDATA%\Claude\claude_desktop_config.json`                                   | Claude Desktop | `mcpServers` | Windows  |
+| `~/.codeium/windsurf/mcp_config.json`                                           | Windsurf       | `mcpServers` | All      |
+| `~/.aws/amazonq/mcp.json`                                                       | Amazon Q       | `mcpServers` | All      |
+| VS Code globalStorage `saoudrizwan.claude-dev/settings/cline_mcp_settings.json` | Cline          | `mcpServers` | All      |
 
 ### 1.4 Environment variable syntax
 
 Different clients use different syntax for referencing environment variables in config values.
 
-| Client | Syntax | Default value support | Example |
-|---|---|---|---|
-| Claude Code | `${VAR}` | `${VAR:-default}` | `${API_KEY}` |
-| Cursor | `${env:VAR}` | No | `${env:API_KEY}` |
-| Continue.dev | `${{ secrets.VAR }}` | No | `${{ secrets.API_KEY }}` |
-| Windsurf | `${env:VAR}` | No | `${env:API_KEY}` |
-| Claude Desktop | Not supported | N/A | Literal values only |
-| Amazon Q | Not supported | N/A | Literal values only |
+| Client         | Syntax               | Default value support | Example                  |
+| -------------- | -------------------- | --------------------- | ------------------------ |
+| Claude Code    | `${VAR}`             | `${VAR:-default}`     | `${API_KEY}`             |
+| Cursor         | `${env:VAR}`         | No                    | `${env:API_KEY}`         |
+| Continue.dev   | `${{ secrets.VAR }}` | No                    | `${{ secrets.API_KEY }}` |
+| Windsurf       | `${env:VAR}`         | No                    | `${env:API_KEY}`         |
+| Claude Desktop | Not supported        | N/A                   | Literal values only      |
+| Amazon Q       | Not supported        | N/A                   | Literal values only      |
 
 Env var expansion applies to `command`, `args`, `env`, `url`, and `headers` fields (where supported).
 
@@ -170,6 +171,7 @@ Env var expansion applies to `command`, `args`, `env`, `url`, and `headers` fiel
 When the same server name exists at multiple scopes, the most specific scope wins.
 
 **Claude Code** (three-tier):
+
 1. **Local** (highest) — per-user, per-project overrides in `~/.claude.json` under a project path key
 2. **Project** — `.mcp.json` at the repo root
 3. **User** (lowest) — `~/.claude.json` top-level `mcpServers`
@@ -185,12 +187,14 @@ When the same server name exists at multiple scopes, the most specific scope win
 ### 1.6 Platform-specific behaviors
 
 **Windows + npx (stdio):** On native Windows (not WSL), `npx` commands must be wrapped with `cmd /c`:
+
 ```json
 {
   "command": "cmd",
   "args": ["/c", "npx", "-y", "@example/mcp-server"]
 }
 ```
+
 Without this wrapper, the subprocess fails to spawn. This is the most common Windows MCP config issue.
 
 **Claude.ai custom connectors:** Only support remote MCP servers over Streamable HTTP. No stdio support — browsers cannot launch local subprocesses. stdio-only servers must be hosted remotely to be used with Claude.ai.
@@ -202,6 +206,7 @@ Without this wrapper, the subprocess fails to spawn. This is the most common Win
 29 rules organized into 8 categories. Each rule has a unique ID, severity level, trigger condition, and message template.
 
 Severity levels:
+
 - **error** — the config is broken or has a security issue. Should fail CI.
 - **warning** — the config has a likely problem. May or may not fail CI depending on strictness.
 - **info** — the config has a potential improvement. Never fails CI.
@@ -210,17 +215,17 @@ Severity levels:
 
 Validates that the config file is well-formed JSON with the correct structure for its target client.
 
-| Rule ID | Severity | Trigger | Message |
-|---|---|---|---|
-| `mcp-schema/invalid-json` | error | File is not valid JSON | `MCP config is not valid JSON: {parseError}` |
-| `mcp-schema/wrong-root-key` | error | Root key doesn't match expected key for the client | `{file} must use "{expected}" as root key, not "{actual}"` |
-| `mcp-schema/missing-root-key` | error | No recognized root key (`mcpServers` or `servers`) | `MCP config has no "{expected}" key` |
-| `mcp-schema/missing-command` | error | stdio server has no `command` field | `Server "{name}" has no "command" field` |
-| `mcp-schema/missing-url` | error | http/sse server has no `url` field | `Server "{name}" has no "url" field` |
-| `mcp-schema/no-name-field` | error | A server entry's key (its name) is the empty string | `Server name cannot be empty` |
-| `mcp-schema/unknown-transport` | warning | Transport cannot be classified: a `type` outside `stdio`/`http`/`sse`, a non-string `type`, or an entry with neither `command` nor `url` | `Server "{name}" has unknown transport type "{type}"` (or, with no classifiable fields at all: `Server "{name}" has no recognizable transport — expected "command", "url", or a valid "type"`) |
-| `mcp-schema/ambiguous-transport` | warning | Server has both `command` and `url` fields | `Server "{name}" has both "command" and "url" — transport is ambiguous` |
-| `mcp-schema/empty-servers` | info | Root key exists but contains no server entries | `MCP config has no server entries` |
+| Rule ID                          | Severity | Trigger                                                                                                                                  | Message                                                                                                                                                                                        |
+| -------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mcp-schema/invalid-json`        | error    | File is not valid JSON                                                                                                                   | `MCP config is not valid JSON: {parseError}`                                                                                                                                                   |
+| `mcp-schema/wrong-root-key`      | error    | Root key doesn't match expected key for the client                                                                                       | `{file} must use "{expected}" as root key, not "{actual}"`                                                                                                                                     |
+| `mcp-schema/missing-root-key`    | error    | No recognized root key (`mcpServers` or `servers`)                                                                                       | `MCP config has no "{expected}" key`                                                                                                                                                           |
+| `mcp-schema/missing-command`     | error    | stdio server has no `command` field                                                                                                      | `Server "{name}" has no "command" field`                                                                                                                                                       |
+| `mcp-schema/missing-url`         | error    | http/sse server has no `url` field                                                                                                       | `Server "{name}" has no "url" field`                                                                                                                                                           |
+| `mcp-schema/no-name-field`       | error    | A server entry's key (its name) is the empty string                                                                                      | `Server name cannot be empty`                                                                                                                                                                  |
+| `mcp-schema/unknown-transport`   | warning  | Transport cannot be classified: a `type` outside `stdio`/`http`/`sse`, a non-string `type`, or an entry with neither `command` nor `url` | `Server "{name}" has unknown transport type "{type}"` (or, with no classifiable fields at all: `Server "{name}" has no recognizable transport — expected "command", "url", or a valid "type"`) |
+| `mcp-schema/ambiguous-transport` | warning  | Server has both `command` and `url` fields                                                                                               | `Server "{name}" has both "command" and "url" — transport is ambiguous`                                                                                                                        |
+| `mcp-schema/empty-servers`       | info     | Root key exists but contains no server entries                                                                                           | `MCP config has no server entries`                                                                                                                                                             |
 
 **Auto-fixable:** `wrong-root-key` — rename the root key to match the expected key.
 
@@ -228,15 +233,16 @@ Validates that the config file is well-formed JSON with the correct structure fo
 
 Detects secrets committed to version control in MCP config files. The three secret rules (`hardcoded-bearer`, `hardcoded-api-key`, `secret-in-url`) only flag issues in git-tracked files — an untracked config leaks nothing to teammates. `mcp-security/http-no-tls` is a transport concern, independent of version control, and fires regardless of git tracking. When the tracked status cannot be determined at all (git unavailable or failing, as opposed to a determined "untracked"), the linter says so via `mcp-security/secret-scan-skipped` instead of silently passing a possibly-tracked file.
 
-| Rule ID | Severity | Trigger | Message |
-|---|---|---|---|
-| `mcp-security/hardcoded-bearer` | error | `Authorization` header contains a literal Bearer token (not an env var reference) in a git-tracked file | `Server "{name}" has a hardcoded Bearer token in a git-tracked file` |
-| `mcp-security/hardcoded-api-key` | error | Header or env value matches known API key patterns (or the high-entropy heuristic below) in a git-tracked file | `Server "{name}" has a hardcoded API key in a git-tracked file` |
-| `mcp-security/secret-in-url` | error | URL contains query params that look like secrets (`?key=`, `?token=`, `?api_key=`) in a git-tracked file | `Server "{name}" has a secret in the URL query string` |
-| `mcp-security/secret-scan-skipped` | info | Git-tracked status could not be determined (git unavailable/failing — not merely untracked), so the three git-gated secret rules were skipped | `Could not determine git-tracked status of {file}; hardcoded-secret rules were skipped` |
-| `mcp-security/http-no-tls` | warning | URL uses `http://` for a non-loopback target (loopback = `localhost`, `[::1]`, `127.0.0.0/8`) | `Server "{name}" uses HTTP without TLS` |
+| Rule ID                            | Severity | Trigger                                                                                                                                       | Message                                                                                 |
+| ---------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `mcp-security/hardcoded-bearer`    | error    | `Authorization` header contains a literal Bearer token (not an env var reference) in a git-tracked file                                       | `Server "{name}" has a hardcoded Bearer token in a git-tracked file`                    |
+| `mcp-security/hardcoded-api-key`   | error    | Header or env value matches known API key patterns (or the high-entropy heuristic below) in a git-tracked file                                | `Server "{name}" has a hardcoded API key in a git-tracked file`                         |
+| `mcp-security/secret-in-url`       | error    | URL contains query params that look like secrets (`?key=`, `?token=`, `?api_key=`) in a git-tracked file                                      | `Server "{name}" has a secret in the URL query string`                                  |
+| `mcp-security/secret-scan-skipped` | info     | Git-tracked status could not be determined (git unavailable/failing — not merely untracked), so the three git-gated secret rules were skipped | `Could not determine git-tracked status of {file}; hardcoded-secret rules were skipped` |
+| `mcp-security/http-no-tls`         | warning  | URL uses `http://` for a non-loopback target (loopback = `localhost`, `[::1]`, `127.0.0.0/8`)                                                 | `Server "{name}" uses HTTP without TLS`                                                 |
 
 **Known API key patterns:**
+
 ```
 sk-ant-[A-Za-z0-9_-]{20,}      # Anthropic
 sk-proj-[A-Za-z0-9_-]{20,}     # OpenAI project-scoped
@@ -261,13 +267,14 @@ sq0atp-[a-zA-Z0-9_\-]{22}      # Square access token
 
 Validates that stdio server commands and file-path arguments are viable.
 
-| Rule ID | Severity | Trigger | Message |
-|---|---|---|---|
-| `mcp-commands/windows-npx-no-wrapper` | error | Platform is Windows and `command` is `npx` without `cmd /c` wrapper | `Server "{name}": npx requires "cmd /c" wrapper on Windows` |
-| `mcp-commands/command-not-found` | warning | `command` is a relative path (`./`, `../`) that doesn't exist (project-scope configs only) | `Server "{name}": command "{command}" not found` |
-| `mcp-commands/args-path-missing` | warning | An arg matches a file path pattern and the file doesn't exist (relative paths: project-scope configs only; absolute paths: every scope) | `Server "{name}": arg "{arg}" looks like a file path but doesn't exist` |
+| Rule ID                               | Severity | Trigger                                                                                                                                 | Message                                                                 |
+| ------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `mcp-commands/windows-npx-no-wrapper` | error    | Platform is Windows and `command` is `npx` without `cmd /c` wrapper                                                                     | `Server "{name}": npx requires "cmd /c" wrapper on Windows`             |
+| `mcp-commands/command-not-found`      | warning  | `command` is a relative path (`./`, `../`) that doesn't exist (project-scope configs only)                                              | `Server "{name}": command "{command}" not found`                        |
+| `mcp-commands/args-path-missing`      | warning  | An arg matches a file path pattern and the file doesn't exist (relative paths: project-scope configs only; absolute paths: every scope) | `Server "{name}": arg "{arg}" looks like a file path but doesn't exist` |
 
 **Notes:**
+
 - `windows-npx-no-wrapper` should only flag project-level configs, not global configs (the user may be developing cross-platform).
 - `args-path-missing` should only check args that look like file paths (contain `/` with a file extension, or start with `./` / `../`). Skip npm package names and flags.
 - Do not validate that system commands (`npx`, `node`, `python`) exist on PATH — that is a runtime concern, not a config concern.
@@ -278,9 +285,9 @@ Validates that stdio server commands and file-path arguments are viable.
 
 Flags usage of deprecated MCP transport protocols and patterns.
 
-| Rule ID | Severity | Trigger | Message |
-|---|---|---|---|
-| `mcp-deprecated/sse-transport` | warning | Server uses `"type": "sse"` | `Server "{name}" uses deprecated SSE transport — use "http" (Streamable HTTP) instead` |
+| Rule ID                        | Severity | Trigger                     | Message                                                                                |
+| ------------------------------ | -------- | --------------------------- | -------------------------------------------------------------------------------------- |
+| `mcp-deprecated/sse-transport` | warning  | Server uses `"type": "sse"` | `Server "{name}" uses deprecated SSE transport — use "http" (Streamable HTTP) instead` |
 
 **Auto-fixable:** `sse-transport` — replace `"sse"` with `"http"`.
 
@@ -288,22 +295,23 @@ Flags usage of deprecated MCP transport protocols and patterns.
 
 Validates environment variable references for correctness and client compatibility.
 
-| Rule ID | Severity | Trigger | Message |
-|---|---|---|---|
-| `mcp-env/wrong-syntax` | error | Env var reference uses wrong syntax for the target client | `Server "{name}": {client} uses {expected}, not {actual}` |
-| `mcp-env/unset-variable` | info | Referenced env var is not set in the current environment | `Server "{name}": environment variable "{var}" is not set` |
-| `mcp-env/empty-env-block` | info | `env` object is present but empty | `Server "{name}": empty "env" block can be removed` |
+| Rule ID                   | Severity | Trigger                                                   | Message                                                    |
+| ------------------------- | -------- | --------------------------------------------------------- | ---------------------------------------------------------- |
+| `mcp-env/wrong-syntax`    | error    | Env var reference uses wrong syntax for the target client | `Server "{name}": {client} uses {expected}, not {actual}`  |
+| `mcp-env/unset-variable`  | info     | Referenced env var is not set in the current environment  | `Server "{name}": environment variable "{var}" is not set` |
+| `mcp-env/empty-env-block` | info     | `env` object is present but empty                         | `Server "{name}": empty "env" block can be removed`        |
 
 **Syntax validation matrix:**
 
-| Config file | Expected syntax | Flag if found |
-|---|---|---|
-| `.mcp.json` | `${VAR}` | `${env:VAR}` |
-| `.cursor/mcp.json` | `${env:VAR}` | `${VAR}` (bare, without `env:`) |
-| `.continue/mcpServers/*.json` | `${{ secrets.VAR }}` | `${VAR}` or `${env:VAR}` |
-| All others | `${VAR}` | — |
+| Config file                   | Expected syntax      | Flag if found                   |
+| ----------------------------- | -------------------- | ------------------------------- |
+| `.mcp.json`                   | `${VAR}`             | `${env:VAR}`                    |
+| `.cursor/mcp.json`            | `${env:VAR}`         | `${VAR}` (bare, without `env:`) |
+| `.continue/mcpServers/*.json` | `${{ secrets.VAR }}` | `${VAR}` or `${env:VAR}`        |
+| All others                    | `${VAR}`             | —                               |
 
 **Notes:**
+
 - `unset-variable` is intentionally `info` severity. Many env vars are set only in CI, `.env` files, or shell profiles that aren't available during linting.
 - `unset-variable` is skipped entirely for Continue configs — their `${{ secrets.VAR }}` references resolve from GitHub Actions secrets, not the local environment, so every correct Continue config would false-positive.
 - Scan all string values in `command`, `args`, `url`, `headers`, and `env` for env var references.
@@ -314,13 +322,14 @@ Validates environment variable references for correctness and client compatibili
 
 Validates remote server URLs for correctness and team usability.
 
-| Rule ID | Severity | Trigger | Message |
-|---|---|---|---|
-| `mcp-urls/malformed-url` | error | URL is not parseable (after skipping env var placeholders) | `Server "{name}": invalid URL "{url}"` |
-| `mcp-urls/localhost-in-project-config` | warning | URL host is a loopback address (`localhost`, `[::1]`, `127.0.0.0/8` — the same set `http-no-tls` exempts) in a project-level config | `Server "{name}": loopback URL in project config won't work for teammates` |
-| `mcp-urls/missing-path` | info | URL has no path or just `/` | `Server "{name}": URL has no path — most MCP servers expect /mcp` |
+| Rule ID                                | Severity | Trigger                                                                                                                             | Message                                                                    |
+| -------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `mcp-urls/malformed-url`               | error    | URL is not parseable (after skipping env var placeholders)                                                                          | `Server "{name}": invalid URL "{url}"`                                     |
+| `mcp-urls/localhost-in-project-config` | warning  | URL host is a loopback address (`localhost`, `[::1]`, `127.0.0.0/8` — the same set `http-no-tls` exempts) in a project-level config | `Server "{name}": loopback URL in project config won't work for teammates` |
+| `mcp-urls/missing-path`                | info     | URL has no path or just `/`                                                                                                         | `Server "{name}": URL has no path — most MCP servers expect /mcp`          |
 
 **Notes:**
+
 - If the URL contains env var references (`${...}`), skip `malformed-url` — it cannot be validated statically.
 - `localhost-in-project-config` should only flag project-scoped files (committed to version control by convention), not global configs where loopback URLs are expected. Strip IPv6 brackets before classifying the host, and treat the whole `127.0.0.0/8` block as loopback — `127.0.0.2` is just as unreachable for a teammate as `127.0.0.1`.
 
@@ -328,13 +337,14 @@ Validates remote server URLs for correctness and team usability.
 
 Compares MCP configs across multiple files in the same project. This is a cross-file check that runs after all individual configs are parsed.
 
-| Rule ID | Severity | Trigger | Message |
-|---|---|---|---|
-| `mcp-consistency/same-server-different-config` | warning | Server with the same name exists in 2+ same-scope config files (project-project or user-user) with different URLs or commands — cross-scope pairs are client precedence, not drift | `Server "{name}" is configured differently in {file1} and {file2}` |
-| `mcp-consistency/duplicate-server-name` | warning | Same server name appears more than once in a single file | `Duplicate server name "{name}" in {file} — only the last definition is used` |
-| `mcp-consistency/missing-from-client` | info | Server exists in `.mcp.json` but is absent from another client's project config that also exists | `Server "{name}" is in .mcp.json but missing from {file}` |
+| Rule ID                                        | Severity | Trigger                                                                                                                                                                            | Message                                                                       |
+| ---------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `mcp-consistency/same-server-different-config` | warning  | Server with the same name exists in 2+ same-scope config files (project-project or user-user) with different URLs or commands — cross-scope pairs are client precedence, not drift | `Server "{name}" is configured differently in {file1} and {file2}`            |
+| `mcp-consistency/duplicate-server-name`        | warning  | Same server name appears more than once in a single file                                                                                                                           | `Duplicate server name "{name}" in {file} — only the last definition is used` |
+| `mcp-consistency/missing-from-client`          | info     | Server exists in `.mcp.json` but is absent from another client's project config that also exists                                                                                   | `Server "{name}" is in .mcp.json but missing from {file}`                     |
 
 **Notes:**
+
 - For `same-server-different-config`, compare `url`/`command`/`args`. Ignore `headers` differences (auth tokens intentionally differ per user).
 - `missing-from-client` is informational only. Teams may intentionally have different server sets per client.
 
@@ -342,12 +352,13 @@ Compares MCP configs across multiple files in the same project. This is a cross-
 
 Flags configs that may be unnecessary or stale.
 
-| Rule ID | Severity | Trigger | Message |
-|---|---|---|---|
-| `mcp-redundancy/disabled-server` | info | Server has `"disabled": true` | `Server "{name}" is disabled — consider removing if no longer needed` |
-| `mcp-redundancy/identical-across-scopes` | info | Same server with identical config at both project and global scope | `Server "{name}" is identically configured in {projectFile} and {globalFile}` |
+| Rule ID                                  | Severity | Trigger                                                            | Message                                                                       |
+| ---------------------------------------- | -------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
+| `mcp-redundancy/disabled-server`         | info     | Server has `"disabled": true`                                      | `Server "{name}" is disabled — consider removing if no longer needed`         |
+| `mcp-redundancy/identical-across-scopes` | info     | Same server with identical config at both project and global scope | `Server "{name}" is identically configured in {projectFile} and {globalFile}` |
 
 **Notes:**
+
 - The `disabled` field is Cline-specific (see [Section 1.2](#12-server-entry-fields)), but `disabled-server` fires on any client's config that carries it — a stale `"disabled": true` is dead weight regardless of which client wrote it.
 
 ---
@@ -357,6 +368,7 @@ Flags configs that may be unnecessary or stale.
 A machine-readable JSON catalog of all rules is available at [`mcp-config-lint-rules.json`](./mcp-config-lint-rules.json).
 
 The catalog enables:
+
 - AI agents to understand what rules exist and when they apply
 - Tool authors to import rule definitions programmatically
 - CI systems to configure which rules to enable/disable
@@ -377,6 +389,7 @@ Scan for the project-level config files listed in [Section 1.3](#13-file-locatio
 ### Parsing
 
 Parse JSON and normalize into a common structure regardless of which client's format the file uses. Key normalization steps:
+
 1. Detect the client from the file path
 2. Determine the expected root key (`servers` for VS Code, `mcpServers` for all others)
 3. Infer transport type from fields: `command` present = stdio, `url` present = http/sse, explicit `type` field takes precedence
@@ -401,6 +414,7 @@ Rules marked as auto-fixable should apply surgical string replacements to the JS
 This specification is maintained at [github.com/YawLabs/ctxlint](https://github.com/YawLabs/ctxlint).
 
 To propose changes:
+
 - **New rules:** Open an issue describing the rule, its severity, trigger condition, and which clients it applies to.
 - **Client additions:** As new MCP clients emerge, submit a PR adding their config file location, root key, and any client-specific behaviors to Section 1.
 - **Corrections:** If any client behavior documented here is inaccurate, open an issue with evidence (link to client docs, source code, or reproduction steps).
@@ -408,6 +422,7 @@ To propose changes:
 ### Versioning
 
 This specification follows semver:
+
 - **Patch** (1.0.x): Typo fixes, clarifications, no rule changes
 - **Minor** (1.x.0): New rules added, new clients documented
 - **Major** (x.0.0): Rules removed or semantics changed in breaking ways
@@ -416,4 +431,4 @@ This specification follows semver:
 
 - [Model Context Protocol Specification](https://spec.modelcontextprotocol.io/) — the underlying protocol this config format serves
 - [ctxlint](https://github.com/YawLabs/ctxlint) — reference implementation of this specification
-- [mcp-compliance](https://github.com/YawLabs/mcp-compliance) — tests MCP server *behavior* against the protocol spec (complementary to config linting)
+- [mcp-compliance](https://github.com/YawLabs/mcp-compliance) — tests MCP server _behavior_ against the protocol spec (complementary to config linting)

@@ -47,11 +47,11 @@
  *   OAM_BIN=/path/to/oam    explicit binary, checked before any discovery
  */
 
-import { execFileSync, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { constants, homedir } from "node:os";
-import { delimiter, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { execFileSync, spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { constants, homedir } from 'node:os';
+import { delimiter, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /** Oldest oam whose `child_process` matches Node. See MINIMUM OAM VERSION above. */
 const OAM_MIN = [0, 9, 0];
@@ -59,10 +59,10 @@ const OAM_MIN = [0, 9, 0];
 // Two forms, deliberately. `import()` on Windows REJECTS a bare `C:\...` path
 // with ERR_UNSUPPORTED_ESM_URL_SCHEME (it reads `c:` as a protocol), so the
 // in-process fallback must use the file:// URL. spawn() needs a real path.
-const SERVER_URL = new URL("../dist/index.js", import.meta.url);
+const SERVER_URL = new URL('../dist/index.js', import.meta.url);
 const SERVER_ENTRY = fileURLToPath(SERVER_URL);
-const isWin = process.platform === "win32";
-const exe = isWin ? "oam.exe" : "oam";
+const isWin = process.platform === 'win32';
+const exe = isWin ? 'oam.exe' : 'oam';
 
 /** Locate an oam binary, or null. Every branch is a stat, never a subprocess. */
 function findOam() {
@@ -75,9 +75,11 @@ function findOam() {
   //    for a user-facing launcher to bind to: cargo replaces the binary
   //    underneath running processes, and the dev build is not the release the
   //    user installed. OAM_BIN remains the way to point at a dev build.
-  const installed = [join(homedir(), ".oam", "bin", exe)];
+  const installed = [join(homedir(), '.oam', 'bin', exe)];
   if (isWin) {
-    installed.unshift(join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "oam", "bin", exe));
+    installed.unshift(
+      join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'oam', 'bin', exe),
+    );
   }
   for (const candidate of installed) {
     if (existsSync(candidate)) return candidate;
@@ -91,7 +93,7 @@ function findOam() {
   // the full PATHEXT list would hand back a path this launcher cannot execute.
   // Discovery has to agree with execution. A skipped shim is still reported --
   // see findOamShim.
-  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+  for (const dir of (process.env.PATH ?? '').split(delimiter)) {
     if (!dir) continue;
     const candidate = join(dir, exe);
     if (existsSync(candidate)) return candidate;
@@ -106,9 +108,9 @@ function findOam() {
  */
 function oamVersion(cmd) {
   try {
-    const out = execFileSync(cmd, ["--version"], {
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
+    const out = execFileSync(cmd, ['--version'], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
     });
     const m = /(\d+)\.(\d+)\.(\d+)/.exec(out);
     return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
@@ -139,14 +141,14 @@ function atLeast(v, min) {
  * diagnostic is not worth crashing a stdio server over.
  */
 async function errSync(message) {
-  const { writeSync } = await import("node:fs");
+  const { writeSync } = await import('node:fs');
   const buf = Buffer.from(message);
   let off = 0;
   for (let attempts = 0; off < buf.length && attempts < 1000; attempts++) {
     try {
       off += writeSync(2, buf, off, buf.length - off);
     } catch (err) {
-      if (err?.code !== "EAGAIN") return;
+      if (err?.code !== 'EAGAIN') return;
       // Pipe is full and the reader has not drained yet -- retry.
     }
   }
@@ -160,9 +162,9 @@ async function errSync(message) {
  */
 function findOamShim() {
   if (!isWin) return null;
-  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+  for (const dir of (process.env.PATH ?? '').split(delimiter)) {
     if (!dir) continue;
-    for (const ext of [".cmd", ".bat"]) {
+    for (const ext of ['.cmd', '.bat']) {
       const candidate = join(dir, `oam${ext}`);
       if (existsSync(candidate)) return candidate;
     }
@@ -179,9 +181,9 @@ async function runInProcess() {
   await import(SERVER_URL.href);
 }
 
-const mode = (process.env.CTXLINT_RUNTIME ?? "auto").toLowerCase();
+const mode = (process.env.CTXLINT_RUNTIME ?? 'auto').toLowerCase();
 
-if (mode === "node") {
+if (mode === 'node') {
   await runInProcess();
 } else {
   const oam = findOam();
@@ -198,17 +200,18 @@ if (mode === "node") {
     const oamShim = findOamShim();
     const shimNote = oamShim
       ? `Found ${oamShim}, but Node cannot execute a .cmd/.bat directly.\n` +
-        "Install the native oam binary, or point OAM_BIN at one.\n"
-      : "";
-    if (mode === "oam") {
+        'Install the native oam binary, or point OAM_BIN at one.\n'
+      : '';
+    if (mode === 'oam') {
       // Explicitly demanded, so this is a real misconfiguration -- do not
       // silently do something else. writeSync because stderr is async for
       // TTYs/pipes on Windows and process.exit truncates pending writes.
-      const { writeSync } = await import("node:fs");
+      const { writeSync } = await import('node:fs');
       writeSync(
         2,
-        "ctxlint: CTXLINT_RUNTIME=oam but no runnable oam binary was found.\n" + shimNote +
-          "Install from https://oamjs.org, set OAM_BIN=/path/to/oam, or use CTXLINT_RUNTIME=node.\n",
+        'ctxlint: CTXLINT_RUNTIME=oam but no runnable oam binary was found.\n' +
+          shimNote +
+          'Install from https://oamjs.org, set OAM_BIN=/path/to/oam, or use CTXLINT_RUNTIME=node.\n',
       );
       process.exit(1);
     }
@@ -217,7 +220,7 @@ if (mode === "node") {
     if (oamShim) await errSync(`ctxlint: ${shimNote}Using Node instead.\n`);
     await runInProcess();
   } else if (!atLeast(found, OAM_MIN)) {
-    const min = OAM_MIN.join(".");
+    const min = OAM_MIN.join('.');
     // Two different causes reach this branch and they need different
     // remedies. `found === null` is NOT "old": oamVersion returns null when
     // the binary could not be run at all (not executable, wrong arch, a
@@ -225,12 +228,12 @@ if (mode === "node") {
     // when its --version output did not parse. Telling that user to
     // `oam self-update` sends them after the one cause it definitely is not.
     const detail = found
-      ? `${oam} is oam ${found.join(".")}, older than ${min}`
+      ? `${oam} is oam ${found.join('.')}, older than ${min}`
       : `${oam} could not be run, or did not report a version this launcher understands`;
     const remedy = found
-      ? "Run \`oam self-update\`, or use CTXLINT_RUNTIME=node.\n"
-      : "Check that it is an executable oam binary for this platform, or use CTXLINT_RUNTIME=node.\n";
-    if (mode === "oam") {
+      ? 'Run \`oam self-update\`, or use CTXLINT_RUNTIME=node.\n'
+      : 'Check that it is an executable oam binary for this platform, or use CTXLINT_RUNTIME=node.\n';
+    if (mode === 'oam') {
       await errSync(`ctxlint: CTXLINT_RUNTIME=oam but ${detail}.\n${remedy}`);
       process.exit(1);
     }
@@ -250,7 +253,7 @@ if (mode === "node") {
     // TTYs and pipes on Windows and the process.exit below truncates pending
     // writes.
     const launchFailed = async (err) => {
-      if (mode === "oam") {
+      if (mode === 'oam') {
         await errSync(`ctxlint: failed to launch oam (${err?.message ?? err})\n`);
         process.exit(1);
       }
@@ -269,11 +272,11 @@ if (mode === "node") {
 
     let child = null;
     try {
-      child = spawn(oam, ["run", SERVER_ENTRY, "--", ...process.argv.slice(2)], {
+      child = spawn(oam, ['run', SERVER_ENTRY, '--', ...process.argv.slice(2)], {
         // inherit keeps the SAME fds, so MCP's newline-delimited JSON framing on
         // stdin/stdout under `serve` is untouched, and the linter's exit-code and
         // output behavior is identical to running it directly.
-        stdio: "inherit",
+        stdio: 'inherit',
         env: process.env,
         windowsHide: true,
       });
@@ -286,15 +289,14 @@ if (mode === "node") {
     }
 
     if (child) {
-
       // If oam cannot be executed at all (deleted between the stat and the spawn,
       // wrong arch, permission), fall back rather than failing outright.
       // `spawned` guards against falling back AFTER the child has begun running.
       let spawned = false;
-      child.on("spawn", () => {
+      child.on('spawn', () => {
         spawned = true;
       });
-      child.on("error", (err) => {
+      child.on('error', (err) => {
         if (spawned) return;
         // Handle the rejection instead of discarding it: a failing in-process
         // fallback would otherwise escape as an unhandled rejection, replacing
@@ -330,7 +332,7 @@ if (mode === "node") {
       // child, so on Windows the timer below is the only kill we issue.
       const ESCALATE_AFTER_MS = 2000;
       let escalation = null;
-      for (const sig of ["SIGINT", "SIGTERM"]) {
+      for (const sig of ['SIGINT', 'SIGTERM']) {
         process.on(sig, () => {
           // No try/catch: kill() on an already-exited child returns false, it does
           // not throw. It throws only for a signal the platform does not know,
@@ -339,13 +341,13 @@ if (mode === "node") {
           if (escalation) return; // already counting down; further signals are noise
           escalation = setTimeout(() => {
             // Still here after its grace window. Stop waiting on it.
-            child.kill("SIGKILL");
+            child.kill('SIGKILL');
             process.exit(128 + (constants.signals[sig] ?? 15));
           }, ESCALATE_AFTER_MS);
         });
       }
 
-      child.on("exit", (code, signal) => {
+      child.on('exit', (code, signal) => {
         if (escalation) clearTimeout(escalation);
         // Mirror the child's fate: a signal death becomes 128+n so callers see a
         // conventional shell exit status rather than a bare 0. ctxlint's exit code

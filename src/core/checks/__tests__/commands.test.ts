@@ -392,7 +392,8 @@ describe('checkCommands', () => {
   it('flags the command after "NEVER guess -- run `npx x`" (spaced -- ends the clause)', async () => {
     seed(
       {
-        'CLAUDE.md': '# Deploy\n\nNEVER guess about deploy state -- run `npx netlify status` to check.\n',
+        'CLAUDE.md':
+          '# Deploy\n\nNEVER guess about deploy state -- run `npx netlify status` to check.\n',
       },
       { dependencies: {}, devDependencies: {} },
     );
@@ -418,7 +419,8 @@ describe('checkCommands', () => {
   it('flags the command after an em-dash clause boundary', async () => {
     seed(
       {
-        'CLAUDE.md': '# Deploy\n\nNEVER guess about deploy state — run `npx netlify status` to check.\n',
+        'CLAUDE.md':
+          '# Deploy\n\nNEVER guess about deploy state — run `npx netlify status` to check.\n',
       },
       { dependencies: {}, devDependencies: {} },
     );
@@ -665,8 +667,7 @@ describe('checkCommands', () => {
   it('still reports exit-status-masked on a prohibited command', async () => {
     seed(
       {
-        'CLAUDE.md':
-          '# Rules\n\nNEVER run `npm test | tail -1 && echo ok` -- it hides failures.\n',
+        'CLAUDE.md': '# Rules\n\nNEVER run `npm test | tail -1 && echo ok` -- it hides failures.\n',
       },
       { scripts: { test: 'vitest' } },
     );

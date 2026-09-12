@@ -9,24 +9,29 @@ See [Versioning policy](#versioning-policy) below.
 ## [0.25.0] - 2026-09-11
 
 ### Added
+
 - **`session/large-read` (info).** A baseline of how much session context goes to whole-file Reads of large files, for anyone weighing read-routing before adopting it. A Read's result stays in the prompt of every later turn of its session; with prompt caching each re-send bills as a cache read, cheap per token but paid once per turn for the rest of the session. The check finds whole-file Reads (no `offset`, `limit` or `pages`) whose result is at least 4,000 tokens -- roughly 300 lines, at the median 13.5 tokens per line of Read output measured across 739 whole-file Reads in 149 transcripts -- and emits ONE info-level summary per project: how many there were, their total tokens, an estimated cache-read carry (each result's tokens times the later turns of its session that re-sent it), the top three files by tokens with their read counts, and the fix (`grep -n`, then Read just that range with `offset`/`limit`; or delegate the question to a subagent). It emits nothing when no Read qualifies, reports no dollar figures, and never fails CI. Token counts come from tiktoken where it resolves and a chars/4 estimate otherwise, which is what an installed ctxlint uses -- the encoder is a devDependency and esbuild leaves its `createRequire` lookup unbundled, so the published tarball carries no encoder. Under the estimate the same corpus crosses 4,000 tokens at roughly 330 lines instead of 300, and per-file totals shift by up to about a fifth. Three details keep the carry honest. Turns are distinct assistant `message.id`s, not records: Claude Code writes one API response as several records sharing an id (one measured transcript: 1,338 assistant records, 640 ids), so counting records would roughly double every carry, and harness-written `<synthetic>` records are not turns at all. The carry stops at the session's next `/compact` boundary, since a compacted history no longer holds the result -- 25 of 150 transcripts on the authoring machine compacted at least once. And a Read that a continued session copied into its own file under a new session id is counted once, with the smaller of its two carries. When the transcript read hit its cap, the finding says its figures cover only what was read.
 
 ### Fixed
+
 - **Watch mode and the MCP server reused the first transcript read for the life of the process.** `readProjectTranscript` memoizes per project, and nothing outside the tests ever cleared it. The CLI's `--watch` reruns and the `ctxlint_session_audit` tool reset the git, paths, package.json and tokenizer caches between audits but not this one, so every later session audit in the same process judged the transcripts as they stood at the first. Both now clear it alongside the others.
 
 ### Changed
+
 - The `ctxlint_session_audit` MCP tool description names the transcript-based checks, this one included. It previously listed only the first five sibling and memory checks.
 
 ### Internal
+
 - **The transcript reader records Reads, result sizes and turns.** `TranscriptEvent` gains a `file-read` kind with `partial`, plus `toolUseId`, `outputChars`, `outputTokens`, `outputLines` and a per-session `turn` ordinal; `TranscriptRead` gains `sessionTurns` and `sessionCompactions`, and `turnsCarried` returns the later turns that re-sent a result. Every Read result is tokenized as it is paired, because the text is not kept on the memoized read; a probe doing the same tokenization over the five most recent transcripts of the slowest project directory on the authoring machine took 842ms. `session/default-branch-accumulation` and `session/unverified-gate-claimed-clean` walk the whole event stream -- one takes the branch stamp of every event it passes, the other counts a 12-event adjacency window -- so both now exclude `file-read` events and behave exactly as before; a regression test pins each.
 - README: the session-checks table and the "Available checks" list were missing `session-shared-temp-path`, `session-unverified-gate-claimed-clean`, `session-default-branch-accumulation` and `session-unresolvable-sha`. All four are listed now, alongside `session-large-read`.
-- `AGENT_SESSION_LINT_SPEC.md` gains section 2.13 for `session/large-read` -- trigger, message, the five-step detection algorithm, the threshold and turn-counting notes, and a catalog rule-ID table row. The spec's rule count moves 12 to 13 in three places: the intro summary, the section 2 header, and the spec-family table row in the README. Section 1 also amends its own scope exclusion: "Full session transcripts -- too large" now adds that rules whose signal is what the agent *did* read a bounded, project-scoped slice instead. That is the load-bearing edit of the three -- it narrows a published DO-NOT-SCAN statement, and the transcript-based checks depend on the narrower reading.
+- `AGENT_SESSION_LINT_SPEC.md` gains section 2.13 for `session/large-read` -- trigger, message, the five-step detection algorithm, the threshold and turn-counting notes, and a catalog rule-ID table row. The spec's rule count moves 12 to 13 in three places: the intro summary, the section 2 header, and the spec-family table row in the README. Section 1 also amends its own scope exclusion: "Full session transcripts -- too large" now adds that rules whose signal is what the agent _did_ read a bounded, project-scoped slice instead. That is the load-bearing edit of the three -- it narrows a published DO-NOT-SCAN statement, and the transcript-based checks depend on the narrower reading.
 - README: an X follow badge joins the badge row at the top of the file (#62). Unrelated to the large-read work -- it landed in this release's commit range and is user-visible on the GitHub and npm landing pages, so it is recorded here rather than left out.
 - README: the "What It Checks" table -- a different table from the session one above, and the anchor every SARIF descriptor's `helpUri` points at -- listed none of the five transcript-based session checks, so a code-scanning alert linked to a table that never mentioned its rule. All five are listed now. The two `v0.9.10` pins are also current: the pre-commit `rev:` snippet, which had users running a 15-versions-old ctxlint, and the example-output banner. A paragraph under the session-data table names the transcript source and its bound.
 
 ## [0.24.1] - 2026-08-23
 
 ### Fixed
+
 - **Ctrl-C aborted the child's shutdown on Windows, and every signal after the first was swallowed.** The launcher forwarded `SIGINT`/`SIGTERM` to the oam child with `if (!child.killed) child.kill(sig)`, under a comment asserting that "signals are a no-op on Windows but harmless to register". Both halves of that were wrong. There are no POSIX signals on Windows: `child.kill` IGNORES the name it is handed and calls `TerminateProcess`, so forwarding was an immediate hard kill that ABORTED the graceful shutdown the console's own Ctrl-C had already started in the child, skipping its `process.on("exit")` cleanup -- verified by observing a child with a SIGTERM handler never run it and die with `code=null, signal=SIGTERM`. Forwarding is now POSIX-only, where `kill` delivers a real, catchable signal and is what lets the child shut itself down; on Windows the console has already notified the child, so the launcher forwards nothing and the escalation `SIGKILL` below is the only kill it issues there. Registering ANY handler for those signals also suppresses Node's default terminate-on-signal, so the parent lost any exit path of its own and could only exit when the child did -- and `child.killed` records only that `kill()` was CALLED, never that the child is gone, so the guard dropped every subsequent signal and a wedged child wedged the launcher with no escape hatch. Escalation is now driven by a 2s timer (`ESCALATE_AFTER_MS`) rather than by counting signals: counting is ambiguous, since a supervisor routinely sends SIGINT then SIGTERM milliseconds apart and a terminal Ctrl-C reaches the whole process group, so reading "a second signal" as impatience hard-kills a child that is already shutting down cleanly. ONE press is enough, a child still alive after the grace window gets `SIGKILL` and the parent exits `128 + signal`, and the timer is cleared when the child exits on its own. `setTimeout` is monotonic, so a wall-clock step cannot mis-gate the window either.
 - **A synchronous throw from `spawn()` killed the launcher instead of falling back to Node.** `spawn` raises some failures synchronously rather than emitting `'error'`, and the `'error'` listener was registered AFTER the call -- so it could never observe one. The uncaught throw ended the process with a raw stack trace on the exact path whose purpose is to degrade to the in-process Node fallback. The `spawn` call is now wrapped, and both outcomes route through a single `launchFailed` so the sync-throw path and the `'error'`-event path cannot drift apart; the child wiring that follows is guarded on a non-null `child`.
 - **A failing fallback escaped as an unhandled rejection, replacing the launcher's diagnostic with a stack trace.** The `'error'` handler called `void runInProcess()`, discarding the promise. `runInProcess` is a bare `import()` of `dist/index.js` and rejects when that file is missing, and at ESM top level an unhandled rejection IS an uncaught exception -- so the one situation the fallback exists for (oam unlaunchable AND the CLI bundle absent) produced the failure mode the handling was written to prevent. Both `launchFailed` call sites now share one reporter, which prints `ctxlint: fallback to Node failed (<message>)` and sets `process.exitCode = 1` rather than calling `process.exit`, so the message is not truncated on its way out.
@@ -35,47 +40,55 @@ See [Versioning policy](#versioning-policy) below.
 - **A launch-failure diagnostic was truncated by the `process.exit` that followed it.** `process.stderr.write` is asynchronous for a TTY on Windows (and for a pipe on POSIX), so the launch-failure message under `CTXLINT_RUNTIME=oam` was written and then discarded by the immediate `process.exit(1)`, leaving a silent exit 1. That path and the version-gate failure beside it now go through a new `errSync`, as do the two notes on the `auto` fallback path; the missing-binary message under `CTXLINT_RUNTIME=oam` already wrote with a raw `writeSync` and still does. `errSync` is not a bare `writeSync`, because that call can short-write (it returns a byte count) and on macOS it can throw EAGAIN, since Node makes a piped stderr non-blocking there rather than blocking the write: it loops over the remaining bytes and retries EAGAIN, with an attempt cap so a permanently-full pipe cannot spin. Any other error gives up quietly -- failing to print a diagnostic is not worth crashing a stdio server over.
 
 ### Internal
+
 - The six fixes above were found in the sibling `@yawlabs/ssh-mcp` launcher, which shares this file's shape, and ported here. One defect from that round does not exist in this copy and was confirmed absent rather than assumed: `bin/ctxlint.mjs` carries no literal `U+0008`, and no non-ASCII byte at all, at either v0.24.0 or v0.24.1.
 - No automated coverage was added. The launcher's failure shapes each need a real subprocess and a real signal, and the only existing test that names it (`src/__tests__/entry.test.ts`) asserts packaging fields -- that `package.json#bin.ctxlint` and `files` both point at `bin/ctxlint.mjs`. Verification for this release was a signature scan per defect, `node --check`, and driving the real launcher through the failure cases by hand.
 
 ## [0.24.0] - 2026-08-22
 
 ### Fixed
+
 - **The prohibition gate now covers every resolvability rule, not just `npx-not-in-deps`.** v0.23.0 taught `commands/npx-not-in-deps` to skip commands the doc cites only to forbid, but the guard sat inside the npx branch, so its four siblings kept firing on the same prose: "NEVER run `tsc --noEmit` here." still produced `commands/tool-not-found`. Every branch in the dispatch loop reports one thing in different words -- this command does not RESOLVE -- and for a command nobody is meant to run there is nothing to resolve. The deny-entry and prose-prohibition checks are now a single gate above the dispatch, covering `script-not-found`, `npx-not-in-deps`, `no-makefile`, `make-target-not-found`, and `tool-not-found`; `unknown-subcommand` (which runs its own pass, and whose invocations carry no column) gets the same treatment by locating the command through inline-code-span identity. A plain substring search picked the wrong occurrence in both directions whenever the text appeared twice on a line: "The `<bin> doctor` check is gone; never run \`<bin> doctor\`." matched the un-backticked prose mention at the head of the line and missed the prohibition after the `;`, while "Never run \`<bin> doctor --json\` in CI; run \`<bin> doctor\` locally." matched the second, affirmative invocation inside the FIRST span (the shorter command is a prefix of the longer one) and suppressed a finding that should fire. Fenced and `$`-prompt candidates have no prose prefix and fall through to the search, where a miss declines to suppress rather than guessing. `commands/package-json-missing` honors it too, so a forbidden command can no longer be the reference that triggers a "checks skipped" notice. `commands/exit-status-masked` is deliberately left OUTSIDE the gate: it reports the command's SHAPE, and a doc demonstrating a masked pipeline teaches the masked pipeline whether or not the reader is told to run it.
 - **A contrast comma now ends a prohibition's scope.** `CLAUSE_TERMINATOR` recognized `;`, spaced `--`, and the em-dash but not the comma, which is how English most often separates "don't do X" from "do Y". "Don't edit dist by hand, run `npx build-tool` instead." suppressed the RECOMMENDED command, while the same sentence with a semicolon flagged correctly -- a split with no defensible basis. The comma could not simply join the terminator list, because it is equally how a prohibition LIST is written ("NEVER run `npx a`, `npx b`, or `npx c`" must keep suppressing every item). The discriminator is what follows the comma: a recommendation verb (`run`, `use`, `call`, `invoke`, `execute`, `prefer`, `deploy`, `install`) re-scopes the clause to after the comma; a bare list continuation leaves it intact. Narrowing is not un-suppressing -- the narrowed tail is still tested, so "Never commit secrets, and never run `npx leak-tool`" stays suppressed on its second negation. The pinned accepted false negative ("Don't forget to run `npx x`") is unaffected, having no comma. Three limits are accepted and documented at the function, all in the module's false-negative-preferred direction and all requiring the verb/coordination analysis this check deliberately avoids: only the LAST comma is considered, so in a post-contrast list the first item un-suppresses and later ones do not; a coordinated continuation whose tail carries a recommendation verb ("Never install X, or run `npx y`") un-suppresses; and, inherited from the existing `CLAUSE_TERMINATOR` rather than introduced here, any `.` ends a clause, so a version mid-sentence ("Never run the v1.2 tool `npx x`") truncates it.
-- **`tier-tokens/hard-enforcement-missing` no longer lints fenced examples or HTML comments as if they were policy.** The check scans raw file content, so a ```` ```markdown ```` fence written to SHOW the reader what a rule looks like was reported as this repo's own unenforced rule -- a pure false positive in documentation that explains the rule itself. A directive can only be written in prose, so every fence is now skipped regardless of its info string (deliberately broader than `parser.ts`'s `isExampleCodeBlock`, which keeps bare and shell fences because they hold real path and command references worth validating). HTML comments are skipped for the same reason, and because Claude Code strips block-level comments before injecting a context file, so their contents never reach the agent. An unterminated fence masks the remainder of the file -- the conservative direction, matching the module's false-negative-over-false-positive posture. Comment handling needed two refinements beyond a naive substring test, each of which had been losing a real finding: markers are matched against a code-span-masked copy of the line, so a file that TALKS about comment syntax ("Use `<!--` to start an HTML comment") no longer opens a comment and latches it over every remaining line; and a line carrying a self-contained `<!-- ... -->` stays in scope, because "NEVER run `x`. <!-- reviewed 2026-08 -->" is a genuine rule with a note appended. Only an UNCLOSED opener puts the scanner into comment state; the annotation's own text is blanked in place by the new `stripInlineHtmlComments`, so it still cannot be read as an instruction. Known limitations, both consistent with the other two fence scanners in the codebase: `~~~` fences are not recognized, and a four-backtick outer fence toggles on its first three characters.
+- **`tier-tokens/hard-enforcement-missing` no longer lints fenced examples or HTML comments as if they were policy.** The check scans raw file content, so a ` ```markdown ` fence written to SHOW the reader what a rule looks like was reported as this repo's own unenforced rule -- a pure false positive in documentation that explains the rule itself. A directive can only be written in prose, so every fence is now skipped regardless of its info string (deliberately broader than `parser.ts`'s `isExampleCodeBlock`, which keeps bare and shell fences because they hold real path and command references worth validating). HTML comments are skipped for the same reason, and because Claude Code strips block-level comments before injecting a context file, so their contents never reach the agent. An unterminated fence masks the remainder of the file -- the conservative direction, matching the module's false-negative-over-false-positive posture. Comment handling needed two refinements beyond a naive substring test, each of which had been losing a real finding: markers are matched against a code-span-masked copy of the line, so a file that TALKS about comment syntax ("Use `<!--` to start an HTML comment") no longer opens a comment and latches it over every remaining line; and a line carrying a self-contained `<!-- ... -->` stays in scope, because "NEVER run `x`. <!-- reviewed 2026-08 -->" is a genuine rule with a note appended. Only an UNCLOSED opener puts the scanner into comment state; the annotation's own text is blanked in place by the new `stripInlineHtmlComments`, so it still cannot be read as an instruction. Known limitations, both consistent with the other two fence scanners in the codebase: `~~~` fences are not recognized, and a four-backtick outer fence toggles on its first three characters.
 
 - **A nonexistent project path reported success.** `ctxlint /typo/d/path` resolved the argument without checking it, found nothing, and printed "No context files found." with exit 0 -- byte-identical to a genuinely empty project. A mistyped path in a CI step or a pre-commit hook therefore reported clean forever. The CLI now rejects a path that is not an existing directory with exit 2, the documented "invalid CLI option" code already used by `validateCheckNames` and the bad-`--config` path. The MCP server had this right at its own boundary (`validateProjectPath`); this closes the CLI side of the same gap.
 - **A malformed auto-discovered `.ctxlintrc` printed a raw stack trace.** The underlying message was already good ("Invalid JSON in `<path>`: Expected property name or '}' at position 2"), but it escaped the action handler as an uncaught exception and surfaced with internal `dist/index.js:62673` frames. The explicit `--config` path has always had a clean `console.error` + exit 2; the discovered path never did. Both config sources now fail identically, including the rethrow-on-watch contract so a bad mid-watch edit still keeps the previous resolution active instead of killing the watcher.
-- **`commands/*` had no HTML-comment awareness, so comments were linted in both directions.** `parser.ts` never tracked HTML comments, which left two defects with one root cause. A command written entirely inside a comment was reported as live documentation -- `<!-- TODO: we used to run \`npx old-tool\` here -->` produced `commands/npx-not-in-deps` against a commented-out note. And a negation written inside a comment governed a command outside it, so `<!-- never --> run \`npx foo\`` suppressed a legitimate finding. `checkCommands` now skips references on comment lines and blanks self-contained comments before the prohibition scan. The mask is comment-only, deliberately NOT the fence-and-comment mask `tier-tokens` uses: the parser extracts commands from shell fences on purpose, so masking fences here would blind the entire check. `findBinInvocations` had already reached the same conclusion for its own scan, with fixture evidence; this brings the other two consumers in line.
+- **`commands/*` had no HTML-comment awareness, so comments were linted in both directions.** `parser.ts` never tracked HTML comments, which left two defects with one root cause. A command written entirely inside a comment was reported as live documentation -- `<!-- TODO: we used to run \`npx old-tool\` here -->`produced`commands/npx-not-in-deps`against a commented-out note. And a negation written inside a comment governed a command outside it, so`<!-- never --> run \`npx foo\``suppressed a legitimate finding.`checkCommands`now skips references on comment lines and blanks self-contained comments before the prohibition scan. The mask is comment-only, deliberately NOT the fence-and-comment mask`tier-tokens`uses: the parser extracts commands from shell fences on purpose, so masking fences here would blind the entire check.`findBinInvocations` had already reached the same conclusion for its own scan, with fixture evidence; this brings the other two consumers in line.
 - **Subprocess test ceilings were left at 15s when `testTimeout` was raised to 60s.** `vitest.config.ts` raises the per-test timeout to 60s on Windows because "Windows process spawn is slow", but the five `execFileSync` ceilings inside the test helpers -- `integration.test.ts`, `mcp/server.test.ts` (x2), `entry.test.ts`, `fix-cli.test.ts` -- were never raised with it. On a contended box a real `node dist/index.js` spawn got killed at 15s and surfaced as `ETIMEDOUT`, or as `exitCode 1` via the helpers' `err.status ?? 1` fallback: a load artifact indistinguishable from a genuine failure, and one that moved between runs (8 failures, then 2, then 3, then 40, then 1). All five now match the 60s config value; the outer `testTimeout` still catches a true hang, and the two deliberate 5s ceilings that assert the MCP server exits on stdin close are unchanged.
 - **The Windows fork cap in `vitest.config.ts` was silently inert since the Vitest 4 upgrade.** The config carried `poolOptions: { forks: { maxForks: 4, minForks: 1 } }` with a comment explaining that uncapped fork-per-CPU parallelism oversubscribes a contended Windows box and blows past the test timeout -- "the flake that aborted the release". Vitest 4 REMOVED `test.poolOptions`; it logs a deprecation and ignores the block, so the suite had been running at full parallelism on Windows the whole time, which is precisely the condition the cap existed to prevent. Re-expressed as top-level `maxWorkers: 4` per the v4 migration. Observed symptom: 8 tests failing with `spawnSync node ETIMEDOUT` on one run and 2 unrelated CLI tests on the next, all passing in isolation -- the signature of a starved box, not a hang.
 
 ### Changed
+
 - **Markdown lexing primitives moved to `src/utils/markdown.ts`.** `inlineCodeSpans` / `maskCodeSpans` were exported from `checks/tier-tokens.ts` and imported by `checks/commands.ts`, coupling two otherwise independent rule modules. They now live in utils alongside the new `nonProseLineMask` (fence and HTML-comment tracking), which is what the fix above is built on. No rule behavior depends on the move; `src/utils/__tests__/markdown.test.ts` covers the primitives directly, including the length-preserving `#` filler that keeps a masked span from bridging two prose fragments into a phantom `do not`.
 
 ## [0.23.0] - 2026-08-16
 
 ### Fixed
+
 - **`commands/npx-not-in-deps` no longer fires on prohibited commands.** A CLAUDE.md line whose only mention of a command is a prohibition ("**NEVER run `npx netlify deploy` directly.**") demanded the dep be installed -- backwards: the doc exists to tell the reader that command must not run here. Mentions are now skipped when a negation token (`never`, `don't`, `do not`, `must not`, `avoid`) precedes the command within the same clause. The scope is deliberately tight, tuned by adversarial probes: inline code spans are masked first (so `avoid-cycles` in an earlier span cannot suppress a later mention), clause boundaries include `;`, spaced `--`, and the em-dash (so "NEVER guess -- run `npx x` to check" still flags the mandated command), and the comparative framings `instead of` / `rather than` are NOT negation tokens ("Instead of clicking around the UI, run `npx x`" recommends x). One accepted false negative is pinned by test: "Don't forget to run `npx x`" stays suppressed -- flipping it needs verb analysis, and the module's documented posture is false-negative-over-false-positive.
 - **`tier-tokens/hard-enforcement-missing` no longer misfires on prose adverbs or code-span contents.** The framing search was a single case-insensitive regex over the raw line, so "the specs have always lived in `e2e/`" nominated a directory for a hook, "the always-on summary" matched a compound, and `applies-when.always === true` matched inside its own code span. Inline code spans are now masked before the search (length-preserving filler, so a masked span cannot bridge two prose fragments into a phantom `do not`), framing tokens must carry at least one uppercase letter (NEVER / Never / do NOT count; all-lowercase is prose), and lookarounds reject compounds and identifiers (`always-on`, `applies-when.always`). Genuine prohibitive framing ("Never calling `process.kill()`", "must NOT invoke `npm publish`") still fires, with ALWAYS-vs-prohibitive suggestion polarity preserved.
 
 ### Internal
+
 - **`release.sh` rebuilds after the version bump and refuses to publish a dist that does not carry the version it claims.** Step 2 builds while `package.json` still holds the old version, and build.mjs bakes that version into the bundle via the `__VERSION__` define -- which is how the v0.22.0 publish shipped a dist reporting 0.21.0. Step 4 now rebuilds post-bump (step 2 stays as the fail-early gate; the post-bump build is the artifact that ships, and resume runs get a fresh dist too), step 6 gates publishing on `dist/index.js` containing the current `package.json` version's baked literal (re-read at the step boundary, not cached from script start), and a new `prepublishOnly` script backstops ANY `npm publish` -- including a manual one outside release.sh -- with a rebuild from the current tree.
 - Regression tests pinning the MSYS dead-hook false-positive fixes that landed in v0.19.0: `Bash(cd /c/<dir>*)` directory targets on win32 resolve through the MSYS drive translation (existing directory audits clean, missing directory still flags).
 
 ## [0.21.0] - 2026-08-07
 
 ### Added
+
 - **`exclude` config key -- drop context files from the corpus before any check runs.** An array of globs matched against each discovered file's project-relative path; the counterpart to `contextFiles`, which ADDS discovery patterns. The distinction from every existing suppression mechanism is that this removes FILES, not FINDINGS, and that is the whole reason it had to exist: `contradictions` and `redundancy/duplicate-content` are cross-file checks that compare the discovered set and report against the literal `(project)` path, which no per-file glob can ever match. `.ctxlintignore`'s grammar is `checkName [fileGlob]`, so it can quiet a noisy finding on a real context file but cannot reach a project-level conflict between two files you never wanted linted in the first place -- the only alternative was suppressing `contradictions` and `redundancy` repo-wide, which would have taken the genuine findings with them. Excluding at scan time makes both halves disappear for the right reason: the files are not this project's agent context, so there is nothing to compare. Motivating case is a repo whose fixtures ARE deliberately-broken context files. ctxlint's own repo is the first consumer -- see Internal below. Matching shares `matchesGlob` with the `.ctxlintignore` path so both surfaces agree on semantics, notably `{ dot: true }`, without which `.claude/**` would silently match nothing; globs are tested against the forward-slash form of the relative path, since `path.relative` yields backslashes on Windows and `fixtures/**` would never match them. Plumbed through `ScanOptions`, `AuditOptions`, the CLI (including `--watch`'s live config reload), and the MCP server's three context-running tools; the `mcpOnly` / `sessionOnly` / `skillsOnly` paths never reach context discovery and deliberately do not forward it. Nine new tests, including a negative control confirming that excluding one operand of a conflict still reports the conflict against a non-excluded sibling -- exclusion must not become a blanket off-switch for the check.
 
 ### Internal
+
 - **ctxlint now ships a `.ctxlintrc` excluding `fixtures/**`.** The repo audited its own 24 deliberately-broken test fixtures on every run, so a session-start hook reported 24 findings that were all test data -- noise that trains a reader to ignore the tool's output. Self-audit is now 1 context file (`CLAUDE.md`, 100 tokens) and zero findings. Verified the exclusion drops nothing legitimate: an audit with an empty config finds 25 context files, 24 of them under `fixtures/`.
 - **`release.sh` now promotes the CHANGELOG heading itself instead of aborting because a human did not.** Renaming `## [Unreleased]` to `## [<version>] - <date>` uses two things the script already knows, making it the same class of mechanical version stamp as the `package.json` bump it sits beside -- so the guard that refused to release on an unpromoted heading was demanding an edit the script was perfectly capable of making. Worse, it demanded it from step 7 (`gh release create`), which runs AFTER step 5 pushes the tag and step 6 publishes to npm: v0.19.0 and v0.20.0 both aborted there with the version already immutable, each needing a follow-up promote-and-resume. New `promote_changelog` runs in step 4 beside the version bump, and `CHANGELOG.md` joins `BUMP_FILES` so the edit is committed rather than left as working-tree dirt that fails the next run's clean-tree pre-flight. Placed OUTSIDE the bump's `CURRENT_VERSION != VERSION` branch, matching the `server.json` sync directly above it and for the same reason: a resume has already-bumped `package.json` and skips that branch, which is exactly the state v0.20.0 was stuck in. Every release promoting its own heading also removes the failure mode that produced the v0.18.3-through-v0.18.7 mess, where `[Unreleased]` silently accumulated five tags' worth of entries. Only the FIRST `## [Unreleased]` line is rewritten, so a stray later occurrence (a link reference, a quoted example) cannot become a second bogus version heading. Step 1's check is now informational -- it names which notes the run will publish and does not abort, since aborting would block the script from doing the fix. `assert_changelog_promoted` survives as a step 7 backstop for the case where promotion never ran. Two non-failures preserved: a CHANGELOG with neither a version entry nor `[Unreleased]` content still falls through to commit subjects with a warning, and an `[Unreleased]` section coexisting with a promoted entry passes, since accumulating the next release's notes during the current one is normal. Ten cases verified against fabricated CHANGELOGs, each under `set -euo pipefail` so a helper leaking a non-zero status surfaces as an abort rather than a pass -- including that the step 7 backstop accepts step 4's output, which is the pairing that was broken.
 
 ## [0.20.0] - 2026-08-07
 
 ### Added
+
 - **`commands/exit-status-masked` (warning).** Flags a documented verification command whose own shape discards the exit status it exists to report. A shell pipeline's status is the LAST command's, so `npx tsc --noEmit | head -20 && echo "tsc clean"` reports `head`'s success: the `&&` fires and prints "tsc clean" over a real type error, and because the chain continues, whatever followed was silently skipped. The same discard happens with `npx biome check src/ 2>&1 | tail -5; echo "exit=$?"` -- that `$?` is `tail`'s status, not biome's. Both shapes were produced live in the sessions this rule came from. Four conditions must ALL hold, which is what keeps it quiet: a verifier heads the pipeline (`tsc`, `eslint`, `biome`, `vitest`, `jest`, `pytest`, `mypy`, `ruff`, `oxlint`, `cargo test|clippy|check`, `go test|vet|build`, or an `npm|pnpm|yarn|bun [run] <script>` resolving to one -- wrappers like `npx` / `pnpm exec` and leading `VAR=value` assignments are stripped first); a filter or pager ends it (`head`, `tail`, `grep`, `sed`, `awk`, `less`, `more`, `cat`, `tee`, `wc`); a success claim follows (an `echo`/`printf` matching `ok|clean|pass|green|success|done` after `&&`, or an `echo` of `$?`); and no `set -o pipefail` is in scope, either earlier in the same fenced block or earlier in the same command line. `${PIPESTATUS[0]}` is exempt -- it is the documented fix. Reading output through a pager with no success claim (`npm test | tail -50`) is normal shell usage and stays silent, as does an honest `... | grep error && echo "has errors"`. Static counterpart to `session/unverified-gate-claimed-clean`, which catches the dynamic case: a structurally-fine gate that crashed and got signed off anyway. Verified quiet against 18 sibling repos -- zero findings outside the fixture.
 - **`commands/unknown-subcommand` (error).** Flags a documented invocation of the project's OWN binary using a subcommand the CLI does not implement. `commands/*` validated npm scripts, make targets and npx packages, but never `package.json#bin`. Two MCP server projects independently shipped a release script telling operators to verify a freshly built binary with `<bin> doctor --json`; no `doctor` existed, and because unknown args fall through to stdio server startup the "verification step" blocks forever and reads as a hang -- hence `error`, not `warning`. The known-subcommand set is resolved statically and tiered: Commander `.command('<name>')` literals first, then a hand-rolled `process.argv[2]` dispatch accepted ONLY when the set is closed (every comparison against the argv token is a string literal, a `switch` case, or a literal-array `.includes()`; comparisons against `undefined`/`null` do not open it). The moment the dispatch is open -- compared against a variable, used as a lookup key, `Object.keys`, `in`, `hasOwnProperty`, or a non-literal `.includes()` -- it emits nothing, as it does for a missing entry file, a bundled or minified one, or no recognizable dispatcher at all. That silence is deliberate: a wrong "that subcommand does not exist" is worse than a miss, because the reader's correct doc looks broken. The bundled-entry gate is what keeps ctxlint from misfiring on itself (its own `bin` is a 69k-line esbuild bundle). Comments and string bodies are stripped before any openness decision -- the motivating fixture's own comment says "an unknown subcommand in the docs reads as a hang", and a raw scan reads that `in` as the `in` operator and bails on a perfectly closed dispatch. The binary is never executed to discover its subcommands: the bug being caught is a CLI that hangs on unrecognized input, and shelling out to it is how a linter inherits that hang. Invocations are extracted independently of the shared command extractor, which gates on a fixed tool list and so never yields `./bin/tailscale-mcp doctor` at all -- a rule built on it would have shipped inert.
 - **`session/unresolvable-sha` (warning).** Flags a memory citing a git SHA that no longer resolves. `session/stale-memory` covers dead PATHS; SHA citations rot faster, since a squash-merge invalidates every SHA on a branch at once and a rebase does it silently. Shape alone is not enough, and resolution alone is not either: a real memory corpus is full of hex-shaped tokens that are not commits -- UUID members from the `originSessionId` every memory carries, `sha256:` digest prefixes, decimal product ids, and words that happen to be hex (`beadfaced`) -- and none of them resolve, so a resolve-only rule reports all of them. The rule therefore requires a citation cue (`commit`, `SHA`, `HEAD`, `landed in`, `reverted`, ...) within 80 characters before the token on the same line, drops UUIDs / digests / decimals / version fragments / colours before any git call, skips fenced blocks, and only then asks `git cat-file -t`. Resolutions are bounded per run and an undecided token stays silent; without a git repository the rule reports nothing rather than falling back to the pattern. Measured on the authoring machine: 328 citations extracted from 511 real memory files, all genuine short SHAs, with no findings on this repo (its cited commits all resolve). MISATTRIBUTION is deliberately out of scope -- the motivating instance cited a SHA that DOES resolve but is not the commit that made the change, which needs the commit's diff compared against the surrounding prose and is a genuinely different, much fuzzier rule.
@@ -95,12 +108,14 @@ See [Versioning policy](#versioning-policy) below.
 > four `session/*` additions and the three session fixes below them.
 
 ### Added
+
 - **Session transcript reading (`src/core/transcript.ts`).** The session pillar previously read only `~/.claude/history.jsonl`, which records what the USER typed -- no tool invocations, no command output, no git state. Every hazard that lives in what the AGENT did was therefore invisible to it. The new reader parses the per-project transcripts under `~/.claude/projects/<encoded>/*.jsonl`: `tool_use` blocks with their inputs, the matching `tool_result` (`is_error`, and whether the call produced any output at all), and the `gitBranch` stamp on assistant records. Scoped to the current project and bounded (5 most recent transcripts, 200,000 lines) because the corpus reaches hundreds of megabytes across 100+ project directories on a working machine; the bound is reported on the result rather than applied silently, so a check cannot report "clean" off a truncated read. Results are memoized per project so several checks can consume it without re-streaming tens of megabytes each.
 - **`session/shared-temp-path` (error).** Flags a fixed, non-session-scoped temp path that is WRITTEN and later READ BACK. `/tmp` is process-global, and under Git Bash on Windows it is shared across every concurrent agent session on the machine, so a backup/restore through a literal path races every other session that picked the same obvious name. From a real incident: an agent backed `package.json` up to `/tmp/pkg.bak`, ran `npm pack --dry-run`, then restored with `cp /tmp/pkg.bak package.json` -- a concurrent session working a sibling repo had used the same path in between, so the restore wrote a DIFFERENT package's manifest into the repo (wrong name, version, `bin`, dependencies). A release from that tree would have published under the wrong identity. The write/read PAIR is the signal, not either half: a scratch file nobody restores from cannot be clobbered into the workspace, and a read with no matching write is consuming something another tool produced deliberately. `mktemp` output and any path carrying a per-run component (`$$`, `$pid`, `$RANDOM`, a session id) are deliberately not flagged -- they are the correct form and appear constantly in the same transcripts, so flagging them would bury the real finding.
 - **`session/unverified-gate-claimed-clean` (warning).** Flags a session that asserts a quality gate PASSED while that gate's own invocation failed or produced nothing. From a session where `biome check` segfaulted on exit -- via the npx wrapper, via the native `biome.exe`, unchanged by shell -- emitting zero bytes roughly a dozen times, twice reported as "zero diagnostics emitted, which is consistent with a clean run". Disproving that took a deliberate experiment: the same binary against a file with an unused variable and mangled formatting ALSO produced zero bytes, because the crash precedes diagnostic emission. Empty output carries no information about cleanliness at all. Prose that labels the state honestly ("unverified", "could not verify", "crashed", "blocked", "inconclusive") is deliberately not flagged -- that is the correct outcome, and the rule targets the false claim rather than the failed gate. Sibling to the static `commands/exit-status-masked`: this one is dynamic and fires on a plain `pnpm lint` that crashed, a command with nothing structurally wrong with it.
 - **`session/default-branch-accumulation` (warning).** Flags ten or more distinct files written on `main`/`master` with no intervening commit. From a session that ran for hours across review, fix, coverage and audit phases and edited 25 files, every one landing uncommitted in the working tree of `main` -- surfacing only during a ship-readiness audit at the very end, with no git-shaped signal along the way. On a machine running a fleet of agents (the source repo had 11 locked worktrees and a `main` whose `HEAD` moved three times during one audit), a large uncommitted delta on a shared default branch is one `git checkout --` or `git stash` away from being someone else's cleanup. A commit or a branch-away (`git checkout -b`, `git switch -c`, `git worktree add`) resets the count; `git commit --dry-run` does not, since it lands nothing. The defect is ACCUMULATION, not the first write -- a one-line typo fix on `main` is normal and flagging it would make the rule noise.
 
 ### Fixed
+
 - **`session/memory-index-overflow` silently never fired for a project path containing an underscore.** `encodeProjectDir` maps `: \ / .` to `-` but leaves `_` intact, while Claude Code's current encoding also folds `_`. Both forms exist on a machine with any history -- on the authoring box `C--Users-x-yaw-mcp_servers-npmjs-mcp` and `C--Users-x-yaw-mcp-servers-npmjs-mcp` are both present, whereas `C--Users-x-yaw-oam_js_runtime-oam` does NOT exist and only the folded form does -- so the scheme changed at some version rather than one form being wrong. The check resolved `MEMORY.md` through the unfolded form alone, so for any underscore-bearing project path (including this repo, `mcp_servers`) it read nothing and returned clean: no error, no output, just a check that never fired. New `projectDirCandidates()` sits beside `encodeProjectDir` and is used by both this check and the transcript reader (which had an inline copy of the same dual lookup). `encodeProjectDir` itself is deliberately unchanged, because `projectDirMatchesPath` consumers compare against its exact output and folding there would strand every project still on the older form. The check now also reports the path it actually read rather than the first candidate -- with two encodings in play, naming the wrong one sends the reader to a file that does not exist.
 - **A session check could be fully implemented, catalogued and unit-tested while never running.** `session/shared-temp-path` shipped in exactly that state: absent from `ALL_SESSION_CHECKS` and never dispatched in `audit.ts`, with its whole unit suite green, because nothing compared the check modules against the runner. A new consistency test asserts every module under `src/core/checks/session/` appears in `ALL_SESSION_CHECKS` and is dispatched. The same rule was also inert for a second reason -- it scanned only `history.jsonl`, so it could not see the agent-run commands of the incident it was written for; it now reads the transcript (see Added) and finds 6 genuine write-then-restore pairs in a real 59 MB corpus, including `cp biome.json /tmp/biome.json.bak` ... `cp /tmp/biome.json.bak biome.json`.
 - **`session/shared-temp-path` path extraction precision.** Two defects that only surfaced against real transcript data: a path was reported with its quotes doubled (`""$TMPDIR/x""`) because only one layer was stripped from a token lifted out of an already-quoted command, and the input-redirect pattern was loose enough to match heredocs (`<<'EOF'`) and comparison operators. Quotes are now stripped repeatedly and the redirect pattern excludes `<<` and restricts the captured token.
@@ -112,34 +127,40 @@ See [Versioning policy](#versioning-policy) below.
 - **`commands/npx-not-in-deps` no longer fires on a DENIED command.** An `npx <pkg>` invocation the project has explicitly listed in `.claude/settings.json` (or `.claude/settings.local.json`) `permissions.deny` is one the user has told the agent never to run, so the "not found in dependencies -- consider adding it to devDependencies for reproducibility" nudge was noise (e.g. `npx netlify deploy` documented under a "NEVER run this" prohibition and denied in settings). `checkCommands` now loads the project deny list, unwraps the `Bash(...)` matcher and strips the trailing `:*` / `*`, and suppresses the finding when the documented command exactly matches or extends (at a word boundary) a deny prefix. Project-scoped only (never the user-global settings, matching the other command checks); a missing or unparseable settings file is a no-op, so the common no-settings case is unchanged. A different npx command not covered by the deny list, and a command that only shares a textual prefix (`npx netlifyctl` vs a `npx netlify` deny), keep being validated -- new `commands.test.ts` cases with a negative control.
 
 ### Internal
+
 - **Removed GitHub Actions; `release.sh` is now the sole pipeline.** Deleted `.github/workflows/ci.yml` and `release.yml`. The release script already fell through to a local `npm publish` when `release.yml` is absent (step 6's publish-path detection), so no rewiring was needed; the one gap -- `npx tsc --noEmit`, which the workflows ran as a distinct step but `release.sh` did not -- is now folded into step 1 alongside lint. Tradeoffs of going local-only, accepted deliberately: no per-PR CI (the lint/type-check/test gate runs at release time and locally, not on every push), no ubuntu + node-version matrix leg (tests run only on the release host), and no npm `--provenance` attestation (sigstore signing needs the Actions OIDC token). Dependabot and CODEOWNERS are kept. README CI/Release badges and the CONTRIBUTING "fails CI" note were updated to match.
 - **Windows-only vitest fork cap.** The git-heavy suites (`paths`, `integration`, `git`) spawn real `git` subprocesses per test; with vitest's default fork-per-CPU parallelism this oversubscribed a contended Windows box (worst under `release.sh`, which runs the full suite locally after lint+build) and those tests blew past even the 30s timeout -- a flake that aborted the local release test step. `vitest.config.ts` now caps `forks` to `maxForks: 4` on `win32` only and raises the per-test timeout to 60s on Windows (even capped, the git rename-provenance tests graze the 30s ceiling under release.sh's sequential install+lint+build+test load on a slow Windows box); Linux CI keeps full parallelism and the 30s timeout and stays the authoritative gate. No behavior or API change.
 
 ## [0.18.2] - 2026-06-26
 
 ### Internal
+
 - **Performance sweep (deferred full-pass items).** Three hot-path optimizations, no behavior or API change. `findClosestMatch` (paths check) resolves the common basename case through a per-audit `Map<basename, paths[]>` index -- an O(1) lookup plus a Levenshtein over the same-basename shortlist, instead of scanning every project file on each broken reference. `scanForMcpConfigs` issues a single batched `glob(patterns[])` call rather than one glob per pattern (mirroring `scanForContextFiles`), keeping the escaping-symlink / 5 MB-cap exclusion. `getCommitsSinceBatch` (staleness) passes referenced paths to `git log` as `-- <pathspec>` arguments so git filters commits server-side instead of buffering the entire `--since` history into memory; globs and repo-escaping refs are excluded from the pathspec and still count via the in-process pass, and win32 folds case with the `:(icase)` magic prefix to stay consistent with the in-process normalizer.
 - Test coverage for the above: graceful all-zero degradation when `git.raw` throws, out-of-repo pathspec exclusion, a real-git batch mixing a valid path with glob and escaping siblings, the basename index rebuilding when the project root changes, basename-match priority over a closer full-path fuzzy candidate, and the `scanForMcpConfigs` escaping-symlink exclusion.
 - Repaired a broken `pnpm-lock.yaml` (a duplicated `tinyglobby` mapping key plus a stale `vite` specifier left by concurrent Dependabot merges) that was failing every branch's `--frozen-lockfile` CI install on `main`; regenerated with no resolved dependency-version changes.
 - Dependency bumps: `commander` 14.0.3 -> 15.0.0 (bundled CLI parser; no CLI behavior change observed, full suite green), `@types/node` 25.9.3 -> 26.0.0 and `hono` 4.12.14 -> 4.12.18 (dev/build only).
 
 ### Security
+
 - Cleared 4 Dependabot alerts (`vite` x2, `esbuild` x2) via `pnpm.overrides` pins plus a direct `vite` devDependency bump to `^8.0.16`, dropping the vulnerable transitive `esbuild@0.27.7` (pinned to `^0.28.1`). `pnpm audit` reports no known vulnerabilities. Both are build/test toolchain only -- `esbuild` is the bundler and `vite` is dev tooling, so neither ships in `dist/index.js`. No runtime API change.
 
 ## [0.18.1] - 2026-06-19
 
 ### Fixed
+
 - **Path-check false positives on `CLAUDE.md` references.** `@`-imports (`@./rules/x.md`) now resolve relative to the importing file's OWN directory (matching Claude Code / `combineClaudeMd` import semantics) instead of the repo root, so a subdirectory doc's import is no longer reported as a broken path or fuzzy-"fixed" into durable bundle source. A bare relative ref (`rules/manifest.json`) is tried against both the repo root and the doc's own directory before being flagged. Refs resolving outside the project root (`ln -s ../../` symlink targets, absolute system paths) are skipped rather than autofixed into another tree. `.git/` internals and macOS `.app/` bundle paths (e.g. `pkill -f` arguments) are no longer extracted as references, while `.github/` workflow paths still validate. Scoped npm package mentions (`@anthropic-ai/sdk`) are no longer treated as imports.
 
 ## [0.18.0] - 2026-06-18
 
 ### Added
+
 - **LSP server** (`src/lsp/server.ts`) -- ctxlint now exposes a language-server interface so editors can surface lint findings inline.
 - **`.ctxlintignore`** (`src/core/ignore-file.ts`) -- a project-level ignore file to exclude paths from scans.
 - **`ctxlint_fix` dry-run** -- the MCP fix tool can preview the changes it would write without touching files.
 - **Watch-mode cache** (`src/core/cache.ts`) -- incremental re-audits under `--watch` reuse cached results instead of re-scanning unchanged inputs.
 
 ### Internal
+
 - Git rename detection is batched (`findRenamesBatch`): the rename log runs once per project root and is cached, distributing lookups across all referenced paths instead of spawning one `git log` per path.
 - `vitest` `testTimeout` raised to 30s (CLI/MCP integration tests spawn Node subprocesses that need headroom, especially on Windows); lint errors resolved (unused var in `audit.ts`, unused import in `lsp/server.ts`, `varsIgnorePattern` added to the eslint config).
 
@@ -148,6 +169,7 @@ See [Versioning policy](#versioning-policy) below.
 Two further full-pass rounds over the lint engine; all findings adversarially verified, full suite green (1002 tests at the time).
 
 ### Fixed
+
 - **MCP secret-scan false negatives** -- a tool whose job is catching secrets was missing some: `server.args` is now scanned for hardcoded keys (was `headers`/`env`/`url` only), and the secret-in-url / hardcoded-bearer / api-key / env scans no longer whole-value-gate on `isEnvVarRef`, so a literal key sitting beside an unrelated `${VAR}` is scanned (against the env-ref-stripped residue) instead of skipped.
 - **Autofix corruption** -- the fixer now claims only the exact scanner-located column of a stale path (`FixAction.column`), so a substring that also appears inside a KEPT path on the same line (e.g. `src/old.ts` within `src/old.ts.bak`) is not corrupted, and column drift between scan and apply skips the fix rather than blind-replacing. The autofix `newText` is rebased into the reference's own coordinate space (a `./`-relative ref in a subdirectory doc is no longer rewritten to an unresolvable root-relative path); the `sse`->`http` fix is anchored to the full `"type": "sse"` pair; and the wrong-root-key fix is suppressed when the expected key already exists (a blind swap would duplicate the key and drop a block).
 - **Symlink / large-file safety** -- symlinks whose `realpathSync` target escapes the project root are excluded from `scanForContextFiles` and `scanForMcpConfigs` (prevents reading out-of-tree content like `~/.ssh/config` or `/etc/passwd` via a project-local symlink); files over 5 MB are excluded from project scans to avoid stalling the stdio MCP server. Neither gate applies to `scanGlobalMcpConfigs`, which already streams.
@@ -155,26 +177,32 @@ Two further full-pass rounds over the lint engine; all findings adversarially ve
 - **CLI / MCP edge cases** -- `--version` degrades to a sentinel if the unbundled `package.json` read fails at module load (instead of throwing before the try-catch is set up); `ctxlint_validate_path` rejects empty / `.` / `./` (which previously reported the project root as an existing file); `--quiet` is honored on watch-mode reruns; the config JSON parse-error position is labeled "near" (it comes from a substring search, not the exact parser site); the no-tiktoken token fallback covers Thai and Brahmic scripts so dense-script docs are not under-counted.
 
 ### Security
+
 - Updated vulnerable dependencies flagged by Dependabot (esbuild and transitive deps), and grouped Dependabot security updates so future bumps land together.
 
 ## [0.16.0] - 2026-06-10
 
 ### Added
-- **`mcp-security/secret-scan-skipped`** (info, experimental) -- the three git-gated secret rules (`hardcoded-bearer`, `hardcoded-api-key`, `secret-in-url`) skip in files git does not track, but previously also skipped *silently* when git could not answer at all (binary missing, permissions, failing repo). Tracking detection is now tri-state: a determined "untracked" stays silent as before, while an undeterminable status emits this finding so a possibly-tracked file never passes blind. MCP catalog grows to 29 rules.
+
+- **`mcp-security/secret-scan-skipped`** (info, experimental) -- the three git-gated secret rules (`hardcoded-bearer`, `hardcoded-api-key`, `secret-in-url`) skip in files git does not track, but previously also skipped _silently_ when git could not answer at all (binary missing, permissions, failing repo). Tracking detection is now tri-state: a determined "untracked" stays silent as before, while an undeterminable status emits this finding so a possibly-tracked file never passes blind. MCP catalog grows to 29 rules.
 
 ### Fixed
+
 - Both MCP spec documents still showed the over-wide `sk-(proj-)?[A-Za-z0-9_-]{20,}` key pattern that v0.15.0 split into three (`sk-ant-`, `sk-proj-`, and an alphanumeric-only generic form); the docs now match the shipped patterns.
 - The `frontmatter/missing` suggestion for Windsurf rules derives its trigger list from `VALID_WINDSURF_TRIGGERS` instead of a hardcoded string that omitted `model_decision`.
 
 ### Internal
+
 - Documented the deliberate bare-fence divergence between the context parser (extracts path references; file trees dominate) and the skills pillar (skips them; usage examples dominate) on both sides of the split.
 
 ## [0.15.1] - 2026-06-10
 
 ### Security
+
 - Bumped **`brace-expansion`** to `>=5.0.6` via `pnpm.overrides`, closing GHSA-jxxr-4gwj-5jf2 (moderate: large numeric ranges defeat the documented `max` DoS protection). The vulnerable copy ships bundled in `dist/index.js` via `glob` -> `minimatch`, and ctxlint runs user-supplied globs from context files through that path, so the bundled copy is the one that matters. `pnpm audit` now reports no known vulnerabilities. No runtime API change.
 
 ### Internal
+
 - CI workflows bumped `pnpm/action-setup` v4 -> v6 (node24 runtime) ahead of the 2026-06-16 node20 Actions deprecation.
 
 ## [0.15.0] - 2026-06-10
@@ -182,11 +210,13 @@ Two further full-pass rounds over the lint engine; all findings adversarially ve
 Full-pass audit of the entire codebase (161 files, every finding adversarially verified) followed by an independent review of the fix sweep: ~120 findings addressed across all pillars.
 
 ### Added
+
 - **GitHub Actions CI** -- `ci.yml` (push/PR) and `release.yml` (`v*` tags) run lint, type-check, build, and tests across ubuntu/windows x node 20/22; `release.yml` publishes to npm with provenance, and `release.sh` now hands the publish off to CI and watches the run. `pretest` builds `dist/` so CLI-level tests can never silently exercise a stale bundle.
 - **content-secrets rules published** -- the shipped inline-secrets check now has its rules in `context-lint-rules.json` and a spec section (catalog: 39 rules / 12 categories).
 - **Catalog integrity guards** -- duplicate-rule-ID and unused-category checks, a prefix==category test (with the documented `ci/*` legacy allowlist), real-schema negative tests, and `build.mjs` now fails loudly on catalog drift instead of silently regenerating prose in place.
 
 ### Fixed
+
 - **git utils**: both git readers pass `core.quotepath=false` so non-ASCII paths count and rename-match correctly; `normalizePath`/`normalizeRenamePath` case-fold on win32; rename detection works from subdirectory project roots, `./`-relative doc refs, and absolute MCP inputs (targets are relativized into git's repo-root coordinate space); ambiguous same-basename renames return no match instead of guessing (the result feeds an autofix); glob refs in staleness convert to their static directory prefix instead of silently counting 0.
 - **parser**: `parseSections` only closes a section on a heading of equal-or-shallower depth; markdown emphasis (`**docs/missing**`) is no longer captured as a path; blockquote prose inside bare fences is no longer extracted as commands; double-star globs are extracted and validated with an ignore list and first-match short-circuit; `tsc` maps to the `typescript` package before the dependency lookup.
 - **MCP pillar**: loopback coverage restored for `[::1]` and all of `127/8` (shared definition with `http-no-tls`, which now runs regardless of git-tracked status); `sk-ant-`/`sk-proj-` key patterns detect modern keys without flagging kebab-case identifiers; env-syntax autofix no longer corrupts multi-reference values; windsurf gets wrong-syntax checking; server line attribution is depth-aware; mixed-type `env`/`headers` blocks no longer disable secret scanning; consistency and path checks are scope-aware (user-user drift compared, only cross-scope pairs skipped; absolute args existence-checked at every scope).
@@ -195,37 +225,45 @@ Full-pass audit of the entire codebase (161 files, every finding adversarially v
 - **CLI/MCP server**: `--format json|sarif` stdout carries only the payload (progress and the `--fix` prompt go to stderr); `--depth 0` is honored; `ctxlint_fix` reports post-fix state instead of pre-fix counts.
 
 ### Removed
+
 - **Package `main`/`exports` entry point** -- ctxlint is a CLI/MCP server, not a library; the entry added briefly during this cycle pointed at the self-executing bundle, so `import '@yawlabs/ctxlint'` would run the linter against the host process argv. The bare import now fails at resolution (`bin` and `./package.json` remain).
 
 ## [0.14.1] - 2026-06-07
 
 ### Security
+
 - Bumped vulnerable transitive dependencies flagged by Dependabot. **`fast-uri`** (pulled via `@modelcontextprotocol/sdk` -> `ajv`) is updated to `>=3.1.2` -- it is the only flagged package bundled into the shipped `dist/index.js` -- closing two high-severity advisories: CVE-2026-6321 (path traversal via percent-encoded dot segments) and CVE-2026-6322 (host confusion via percent-encoded authority delimiters). The vulnerable URI-normalization path is not reachable through ctxlint's usage (ajv uses it for schema validation, and ctxlint makes no URI-based security decisions), but the bundled copy is updated regardless. Dev-only transitive deps `hono`, `postcss`, `qs`, and `ip-address` were also bumped via `pnpm.overrides` (build/test toolchain only -- never shipped). No runtime API change.
 
 ## [0.14.0] - 2026-06-07
 
 ### Fixed
+
 - Session memory path extraction dropped Windows drive-absolute paths entirely and (once added) kept trailing sentence punctuation and `:line` suffixes, producing false "stale path" findings; the MCP `http-no-tls` loopback exemption used a `127.`-prefix string match that fail-open-exempted public hosts like `127.evil.com` (now anchored to the `127.0.0.0/8` dotted-quad, with the same fix applied to `mcph` apibase's now-removed `isPrivateHost`); and the `session-missing-secret` check mis-parsed `gh secret set` invocations with flag-first ordering or `-R` / `--repo=` repo forms.
 
 ### Removed
+
 - **mcph config-linting pillar** (`.mcph.json` / mcp.hosting CLI config). The entire `mcph-*` rule family, the `--mcph` / `--mcph-only` / `--mcph-global` / `--mcph-strict-env-token` flags, the `ctxlint_mcph_audit` MCP tool, the `.mcph.json` / `.mcph.local.json` scanning, and the `mcph-config-lint-rules.json` catalog are removed. mcp.hosting has been decommissioned and replaced by Yaw Labs MCP ("Yaw MCP"), integrated directly into Yaw Terminal, so the config file these rules linted no longer exists.
 
 ## [0.13.1] - 2026-06-02
 
 ### Fixed
+
 - **`findRenames` now detects real git renames.** The git-history auto-fixer's "Did you mean `<new path>`?" suggestion never fired: a path-scoped `git log -- <old>` returns nothing once `<old>` has been renamed away (the name no longer exists at HEAD, and `--follow` only tracks a path that still exists), so a referenced-but-renamed path always fell through to a fuzzy match. `findRenames` now scans an unscoped `--diff-filter=R` rename log and matches the entry whose source path is the broken reference. `parseRenameLog` gained an optional `targetPath` (exact match, then a most-recent basename fallback; no-target behaviour unchanged).
 
 ### Internal
+
 - High-severity test coverage added across the lint engine: `findRenames`/`parseRenameLog`, the fixer dry-run and symlink-skip branches, and the catalog-schema validator's error paths. `parseRenameLog` was extracted from `findRenames` for direct testing (behaviour-preserving).
 
 ## [0.13.0] - 2026-06-02
 
 ### Added
+
 - **Agent-skill lint pillar** (`AGENT_SKILL_LINT_SPEC`) - a fourth open spec covering Claude Code `~/.claude/skills/<name>/SKILL.md` and `~/.claude/agents/*.md`: frontmatter presence, broken path/command references, trigger-phrase collisions, orphaned skills, and dead tool restrictions. New `--skills` / `--skills-only` flags and an `agent-skill-lint-rules.json` catalog.
 - **`hook-coverage` / dead-hook rule** - flags `.claude/settings.json` hook and permission entries that reference a script or path missing on disk (a dead gate silently no-ops). The user-global `~/.claude/settings.json` scan is gated behind `--hooks-global`.
 - **Catalog JSON Schema + generate-from-catalog** - a governing schema for the rule catalogs with normalized metadata, plus a build step that generates the spec rule-count headers and the README family-table counts from the catalogs so the prose cannot drift from the machine-readable source.
 
 ### Fixed
+
 - Corrected rule-count drift across the spec headers and the README table.
 - The skill `broken-ref` check no longer false-flags `./` paths inside shell code fences.
 - Removed stale references to the archived `mcp.hosting`.
@@ -233,46 +271,56 @@ Full-pass audit of the entire codebase (161 files, every finding adversarially v
 ## [0.12.3] - 2026-05-28
 
 ### Internal
+
 - `release.sh` hardening: a tag-drift push guard, a `SKIP_LINT` escape hatch for the Windows-ARM lint segfault, and a `gh release create` step.
 
 ## [0.12.2] - 2026-05-28
 
 ### Changed
+
 - `release.sh` now publishes to the MCP Registry and creates the GitHub release itself; `release.yml` and the other CI workflows were dropped in favor of the local release flow.
 - README: replaced the mcp.hosting badge with an "Add to Yaw MCP" deep link, and pinned the `npx` spawn to `@latest` for auto-update.
 
 ### Internal
+
 - Release-flow fixes: tty-gated confirmation prompt, unconditional `server.json` version sync, a `gh auth token` fallback for the MCP Registry, and CI hand-off instead of racing it.
 
 ## [0.12.1] - 2026-05-19
 
 ### Fixed
+
 - A batch of correctness fixes across the git utilities, file scanner, fixer, and checks (from a full-pass review).
 
 ## [0.12.0] - 2026-05-17
 
 ### Fixed
+
 - Path matching in `getCommitsSinceBatch` (the git commit-history utility).
 
 ## [0.11.0] — 2026-05-15
 
 ### Added
+
 - **Path-detector classification stage** in `session-stale-memory`. A new `classifyPath()` filter rejects candidates that look path-like but aren't filesystem paths: slash commands (`/yaw-review`, `/release-yaw`), tilde approximations (`~80%`, `~23h`, `~1KB`, `~Nx`), URL paths (`/blog`, `/docs`, `/api/...` -- recognized via a `WEB_FIRST_SEGMENTS` vocabulary or a co-occurring `https?://` base URL in the same memory), and template placeholders (`~/.claude/skills/<name>/SKILL.md`, `src/{{module}}/index.ts`). Order: approximation -> template -> URL-path -> slash-command -> fall-through fs-path. `WEB_FIRST_SEGMENTS` lives at `tests/fixtures/web-first-segments.json` so additions go through a fixture edit + a test rather than a code edit, bundled into the dist at build time via an esbuild define.
 - **`ignoreRules` config field** alongside the existing `ignore: CheckName[]`. Granular per-finding suppression with three filter axes: `check` (required, exact `CheckName`), `match` (regex tested against the finding message), and `pathPattern` (regex tested against each extracted path in a `session-stale-memory` message -- every path must match for the rule to fire). Optional `reason` field surfaces in drift reports. `ignore` is unchanged; `ignoreRules` is purely additive.
 - **Drift report** in all three output formats: CLI text footer (after the main report), JSON `_meta.ignoreReport` block on `LintResult`, and the MCP response payload. Reports `dropped` count, `unusedRules` (rules that never fired -- stale-config debt), and `rulesMissingReason` (rules without a `reason` field -- undocumented suppression debt).
 
 ### Changed
+
 - `session-stale-memory` produces fewer false positives. The same content that previously surfaced `~80%`, `/blog`, `/yaw-review`, etc. as broken filesystem references no longer flags them at all. Behaviour change is user-visible (hence the minor bump), but no consumer relied on the false-positive output.
 
 ### Security
+
 - Ignore-rule regexes from `.ctxlintrc.json` are repo-author-trusted, same posture as `.eslintrc.json`. Compiled with `new RegExp(...)` and run with no step cap. Documented at the top of `src/core/ignore-rules.ts`.
 
 ### Why
+
 A `ctxlint_session_audit` run against `~/yaw/mcp-hosting` on 2026-05-15 returned 20 findings, only 5 of which were actionable. 9 of the 15 false positives came from the path detector flagging slash commands / URL paths / approximations; the remaining 6 needed per-project context the auditor couldn't know (intentionally diverged config files, intentionally absent `release.yml`). Improvement 1 fixes the detector; Improvement 2 adds the mechanism so per-project context can be suppressed without disabling whole checks. Same audit now produces 5 findings, all actionable.
 
 ## [0.9.17] — 2026-04-16
 
 ### Added
+
 - **`.mcph.json` linting** — 10 new rules under the `mcph-config/*` ID family for the config file read by the `@yawlabs/mcph` CLI. Distinct from `.mcp.json` (client-side MCP server list): `.mcph.json` holds auth token + API base + allow/deny lists for the mcph binary that orchestrates mcp.hosting-managed servers.
 - Rules cover five themes: **token security** (`token-in-project-scope` error on git-tracked project files, `invalid-token-format`, configurable `prefer-env-token`), **API endpoint validation** (`insecure-apibase` on public plaintext HTTP, `invalid-apibase`), **schema conformance** (`unknown-field` to catch typos like `tokens` vs `token`, `stale-version`), **allow/deny list semantics** (`allowlist-denylist-conflict`, `duplicate-entries`), and **gitignore hygiene** (`local-file-not-gitignored` with auto-fix).
 - New CLI flags: `--mcph`, `--mcph-only`, `--mcph-global`, `--mcph-strict-env-token` (upgrades `prefer-env-token` from warning to error).
@@ -280,29 +328,36 @@ A `ctxlint_session_audit` run against `~/yaw/mcp-hosting` on 2026-05-15 returned
 - Token-related rules emit per-shell `export MCPH_TOKEN` examples (bash/zsh, fish, PowerShell, direnv) and include the rotation URL (`https://mcp.hosting/settings/tokens`) when a leak is already on-disk.
 
 ### Why
+
 `mcph install` flows hand out PATs (`mcp_pat_*`) that must not land in committed config. The existing `.mcp.json` rules don't apply — different schema, different threat model. This adds a parallel rule family so teams adopting mcph get the same leak-detection bar without writing custom scripts.
 
 ## [0.9.16] — 2026-04-16
 
 ### Security
+
 - MCP tools now validate `projectPath` (and `ctxlint_validate_path`'s `path` parameter) at the tool boundary. Inputs containing shell metacharacters (`;`, `|`, backticks, `$(`, `${`, newlines) are rejected with a generic error that does not echo the input. `projectPath` must resolve to an existing directory.
 - Defense-in-depth: ctxlint uses Node `fs` APIs (no shell), so there is no actual injection surface. This change eliminates false-positive signals from security scanners that grep tool output for reflected payloads and hardens a user-provided entry point against malformed input.
 
 ### Changed
+
 - `ctxlint_audit` description no longer names sibling tools (`ctxlint_mcp_audit`, `ctxlint_session_audit`). Reworded to describe scope without choreographing workflows across tools — sibling tool names rot on rename and encourage LLMs to pattern-match from descriptions instead of reading each tool's own definition.
 
 ### Why
+
 Dogfood run against mcp-compliance scored 97 → 98 → 100 across these changes. The injection false-positive was a real defense-in-depth gap once we looked at it (no shell, but also no validation); the cross-tool description was a guideline violation we were only one reword away from fixing.
 
 ## [0.9.15] — 2026-04-16
 
 ### Added
+
 - `ctxlint serve` subcommand as a discoverable alias for `--mcp-server`. `mcp` is already overloaded in the lint flags (`--mcp`, `--mcp-only`, `--mcp-global`), so `serve` is the clearer name for launching the stdio MCP server. The `--mcp-server` flag continues to work for back-compat.
 
 ### Changed
+
 - README integration examples (Claude Code, `.mcp.json`, VS Code, Claude Desktop) updated to use `serve` instead of `--mcp-server`.
 
 ### Why
+
 Running `npx @yawlabs/ctxlint` without the flag drops into the CLI linter and exits — confusing for users expecting a stdio MCP server. `serve` gives a clean, discoverable entry point that matches the README's integration examples.
 
 ## [0.9.14] — 2026-04-16
@@ -310,6 +365,7 @@ Running `npx @yawlabs/ctxlint` without the flag drops into the CLI linter and ex
 Housekeeping release — keeps the published package in step with `main` after a post-0.9.13 formatting fix.
 
 ### Changed
+
 - **Internal:** prettier-formatted a comment block in `src/mcp/server.ts`. No functional change; the bundled artifact is identical to 0.9.13 modulo the version string.
 
 ## [0.9.13] — 2026-04-16
@@ -317,6 +373,7 @@ Housekeeping release — keeps the published package in step with `main` after a
 Third pre-1.0 review pass — MCP server schema tightening and a session-scanner edge-case guard.
 
 ### Fixed
+
 - **MCP tools' `checks` parameter is now domain-scoped.** Previously every MCP tool (`ctxlint_audit`, `ctxlint_fix`, `ctxlint_mcp_audit`, `ctxlint_session_audit`) accepted the full union of context/MCP/session check names — so a call like `ctxlint_audit` with `checks: ['mcp-schema']` would validate and then silently produce an empty result, because the audit path for that tool only scans context files. Each tool's schema now exposes only the check names for the domain it actually runs, so hosts (Claude Code, Cursor) can present valid options in their tool UI and invalid inputs fail at schema validation instead of silently dropping.
 - **`session-scanner.ts` refuses to detect providers when `$HOME`/`%USERPROFILE%` are both unset.** In that pathological case, `join('', '.claude')` produced the relative path `.claude`, and `existsSync` would then match a project-local `.claude/` directory as if it were the user's global agent data. `detectProviders()` now returns `[]` when `home` is empty, which short-circuits every downstream reader (history, memories) because they're all gated on the matching provider being detected first.
 
@@ -325,6 +382,7 @@ Third pre-1.0 review pass — MCP server schema tightening and a session-scanner
 Follow-up to 0.9.11. One correctness fix carried over from the review that was deferred at release time.
 
 ### Fixed
+
 - **`redundancy/duplicate-content` now uses true Jaccard similarity** (`|A ∩ B| / |A ∪ B|`) instead of `|A ∩ B| / max(|A|, |B|)`. The old metric inflated the score when one file was much smaller than the other — e.g. a 10-line AGENTS.md fully contained in a 200-line CLAUDE.md reported ~100% overlap when a user reading "content overlap" would expect ~5%. The user-facing percentage and the stored rule ID are unchanged; only the underlying computation moved. Threshold kept at 0.6 but flipped to `>=` so pairs landing exactly on the line still get flagged. Threshold and metric now documented inline.
 
 ## [0.9.11] — 2026-04-16
@@ -332,6 +390,7 @@ Follow-up to 0.9.11. One correctness fix carried over from the review that was d
 Second pre-1.0 review pass. Ten bug fixes across SARIF output, MCP tool hints, fixer correctness, init hook pinning, watch-mode cleanup, parser section bounds, tier-tokens settings error handling, pre-commit-framework hook pinning, plus doc corrections. No breaking changes.
 
 ### Fixed
+
 - **SARIF now emits `logicalLocations` for synthetic cross-file buckets** instead of shoving labels like `(project)`, `(mcp)`, and `~/.claude/ (session audit)` into `physicalLocation.artifactLocation.uri`. GitHub Code Scanning interprets that URI as a repo-relative file path, so the old output either dropped cross-file findings or filed them against literal `(project)` paths. Real file paths continue to use `physicalLocation` unchanged.
 - **`ctxlint_fix` MCP tool now advertises `destructiveHint: true`** (`src/mcp/server.ts`). The tool writes to disk via `applyFixes()` → `fs.writeFileSync`, so hosts need to know it's destructive when deciding whether to prompt the user for confirmation.
 - **Fixer replaces every occurrence of `oldText` on a line**, not just the first. A directory rename landing on a line like ``"tests live in `src/old/a.ts` and `src/old/b.ts`"`` would previously leave the second reference dangling. Switched to `String.prototype.replaceAll`.
@@ -342,6 +401,7 @@ Second pre-1.0 review pass. Ten bug fixes across SARIF output, MCP tool hints, f
 - **`tier-tokens.ts` surfaces malformed `.claude/settings.json` on stderr** instead of silently treating an unparseable settings file as "no hook enforcement configured". `loadSettingsSources` now distinguishes ENOENT (still silent — not every repo has one) from parse failures (warns with the underlying error).
 
 ### Docs
+
 - `AGENT_SESSION_LINT_SPEC.md` prose now says "7 lint rules" (was "5") to match the catalog and `ALL_SESSION_CHECKS`.
 - `MCP_CONFIG_LINT_SPEC.md` prose now says "43 lint rules" (was "27") — the 0.9.9 reconciliation missed this spot.
 - `README.md` example output and pre-commit-framework `rev:` pin bumped off `v0.9.0`. Bundle-size blurb corrected from "~200 KB" to "~400 KB" — the actual tarball is 390 KB per `npm pack --dry-run` (unpacks to 2.1 MB; `dist/index.js` is 1.9 MB).
@@ -352,9 +412,11 @@ Second pre-1.0 review pass. Ten bug fixes across SARIF output, MCP tool hints, f
 Staleness detector fix + pre-merge bench integration.
 
 ### Fixed
-- **`staleness/stale` and `staleness/aging` silently never fired.** `getCommitsSinceBatch` in `src/utils/git.ts` ran `git log --format=___CTXLINT_COMMIT___`, which git rejects as an invalid pretty format ("fatal: invalid --pretty format: ___CTXLINT_COMMIT___"). The surrounding try/catch swallowed the error, every referenced path got a zero commit count, and the `totalCommits === 0` short-circuit in `checkStaleness` returned no issues. Fix: prefix the sentinel with `%n` so git accepts the format. Detected by [ctxlint-bench](https://github.com/YawLabs/ctxlint-bench) — the case was XFAIL'd against 0.9.9 and XPASSed against this build. (#2, #3)
+
+- **`staleness/stale` and `staleness/aging` silently never fired.** `getCommitsSinceBatch` in `src/utils/git.ts` ran `git log --format=___CTXLINT_COMMIT___`, which git rejects as an invalid pretty format ("fatal: invalid --pretty format: **_CTXLINT_COMMIT_**"). The surrounding try/catch swallowed the error, every referenced path got a zero commit count, and the `totalCommits === 0` short-circuit in `checkStaleness` returned no issues. Fix: prefix the sentinel with `%n` so git accepts the format. Detected by [ctxlint-bench](https://github.com/YawLabs/ctxlint-bench) — the case was XFAIL'd against 0.9.9 and XPASSed against this build. (#2, #3)
 
 ### CI
+
 - **Pre-merge effectiveness gate.** New `.github/workflows/bench.yml` runs the private ctxlint-bench corpus against every PR's freshly-built binary (not just post-release via cron). Fails the check on any F1 regression vs baseline. Requires a `BENCH_REPO_TOKEN` repo secret with read access to `YawLabs/ctxlint-bench`. (#4)
 
 ## [0.9.9] — 2026-04-13
@@ -362,9 +424,11 @@ Staleness detector fix + pre-merge bench integration.
 Spec-hygiene pass + CI unblock. Docs-only and test-only changes; no runtime or API changes.
 
 ### Fixed
+
 - **CI typecheck.** `src/utils/__tests__/tokens.test.ts` used `afterEach` without importing it. Vitest's auto-loaded globals hid the miss locally, but `tsc --noEmit` in CI caught it and v0.9.8's CI went red. Imported explicitly.
 
 ### Docs
+
 - **Cross-reference mcp-compliance.** Added "Related specifications" section to `MCP_CONFIG_LINT_SPEC.md` positioning `mcp-config-lint` (static config linting) and `mcp-compliance` (runtime server testing) as complementary open specs in the Yaw Labs family. Both target MCP spec `2025-11-25`.
 - **Rule count reconciled.** `MCP_CONFIG_LINT_SPEC.md` and `README.md` said "23 lint rules" but the catalog has had 43 for several versions. Prose updated in 4 places. Category count (8) unchanged.
 
@@ -373,9 +437,11 @@ Spec-hygiene pass + CI unblock. Docs-only and test-only changes; no runtime or A
 Test hygiene pass closing the low-priority items from the pre-1.0 audit. 41 new tests (377 → 418); one incidental parser fix surfaced while writing them.
 
 ### Fixed
+
 - **Parser strips trailing sentence punctuation from path captures.** A path at the end of a sentence like `"See src/utils/fmt.ts."` was captured as `src/utils/fmt.ts.` (trailing period), because the greedy `[\w.*-]*` in `PATH_PATTERN` absorbed it. Now trimmed post-capture, while still requiring the result to contain a `/` so we don't mangle legitimate file paths.
 
 ### Tests
+
 - **Fixer:** quiet-mode logging suppression, JSON-fix-rollback when the candidate change would produce invalid JSON.
 - **Token thresholds:** invalid-order validation (info ≥ warning, warning ≥ error) falls back to defaults with a stderr warning.
 - **Commands:** parameterized shorthand package-manager coverage — `yarn`, `bun`, `bun run`, `yarn run` forms all exercise `commands/script-not-found`.
@@ -391,16 +457,19 @@ Test hygiene pass closing the low-priority items from the pre-1.0 audit. 41 new 
 Six performance and correctness fixes carrying forward the pre-1.0 audit queue. No breaking changes.
 
 ### Performance
+
 - **Staleness check now batches git calls.** Previously `checkStaleness` spawned one `git log` subprocess per referenced path per file (30 refs × 50ms fork+exec on Windows = 1.5s per stale file). New `getCommitsSinceBatch` runs a single `git log --since=<date> --name-only` call and parses commit blocks to compute per-path counts. Cuts staleness time to ~constant per file regardless of ref count.
 - **Scanner discovery now does one glob call per directory instead of 32.** The nested `for (dir) for (pattern)` loop became 32N filesystem scans. Passing all patterns as an array to a single `glob()` call per directory lets the library share the directory read. ~32× fewer filesystem operations on the discovery path.
 - **Contradictions check now pre-indexes directives** by `(category, file, label)` instead of running `.find()` linear scans inside nested loops. Effectively O(F²·M²·D) → O(F²·M²) with much smaller constants.
 
 ### Fixed
+
 - **Contradictions output now collapses N-way clusters.** Three files declaring npm / pnpm / yarn previously produced 3 separate "X vs Y" pair issues for what reads as one cluster disagreement. Now emits a single issue listing all conflicting (file, label) tuples when 3+ files disagree. 2-file pair conflicts unchanged.
 - **`mcp-commands/args-path-missing` no longer false-positives on URL args.** Values like `https://api.example.com/openapi.json`, `s3://bucket/spec.json`, and `git://...` matched the file-path heuristic (`segment/segment.ext`), got resolved against the project root, and were warned as missing. Added a URL-prefix skip for `http(s)`, `file`, `s3`, `gs`, `ssh`, `git`.
 - **Fixer now deduplicates identical fix actions.** When two checks proposed the same `(line, oldText, newText)` — e.g. git-rename detection and fuzzy-match both surfacing the same target — the second `line.replace()` was a silent no-op but `totalFixes` still incremented, over-counting. Dedupe on the triple before applying.
 
 ### Improved
+
 - **Config errors point at the line and column** where JSON parsing failed (when Node's error format allows extraction). Unknown top-level keys in `.ctxlintrc` now produce a warning on stderr with a Levenshtein-based "did you mean" suggestion when the typo is close (e.g. `chekcs` → `checks`). Config-root-not-object (JSON array or scalar at root) now errors clearly instead of type-lying to downstream callers.
 
 ## [0.9.6] — 2026-04-12
@@ -408,6 +477,7 @@ Six performance and correctness fixes carrying forward the pre-1.0 audit queue. 
 Eight fixes from a pre-1.0 bug / perf / UX audit. All backward-compatible for CI / non-interactive use. Interactive TTY behavior of `--fix` changes (see below) — safer, but new.
 
 ### Fixed
+
 - **Tiktoken (~5 MB WASM) no longer loads on every invocation.** Previously a top-level `await import('tiktoken')` was hoisted into CLI init, so every `--version` / `--help` paid the cost. Now lazy via `createRequire` on first `countTokens()` call. Every CI run saves hundreds of milliseconds and ~5 MB of memory.
 - **SARIF rule descriptors out of sync with active checks.** `ctxlint/tier-tokens` and `ctxlint/session-memory-index-overflow` were missing from `buildRuleDescriptors()`, so GitHub Code Scanning dropped metadata for any issue using those rule IDs. Added both. A new self-validating test asserts descriptors ⊇ every check in `ALL_*CHECKS` so this can't drift again.
 - **`session/stale-memory` flagged `~/` paths as broken.** Node's `isAbsolute('~/…')` returns false, so the check resolved tilde refs under the project root, didn't find them, and fired. Now expands `~` to `$HOME` / `%USERPROFILE%` before the existence check.
@@ -417,38 +487,47 @@ Eight fixes from a pre-1.0 bug / perf / UX audit. All backward-compatible for CI
 - **`tier-tokens/hard-enforcement-missing` fired on cross-sentence framing.** "Run `npm test`. Do not commit with failing tests" flagged `npm test` as unenforced even though `Do not` was part of a different sentence. Regex now requires the inviolable word and the backticked command to be in the same sentence (no `.!?` between). Also tightened enforcement-check against hook/deny entries to word-boundary matching, so `rm` doesn't match `npm run rm-old-logs` and the command phrase is canonicalized before comparison.
 
 ### Changed
+
 - **`--fix` now prompts for confirmation in an interactive TTY** unless `--yes` is passed. Previously `--fix` applied all changes immediately, which bit users when fuzzy-match picked a wrong target. Non-TTY (CI) behavior is unchanged — `--fix` still writes directly.
 - **`--fix` now skips symlinked context files by default** to avoid silently writing through to the symlink target. Pass `--follow-symlinks` to opt back in.
 
 ### Added
+
 - **`--fix-dry-run`** flag. Shows the diff (`Would fix …`) without modifying files. Works in any environment.
 - **`--yes`** flag. Skips the new interactive confirmation when using `--fix`. Required when `--fix` is run in a TTY without prompting.
 - **`--follow-symlinks`** flag. Allows `--fix` to write through symlinks (previously the implicit default, now opt-in).
 
 ### Notes
+
 Despite adding three flags (per policy normally a minor bump), this release ships as patch because the flags are safety additions around an existing capability (`--fix`) that the audit identified as a foot-gun, and the other seven items are pure bug fixes. CI workflows using `--fix` remain unchanged since non-TTY environments apply fixes directly.
 
 ## [0.9.5] — 2026-04-12
 
 ### Removed
+
 - **`commands/npm-auth-trap`** (shipped in v0.9.4) — retracted. The rule was based on a false premise: that npm write operations (`deprecate`, `unpublish`, `dist-tag`, `access`, `owner`) return 422 from the CLI under WebAuthn-only 2FA, forcing users to the npmjs.com settings UI. In reality, `npm login --auth-type=web` establishes a session that **does** satisfy 2FA-for-writes, and the subsequent write commands succeed. The rule was pushing users away from a working CLI path based on a theory not verified against observable evidence. Removing the rule is allowed without a major bump because it was flagged `stability: "experimental"` — its matching logic and existence are both subject to revision.
 
 ### Fixed
+
 - **`paths/directory-not-found` now fires.** The parser's `PATH_PATTERN` required a non-empty final segment, which meant trailing-slash directory references like `src/components/` were never captured. The rule was shipping in the catalog but could not fire from real context files. Widened the final segment to allow zero characters, so directory references are now passed to the check.
 
 ### Added
+
 - `CONTRIBUTING.md` — new "Writing a new check" section covering check-file structure, `audit.ts` wiring, catalog entries, tests, and the stability convention. Plus corrected the Development Workflow table (the repo uses `npm run format` + `npm run lint`, not `npm run lint:fix` which never existed).
 - Test coverage raised to **92.97% lines** (was 91.38% in v0.9.3). Added targeted tests for SARIF reporter edges (severity mapping, detail append, empty case, line clamping, rule descriptors) and tiktoken encoder lifecycle paths (`keepEncoderAlive`, `forceFreeEncoder`).
 
 ### Notes on the retraction
+
 This release is the result of a policy-over-evidence failure on the tooling side. A plausible-sounding but unverified theory about npm + WebAuthn was codified into a ctxlint rule without cross-checking against the user's actual shell history. When the user pointed out that the CLI path had succeeded twice the same day, the rule was retracted and the incident prompted explicit "check evidence before asserting" guidance in the project's own ops documentation. Rule `commands/npm-auth-trap` was live in v0.9.4 for ~2 hours; if you pinned to v0.9.4, upgrade to v0.9.5 or add the rule to your `ignore` list.
 
 ## [0.9.4] — 2026-04-12
 
 ### Added
+
 - `commands/npm-auth-trap` rule (**experimental**) — flags context-file references to `npm deprecate`, `unpublish`, `dist-tag add/rm/set`, `access grant/revoke/2fa`, or `owner add/rm` as local CLI commands. Under WebAuthn-only 2FA (no TOTP authenticator), these return 422 because npm treats CLI web-auth tokens as not-2FA-authenticated for writes. The suggestion routes users to `npmjs.com/package/<pkg>/settings` or a CI-driven workflow. Severity `info`; opinionated because it only bites users whose 2FA config lacks a TOTP fallback.
 
 ### Changed
+
 - Parser's bash-block command extraction now captures all `npm <subcommand>` forms, not just `npm run <script>`. Previously `npm deprecate`, `npm unpublish`, etc. were silently dropped from the reference set — a real undercapture bug that masked several check paths from being exercised at all.
 - Versioning policy: experimental rules (`stability: "experimental"` in the rule catalog) bump **patch**, not minor. Their matching logic is expected to evolve; treating them as stable-surface additions forces premature minor bumps. Stable rules still bump minor on addition, per the original policy.
 
@@ -457,6 +536,7 @@ This release is the result of a policy-over-evidence failure on the tooling side
 Pre-1.0 hardening pass. No breaking changes; everything is additive or internal.
 
 ### Added
+
 - `CHANGELOG.md` with retroactive release history from v0.1.
 - Versioning policy documenting what counts as major / minor / patch for this project.
 - `stability` field on every rule in the three JSON catalogs (`stable` by default; `experimental` on the three most heuristic rules — `tier-tokens/hard-enforcement-missing`, `session/consecutive-repeat`, `session/cyclic-pattern`). Experimental rules may tune their matching logic without a major bump.
@@ -465,11 +545,13 @@ Pre-1.0 hardening pass. No breaking changes; everything is additive or internal.
 - Fixture + tests for empty-project behavior (no context files, no `.claude/`, no `package.json`) — ctxlint exits `0` cleanly in every mode.
 
 ### Changed
+
 - Upgraded transitive deps to resolve 9 Dependabot alerts (vite → 8.0.8, hono → 4.12.12, @hono/node-server → 1.19.13 via pnpm overrides). All 9 were dev-only; the shipped bundle was not affected.
 
 ## [0.9.2] — 2026-04-12
 
 ### Added
+
 - `tier-tokens` check reports tier-aware token accounting for always-loaded context files.
   - `tier-tokens/section-breakdown` — reports the heaviest top-level sections so bloat has a demotion target.
   - `tier-tokens/aggregate` — warns when combined always-loaded files exceed the budget across the project.
@@ -478,14 +560,17 @@ Pre-1.0 hardening pass. No breaking changes; everything is additive or internal.
 - `tokenThresholds.tierBreakdown` and `tokenThresholds.tierAggregate` config fields.
 
 ### Fixed
+
 - `.claude/rules/*.md` files are now classified correctly: rules without `paths` frontmatter are always-loaded; rules with `paths` are on-demand (previously all rules files were treated as on-demand, undercounting the always-loaded budget).
 
 ## [0.9.1] — 2026-04-11
 
 ### Added
+
 - Unit coverage for session checks.
 
 ### Changed
+
 - CLI now validates `--format` and `--depth` option values; invalid values exit with code 2 and a clear error.
 - Config file parse errors surface the exact error, not a generic fallback.
 - Internal: MCP check enum DRY'd up to remove duplication.
@@ -493,57 +578,68 @@ Pre-1.0 hardening pass. No breaking changes; everything is additive or internal.
 ## [0.9.0] — 2026-04-09
 
 ### Added
+
 - `ci-coverage` check — flags release/deploy CI workflows that aren't referenced from any context file.
 - `ci-secrets` check — flags CI secrets referenced in workflows but not documented in a context file.
 - `session-loop-detection` check — flags consecutive-repeat and cyclic patterns in agent history (signal that the agent is stuck).
 
 ### Fixed
+
 - 32 bug, UX, and performance fixes across the linter (covered in commit `745650c`).
 
 ## [0.8.0] — 2026-04-08
 
 ### Added
+
 - `--watch` mode — re-lint on context-file / MCP-config / `package.json` changes.
 - GitHub Action wrapper (`action.yml`) for one-line CI integration.
 
 ### Changed
+
 - Zero-dependency bundle via esbuild — `dist/index.js` is now a single-file release with no runtime `node_modules` install needed.
 
 ## [0.7.0] — 2026-04-07
 
 ### Added
+
 - Session linting — cross-project consistency checks using AI agent session data (`~/.claude/`, `~/.codex/`, etc.).
 - Initial session check set: `session-missing-secret`, `session-diverged-file`, `session-missing-workflow`, `session-stale-memory`, `session-duplicate-memory`.
 
 ## [0.6.0] — 2026-04-07
 
 ### Added
+
 - Release automation workflow.
 - Public linting specifications and machine-readable rule catalogs (`context-lint-rules.json`, `mcp-config-lint-rules.json`, `agent-session-lint-rules.json`).
 
 ### Fixed
+
 - `--mcp` flag collision resolved.
 - Repo URL casing for npm provenance.
 
 ## [0.5.0] — 2026-04-07
 
 ### Added
+
 - MCP config linting across all major AI clients (Claude Code, Claude Desktop, VS Code, Cursor, Windsurf, Cline, Amazon Q, Continue).
 - MCP check set: `mcp-schema`, `mcp-security`, `mcp-commands`, `mcp-deprecated`, `mcp-env`, `mcp-urls`, `mcp-consistency`, `mcp-redundancy`.
 
 ## [0.4.0] — 2026-04-07
 
 ### Added
+
 - `--mcp` flag to enable MCP config linting alongside context checks.
 - Tool annotations surface in MCP server output.
 - Per-file checks now run in parallel.
 
 ### Changed
+
 - Node.js 20+ required (dropped Node 18 — vitest 4.x requires 20+).
 
 ## [0.3.0] — (pre-release iteration)
 
 ### Added
+
 - Contradiction detection across multiple context files.
 - Frontmatter validation for Cursor `.mdc`, Copilot `.instructions.md`, Windsurf `.windsurf/rules/*.md`.
 - SARIF output format (`--format sarif`) for GitHub code-scanning integration.
@@ -552,6 +648,7 @@ Pre-1.0 hardening pass. No breaking changes; everything is additive or internal.
 ## [0.2.0] — 2026-04-05
 
 ### Added
+
 - `--fix` flag for auto-fixing broken paths (git rename detection + fuzzy matching).
 - Config file support (`.ctxlintrc`, `.ctxlintrc.json`).
 - `ctxlint init` command — installs a git pre-commit hook.
@@ -563,6 +660,7 @@ Pre-1.0 hardening pass. No breaking changes; everything is additive or internal.
 Initial release.
 
 ### Added
+
 - Context file checks: `paths`, `commands`, `staleness`, `tokens`, `redundancy`.
 - Output formats: text, JSON.
 - CLI: `--strict`, `--checks`, `--ignore`, `--verbose`, `--tokens`.

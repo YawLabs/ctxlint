@@ -432,8 +432,7 @@ describe('checkTierTokens — hard-enforcement-missing', () => {
   // A prose directive that FOLLOWS a closed fence must still fire -- the mask
   // has to toggle off, not latch.
   it('flags prose after a closed fence (mask toggles off)', async () => {
-    const content =
-      '# CLAUDE.md\n\n```bash\nnpm ci\n```\n\nNEVER run `npm login` locally.\n';
+    const content = '# CLAUDE.md\n\n```bash\nnpm ci\n```\n\nNEVER run `npm login` locally.\n';
     const issues = await checkTierTokens(
       makeFile({ content, sections: [], totalTokens: 50 }),
       tmpDir,
@@ -603,7 +602,7 @@ describe('checkTierTokens — hard-enforcement-missing', () => {
       '# CLAUDE.md\n\n' +
       'At overlay-build time `combineClaudeMd` (src/yaw-mode.ts) reads `rules/manifest.json` ' +
       'and filters this list down to the rules whose `applies-when.always === true` -- plus ' +
-      'the active overlay profile\'s force-load set -- those load every turn, injected on ' +
+      "the active overlay profile's force-load set -- those load every turn, injected on " +
       'demand by the `rule-trigger-load.js` UserPromptSubmit hook\n';
     const issues = await checkTierTokens(
       makeFile({ content, sections: [], totalTokens: 50 }),
