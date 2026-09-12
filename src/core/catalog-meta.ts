@@ -23,6 +23,18 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // This file lives at <repo>/src/core/catalog-meta.ts, so repo root is two up.
+//
+// DEV/BUILD-TIME ONLY. "Two up" holds for the source tree, not for the published
+// package: the bundle is `<pkg>/dist/index.js`, where the same expression resolves
+// to the PARENT of the installed package, so `readCatalog` would miss the catalogs
+// `package.json` `files` ships at `<pkg>/`. That is harmless today only because
+// this module is never in the runtime bundle graph -- its only importers are tests
+// and the test-only `catalog-schema.ts` / `catalog-generate.ts` -- so esbuild keeps
+// it out of `dist/index.js` entirely. A future runtime feature that pulls in a
+// catalog reader (a `ctxlint rules` subcommand, an `--explain` flag) breaks that
+// invariant SILENTLY: no build error, just reads one directory too high. Such a
+// change must resolve catalogs relative to the PACKAGE (one up from `dist/`), not
+// reuse REPO_ROOT.
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(HERE, '..', '..');
 
