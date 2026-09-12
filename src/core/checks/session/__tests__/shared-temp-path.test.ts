@@ -14,7 +14,13 @@ function cmd(display: string): HistoryEntry {
 }
 
 function ctx(history: HistoryEntry[]): SessionContext {
-  return { history, memories: [], siblings: [], currentProject: '/repo/a', providers: ['claude-code'] };
+  return {
+    history,
+    memories: [],
+    siblings: [],
+    currentProject: '/repo/a',
+    providers: ['claude-code'],
+  };
 }
 
 describe('session/shared-temp-path', () => {
@@ -57,7 +63,9 @@ describe('session/shared-temp-path', () => {
 
   it('does not flag a write that is never read back', async () => {
     // A scratch file nobody restores from cannot be clobbered into the workspace.
-    const issues = await checkSharedTempPath(ctx([cmd('npm test > /tmp/test.log'), cmd('echo done')]));
+    const issues = await checkSharedTempPath(
+      ctx([cmd('npm test > /tmp/test.log'), cmd('echo done')]),
+    );
     expect(issues).toHaveLength(0);
   });
 

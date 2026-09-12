@@ -23,14 +23,23 @@ function seed(encodedDir: string, lines: number): string {
   roots.push(home);
   const dir = join(home, '.claude', 'projects', encodedDir, 'memory');
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'MEMORY.md'), `${Array.from({ length: lines }, (_, i) => `- entry ${i}`).join('\n')}\n`);
+  writeFileSync(
+    join(dir, 'MEMORY.md'),
+    `${Array.from({ length: lines }, (_, i) => `- entry ${i}`).join('\n')}\n`,
+  );
   process.env.HOME = home;
   process.env.USERPROFILE = home;
   return home;
 }
 
 function ctx(project: string): SessionContext {
-  return { history: [], memories: [], siblings: [], currentProject: project, providers: ['claude-code'] };
+  return {
+    history: [],
+    memories: [],
+    siblings: [],
+    currentProject: project,
+    providers: ['claude-code'],
+  };
 }
 
 describe('projectDirCandidates', () => {

@@ -14,6 +14,7 @@ AI coding agents persist session data -- command history, memory files, learned 
 This specification defines a standard set of lint rules for validating agent session data for cross-project consistency. It does NOT define agent session formats (those are owned by each agent vendor). Instead, it defines what to CHECK across the session data that already exists.
 
 The specification includes:
+
 - A reference of session data locations across 8 AI coding agents
 - 13 lint rules in the `session` category with defined severities
 - A machine-readable rule catalog ([`agent-session-lint-rules.json`](./agent-session-lint-rules.json))
@@ -21,11 +22,11 @@ The specification includes:
 
 This is the third pillar alongside context file linting (`CLAUDE.md`, `.cursorrules`) and MCP config linting (`.mcp.json`). Together they cover everything that shapes what an AI agent knows and can do:
 
-| Pillar | What it checks | Specification |
-|---|---|---|
-| Context files | Instructions the agent reads | [CONTEXT_LINT_SPEC.md](./CONTEXT_LINT_SPEC.md) |
-| MCP configs | Tools the agent can use | [MCP_CONFIG_LINT_SPEC.md](./MCP_CONFIG_LINT_SPEC.md) |
-| Session data | History and memory the agent carries | This document |
+| Pillar        | What it checks                       | Specification                                        |
+| ------------- | ------------------------------------ | ---------------------------------------------------- |
+| Context files | Instructions the agent reads         | [CONTEXT_LINT_SPEC.md](./CONTEXT_LINT_SPEC.md)       |
+| MCP configs   | Tools the agent can use              | [MCP_CONFIG_LINT_SPEC.md](./MCP_CONFIG_LINT_SPEC.md) |
+| Session data  | History and memory the agent carries | This document                                        |
 
 **Reference implementation:** [ctxlint](https://github.com/YawLabs/ctxlint) (v0.7.0+)
 
@@ -73,23 +74,25 @@ This data is usually stored in the user's home directory, not in the project rep
 
 ### 1.2 Data sources by agent
 
-| Agent | Provider | History Location | Format | Memory / Preferences |
-|---|---|---|---|---|
-| Claude Code | Anthropic | `~/.claude/history.jsonl` | JSONL | `~/.claude/projects/*/memory/*.md` (Markdown with YAML frontmatter) |
-| Codex CLI | OpenAI | `~/.codex/history.jsonl` | JSONL | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` |
-| Aider | Paul Gauthier | `.aider.chat.history.md` (per-project) | Markdown | `.aider.input.history` (per-project, readline format) |
-| Vibe CLI | Mistral | `~/.vibe/sessions/*/messages.jsonl` | JSONL | `~/.vibe/sessions/*/meta.json` |
-| Amazon Q | AWS | `~/.aws/amazonq/history/chat-history-*.json` | JSON | Keyed by workspace path hash |
-| Goose | Block | `~/.local/share/goose/sessions/sessions.db` (Linux/macOS), `%APPDATA%\Block\goose\data\sessions\` (Windows) | SQLite | Schema v9, versioned migrations |
-| Continue.dev | Continue | `~/.continue/sessions/*.json` | JSON | `~/.continue/dev_data/*.jsonl` |
-| Windsurf | Codeium | `~/.windsurf/transcripts/*.jsonl` | JSONL | `~/.codeium/windsurf/cascade/` |
+| Agent        | Provider      | History Location                                                                                            | Format   | Memory / Preferences                                                |
+| ------------ | ------------- | ----------------------------------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------- |
+| Claude Code  | Anthropic     | `~/.claude/history.jsonl`                                                                                   | JSONL    | `~/.claude/projects/*/memory/*.md` (Markdown with YAML frontmatter) |
+| Codex CLI    | OpenAI        | `~/.codex/history.jsonl`                                                                                    | JSONL    | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`                      |
+| Aider        | Paul Gauthier | `.aider.chat.history.md` (per-project)                                                                      | Markdown | `.aider.input.history` (per-project, readline format)               |
+| Vibe CLI     | Mistral       | `~/.vibe/sessions/*/messages.jsonl`                                                                         | JSONL    | `~/.vibe/sessions/*/meta.json`                                      |
+| Amazon Q     | AWS           | `~/.aws/amazonq/history/chat-history-*.json`                                                                | JSON     | Keyed by workspace path hash                                        |
+| Goose        | Block         | `~/.local/share/goose/sessions/sessions.db` (Linux/macOS), `%APPDATA%\Block\goose\data\sessions\` (Windows) | SQLite   | Schema v9, versioned migrations                                     |
+| Continue.dev | Continue      | `~/.continue/sessions/*.json`                                                                               | JSON     | `~/.continue/dev_data/*.jsonl`                                      |
+| Windsurf     | Codeium       | `~/.windsurf/transcripts/*.jsonl`                                                                           | JSONL    | `~/.codeium/windsurf/cascade/`                                      |
 
 **Platform notes:**
+
 - On Windows, `~` refers to `%USERPROFILE%` (typically `C:\Users\<name>`).
 - Goose uses platform-specific paths: XDG on Linux, `~/Library/Application Support/` on macOS, `%APPDATA%` on Windows.
 - Aider stores history in the project directory itself, not in the user's home directory. These files are typically gitignored.
 
 **Format stability:**
+
 - Claude Code's JSONL history and Markdown memory files are the most stable and well-documented formats.
 - Codex CLI's JSONL format is documented via OpenAI's CLI docs.
 - Goose uses SQLite with versioned schema migrations (v9 as of April 2026), making the format stable but requiring a SQLite dependency to read.
@@ -107,7 +110,7 @@ Session data varies enormously in size and format. This specification targets on
 
 **What we explicitly DO NOT scan:**
 
-- **Full session transcripts** -- too large. Active projects can accumulate hundreds of megabytes of transcript data. Scanning these would be slow and yield low-signal results. Rules whose signal is what the agent *did* read a bounded, project-scoped slice instead -- see §3, "Data sources".
+- **Full session transcripts** -- too large. Active projects can accumulate hundreds of megabytes of transcript data. Scanning these would be slow and yield low-signal results. Rules whose signal is what the agent _did_ read a bounded, project-scoped slice instead -- see §3, "Data sources".
 - **SQLite databases** -- Goose's `sessions.db` requires a SQLite dependency. Out of scope for v1. Future versions may add opt-in SQLite support.
 - **File history or shell snapshots** -- some agents capture filesystem state or shell output. These are agent-internal data and not useful for cross-project linting.
 
@@ -136,6 +139,7 @@ Skip hidden directories (starting with `.`) and `node_modules`.
 13 rules in 1 category (`session`). All rules in this category perform cross-project checks using sibling detection or per-project history analysis.
 
 Severity levels:
+
 - **error** -- the session data reveals a verifiably missing configuration. Should fail CI.
 - **warning** -- the session data reveals likely drift worth investigating. May fail CI in strict mode.
 - **info** -- the session data reveals a potential improvement. Never fails CI.
@@ -144,12 +148,12 @@ Severity levels:
 
 Detects GitHub secrets that have been set on sibling repositories but not the current project.
 
-| Field | Value |
-|---|---|
-| **Rule ID** | `session/missing-secret` |
-| **Severity** | error |
-| **Trigger** | `gh secret set <NAME>` found in agent history for 2+ sibling repos but not the current project |
-| **Message** | `GitHub secret "<name>" is set on <N> sibling repos (<names>) but not on this project` |
+| Field        | Value                                                                                          |
+| ------------ | ---------------------------------------------------------------------------------------------- |
+| **Rule ID**  | `session/missing-secret`                                                                       |
+| **Severity** | error                                                                                          |
+| **Trigger**  | `gh secret set <NAME>` found in agent history for 2+ sibling repos but not the current project |
+| **Message**  | `GitHub secret "<name>" is set on <N> sibling repos (<names>) but not on this project`         |
 
 **Detection algorithm:**
 
@@ -165,25 +169,25 @@ Detects GitHub secrets that have been set on sibling repositories but not the cu
 
 Detects canonical configuration files that have drifted between the current project and its siblings.
 
-| Field | Value |
-|---|---|
-| **Rule ID** | `session/diverged-file` |
-| **Severity** | warning |
-| **Trigger** | A canonical file exists in both the current project and 1+ siblings, and line-level overlap is 20-90% |
-| **Message** | `<file> has diverged from sibling repos: <sibling> (<N>% overlap)` |
+| Field        | Value                                                                                                 |
+| ------------ | ----------------------------------------------------------------------------------------------------- |
+| **Rule ID**  | `session/diverged-file`                                                                               |
+| **Severity** | warning                                                                                               |
+| **Trigger**  | A canonical file exists in both the current project and 1+ siblings, and line-level overlap is 20-90% |
+| **Message**  | `<file> has diverged from sibling repos: <sibling> (<N>% overlap)`                                    |
 
 **Canonical files:**
 
-| File path | Purpose |
-|---|---|
-| `release.sh` | Release automation script |
-| `.github/workflows/ci.yml` | CI pipeline |
-| `.github/workflows/release.yml` | Release pipeline |
-| `biome.json` | Biome linter config |
-| `.prettierrc` | Prettier config |
-| `.eslintrc.json` | ESLint config |
-| `tsconfig.json` | TypeScript config |
-| `.gitignore` | Git ignore rules |
+| File path                       | Purpose                   |
+| ------------------------------- | ------------------------- |
+| `release.sh`                    | Release automation script |
+| `.github/workflows/ci.yml`      | CI pipeline               |
+| `.github/workflows/release.yml` | Release pipeline          |
+| `biome.json`                    | Biome linter config       |
+| `.prettierrc`                   | Prettier config           |
+| `.eslintrc.json`                | ESLint config             |
+| `tsconfig.json`                 | TypeScript config         |
+| `.gitignore`                    | Git ignore rules          |
 
 **Detection algorithm:**
 
@@ -195,6 +199,7 @@ Detects canonical configuration files that have drifted between the current proj
    - **Above 90%** -- close enough. No flag. Minor differences are expected (e.g., different project names).
 
 **Notes:**
+
 - Lines are trimmed before comparison; blank lines and very short lines (3 characters or fewer after trimming) are excluded from the overlap calculation. Comment lines count toward overlap -- drift in the comments of a canonical file is still drift.
 - Compare each sibling independently. Report the sibling with the lowest overlap percentage first (the furthest-drifted sibling is the one worth reading first).
 
@@ -202,12 +207,12 @@ Detects canonical configuration files that have drifted between the current proj
 
 Detects GitHub Actions workflow files that exist across sibling repos but are absent from the current project.
 
-| Field | Value |
-|---|---|
-| **Rule ID** | `session/missing-workflow` |
-| **Severity** | warning |
-| **Trigger** | A GitHub Actions workflow file exists in 2+ sibling repos but not in the current project (which has a `.github` directory) |
-| **Message** | `GitHub Actions workflow "<file>" exists in <N> sibling repos (<names>) but not in this project` |
+| Field        | Value                                                                                                                      |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| **Rule ID**  | `session/missing-workflow`                                                                                                 |
+| **Severity** | warning                                                                                                                    |
+| **Trigger**  | A GitHub Actions workflow file exists in 2+ sibling repos but not in the current project (which has a `.github` directory) |
+| **Message**  | `GitHub Actions workflow "<file>" exists in <N> sibling repos (<names>) but not in this project`                           |
 
 **Detection algorithm:**
 
@@ -217,6 +222,7 @@ Detects GitHub Actions workflow files that exist across sibling repos but are ab
 4. For each filename that exists in 2+ siblings but not in the current project, flag it.
 
 **Notes:**
+
 - Match by filename only, not by content. A `ci.yml` in one repo may be very different from `ci.yml` in another, but the absence of any CI workflow is still worth flagging.
 - Exclude workflow files that are clearly project-specific (e.g., containing the repo name in the filename). Implementors may use heuristics here.
 
@@ -224,12 +230,12 @@ Detects GitHub Actions workflow files that exist across sibling repos but are ab
 
 Detects Claude Code memory entries that reference file paths which no longer exist in the project.
 
-| Field | Value |
-|---|---|
-| **Rule ID** | `session/stale-memory` |
-| **Severity** | info |
-| **Trigger** | A memory file references file paths that no longer exist in the project |
-| **Message** | `Memory "<name>" references <N> path(s) that no longer exist: <paths>` |
+| Field        | Value                                                                   |
+| ------------ | ----------------------------------------------------------------------- |
+| **Rule ID**  | `session/stale-memory`                                                  |
+| **Severity** | info                                                                    |
+| **Trigger**  | A memory file references file paths that no longer exist in the project |
+| **Message**  | `Memory "<name>" references <N> path(s) that no longer exist: <paths>`  |
 
 **Scope:** This rule only checks memory files for the current project. Claude Code stores per-project memories in `~/.claude/projects/<encoded-path>/memory/`, where `<encoded-path>` encodes the project's absolute path (each of `:`, `/`, `\`, and `.` becomes a single `-` -- see [Section 4](#4-implementing-this-specification)).
 
@@ -242,6 +248,7 @@ Detects Claude Code memory entries that reference file paths which no longer exi
 5. Flag memory files that reference 1+ paths that no longer exist.
 
 **Notes:**
+
 - This rule is `info` severity because stale memories are low-risk -- they waste a small amount of context but don't cause incorrect behavior.
 - Implementors may suggest `claude memory remove` or manual deletion as a fix.
 
@@ -249,12 +256,12 @@ Detects Claude Code memory entries that reference file paths which no longer exi
 
 Detects memory entries from different projects that have significant content overlap.
 
-| Field | Value |
-|---|---|
-| **Rule ID** | `session/duplicate-memory` |
-| **Severity** | info |
-| **Trigger** | Two memory entries from different projects have >60% line overlap |
-| **Message** | `Memory "<nameA>" (<projA>) and "<nameB>" (<projB>) have <N>% overlap` |
+| Field        | Value                                                                  |
+| ------------ | ---------------------------------------------------------------------- |
+| **Rule ID**  | `session/duplicate-memory`                                             |
+| **Severity** | info                                                                   |
+| **Trigger**  | Two memory entries from different projects have >60% line overlap      |
+| **Message**  | `Memory "<nameA>" (<projA>) and "<nameB>" (<projB>) have <N>% overlap` |
 
 **Detection algorithm:**
 
@@ -266,6 +273,7 @@ Detects memory entries from different projects that have significant content ove
 6. Flag pairs with >60% overlap.
 
 **Notes:**
+
 - This rule helps identify boilerplate that has been memorized per-project instead of being placed in a shared context file or user-level config.
 - A common pattern is the same coding conventions memorized independently in 5+ projects. Consolidating to a user-level `CLAUDE.md` or `.claude/settings.json` would be more efficient.
 
@@ -275,12 +283,12 @@ Detects memory entries from different projects that have significant content ove
 
 Detects when an agent runs the same command 3 or more times consecutively, indicating a loop.
 
-| Field | Value |
-|---|---|
-| **Rule ID** | `session/consecutive-repeat` |
-| **Severity** | warning |
-| **Trigger** | 3+ consecutive history entries with identical `display` values within a single session segment for the current project |
-| **Message** | `Command run <N> times consecutively: "<command>"` |
+| Field        | Value                                                                                                                  |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| **Rule ID**  | `session/consecutive-repeat`                                                                                           |
+| **Severity** | warning                                                                                                                |
+| **Trigger**  | 3+ consecutive history entries with identical `display` values within a single session segment for the current project |
+| **Message**  | `Command run <N> times consecutively: "<command>"`                                                                     |
 
 **Detection algorithm:**
 
@@ -291,6 +299,7 @@ Detects when an agent runs the same command 3 or more times consecutively, indic
 5. Within each segment (per-session and merged one-shot), slide a window over the entries. For each run of 3+ entries with identical `display` values, emit a warning.
 
 **Notes:**
+
 - Looping is an intra-session pathology. Pooling full sessions would flag routine reuse across days, and concurrently interleaved sessions (including cross-provider ones, since multiple providers' histories are merged) would produce phantom patterns no session actually ran. The single-command-session merge in step 4 is the deliberate exception: N identical one-shots inside a 30-minute window are a respawn loop, not reuse.
 - Truncates long command strings to 80 characters in the message for readability.
 - This rule helps surface cases where an agent is stuck retrying a failing command instead of changing approach.
@@ -301,12 +310,12 @@ Detects when an agent runs the same command 3 or more times consecutively, indic
 
 Detects short repeating cycles of commands, indicating an agent stuck in a loop.
 
-| Field | Value |
-|---|---|
-| **Rule ID** | `session/cyclic-pattern` |
-| **Severity** | warning |
-| **Trigger** | A sequence of 2-3 distinct commands repeating 2+ times consecutively (e.g. A,B,A,B) within a single session segment |
-| **Message** | `Cyclic pattern repeated <N> times: <cycle>` |
+| Field        | Value                                                                                                               |
+| ------------ | ------------------------------------------------------------------------------------------------------------------- |
+| **Rule ID**  | `session/cyclic-pattern`                                                                                            |
+| **Severity** | warning                                                                                                             |
+| **Trigger**  | A sequence of 2-3 distinct commands repeating 2+ times consecutively (e.g. A,B,A,B) within a single session segment |
+| **Message**  | `Cyclic pattern repeated <N> times: <cycle>`                                                                        |
 
 **Detection algorithm:**
 
@@ -317,6 +326,7 @@ Detects short repeating cycles of commands, indicating an agent stuck in a loop.
 5. Subsumption: if a shorter cycle is fully contained within an already-reported longer cycle at the same position, skip it.
 
 **Notes:**
+
 - A cycle like "edit file → run tests → edit file → run tests" is a common pattern when an agent is making iterative fixes. This rule flags when the cycle repeats enough times to suggest the agent isn't making progress.
 - The suggestion directs users to check if a context file is missing workflow instructions.
 
@@ -326,14 +336,14 @@ Detects short repeating cycles of commands, indicating an agent stuck in a loop.
 
 Detects when `MEMORY.md` exceeds Claude Code's session-load cap. Claude Code loads the first 200 lines OR 25KB of `MEMORY.md` at session start — whichever comes first. Entries past the cap are silently dropped, so auto-memory pointers beyond that point are effectively invisible to the agent.
 
-| Field | Value |
-|---|---|
-| **Rule ID** | `session/memory-index-overflow` |
-| **Severity** | warning |
-| **Trigger** | `~/.claude/projects/<encoded-project>/memory/MEMORY.md` exceeds 200 lines OR 25,600 bytes |
-| **Message (lines)** | `MEMORY.md has <N> lines — only the first 200 are loaded. <excess> line(s) are effectively invisible.` |
+| Field               | Value                                                                                                         |
+| ------------------- | ------------------------------------------------------------------------------------------------------------- |
+| **Rule ID**         | `session/memory-index-overflow`                                                                               |
+| **Severity**        | warning                                                                                                       |
+| **Trigger**         | `~/.claude/projects/<encoded-project>/memory/MEMORY.md` exceeds 200 lines OR 25,600 bytes                     |
+| **Message (lines)** | `MEMORY.md has <N> lines — only the first 200 are loaded. <excess> line(s) are effectively invisible.`        |
 | **Message (bytes)** | `MEMORY.md is <N> bytes — only the first 25,600 bytes are loaded. ~<excess> bytes are effectively invisible.` |
-| **Source** | [code.claude.com/docs/en/memory](https://code.claude.com/docs/en/memory) |
+| **Source**          | [code.claude.com/docs/en/memory](https://code.claude.com/docs/en/memory)                                      |
 
 **Detection algorithm:**
 
@@ -342,6 +352,7 @@ Detects when `MEMORY.md` exceeds Claude Code's session-load cap. Claude Code loa
 3. Count lines and bytes. Emit a warning for each dimension that exceeds its cap.
 
 **Notes:**
+
 - Each MEMORY.md entry should stay under ~150 characters (one-line pointer, not content).
 - The remediation is to trim older entries, consolidate duplicates, or move detail into the corresponding topic file — topic files stay on-demand and don't count toward the cap.
 - Both line and byte caps can fire independently (a short file with very long lines trips the byte cap first; a long file with short lines trips the line cap first).
@@ -352,13 +363,13 @@ Detects when `MEMORY.md` exceeds Claude Code's session-load cap. Claude Code loa
 
 Detects a fixed, non-session-scoped temp path that the agent **writes** and later **reads back**. `/tmp` is process-global, and under Git Bash on Windows it is shared across every concurrent agent session on the machine. An agent that backs a file up to a literal path, mutates the original, then restores from that path is racing every other session that picked the same obvious name.
 
-| Field | Value |
-|---|---|
-| **Rule ID** | `session/shared-temp-path` |
-| **Severity** | error |
-| **Trigger** | Session history writes a literal path under `/tmp`, `/var/tmp`, `$TMPDIR` or `%TEMP%` with no per-run component, then reads the same path |
-| **Message** | `Fixed temp path "<path>" is written and later read back` |
-| **Source** | Observed incident (see Notes) |
+| Field        | Value                                                                                                                                     |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| **Rule ID**  | `session/shared-temp-path`                                                                                                                |
+| **Severity** | error                                                                                                                                     |
+| **Trigger**  | Session history writes a literal path under `/tmp`, `/var/tmp`, `$TMPDIR` or `%TEMP%` with no per-run component, then reads the same path |
+| **Message**  | `Fixed temp path "<path>" is written and later read back`                                                                                 |
+| **Source**   | Observed incident (see Notes)                                                                                                             |
 
 **Detection algorithm:**
 
@@ -368,6 +379,7 @@ Detects a fixed, non-session-scoped temp path that the agent **writes** and late
 4. Emit an error when a qualifying read is preceded by a qualifying write of the same normalized path. Report each path once.
 
 **Notes:**
+
 - The motivating incident: an agent measuring a packaging change wrote `package.json` to `/tmp/pkg.bak`, ran `npm pack --dry-run`, then restored with `cp /tmp/pkg.bak package.json`. Between the write and the restore, a concurrent session working a sibling repo used the same `/tmp/pkg.bak`. The restore wrote a **different** package's manifest into the repo — wrong name, version, `bin` and dependencies. A release from that tree would have published under the wrong identity.
 - **The pair is the signal, not either half.** A scratch file that is never read back cannot be clobbered into the workspace, and a read with no matching write is consuming something another tool produced deliberately. Both are ignored.
 - `mktemp` output and any path carrying a per-run component are deliberately **not** flagged — those are the correct form and appear constantly in the same transcripts, so flagging them would bury the real finding.
@@ -379,13 +391,13 @@ Detects a fixed, non-session-scoped temp path that the agent **writes** and late
 
 Detects a session that asserts a quality gate **passed** while that gate's own invocation failed or produced nothing.
 
-| Field | Value |
-|---|---|
-| **Rule ID** | `session/unverified-gate-claimed-clean` |
-| **Severity** | warning |
-| **Trigger** | A lint/typecheck/test/build command errors or emits no output, and nearby agent prose claims it passed |
-| **Message** | `'<gate>' asserted as passing, but the invocation produced no output` |
-| **Source** | Observed incident (see Notes) |
+| Field        | Value                                                                                                  |
+| ------------ | ------------------------------------------------------------------------------------------------------ |
+| **Rule ID**  | `session/unverified-gate-claimed-clean`                                                                |
+| **Severity** | warning                                                                                                |
+| **Trigger**  | A lint/typecheck/test/build command errors or emits no output, and nearby agent prose claims it passed |
+| **Message**  | `'<gate>' asserted as passing, but the invocation produced no output`                                  |
+| **Source**   | Observed incident (see Notes)                                                                          |
 
 **Detection algorithm:**
 
@@ -396,9 +408,10 @@ Detects a session that asserts a quality gate **passed** while that gate's own i
 5. Emit a warning per gate when a claim is found.
 
 **Notes:**
-- The motivating session ran `biome check` roughly a dozen times. On that host (Windows ARM64) the binary segfaults during exit — via the npx wrapper, via the native `biome.exe`, and unchanged by shell — producing **zero bytes** every time. The agent twice reported this as "zero diagnostics emitted, which is consistent with a clean run." Disproving it took a deliberate experiment: the same binary against a file with an unused variable and mangled formatting *also* produced zero bytes. The crash precedes diagnostic emission, so empty output carries no information about cleanliness at all.
+
+- The motivating session ran `biome check` roughly a dozen times. On that host (Windows ARM64) the binary segfaults during exit — via the npx wrapper, via the native `biome.exe`, and unchanged by shell — producing **zero bytes** every time. The agent twice reported this as "zero diagnostics emitted, which is consistent with a clean run." Disproving it took a deliberate experiment: the same binary against a file with an unused variable and mangled formatting _also_ produced zero bytes. The crash precedes diagnostic emission, so empty output carries no information about cleanliness at all.
 - Prose that labels the state honestly — "unverified", "could not verify", "crashed", "blocked", "inconclusive" — is deliberately **not** flagged. A session saying "lint is UNVERIFIED because the runner crashed" reached the correct conclusion. The rule targets the false claim, not the failed gate.
-- Sibling to `commands/exit-status-masked`, which is the *static* half: it reads a documented command whose own shape discards the status (`npx tsc --noEmit | head -20 && echo "tsc clean"`). This rule is *dynamic* — it fires on a plain `pnpm lint` that crashed, a command with nothing structurally wrong with it.
+- Sibling to `commands/exit-status-masked`, which is the _static_ half: it reads a documented command whose own shape discards the status (`npx tsc --noEmit | head -20 && echo "tsc clean"`). This rule is _dynamic_ — it fires on a plain `pnpm lint` that crashed, a command with nothing structurally wrong with it.
 
 ---
 
@@ -406,13 +419,13 @@ Detects a session that asserts a quality gate **passed** while that gate's own i
 
 Detects a session that accumulates edits on the repo's **default branch** without an intervening commit.
 
-| Field | Value |
-|---|---|
-| **Rule ID** | `session/default-branch-accumulation` |
-| **Severity** | warning |
-| **Trigger** | Ten or more distinct files written while on `main`/`master` with no commit or branch-away in between |
-| **Message** | `<count> files edited on '<branch>' with no intervening commit` |
-| **Source** | Observed incident (see Notes) |
+| Field        | Value                                                                                                |
+| ------------ | ---------------------------------------------------------------------------------------------------- |
+| **Rule ID**  | `session/default-branch-accumulation`                                                                |
+| **Severity** | warning                                                                                              |
+| **Trigger**  | Ten or more distinct files written while on `main`/`master` with no commit or branch-away in between |
+| **Message**  | `<count> files edited on '<branch>' with no intervening commit`                                      |
+| **Source**   | Observed incident (see Notes)                                                                        |
 
 **Detection algorithm:**
 
@@ -423,6 +436,7 @@ Detects a session that accumulates edits on the repo's **default branch** withou
 5. Emit a warning when the accumulated count reaches 10.
 
 **Notes:**
+
 - The motivating session ran for hours across review, fix, coverage and audit phases and edited 25 files. Every edit landed in the working tree of `main`, uncommitted, and it surfaced only during a ship-readiness audit at the very end — no git-shaped signal fired along the way.
 - Two things make that worse than untidy. Repo operating instructions commonly say to branch before committing on the default branch, so the end state is one the session was told to avoid. And on a machine running a fleet of agents — the sibling repo this came from had 11 locked worktrees and a `main` whose `HEAD` moved three times during a single audit — a large uncommitted delta on a shared default branch is one `git checkout --` or `git stash` away from being someone else's cleanup.
 - The defect is **accumulation**, not the first write. A one-line typo fix on `main` is normal, and flagging it would make the rule noise. Sessions that branch first or commit as they go stay clean.
@@ -434,13 +448,13 @@ Detects a session that accumulates edits on the repo's **default branch** withou
 
 Detects a memory that cites a git SHA which no longer resolves in the repository.
 
-| Field | Value |
-|---|---|
-| **Rule ID** | `session/unresolvable-sha` |
-| **Severity** | warning |
-| **Trigger** | A cue-preceded 7-40 character hex token outside code fences fails to resolve via `git cat-file -t` |
-| **Message** | `cited commit <sha> does not resolve in this repository` |
-| **Requires** | git |
+| Field        | Value                                                                                              |
+| ------------ | -------------------------------------------------------------------------------------------------- |
+| **Rule ID**  | `session/unresolvable-sha`                                                                         |
+| **Severity** | warning                                                                                            |
+| **Trigger**  | A cue-preceded 7-40 character hex token outside code fences fails to resolve via `git cat-file -t` |
+| **Message**  | `cited commit <sha> does not resolve in this repository`                                           |
+| **Requires** | git                                                                                                |
 
 **Detection algorithm:**
 
@@ -453,10 +467,11 @@ Detects a memory that cites a git SHA which no longer resolves in the repository
 7. Without a git repository, report nothing.
 
 **Notes:**
-- `session/stale-memory` covers memories referencing dead *paths*. SHA citations rot faster: a squash-merge invalidates every SHA on the branch at once, and a rebase invalidates them silently. An agent that reads such a memory and runs `git show <sha>` gets `fatal: bad object` and has to re-derive the history it was told.
+
+- `session/stale-memory` covers memories referencing dead _paths_. SHA citations rot faster: a squash-merge invalidates every SHA on the branch at once, and a rebase invalidates them silently. An agent that reads such a memory and runs `git show <sha>` gets `fatal: bad object` and has to re-derive the history it was told.
 - **Shape is not enough, and resolution alone is not enough either.** Real memory corpora are full of hex-shaped tokens that are not commits — `originSessionId: 77bde817-610b-4f82-971d-1c2452b07917`, `image sha256:7e7b3ab9`, decimal product ids, and words that happen to be hex (`beadfaced`). None of them resolve, so a resolve-only rule reports every one. The cue requirement in step 5 is what makes the rule quiet; the resolution in step 6 is what makes the finding true.
 - Do **not** try to filter by shape alone in the other direction either. A nine-character hex token that reads as an English word is indistinguishable from a short SHA by pattern; only resolution separates them.
-- **Misattribution is deliberately out of scope.** The motivating instance cited a SHA that *does* resolve but is not the commit that made the change. Detecting that means comparing the commit's diff against the surrounding prose claim — a genuinely different, much fuzzier rule that must not be smuggled in under this ID.
+- **Misattribution is deliberately out of scope.** The motivating instance cited a SHA that _does_ resolve but is not the commit that made the change. Detecting that means comparing the commit's diff against the surrounding prose claim — a genuinely different, much fuzzier rule that must not be smuggled in under this ID.
 
 ---
 
@@ -464,13 +479,13 @@ Detects a memory that cites a git SHA which no longer resolves in the repository
 
 Measures how much of a project's session context goes to **whole-file Reads of large files**. It is a baseline, not a defect report.
 
-| Field | Value |
-|---|---|
-| **Rule ID** | `session/large-read` |
-| **Severity** | info |
-| **Trigger** | One or more whole-file `Read` calls (no `offset`, `limit` or `pages`) in the project transcript whose result is 4,000 tokens or more |
-| **Message** | `<count> whole-file Read(s) of 4,000+ tokens (<tokens> tokens); est. <carry> tokens of cache-read carry on later turns` |
-| **Source** | Claude Code transcript format; measured corpus (see Notes) |
+| Field        | Value                                                                                                                                |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| **Rule ID**  | `session/large-read`                                                                                                                 |
+| **Severity** | info                                                                                                                                 |
+| **Trigger**  | One or more whole-file `Read` calls (no `offset`, `limit` or `pages`) in the project transcript whose result is 4,000 tokens or more |
+| **Message**  | `<count> whole-file Read(s) of 4,000+ tokens (<tokens> tokens); est. <carry> tokens of cache-read carry on later turns`              |
+| **Source**   | Claude Code transcript format; measured corpus (see Notes)                                                                           |
 
 **Detection algorithm:**
 
@@ -481,6 +496,7 @@ Measures how much of a project's session context goes to **whole-file Reads of l
 5. When anything qualified, emit ONE info finding per project with the count, total tokens, summed carry, and the top three files by tokens with their read counts. Emit nothing otherwise. When the transcript read was capped, say so in the finding.
 
 **Notes:**
+
 - Why it matters: a tool_result stays in the prompt of every later turn. With prompt caching each re-send bills as a cache read -- cheap per token, but paid per turn for the rest of the session. A large file read whole early in a long session is re-sent hundreds of times, when `grep -n` plus a ranged Read would have carried the few lines needed.
 - It is a baseline for judging read-routing changes against, which is why it is one summary at `info` severity rather than a finding per Read. Reading a file whole is often correct.
 - The threshold: across 739 whole-file Reads in a real corpus of 149 transcripts, Read output (line-number prefixes included) ran at a median 13.5 tokens per line, so 4,000 tokens is roughly 300 lines. An implementation counting with a chars/4 estimate instead measures 12.2 tokens per line on the same corpus, crossing the threshold at roughly 330 lines.
@@ -500,21 +516,21 @@ See the JSON file for the full catalog.
 
 Catalog rule IDs use the pillar-stable `session/<slug>` form -- these are the cross-tool names to use in documentation, configuration, and issue reports. The reference implementation namespaces the `ruleId` it emits (in `--format json` output) by check module instead -- `<check>/<slug>` -- and splits `session/memory-index-overflow` into one emitted slug per cap dimension. The full correspondence (pinned by a consistency test in the reference implementation):
 
-| Catalog rule ID | Emitted `ruleId` (reference implementation) |
-|---|---|
-| `session/missing-secret` | `session-missing-secret/missing-secret` |
-| `session/diverged-file` | `session-diverged-file/diverged-file` |
-| `session/missing-workflow` | `session-missing-workflow/missing-workflow` |
-| `session/stale-memory` | `session-stale-memory/stale-memory` |
-| `session/duplicate-memory` | `session-duplicate-memory/duplicate-memory` |
-| `session/consecutive-repeat` | `session-loop-detection/consecutive-repeat` |
-| `session/cyclic-pattern` | `session-loop-detection/cyclic-pattern` |
-| `session/memory-index-overflow` | `session-memory-index-overflow/line-overflow`, `session-memory-index-overflow/byte-overflow` |
-| `session/shared-temp-path` | `session-shared-temp-path/shared-temp-path` |
-| `session/unverified-gate-claimed-clean` | `session-unverified-gate-claimed-clean/unverified-gate-claimed-clean` |
-| `session/default-branch-accumulation` | `session-default-branch-accumulation/default-branch-accumulation` |
-| `session/unresolvable-sha` | `session-unresolvable-sha/unresolvable-sha` |
-| `session/large-read` | `session-large-read/large-read` |
+| Catalog rule ID                         | Emitted `ruleId` (reference implementation)                                                  |
+| --------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `session/missing-secret`                | `session-missing-secret/missing-secret`                                                      |
+| `session/diverged-file`                 | `session-diverged-file/diverged-file`                                                        |
+| `session/missing-workflow`              | `session-missing-workflow/missing-workflow`                                                  |
+| `session/stale-memory`                  | `session-stale-memory/stale-memory`                                                          |
+| `session/duplicate-memory`              | `session-duplicate-memory/duplicate-memory`                                                  |
+| `session/consecutive-repeat`            | `session-loop-detection/consecutive-repeat`                                                  |
+| `session/cyclic-pattern`                | `session-loop-detection/cyclic-pattern`                                                      |
+| `session/memory-index-overflow`         | `session-memory-index-overflow/line-overflow`, `session-memory-index-overflow/byte-overflow` |
+| `session/shared-temp-path`              | `session-shared-temp-path/shared-temp-path`                                                  |
+| `session/unverified-gate-claimed-clean` | `session-unverified-gate-claimed-clean/unverified-gate-claimed-clean`                        |
+| `session/default-branch-accumulation`   | `session-default-branch-accumulation/default-branch-accumulation`                            |
+| `session/unresolvable-sha`              | `session-unresolvable-sha/unresolvable-sha`                                                  |
+| `session/large-read`                    | `session-large-read/large-read`                                                              |
 
 ### Data sources: history vs. transcript
 
@@ -522,7 +538,7 @@ Session rules read two distinct sources, and the difference decides what a rule 
 
 **`~/.claude/history.jsonl`** records only what the **user typed** — one entry per prompt, with `display`, `timestamp`, `project` and `sessionId`. It carries no tool invocations, no command output and no git state.
 
-**`~/.claude/projects/<encoded-project>/<uuid>.jsonl`** is the session **transcript**. It carries `tool_use` blocks with their inputs, the matching `tool_result` with `is_error` and output, and a `gitBranch` stamp on assistant records. Every rule whose signal is *what the agent did* — the command it ran, the gate that crashed, the branch the edits landed on — needs this source; a rule built on `history.jsonl` alone would be inert against them.
+**`~/.claude/projects/<encoded-project>/<uuid>.jsonl`** is the session **transcript**. It carries `tool_use` blocks with their inputs, the matching `tool_result` with `is_error` and output, and a `gitBranch` stamp on assistant records. Every rule whose signal is _what the agent did_ — the command it ran, the gate that crashed, the branch the edits landed on — needs this source; a rule built on `history.jsonl` alone would be inert against them.
 
 Transcript reads are scoped to the **current project** and bounded (most recent 5 transcripts, 200,000 lines), because the corpus on a working machine reaches hundreds of megabytes across a hundred-plus project directories. The bound is reported rather than applied silently, so a check cannot report "clean" off a truncated read.
 
@@ -553,6 +569,7 @@ Sibling detection and history file scanning must handle both Windows and Unix pa
 Agent history files (JSONL) should be parsed line-by-line using streaming reads. Do not load entire files into memory -- active developers may have history files in the tens of megabytes.
 
 For each line:
+
 1. Parse as JSON.
 2. Extract the command/action string.
 3. Match against rule-specific patterns (e.g., `gh secret set` regex).
@@ -564,12 +581,12 @@ Claude Code encodes a project's absolute path into a directory name under `~/.cl
 
 **Examples:**
 
-| Actual path | Encoded directory name |
-|---|---|
-| `C:/Users/jeff/yaw/ctxlint` | `C--Users-jeff-yaw-ctxlint` |
-| `/home/dev/projects/my-app` | `-home-dev-projects-my-app` |
+| Actual path                  | Encoded directory name       |
+| ---------------------------- | ---------------------------- |
+| `C:/Users/jeff/yaw/ctxlint`  | `C--Users-jeff-yaw-ctxlint`  |
+| `/home/dev/projects/my-app`  | `-home-dev-projects-my-app`  |
 | `/Users/dev/work/api-server` | `-Users-dev-work-api-server` |
-| `/home/dev/repo.js` | `-home-dev-repo-js` |
+| `/home/dev/repo.js`          | `-home-dev-repo-js`          |
 
 The encoding is **lossy**: `-`, `.`, `/`, `\`, and `:` all collapse to the same output character, so distinct paths can encode to the same directory name (`/home/dev/my-app` and `/home/dev/my.app` collide). There is no decode step. Implementors must compare encoded-to-encoded: encode the current project's absolute path with the same substitution rules and match the result against the directory names actually present in `~/.claude/projects/` -- never attempt to reconstruct a path from an encoded name.
 
@@ -582,6 +599,7 @@ The v1 specification focuses on:
 - **Claude Code** for memory file checks (`session/stale-memory`, `session/duplicate-memory`) -- the only agent with a well-documented, file-based memory system.
 
 Future versions may add support for:
+
 - Goose SQLite session parsing (requires bundling or requiring SQLite).
 - Aider per-project history parsing.
 - Additional memory/preference formats as agents stabilize their storage.
@@ -593,6 +611,7 @@ Future versions may add support for:
 This specification is maintained at [github.com/YawLabs/ctxlint](https://github.com/YawLabs/ctxlint).
 
 To propose changes:
+
 - **New rules:** Open an issue describing the rule, its severity, trigger condition, and which agents it applies to.
 - **Agent additions:** As new AI coding agents emerge or existing agents change their session data formats, submit a PR updating the data sources table in Section 1.2.
 - **Corrections:** If any agent behavior or file location documented here is inaccurate, open an issue with evidence (agent docs, source code, or reproduction steps).
@@ -600,6 +619,7 @@ To propose changes:
 ### Versioning
 
 This specification follows semver:
+
 - **Patch** (1.0.x): Typo fixes, clarifications, no rule changes
 - **Minor** (1.x.0): New rules added, new agents documented, new canonical files for diverged-file checks
 - **Major** (x.0.0): Rules removed or semantics changed in breaking ways

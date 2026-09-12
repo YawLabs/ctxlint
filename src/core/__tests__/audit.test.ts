@@ -139,10 +139,7 @@ describe('runAudit exclude', () => {
     // check. A file left in the corpus that conflicts with a NON-excluded
     // sibling is still reported.
     fs.writeFileSync(path.join(tmpDir, 'CLAUDE.md'), '# Root\n\nUse Vitest for testing.\n');
-    fs.writeFileSync(
-      path.join(tmpDir, 'AGENTS.md'),
-      '# Root agents\n\nUse Jest for testing.\n',
-    );
+    fs.writeFileSync(path.join(tmpDir, 'AGENTS.md'), '# Root agents\n\nUse Jest for testing.\n');
     const result = await runAudit(tmpDir, ['contradictions'], { exclude: ['fixtures/**'] });
     expect(contradictionsIn(result).length).toBeGreaterThan(0);
   });

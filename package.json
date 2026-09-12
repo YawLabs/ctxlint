@@ -19,11 +19,12 @@
     "pretest": "node build.mjs",
     "pretest:run": "node build.mjs",
     "pretest:coverage": "node build.mjs",
-    "test": "vitest",
-    "test:run": "vitest run",
+    "test": "prettier --check . && vitest",
+    "test:run": "prettier --check . && vitest run",
     "test:coverage": "vitest run --coverage --coverage.reporter=text-summary --coverage.reporter=html --coverage.exclude='**/__tests__/**' --coverage.exclude='**/fixtures/**' --coverage.exclude='dist/**' --coverage.exclude='build.mjs' --coverage.exclude='coverage-report.mjs'",
     "lint": "eslint src/",
-    "format": "prettier --write src/",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "mcp": "node dist/index.js --mcp-server"
   },
   "keywords": [

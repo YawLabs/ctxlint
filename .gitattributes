@@ -1,0 +1,8 @@
+# Git already stores LF blobs for this repo, and Prettier's `endOfLine` default
+# is "lf". Without this file, a checkout with core.autocrlf=true (the setting on
+# the Windows box release.sh runs from) rewrites the worktree to CRLF, and
+# `prettier --check .` -- now part of `npm test` -- fails on every text file
+# even when the content is byte-identical. Verified by rewriting an
+# already-formatted file with CRLF endings: --check goes from pass to fail.
+# Pinning eol=lf keeps the worktree matching what Prettier expects.
+* text=auto eol=lf

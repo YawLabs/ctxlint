@@ -20,7 +20,7 @@ This doc specs the three that are design changes rather than bug fixes. No catal
 
 > `CLAUDE.md:1 (staleness/stale) Last updated 83 days ago. src/api.ts has 4 commits since.`
 
-That was **correct and useful** — the file really was stale. But it took a manual read of both `CLAUDE.md` and every source file to learn *how*. The doc was missing:
+That was **correct and useful** — the file really was stale. But it took a manual read of both `CLAUDE.md` and every source file to learn _how_. The doc was missing:
 
 - an entire module (`src/snapshots.ts`)
 - two of eighteen tools (`caddy_revert`, `caddy_remove_route`)
@@ -28,25 +28,25 @@ That was **correct and useful** — the file really was stale. But it took a man
 
 The check already knows the context file's referenced paths (`staleness.ts:32-40` builds `referencedPaths`), and already runs git over them. It stops one step short of the answer.
 
-**Proposal.** A companion rule — `staleness/undocumented-entity` — that, for context files which reference source paths, extracts *named entities* from those sources and reports the ones the doc never mentions:
+**Proposal.** A companion rule — `staleness/undocumented-entity` — that, for context files which reference source paths, extracts _named entities_ from those sources and reports the ones the doc never mentions:
 
-| Entity | Extraction | Rationale |
-|---|---|---|
-| Module files | files under a referenced directory | a doc listing `src/*.ts` line by line should list all of them |
-| `process.env.X` reads | regex over source | env vars are the highest-value undocumented thing; they are invisible from the outside |
-| Exported symbols | `export function/const/class` | catches a public API the doc predates |
+| Entity                | Extraction                         | Rationale                                                                              |
+| --------------------- | ---------------------------------- | -------------------------------------------------------------------------------------- |
+| Module files          | files under a referenced directory | a doc listing `src/*.ts` line by line should list all of them                          |
+| `process.env.X` reads | regex over source                  | env vars are the highest-value undocumented thing; they are invisible from the outside |
+| Exported symbols      | `export function/const/class`      | catches a public API the doc predates                                                  |
 
 Report shape: `CLAUDE.md documents src/ but does not mention: src/snapshots.ts, CADDY_TIMEOUT, CADDY_LOAD_TIMEOUT`.
 
-**Why it is worth the complexity.** This converts a *prompt to go look* into a *diff to go apply*. The existing rule's value is capped by the fact that acting on it requires the same manual audit whether the doc is 5% or 95% stale.
+**Why it is worth the complexity.** This converts a _prompt to go look_ into a _diff to go apply_. The existing rule's value is capped by the fact that acting on it requires the same manual audit whether the doc is 5% or 95% stale.
 
-**False-positive risk, and the guard.** A doc deliberately summarizing rather than enumerating would light up. Guard: only fire when the doc *already* mentions a majority of the entities in a class (it is clearly trying to be exhaustive), and stay `info` severity. A doc listing 8 of 10 modules wants to know about the other 2; a doc listing 0 of 10 is not that kind of doc.
+**False-positive risk, and the guard.** A doc deliberately summarizing rather than enumerating would light up. Guard: only fire when the doc _already_ mentions a majority of the entities in a class (it is clearly trying to be exhaustive), and stay `info` severity. A doc listing 8 of 10 modules wants to know about the other 2; a doc listing 0 of 10 is not that kind of doc.
 
 ---
 
 ## 2. MCP tool DESCRIPTIONS are agent-context, and ctxlint cannot currently see them
 
-**Current scope:** the `mcp` pillar lints `.mcp.json` **config** (`ParsedMcpConfig`, `src/core/checks/mcp/schema.ts:1`) — server wiring, env, URLs, security. It never reads server *source*.
+**Current scope:** the `mcp` pillar lints `.mcp.json` **config** (`ParsedMcpConfig`, `src/core/checks/mcp/schema.ts:1`) — server wiring, env, URLs, security. It never reads server _source_.
 
 **What happened.** The session found two contradictions between an MCP server's tool descriptions and its implementation, in one repo:
 
@@ -68,14 +68,14 @@ Both are decidable from the AST of a `server.tool(...)` call. Neither needs to u
 
 ## 3. Findings need a confidence signal, because session-start output is read as fact
 
-**What happened.** ctxlint ran at session start and emitted three warnings. **One of the three was wrong** — the `//c/...` dead-hook false positive fixed above. Its suggestion was *"remove the dead entry"*, and the agent came close to deleting a legitimate, working permission grant on that advice. It only survived because the agent probed the path before acting.
+**What happened.** ctxlint ran at session start and emitted three warnings. **One of the three was wrong** — the `//c/...` dead-hook false positive fixed above. Its suggestion was _"remove the dead entry"_, and the agent came close to deleting a legitimate, working permission grant on that advice. It only survived because the agent probed the path before acting.
 
 That is a 33% false-positive rate on a surface that is, by construction, read before any verification has happened — and whose remedies include destructive ones.
 
 **Proposal.** A `confidence` field on `LintIssue`, with two values:
 
 - **`verified`** — the finding is decidable from what was read. A JSON parse error. A file absent under every path reading. A duplicate key.
-- **`heuristic`** — the finding rests on an inference. Staleness by commit count. Prose that *looks* like a path. Anything where the check guessed at intent.
+- **`heuristic`** — the finding rests on an inference. Staleness by commit count. Prose that _looks_ like a path. Anything where the check guessed at intent.
 
 Consumers use it differently:
 
@@ -83,7 +83,7 @@ Consumers use it differently:
 - The **session-start hook** tells the agent to probe heuristic findings before acting, and may act directly on verified ones.
 - **`--fix`** touches `verified` only. (It already declines the risky cases; this makes the criterion explicit rather than per-rule folklore.)
 
-**Why this beats more per-rule tuning.** `HANDOFF-paths-false-positives.md` documents the same shape from a different rule: correct-but-confident wrongness diluting real signal. Each individual false positive is worth fixing, and both of those are being fixed — but the *class* recurs because some checks are inherently inferential. Labelling them is a structural answer, and it also gives permission to ship a useful-but-noisy heuristic rule that would otherwise be unshippable at `warning`.
+**Why this beats more per-rule tuning.** `HANDOFF-paths-false-positives.md` documents the same shape from a different rule: correct-but-confident wrongness diluting real signal. Each individual false positive is worth fixing, and both of those are being fixed — but the _class_ recurs because some checks are inherently inferential. Labelling them is a structural answer, and it also gives permission to ship a useful-but-noisy heuristic rule that would otherwise be unshippable at `warning`.
 
 **Migration.** Default `confidence: 'verified'` so existing rules keep today's behavior, then reclassify deliberately. Candidates for `heuristic` on day one: `staleness/*`, `ctxlint/paths` (per the other handoff), `redundancy/*`.
 

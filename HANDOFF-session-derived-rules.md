@@ -5,13 +5,13 @@
 
 > **STATUS UPDATE — three of the five have SHIPPED. Do not re-implement them.**
 >
-> | Section | Rule | State |
-> |---|---|---|
-> | 1 | `claims/total-vs-parts` | **open** — needs a new `claims` category in `context-lint-rules.json` |
-> | 2 | `commands/unknown-subcommand` | **shipped** — `src/core/checks/cli-subcommands.ts` + `commands.ts` |
-> | 3 | `commands/exit-status-masked` | **shipped** — `src/core/checks/exit-status.ts` + `commands.ts` |
-> | 4 | `contradictions/directive-conflict` | **open** — the handoff's own "highest-FP-risk of the five" |
-> | 5 | `session/unresolvable-sha` | **shipped** — `src/core/checks/session/unresolvable-sha.ts` |
+> | Section | Rule                                | State                                                                 |
+> | ------- | ----------------------------------- | --------------------------------------------------------------------- |
+> | 1       | `claims/total-vs-parts`             | **open** — needs a new `claims` category in `context-lint-rules.json` |
+> | 2       | `commands/unknown-subcommand`       | **shipped** — `src/core/checks/cli-subcommands.ts` + `commands.ts`    |
+> | 3       | `commands/exit-status-masked`       | **shipped** — `src/core/checks/exit-status.ts` + `commands.ts`        |
+> | 4       | `contradictions/directive-conflict` | **open** — the handoff's own "highest-FP-risk of the five"            |
+> | 5       | `session/unresolvable-sha`          | **shipped** — `src/core/checks/session/unresolvable-sha.ts`           |
 >
 > Two design notes the implementations added, worth reading before picking up 1 or 4:
 >
@@ -20,7 +20,7 @@
 
 **Status of the remaining two: SPEC ONLY.** No catalog entries, no spec-table rows, no implementations. See [Why nothing was added to the catalogs](#why-nothing-was-added-to-the-catalogs) — for those two this is still deliberate and is the whole point of one of the rules.
 
-What *is* in this branch: this document, plus five ready-to-run fixture directories under `fixtures/`.
+What _is_ in this branch: this document, plus five ready-to-run fixture directories under `fixtures/`.
 
 ## Coordination with `HANDOFF-ci-claim-and-bin-subcommand-rules.md`
 
@@ -36,13 +36,13 @@ Rule IDs here satisfy the **prefix-equals-category** invariant documented at `CO
 
 ## TL;DR
 
-| Proposed rule | Catalog | Severity | Motivating real defect |
-|---|---|---|---|
-| `claims/total-vs-parts` | context | warning | README stated `89 tools` while its own enumerated sections summed to `93` |
-| `commands/unknown-subcommand` | context | error | Release script told operators to run `<bin> doctor --json`; no such subcommand — it hung on stdio instead |
-| `commands/exit-status-masked` | context | warning | `npx tsc --noEmit \| head -20 && echo "tsc clean"` printed `tsc clean` over a real type error |
-| `contradictions/directive-conflict` | context | warning | Two always-loaded files: "do not use workflows unless requested" vs "default to workflows for every substantive task" |
-| `session/unresolvable-sha` | session | warning | A memory attributed a change to a SHA that is not the commit that made it |
+| Proposed rule                       | Catalog | Severity | Motivating real defect                                                                                                |
+| ----------------------------------- | ------- | -------- | --------------------------------------------------------------------------------------------------------------------- |
+| `claims/total-vs-parts`             | context | warning  | README stated `89 tools` while its own enumerated sections summed to `93`                                             |
+| `commands/unknown-subcommand`       | context | error    | Release script told operators to run `<bin> doctor --json`; no such subcommand — it hung on stdio instead             |
+| `commands/exit-status-masked`       | context | warning  | `npx tsc --noEmit \| head -20 && echo "tsc clean"` printed `tsc clean` over a real type error                         |
+| `contradictions/directive-conflict` | context | warning  | Two always-loaded files: "do not use workflows unless requested" vs "default to workflows for every substantive task" |
+| `session/unresolvable-sha`          | session | warning  | A memory attributed a change to a SHA that is not the commit that made it                                             |
 
 Existing rules I checked against and did **not** duplicate: `paths/not-found`, `skill/broken-ref`, `commands/script-not-found`, `commands/make-target-not-found`, `commands/npx-not-in-deps`, `contradictions/conflict`, `session/stale-memory`, `redundancy/duplicate-content`, `tier-tokens/hard-enforcement-missing`.
 
@@ -50,16 +50,16 @@ Existing rules I checked against and did **not** duplicate: `paths/not-found`, `
 
 ## Why nothing was added to the catalogs
 
-The catalogs are the source of truth: `scripts/generate-catalog-prose.mjs` derives the `N rules` header in each spec and the README family-table counts *from* them. Adding a rule entry therefore makes the published spec and README advertise a rule that does not run.
+The catalogs are the source of truth: `scripts/generate-catalog-prose.mjs` derives the `N rules` header in each spec and the README family-table counts _from_ them. Adding a rule entry therefore makes the published spec and README advertise a rule that does not run.
 
 That is precisely the defect class this handoff exists to catch — and it is the single most common thing the source session had to fix (a README claiming 89 tools, a build script naming a subcommand that did not exist, a code comment asserting a contract the code did not hold). Shipping unimplemented catalog entries here would reproduce it inside the linter meant to detect it.
 
 **This is not hypothetical — ctxlint already has a live instance.** The concurrent handoff's Finding 4 reports it and I verified it independently at `62c0da1`:
 
-| Published in `context-lint-rules.json` | Actually emitted by the implementation |
-|---|---|
-| `ci/no-release-docs` | `ci-coverage/no-release-docs` (`src/core/checks/ci-coverage.ts:96`) |
-| `ci/undocumented-secret` | `ci-secrets/undocumented-secret` (`src/core/checks/ci-secrets.ts:127`) |
+| Published in `context-lint-rules.json` | Actually emitted by the implementation                                 |
+| -------------------------------------- | ---------------------------------------------------------------------- |
+| `ci/no-release-docs`                   | `ci-coverage/no-release-docs` (`src/core/checks/ci-coverage.ts:96`)    |
+| `ci/undocumented-secret`               | `ci-secrets/undocumented-secret` (`src/core/checks/ci-secrets.ts:127`) |
 
 Those two catalog IDs are emitted by nothing. A user who reads the spec and writes a suppression or a CI filter for `ci/no-release-docs` silences nothing, and never finds out. The catalog is published API, so the fix is a judgement call about which side moves — that belongs to the other handoff, which owns the finding. It is cited here only as proof that "catalog entry without a matching emitter" is a failure this project can and does ship.
 
@@ -112,7 +112,7 @@ A document states a total (`89 tools`) and separately enumerates parts (`(1 tool
 4. Report when `sum(parts) != total`.
 
 **False-positive boundary (encoded in the fixture's `AGENTS.md`)**
-The negative control deliberately includes profile bullets `(20 tools)` and `(29 tools)` that are *overlapping subsets*, not parts. A naive implementation that sums every `(N tools)` on the page fires there and is wrong. Only a structurally sibling set counts as a partition. **If you cannot identify a sibling set with confidence, emit nothing** — this rule is worthless if it cries wolf on every doc with numbers in it.
+The negative control deliberately includes profile bullets `(20 tools)` and `(29 tools)` that are _overlapping subsets_, not parts. A naive implementation that sums every `(N tools)` on the page fires there and is wrong. Only a structurally sibling set counts as a partition. **If you cannot identify a sibling set with confidence, emit nothing** — this rule is worthless if it cries wolf on every doc with numbers in it.
 
 ---
 
@@ -142,14 +142,14 @@ The negative control deliberately includes profile bullets `(20 tools)` and `(29
 3. Resolve the known set by statically scanning the bin's entry source (see the resolved design question below). The fixture's `cli.js` is written in the hand-rolled-argv shape.
 4. Report only when the known set was resolved **non-empty**. If it could not be determined, skip silently (or emit an `info`, mirroring `commands/package-json-missing`).
 
-**Do not** execute the binary with `--help` to discover subcommands. The motivating bug is a CLI that *hangs* on unrecognized input; shelling out to it is how a linter inherits that hang.
+**Do not** execute the binary with `--help` to discover subcommands. The motivating bug is a CLI that _hangs_ on unrecognized input; shelling out to it is how a linter inherits that hang.
 
 ### Resolved: Commander-only vs hand-rolled argv
 
 `HANDOFF-ci-claim-and-bin-subcommand-rules.md` Finding 3 raises this and deliberately leaves it open: it recommends **Commander-only** detection, while this effort's fixture implies **literal-argv** detection. Its author is right that a wrong "that subcommand does not exist" is worse than silence. Resolution — **do both, tiered, with an explicit bail-out**:
 
 1. **Commander first.** Statically match `.command('<name>')`. High confidence; covers the large Node-CLI population.
-2. **Then hand-rolled argv**, but accept the extracted set only if it is *closed*: every comparison against `process.argv[2]` (or a variable directly assigned from it) is against a **string literal**, or a `.includes()` on a **literal array**.
+2. **Then hand-rolled argv**, but accept the extracted set only if it is _closed_: every comparison against `process.argv[2]` (or a variable directly assigned from it) is against a **string literal**, or a `.includes()` on a **literal array**.
 3. **Bail silently the moment the dispatch is open.** If `argv[2]` is compared against a variable, an imported map, a computed key, `Object.keys(...)`, or is used to index a lookup table, emit nothing for that binary. This is the "computed or aliased subcommands" case, and it is exactly where literal-argv scanning would produce the confident-but-wrong finding.
 4. **No recognizable dispatcher at all → emit nothing.** (This was the other handoff's explicit minimum ask; it is satisfied by 3 and 4 together.)
 5. **Adopt its gating suggestion:** only attempt this when `bin` resolves into source. A bundled or minified `dist/index.js` is unparseable, and guessing at it is how the rule earns a reputation for noise.
@@ -194,7 +194,7 @@ The fixture carries three negative controls, one per relaxable condition: no fil
 
 **Fixture:** `fixtures/directive-conflict/`
 
-`contradictions/conflict` catches two files choosing mutually exclusive *config options* in the same category. It does not catch two *behavioural directives* disagreeing. In the source session, one always-loaded instruction said "do not use workflows or sub-agents unless the user requested it" while another always-loaded overlay said "default to authoring and running a Workflow for every substantive task." Both were live on every turn; the agent had to silently pick one, repeatedly, with no signal to the user that their configuration was self-contradictory.
+`contradictions/conflict` catches two files choosing mutually exclusive _config options_ in the same category. It does not catch two _behavioural directives_ disagreeing. In the source session, one always-loaded instruction said "do not use workflows or sub-agents unless the user requested it" while another always-loaded overlay said "default to authoring and running a Workflow for every substantive task." Both were live on every turn; the agent had to silently pick one, repeatedly, with no signal to the user that their configuration was self-contradictory.
 
 ```json
 {
@@ -217,7 +217,7 @@ The fixture carries three negative controls, one per relaxable condition: no fil
 4. Assign polarity: prohibitive (`NEVER`, `DO NOT`, `AVOID`, `MUST NOT`) vs prescriptive (`ALWAYS`, `DEFAULT TO`, `PREFER`, `MUST`).
 5. Report when one subject key carries both polarities across two different files.
 
-**False-positive boundary:** the fixture's two files carry an *identical* directive ("Always run the full suite before committing") as a negative control. Agreement is redundancy, not conflict — `redundancy/duplicate-content` owns that. Also beware the legitimate `NEVER x unless y` escape-hatch form; a bare polarity flip on a qualified directive is the most likely source of noise here. This is the highest-FP-risk rule of the five; consider shipping it `info` first.
+**False-positive boundary:** the fixture's two files carry an _identical_ directive ("Always run the full suite before committing") as a negative control. Agreement is redundancy, not conflict — `redundancy/duplicate-content` owns that. Also beware the legitimate `NEVER x unless y` escape-hatch form; a bare polarity flip on a qualified directive is the most likely source of noise here. This is the highest-FP-risk rule of the five; consider shipping it `info` first.
 
 ---
 
@@ -225,7 +225,7 @@ The fixture carries three negative controls, one per relaxable condition: no fil
 
 **Fixture:** `fixtures/stale-sha/`
 
-`session/stale-memory` covers memories referencing dead *paths*. Memories and rules also accumulate git SHA citations, which rot faster than paths — a squash-merge rewrite invalidates every SHA in a branch.
+`session/stale-memory` covers memories referencing dead _paths_. Memories and rules also accumulate git SHA citations, which rot faster than paths — a squash-merge rewrite invalidates every SHA in a branch.
 
 ```json
 {
@@ -248,21 +248,21 @@ The fixture carries three negative controls, one per relaxable condition: no fil
 
 **Do not** try to filter by shape alone. The fixture includes `beadfaced` — nine hex characters that read as an English word — specifically because a pattern-only implementation fires on it. Resolution is what makes this precise, and it is why the check must be `git cat-file`-backed rather than regex-backed.
 
-**Honest scope note:** the motivating instance was subtler than what this v1 catches. A project memory attributed a CI-removal change to `1b18b85`, which *does* resolve — it is simply not the commit that made the change (that was `14ef069`). Detecting *misattribution* means comparing the cited commit's subject/diff against the surrounding prose claim. That is a genuinely different, much fuzzier rule. **v1 should ship the crisp unresolvable check only**; misattribution is a stretch goal and should not be smuggled in under this rule ID.
+**Honest scope note:** the motivating instance was subtler than what this v1 catches. A project memory attributed a CI-removal change to `1b18b85`, which _does_ resolve — it is simply not the commit that made the change (that was `14ef069`). Detecting _misattribution_ means comparing the cited commit's subject/diff against the surrounding prose claim. That is a genuinely different, much fuzzier rule. **v1 should ship the crisp unresolvable check only**; misattribution is a stretch goal and should not be smuggled in under this rule ID.
 
 ---
 
 ## Fixtures added by this branch
 
-| Directory | Positive cases | Negative controls |
-|---|---|---|
-| `fixtures/claim-total-vs-parts/` | `CLAUDE.md`: total 89 vs parts summing 33 | `AGENTS.md`: reconciled total, plus overlapping-subset bullets that must not be summed |
-| `fixtures/unknown-subcommand/` | `CLAUDE.md`: `doctor` | `--version`, `validate-acl`; `cli.js` supplies the known set |
-| `fixtures/masked-exit-status/` | `tsc \| head && echo`, `eslint \| tail && echo` | no-filter, `pipefail`-in-scope, no-success-claim |
-| `fixtures/directive-conflict/` | workflows: prohibitive vs prescriptive across two always-loaded files | identical "always run the full suite" directive in both |
-| `fixtures/stale-sha/` | `1b18b85`, `deadbee` | version numbers, 6-char hex, `#a1b2c3` colour, `beadfaced`, fenced SHA |
+| Directory                        | Positive cases                                                        | Negative controls                                                                      |
+| -------------------------------- | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `fixtures/claim-total-vs-parts/` | `CLAUDE.md`: total 89 vs parts summing 33                             | `AGENTS.md`: reconciled total, plus overlapping-subset bullets that must not be summed |
+| `fixtures/unknown-subcommand/`   | `CLAUDE.md`: `doctor`                                                 | `--version`, `validate-acl`; `cli.js` supplies the known set                           |
+| `fixtures/masked-exit-status/`   | `tsc \| head && echo`, `eslint \| tail && echo`                       | no-filter, `pipefail`-in-scope, no-success-claim                                       |
+| `fixtures/directive-conflict/`   | workflows: prohibitive vs prescriptive across two always-loaded files | identical "always run the full suite" directive in both                                |
+| `fixtures/stale-sha/`            | `1b18b85`, `deadbee`                                                  | version numbers, 6-char hex, `#a1b2c3` colour, `beadfaced`, fenced SHA                 |
 
-Each fixture carries an HTML comment stating the expected finding and, where it matters, *why* the negative control is the interesting half. None of them are wired into a test yet — they are inert until an implementation exists.
+Each fixture carries an HTML comment stating the expected finding and, where it matters, _why_ the negative control is the interesting half. None of them are wired into a test yet — they are inert until an implementation exists.
 
 ## Verification state of this branch
 

@@ -15,12 +15,12 @@ Every claim cites `file:line` in THIS repo. Findings 1-3 are new rules; finding 
 
 ## TL;DR
 
-| # | Proposal | Category | Kind |
-|---|---|---|---|
-| 1 | `ci-coverage/workflow-not-found` — context names a workflow file that is not on disk | `ci-coverage` | new rule |
-| 2 | `ci-coverage/no-workflows` — context describes CI, repo has no workflows at all | `ci-coverage` | new rule |
-| 3 | bin subcommand validation — **in flight elsewhere as `commands/unknown-subcommand`**; read that section for the one open design question, do not re-implement | `commands` | in flight |
-| 4 | `ci/no-release-docs` and `ci/undocumented-secret` are published in the catalog but **never emitted** | `ci-coverage`, `ci-secrets` | bug |
+| #   | Proposal                                                                                                                                                      | Category                    | Kind      |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- | --------- |
+| 1   | `ci-coverage/workflow-not-found` — context names a workflow file that is not on disk                                                                          | `ci-coverage`               | new rule  |
+| 2   | `ci-coverage/no-workflows` — context describes CI, repo has no workflows at all                                                                               | `ci-coverage`               | new rule  |
+| 3   | bin subcommand validation — **in flight elsewhere as `commands/unknown-subcommand`**; read that section for the one open design question, do not re-implement | `commands`                  | in flight |
+| 4   | `ci/no-release-docs` and `ci/undocumented-secret` are published in the catalog but **never emitted**                                                          | `ci-coverage`, `ci-secrets` | bug       |
 
 Findings 1 and 2 are the **inverse** of what `ci-coverage` does today. `src/core/checks/ci-coverage.ts:82-102` reads: workflows exist on disk -> is the release process documented? It returns early (`:88`) when `.github/workflows` yields nothing. The failure mode found in postgres-mcp is the other direction — **docs assert a pipeline that does not exist** — and it is currently unreachable by any rule.
 
@@ -28,7 +28,7 @@ Findings 1 and 2 are the **inverse** of what `ci-coverage` does today. `src/core
 
 ## Read this first: the rule-ID invariant
 
-`CONTRIBUTING.md:72` documents a **prefix-equals-category** invariant, enforced by `checkRuleIdPrefixes` and asserted in `src/core/__tests__/catalog-schema.test.ts:62`. New rules must use their **full category** as the ID prefix. The two `ci/*` IDs are a closed legacy allowlist (`catalog-schema.test.ts:27-28`) and `CONTRIBUTING.md:72` says explicitly: *"Do not add new entries to that allowlist."*
+`CONTRIBUTING.md:72` documents a **prefix-equals-category** invariant, enforced by `checkRuleIdPrefixes` and asserted in `src/core/__tests__/catalog-schema.test.ts:62`. New rules must use their **full category** as the ID prefix. The two `ci/*` IDs are a closed legacy allowlist (`catalog-schema.test.ts:27-28`) and `CONTRIBUTING.md:72` says explicitly: _"Do not add new entries to that allowlist."_
 
 So the new IDs are `ci-coverage/...` and `commands/...`, **not** `ci/...`. Getting this wrong fails `pnpm run test:run`.
 
@@ -40,9 +40,9 @@ So the new IDs are `ci-coverage/...` and `commands/...`, **not** `ci/...`. Getti
 
 postgres-mcp deleted its `release.yml` when registry publish moved into `release.sh`, but three files still described it as live:
 
-- a build script header: *"The binary BUILD is CI (release.yml on tag push); this manifest BUMP runs locally after."*
+- a build script header: _"The binary BUILD is CI (release.yml on tag push); this manifest BUMP runs locally after."_
 - a second script's comment asserting the same
-- `.gitattributes`: *"CI lint fails with a full-file formatter diff on Windows runners"*
+- `.gitattributes`: _"CI lint fails with a full-file formatter diff on Windows runners"_
 
 Meanwhile `release.sh` itself had been correctly updated and guarded every CI branch with `[ -f ".github/workflows/release.yml" ]`. So the repo simultaneously contained code that knew the workflow was gone and prose that did not. An agent reading the prose would wait for a CI run that never starts.
 
@@ -50,7 +50,7 @@ Meanwhile `release.sh` itself had been correctly updated and guarded every CI br
 
 A context file names a workflow file (`release.yml`, `ci.yaml`, `.github/workflows/<x>.yml`) that does not exist at that path.
 
-The extraction is narrow on purpose: match an explicit `*.yml` / `*.yaml` token that is either preceded by `.github/workflows/` or is a bare filename appearing within N characters of a CI-ish word (`workflow`, `CI`, `Actions`, `pipeline`). Do **not** treat every `foo.yml` mention as a workflow claim — `docker-compose.yml` and `pnpm-workspace.yaml` will produce noise. Note `paths/not-found` already covers a bare `.github/workflows/release.yml` written as a **path**; this rule is for the *named-without-a-path* case (`release.yml on tag push`), which the path extractor does not treat as a path reference.
+The extraction is narrow on purpose: match an explicit `*.yml` / `*.yaml` token that is either preceded by `.github/workflows/` or is a bare filename appearing within N characters of a CI-ish word (`workflow`, `CI`, `Actions`, `pipeline`). Do **not** treat every `foo.yml` mention as a workflow claim — `docker-compose.yml` and `pnpm-workspace.yaml` will produce noise. Note `paths/not-found` already covers a bare `.github/workflows/release.yml` written as a **path**; this rule is for the _named-without-a-path_ case (`release.yml on tag push`), which the path extractor does not treat as a path reference.
 
 ### Catalog entry
 
@@ -75,20 +75,20 @@ The extraction is narrow on purpose: match an explicit `*.yml` / `*.yaml` token 
 
 The high-signal degenerate case of finding 1, and worth its own ID because it can be near-zero-false-positive.
 
-postgres-mcp has **no `.github/` directory at all**, yet four files talk about CI runners, CI lint gates, and tag-triggered builds. When `.github/workflows` is absent or empty *and* a context file matches the existing `RELEASE_DOC_PATTERNS` (`src/core/checks/ci-coverage.ts:10-23`), the docs are describing infrastructure that cannot run.
+postgres-mcp has **no `.github/` directory at all**, yet four files talk about CI runners, CI lint gates, and tag-triggered builds. When `.github/workflows` is absent or empty _and_ a context file matches the existing `RELEASE_DOC_PATTERNS` (`src/core/checks/ci-coverage.ts:10-23`), the docs are describing infrastructure that cannot run.
 
 Most of the machinery already exists. `findReleaseWorkflows` (`:26`) and `contextMentionsRelease` (`:71`) are the two halves; today `checkCiCoverage` fires only on `workflows non-empty AND NOT documented` (`:88-90`). This rule is the opposite corner of the same 2x2:
 
-| | context mentions release | context silent |
-|---|---|---|
-| **workflows exist** | ok | `ci-coverage/no-release-docs` (today) |
-| **no workflows** | **`ci-coverage/no-workflows` (proposed)** | ok |
+|                     | context mentions release                  | context silent                        |
+| ------------------- | ----------------------------------------- | ------------------------------------- |
+| **workflows exist** | ok                                        | `ci-coverage/no-release-docs` (today) |
+| **no workflows**    | **`ci-coverage/no-workflows` (proposed)** | ok                                    |
 
 ### Guard against the obvious false positive
 
 A repo with no CI that documents `./release.sh` as a **local** flow is correct, not broken. `RELEASE_DOC_PATTERNS` currently matches `/npm\s+publish/i` and `/git\s+tag\s+v/i`, which a purely local release doc absolutely contains — firing on those alone would be wrong, and postgres-mcp's own `release.sh` is exactly that repo.
 
-Narrow the trigger to phrasing that asserts *hosted* CI specifically: `CI`, `GitHub Actions`, `workflow`, `runner`, `on tag push`, `.yml`. Do not reuse `RELEASE_DOC_PATTERNS` unmodified. Fixture `fixtures/empty-project` is a good negative control; a new fixture with a CI-claiming CLAUDE.md and no `.github/` is the positive.
+Narrow the trigger to phrasing that asserts _hosted_ CI specifically: `CI`, `GitHub Actions`, `workflow`, `runner`, `on tag push`, `.yml`. Do not reuse `RELEASE_DOC_PATTERNS` unmodified. Fixture `fixtures/empty-project` is a good negative control; a new fixture with a CI-claiming CLAUDE.md and no `.github/` is the positive.
 
 ### Catalog entry
 
@@ -111,12 +111,12 @@ Narrow the trigger to phrasing that asserts *hosted* CI specifically: `CI`, `Git
 
 **Status: do not implement from this section.** While this handoff was being written, another agent was writing `fixtures/unknown-subcommand/` into this checkout (untracked at the time of writing; `CLAUDE.md` + `cli.js` + `package.json`, mtime 07:07:49). It targets the same defect under the rule ID **`commands/unknown-subcommand`** — and its fixture is the same scenario described below, down to a documented `doctor` subcommand on an MCP server binary whose unknown args fall through to server startup and read as a hang.
 
-Their fixture is the authority on naming; **use `commands/unknown-subcommand`, not the `commands/bin-subcommand-not-found` ID proposed further down.** This section is kept only for the design tradeoff in "Step 3", which the two efforts answer *differently* and which someone should decide deliberately rather than by merge order:
+Their fixture is the authority on naming; **use `commands/unknown-subcommand`, not the `commands/bin-subcommand-not-found` ID proposed further down.** This section is kept only for the design tradeoff in "Step 3", which the two efforts answer _differently_ and which someone should decide deliberately rather than by merge order:
 
-- Their `cli.js` is annotated *"Minimal argv dispatch in the shape the detector must read: string-literal comparisons against `process.argv[2]`"* — i.e. they are building the hand-rolled-argv detector.
+- Their `cli.js` is annotated _"Minimal argv dispatch in the shape the detector must read: string-literal comparisons against `process.argv[2]`"_ — i.e. they are building the hand-rolled-argv detector.
 - The recommendation below is the opposite: **Commander-only, emit nothing when no recognizable dispatcher is found.**
 
-Neither is obviously right. Literal-argv matching covers more real CLIs (including every `@yawlabs/*-mcp` server, which all hand-roll) but false-positives on any CLI whose subcommands are computed, aliased, or built from a table — and a wrong *"that subcommand does not exist"* is worse than silence, because the reader's correct doc looks broken. Whoever lands this should at minimum make the detector bail out silently when the entry file has no recognizable dispatcher at all, rather than treating "found no subcommands" as "the set is empty."
+Neither is obviously right. Literal-argv matching covers more real CLIs (including every `@yawlabs/*-mcp` server, which all hand-roll) but false-positives on any CLI whose subcommands are computed, aliased, or built from a table — and a wrong _"that subcommand does not exist"_ is worse than silence, because the reader's correct doc looks broken. Whoever lands this should at minimum make the detector bail out silently when the entry file has no recognizable dispatcher at all, rather than treating "found no subcommands" as "the set is empty."
 
 Also present and untracked from the same effort, unrelated to these findings: `fixtures/claim-total-vs-parts/`, `fixtures/directive-conflict/`, `fixtures/masked-exit-status/`.
 
@@ -134,7 +134,7 @@ Verify with:
 
 ### Why the existing `commands` check misses it
 
-`src/core/checks/commands.ts:13` matches `npm run X` / `pnpm|yarn|bun [run] X` and `make X` (`:14`), validating against package.json scripts and the Makefile. A project's **own** bin has no equivalent. The irony worth noting: `doctor` already appears in that file's `PM_BUILTIN_SUBCOMMANDS` set (`:39`) — but that set is about *package-manager* subcommands, and does nothing for a project-owned binary.
+`src/core/checks/commands.ts:13` matches `npm run X` / `pnpm|yarn|bun [run] X` and `make X` (`:14`), validating against package.json scripts and the Makefile. A project's **own** bin has no equivalent. The irony worth noting: `doctor` already appears in that file's `PM_BUILTIN_SUBCOMMANDS` set (`:39`) — but that set is about _package-manager_ subcommands, and does nothing for a project-owned binary.
 
 ### Proposed trigger
 
@@ -204,14 +204,14 @@ Step 3 is the hard part and determines whether this ships. Two viable sources, i
 
 **Original text follows, retained only so the retraction has context. Do not act on it.**
 
-| Catalog `id` | Emitted `ruleId` |
-|---|---|
-| `ci/no-release-docs` (`context-lint-rules.json`) | `ci-coverage/no-release-docs` (`src/core/checks/ci-coverage.ts:96`) |
+| Catalog `id`                                         | Emitted `ruleId`                                                       |
+| ---------------------------------------------------- | ---------------------------------------------------------------------- |
+| `ci/no-release-docs` (`context-lint-rules.json`)     | `ci-coverage/no-release-docs` (`src/core/checks/ci-coverage.ts:96`)    |
 | `ci/undocumented-secret` (`context-lint-rules.json`) | `ci-secrets/undocumented-secret` (`src/core/checks/ci-secrets.ts:127`) |
 
 Verified: `ci/no-release-docs` and `ci/undocumented-secret` appear **nowhere** in `src/` except the allowlist itself (`catalog-schema.test.ts:27-28`) and a doc comment (`catalog-schema.ts:248-249`). There is no mapping layer. A downstream consumer that suppresses or filters on the published ID `ci/no-release-docs` matches nothing, forever.
 
-`CONTRIBUTING.md:72` justifies the allowlist as *"their IDs are published API and stay as-is"* — but the linter does not emit them, so whatever is published API, it is not what the catalog says.
+`CONTRIBUTING.md:72` justifies the allowlist as _"their IDs are published API and stay as-is"_ — but the linter does not emit them, so whatever is published API, it is not what the catalog says.
 
 ### Why no test caught it
 

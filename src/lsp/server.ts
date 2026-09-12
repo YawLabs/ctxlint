@@ -64,9 +64,7 @@ export async function startLspServer(): Promise<void> {
                 : DiagnosticSeverity.Information,
           code: issue.ruleId ?? issue.check,
           source: 'ctxlint',
-          message: issue.suggestion
-            ? `${issue.message} -- ${issue.suggestion}`
-            : issue.message,
+          message: issue.suggestion ? `${issue.message} -- ${issue.suggestion}` : issue.message,
         })),
       );
 

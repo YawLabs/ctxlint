@@ -1,6 +1,3 @@
 {
-  "enabledMcpjsonServers": [
-    "npmjs",
-    "tailscale"
-  ]
+  "enabledMcpjsonServers": ["npmjs", "tailscale"]
 }

@@ -41,14 +41,7 @@ interface Scanned {
  */
 
 /** Fixed temp roots. `%TEMP%`/`$TMPDIR` included: same sharing semantics. */
-const TEMP_ROOTS = [
-  '/tmp/',
-  '/var/tmp/',
-  '$TMPDIR/',
-  '${TMPDIR}/',
-  '%TEMP%\\',
-  '%TMP%\\',
-];
+const TEMP_ROOTS = ['/tmp/', '/var/tmp/', '$TMPDIR/', '${TMPDIR}/', '%TEMP%\\', '%TMP%\\'];
 
 /**
  * A path component that makes the name unique per run. `mktemp` is handled
