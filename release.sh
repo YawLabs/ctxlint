@@ -98,17 +98,27 @@ promote_changelog() {
   info "CHANGELOG.md: promoted [Unreleased] -> [${VERSION}] - ${today}"
 }
 
-# SKIP_LINT=1 escape hatch -- wraps `npm`/`pnpm` so lint-related runs are
-# no-ops. It does NOT route around a broken runner. Lint here is `eslint src/`:
-# pure JS on node, with no native binary to crash, and it exits 0 on
-# MINGW64-ARM64 (measured 2026-09-11). The thing that segfaults on that host is
-# biome's native arm64 executable, which this repo does not use.
+# SKIP_LINT=1 escape hatch -- wraps `npm`/`pnpm` so that any `run lint*` is a
+# no-op. Concretely, what it skips is `eslint src/` (package.json `lint`) and
+# nothing else: typecheck, tests and the build still run.
 #
-# So setting this skips a WORKING gate, and nothing else re-checks it: there is
-# no CI (no .github/workflows, and GitHub Actions is disabled on the repo), so
-# this script is the only thing that ever runs eslint. What it really buys is a
-# release whose lint findings were never looked at. Explicit last resort only,
-# and needing it is a bug to fix rather than a step to skip.
+# It does NOT route around a broken runner, and the name is inherited rather
+# than earned. Lint here is eslint: pure JS on node, with no native binary to
+# crash, and it exits 0 on MINGW64-ARM64 (measured 2026-09-11). The crash the
+# hatch is named after belongs to a sibling repo's toolchain -- biome's native
+# win32-arm64 executable, which dies on CHECK-shaped runs at SOME versions
+# (2.5.4 does, while answering `--version` with exit 0; 2.4.16 and 2.5.13 run
+# correctly -- measured 2026-09-11 on this host). This repo does not depend on
+# biome at all, so none of that can happen here.
+#
+# So setting this skips a WORKING gate, and nothing re-checks it afterwards:
+# there is no CI -- `.github/` holds only CODEOWNERS, no `workflows/` directory
+# exists, and `gh api repos/YawLabs/ctxlint/actions/permissions --jq .enabled`
+# returns false (checked 2026-09-11), so Actions could not run a workflow even
+# if one were added. This script is the only thing that ever runs eslint on
+# this code. What SKIP_LINT really buys is a release whose lint findings were
+# never looked at. Explicit last resort only, and needing it is a bug to fix
+# rather than a step to skip.
 if [ "${SKIP_LINT:-}" = "1" ]; then
   npm() {
     if [ "$1" = "run" ] && [[ "$2" == lint* ]]; then
