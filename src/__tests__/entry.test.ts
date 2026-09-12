@@ -217,17 +217,43 @@ describe('package.json consistency', () => {
   //
   // Wiring a catalog reader into the CLI (a `ctxlint rules` subcommand, an
   // --explain flag) would pull it in and break silently: no build error, just
-  // a read one directory too high. Asserting on the literals rather than the
-  // symbol names because build.mjs sets minify:false, so a bundled string
-  // survives verbatim while an identifier could in principle be renamed.
+  // a read one directory too high.
+  //
+  // The MODULE BANNER is the load-bearing marker. esbuild prefixes each
+  // bundled module with `// <path>`, so that string appears if and only if
+  // catalog-meta is in the graph -- whatever is imported from it.
+  //
+  // Export names and path literals are NOT sufficient on their own, measured
+  // by rebuilding the module under the repo's own esbuild options against
+  // three import shapes. Every one ships the broken `resolve(HERE, '..',
+  // '..')`, but tree-shaking decides what else survives:
+  //
+  //   imports              broken resolve   readCatalog   path literals
+  //   REPO_ROOT only             yes             no            no
+  //   readCatalog only           yes            yes            no
+  //   CATALOGS + readCatalog     yes            yes           yes
+  //
+  // So a literals-only check misses two of the three, and adding
+  // `readCatalog` still misses the first. The banner catches all three.
+  //
+  // Not asserting on `REPO_ROOT`: vendored simple-git puts `IS_REPO_ROOT` in
+  // the bundle today, so that substring is a false positive, not a canary.
   it('catalog readers stay out of the shipped bundle', () => {
     const bundle = fs.readFileSync(CLI, 'utf-8');
-    for (const literal of [
+
+    // Anti-vacuity guard. The banner marker exists only because build.mjs
+    // sets minify:false; under minification every assertion below would pass
+    // for the wrong reason and this test would quietly stop gating anything.
+    expect(bundle).toContain('// src/core/');
+
+    for (const marker of [
+      'src/core/catalog-meta.ts',
+      'readCatalog',
       'schemas/ctxlint-catalog.schema.json',
       'agent-session-lint-rules.json',
       'context-lint-rules.json',
     ]) {
-      expect(bundle).not.toContain(literal);
+      expect(bundle).not.toContain(marker);
     }
   });
 });
