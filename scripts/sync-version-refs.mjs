@@ -62,7 +62,7 @@ export function applyVersionRefs(src, refs, version) {
   const missing = [];
   for (const { label, pattern } of refs) {
     let count = 0;
-    // A replacer function, not a `$1` string: `'$1' + '0.25.3'` reads as `$10`.
+    // A replacer function so each match is counted: a ref matching nothing fails.
     next = next.replace(pattern, (_match, prefix) => {
       count++;
       return prefix + version;

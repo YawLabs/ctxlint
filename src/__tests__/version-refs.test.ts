@@ -51,11 +51,14 @@ describe('sync-version-refs', () => {
   });
 
   it('checked-in pins match package.json (--check)', () => {
-    // The mode that fails `npm test` when a pin drifts or a README edit breaks
-    // a pattern -- long before release.sh step 4 would hit it.
-    expect(() =>
-      execFileSync(process.execPath, [SCRIPT, '--check'], { cwd: ROOT, stdio: 'pipe' }),
-    ).not.toThrow();
+    // Fails `npm test` when a pin drifts or a README edit breaks a pattern --
+    // long before release.sh step 4 would hit it. The stdout assertion is what
+    // tells a passing check from a script whose main() never ran (also exit 0).
+    const stdout = execFileSync(process.execPath, [SCRIPT, '--check'], {
+      cwd: ROOT,
+      encoding: 'utf-8',
+    });
+    expect(stdout).toContain('Pinned version refs match package.json');
   });
 
   it('rewrites the README rev and banner, and nothing else', () => {
@@ -104,13 +107,46 @@ describe('sync-version-refs', () => {
     expect(twice).toEqual({ next: once, missing: [] });
   });
 
-  function scratchRepo(readme: string, hooks: string): string {
+  function mkTmp(): string {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-version-refs-'));
     tmpDirs.push(dir);
-    fs.writeFileSync(path.join(dir, 'README.md'), readme);
-    fs.writeFileSync(path.join(dir, '.pre-commit-hooks.yaml'), hooks);
     return dir;
   }
+
+  /**
+   * A scratch repo holding a copy of the script. It resolves the files it edits
+   * (and package.json, for --check) relative to its own location, exactly as
+   * release.sh invokes it from the repo root.
+   */
+  function scratchRepo(readme: string, hooks: string, pkgVersion = '0.0.0'): string {
+    const dir = mkTmp();
+    fs.writeFileSync(path.join(dir, 'README.md'), readme);
+    fs.writeFileSync(path.join(dir, '.pre-commit-hooks.yaml'), hooks);
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ version: pkgVersion }));
+    fs.mkdirSync(path.join(dir, 'scripts'));
+    fs.copyFileSync(SCRIPT, path.join(dir, 'scripts', 'sync-version-refs.mjs'));
+    return dir;
+  }
+
+  function runCli(root: string, args: string[]) {
+    const script = path.join(root, 'scripts', 'sync-version-refs.mjs');
+    try {
+      const stdout = execFileSync(process.execPath, [script, ...args], {
+        cwd: root,
+        encoding: 'utf-8',
+        stdio: 'pipe',
+      });
+      return { status: 0, stdout, stderr: '' };
+    } catch (err: any) {
+      return {
+        status: err.status as number,
+        stdout: String(err.stdout),
+        stderr: String(err.stderr),
+      };
+    }
+  }
+
+  const read = (dir: string, file: string) => fs.readFileSync(path.join(dir, file), 'utf-8');
 
   it('computeTargets reads every file a ref names', () => {
     const dir = scratchRepo(README, HOOKS);
@@ -126,42 +162,51 @@ describe('sync-version-refs', () => {
   });
 
   it('CLI writes nothing when any pattern is missing', () => {
-    // Runs a copy of the script from a scratch root: it resolves the files it
-    // edits relative to its own location, exactly as release.sh invokes it.
     const dir = scratchRepo(README.replace('ctxlint v0.9.10', 'ctxlint 0.9.10'), HOOKS);
-    fs.mkdirSync(path.join(dir, 'scripts'));
-    const script = path.join(dir, 'scripts', 'sync-version-refs.mjs');
-    fs.copyFileSync(SCRIPT, script);
-
-    let status = 0;
-    let stderr = '';
-    try {
-      execFileSync(process.execPath, [script, '1.2.3'], { cwd: dir, stdio: 'pipe' });
-    } catch (err: any) {
-      status = err.status;
-      stderr = String(err.stderr);
-    }
+    const { status, stderr } = runCli(dir, ['1.2.3']);
     expect(status).toBe(1);
     expect(stderr).toContain('README.md: Example Output banner');
     // All-or-nothing: the hooks file, whose pattern DID match, is untouched.
-    expect(fs.readFileSync(path.join(dir, '.pre-commit-hooks.yaml'), 'utf-8')).toBe(HOOKS);
+    expect(read(dir, '.pre-commit-hooks.yaml')).toBe(HOOKS);
   });
 
   it('CLI rewrites a scratch repo and rejects a malformed version', () => {
     const dir = scratchRepo(README, HOOKS);
-    fs.mkdirSync(path.join(dir, 'scripts'));
-    const script = path.join(dir, 'scripts', 'sync-version-refs.mjs');
-    fs.copyFileSync(SCRIPT, script);
+    expect(runCli(dir, ['v1.2.3']).status).toBe(1);
+    expect(read(dir, 'README.md')).toBe(README);
 
-    expect(() =>
-      execFileSync(process.execPath, [script, 'v1.2.3'], { cwd: dir, stdio: 'pipe' }),
-    ).toThrow();
-    expect(fs.readFileSync(path.join(dir, 'README.md'), 'utf-8')).toBe(README);
+    expect(runCli(dir, ['1.2.3'])).toMatchObject({ status: 0 });
+    expect(read(dir, 'README.md')).toContain('    rev: v1.2.3\n');
+    expect(read(dir, '.pre-commit-hooks.yaml')).toContain('npx @yawlabs/ctxlint@1.2.3 --strict');
+  });
 
-    execFileSync(process.execPath, [script, '1.2.3'], { cwd: dir, stdio: 'pipe' });
-    expect(fs.readFileSync(path.join(dir, 'README.md'), 'utf-8')).toContain('    rev: v1.2.3\n');
-    expect(fs.readFileSync(path.join(dir, '.pre-commit-hooks.yaml'), 'utf-8')).toContain(
-      'npx @yawlabs/ctxlint@1.2.3 --strict',
-    );
+  it('--check fails on a drifted pin without writing, and passes once it is synced', () => {
+    // README pins 0.9.10 (in sync with package.json); the hooks file pins 0.24.1.
+    const dir = scratchRepo(README, HOOKS, '0.9.10');
+    const drifted = runCli(dir, ['--check']);
+    expect(drifted.status).toBe(1);
+    expect(drifted.stderr).toContain('do not match package.json (0.9.10)');
+    expect(drifted.stderr).toContain('  .pre-commit-hooks.yaml');
+    expect(drifted.stderr).not.toContain('  README.md');
+    expect(read(dir, '.pre-commit-hooks.yaml')).toBe(HOOKS);
+
+    fs.writeFileSync(path.join(dir, '.pre-commit-hooks.yaml'), HOOKS.replace('0.24.1', '0.9.10'));
+    const synced = runCli(dir, ['--check']);
+    expect(synced).toMatchObject({ status: 0 });
+    expect(synced.stdout).toContain('Pinned version refs match package.json (0.9.10)');
+  });
+
+  it('CLI runs when invoked through a symlinked or junctioned checkout', () => {
+    // node resolves the entry module's import.meta.url through the link but
+    // leaves argv[1] as typed; a plain string compare would skip main() and
+    // exit 0 having synced nothing. A junction on Windows needs no privilege.
+    const dir = scratchRepo(README, HOOKS);
+    const link = path.join(mkTmp(), 'linked-checkout');
+    fs.symlinkSync(dir, link, process.platform === 'win32' ? 'junction' : 'dir');
+
+    const { status, stdout } = runCli(link, ['1.2.3']);
+    expect(status).toBe(0);
+    expect(stdout).toContain('synced README.md to 1.2.3');
+    expect(read(dir, '.pre-commit-hooks.yaml')).toContain('npx @yawlabs/ctxlint@1.2.3 --strict');
   });
 });

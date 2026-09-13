@@ -98,6 +98,41 @@ promote_changelog() {
   info "CHANGELOG.md: promoted [Unreleased] -> [${VERSION}] - ${today}"
 }
 
+# ---- Version-pinned files ----
+# Every file besides package.json that names the release being cut. Both syncs
+# are idempotent: already at $VERSION, they write nothing.
+#
+# - scripts/sync-version-refs.mjs: the .pre-commit-hooks.yaml npx entry (so
+#   `rev: vX.Y.Z` runs exactly that release rather than whatever @latest was at
+#   install time), plus README.md's pre-commit `rev:` and example-output
+#   banner, which went unsynced from v0.9.10 until a hand bump to v0.25.0
+#   (#63). It fails, writing nothing, when any pattern is missing.
+# - server.json: published to the MCP Registry in step 8 and must match the
+#   tag's version, or mcp-publisher re-publishes the previous version and gets
+#   400 "cannot publish duplicate version".
+#
+# Step 4 runs this after the package.json bump. A RESUME also runs it during
+# pre-flight, before step 1: when an earlier run bumped package.json and then
+# died before these syncs finished, step 3's tests (server.json and the pins in
+# entry.test.ts, and version-refs.test.ts --check) fail on that half-bumped
+# tree, so a resume that waited for step 4 would never get there.
+sync_version_files() {
+  node scripts/sync-version-refs.mjs "$VERSION" || fail "Pinned version refs not synced to $VERSION -- see the error above"
+
+  if [ -f server.json ]; then
+    local current_server_version
+    current_server_version=$(jq -r '.version' server.json 2>/dev/null || echo "")
+    if [ "$current_server_version" != "$VERSION" ]; then
+      # tr: a native Windows jq.exe writes CRLF (jq 1.7.1, measured 2026-09-13).
+      # git normalizes the committed blob, but the working-tree file stays CRLF
+      # and fails the NEXT release's step 3, whose `prettier --check .` expects LF.
+      jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' server.json | tr -d '\r' > server.tmp
+      mv server.tmp server.json
+      info "server.json synced to $VERSION"
+    fi
+  fi
+}
+
 # SKIP_LINT=1 escape hatch -- wraps `npm`/`pnpm` so that any `run lint*` is a
 # no-op. Concretely, what it skips is `eslint src/` (package.json `lint`) and
 # nothing else: typecheck, tests and the build still run.
@@ -173,6 +208,8 @@ RESUMING=false
 if [ "$CURRENT_VERSION" = "$VERSION" ]; then
   RESUMING=true
   info "Already at v${VERSION} — resuming"
+  # Before step 3, whose tests fail on exactly this state. See sync_version_files.
+  sync_version_files
 else
   if [ "$IS_CI" != "true" ]; then
     if [ -n "$(git status --porcelain)" ]; then
@@ -292,40 +329,12 @@ else
   info "Version bumped"
 fi
 
-# Pinned version refs outside package.json: the .pre-commit-hooks.yaml npx
-# entry (so `rev: vX.Y.Z` runs exactly that release rather than whatever
-# @latest was at install time), and README.md's pre-commit `rev:` and
-# example-output banner, which went unsynced from v0.9.10 until a hand bump to
-# v0.25.0 (#63). The script fails -- writing nothing -- when any pattern is
-# missing.
-#
-# Unconditional, like server.json below. The .pre-commit-hooks.yaml rewrite
-# used to sit inside the bump branch, so a run that bumped package.json and
-# then failed that rewrite could never retry it: the resume sees
-# CURRENT_VERSION == VERSION, skips the branch, and commits package.json
-# without it. The script is idempotent, so a clean re-run writes nothing.
-node scripts/sync-version-refs.mjs "$VERSION" || fail "Pinned version refs not synced to $VERSION -- see the error above"
+# Unconditional (not inside the bump else above), so the bump branch holds
+# nothing a resume would need to redo. See sync_version_files for why a resume
+# also runs it before step 1.
+sync_version_files
 
-# server.json is published to the MCP Registry in step 8 and must match the
-# tag's version. This runs UNCONDITIONALLY (not inside the bump else above)
-# so a resume run where package.json was bumped in a prior invocation still
-# syncs server.json -- otherwise mcp-publisher tries to re-publish the
-# previous version and gets 400 "cannot publish duplicate version".
-# Idempotent: the inner if skips the write when server.json is already in
-# sync, so a clean re-run produces no working-tree dirt.
-if [ -f server.json ]; then
-  CURRENT_SERVER_VERSION=$(jq -r '.version' server.json 2>/dev/null || echo "")
-  if [ "$CURRENT_SERVER_VERSION" != "$VERSION" ]; then
-    # tr: a native Windows jq.exe writes CRLF (jq 1.7.1, measured 2026-09-13).
-    # git normalizes the committed blob, but the working-tree file stays CRLF
-    # and fails the NEXT release's step 3, whose `prettier --check .` expects LF.
-    jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' server.json | tr -d '\r' > server.tmp
-    mv server.tmp server.json
-    info "server.json synced to $VERSION"
-  fi
-fi
-
-# Same unconditional placement, and for the same reason as server.json above:
+# Same unconditional placement as sync_version_files above, for the same reason:
 # a resume run has CURRENT_VERSION == VERSION and skips the bump branch, but an
 # unpromoted CHANGELOG still needs promoting. That is exactly the state v0.20.0
 # was in when it failed -- the tag and the npm publish had already landed, and
