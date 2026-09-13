@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { stripBom } from '../../utils/fs.js';
-import { shellWords } from './gradle-projects.js';
+import { CONTINUATION, shellWords } from './gradle-projects.js';
 
 /**
  * Static analysis behind `commands/maven-module-not-found`.
@@ -57,15 +57,19 @@ export function readMavenReactor(baseDir: string): ReactorProject[] | null {
   const seen = new Set<string>();
   const queue = [path.resolve(rootPom)];
   while (queue.length > 0) {
-    const pomFile = queue.shift() as string;
-    const key = pomFile.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
+    // The real path, in the file system's own casing: `<module>Core</module>`
+    // naming a `core/` directory is one project on Windows (and absent on
+    // Linux, where the read below fails), while a case-sensitive directory can
+    // really hold both `Legacy/` and `legacy/`.
+    const pomFile = realPath(queue.shift() as string);
+    if (pomFile === null) return null;
+    if (seen.has(pomFile)) continue;
+    seen.add(pomFile);
     if (seen.size > MAX_POMS) return null;
 
     let xml: string;
     try {
-      xml = stripBom(fs.readFileSync(pomFile, 'utf-8'));
+      xml = readXml(pomFile);
     } catch {
       // A module listed but absent fails the build on its own; it cannot be
       // proven absent from the reactor either way, so the set is unknowable.
@@ -90,6 +94,26 @@ export function readMavenReactor(baseDir: string): ReactorProject[] | null {
   return projects;
 }
 
+/** The canonical path of an existing file or directory, or null when it does not exist. */
+export function realPath(p: string): string | null {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read a POM as text. A UTF-16 POM (BOM or NUL bytes) is valid XML that Maven
+ * reads, but read as UTF-8 it parses as an empty project with no modules; it
+ * throws instead, so the reactor is treated as unknowable.
+ */
+function readXml(file: string): string {
+  const buf = fs.readFileSync(file);
+  if (buf.includes(0)) throw new Error('not UTF-8');
+  return stripBom(buf.toString('utf-8'));
+}
+
 interface PomModel {
   artifactId: string | null;
   groupId: string | null;
@@ -103,47 +127,64 @@ interface PomModel {
  */
 export function parsePom(xml: string): PomModel | null {
   const cleaned = xml.replace(/<!--[\s\S]*?-->/g, '').replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, '');
-  const tagRe = /<(\/?)([A-Za-z_][\w.:-]*)([^>]*?)(\/?)>/g;
+  // Attribute values are skipped as quoted runs, so a `>` inside one does not
+  // end the tag.
+  const tagRe = /<(\/?)([A-Za-z_][\w.:-]*)((?:[^>"']|"[^"]*"|'[^']*')*?)(\/?)>/g;
   const stack: string[] = [];
   const text: Record<string, string> = {};
   const modules: string[] = [];
   let hasModuleList = false;
+  let namespaceVersion: string | null = null;
   let lastEnd = 0;
 
   for (const m of cleaned.matchAll(tagRe)) {
-    const [whole, closing, rawName, , selfClosing] = m;
+    const [whole, closing, rawName, attrs, selfClosing] = m;
     const name = rawName.includes(':') ? rawName.slice(rawName.indexOf(':') + 1) : rawName;
     const start = m.index ?? 0;
     if (closing) {
+      // A close tag that does not match the open element means the walker lost
+      // track of the tree; a module list read from there cannot be trusted.
+      if (stack[stack.length - 1] !== name) return null;
       const elementPath = stack.join('/');
       const value = cleaned.slice(lastEnd, start).trim();
-      if (stack[stack.length - 1] === name) {
-        if (/^project\/(?:artifactId|groupId|modelVersion)$/.test(elementPath))
-          text[elementPath] = value;
-        if (elementPath === 'project/parent/groupId') text[elementPath] = value;
-        if (
-          /^project\/(?:profiles\/profile\/)?(?:modules\/module|subprojects\/subproject)$/.test(
-            elementPath,
-          )
-        ) {
-          if (!value || value.includes('${')) return null;
-          modules.push(decodeEntities(value));
-        }
-        stack.pop();
+      if (/^project\/(?:artifactId|groupId|modelVersion|packaging)$/.test(elementPath)) {
+        text[elementPath] = value;
       }
-    } else if (!selfClosing && !whole.startsWith('<?')) {
-      stack.push(name);
-      const elementPath = stack.join('/');
-      if (/^project\/(?:profiles\/profile\/)?(?:modules|subprojects)$/.test(elementPath)) {
+      if (elementPath === 'project/parent/groupId') text[elementPath] = value;
+      if (
+        /^project\/(?:profiles\/profile\/)?(?:modules\/module|subprojects\/subproject)$/.test(
+          elementPath,
+        )
+      ) {
+        if (!value || value.includes('${')) return null;
+        modules.push(decodeEntities(value));
+      }
+      stack.pop();
+    } else {
+      const elementPath = [...stack, name].join('/');
+      if (elementPath === 'project') {
+        namespaceVersion =
+          /xmlns\s*=\s*["']http:\/\/maven\.apache\.org\/POM\/(\d+\.\d+\.\d+)["']/.exec(
+            attrs,
+          )?.[1] ?? null;
+      }
+      // Only the PROJECT's own list switches discovery off; a profile's does not.
+      if (elementPath === 'project/modules' || elementPath === 'project/subprojects') {
         hasModuleList = true;
       }
+      if (!selfClosing) stack.push(name);
     }
     lastEnd = start + whole.length;
   }
+  if (stack.length > 0) return null;
 
-  // Maven 4.1.0 discovers subprojects from the directory tree when a POM
-  // declares neither list; that set is not in the file.
-  if (text['project/modelVersion'] === '4.1.0' && !hasModuleList) return null;
+  // Maven 4 discovers subprojects from the directory tree when an aggregator
+  // (packaging `pom`) on a model newer than 4.0.0 declares neither list. The
+  // model version may be implied by the namespace alone (`mvnup` output).
+  const modelVersion = text['project/modelVersion'] || namespaceVersion;
+  const packaging = text['project/packaging'] || 'jar';
+  const aggregator = packaging === 'pom' || packaging.includes('${');
+  if (aggregator && !hasModuleList && modelVersion !== '4.0.0') return null;
 
   const value = (v: string | undefined): string | null => (v ? decodeEntities(v) : null);
   return {
@@ -154,7 +195,16 @@ export function parsePom(xml: string): PomModel | null {
 }
 
 function decodeEntities(s: string): string {
+  const codePoint = (n: number, raw: string): string => {
+    try {
+      return String.fromCodePoint(n);
+    } catch {
+      return raw;
+    }
+  };
   return s
+    .replace(/&#x([0-9a-fA-F]+);/g, (raw, h: string) => codePoint(parseInt(h, 16), raw))
+    .replace(/&#(\d+);/g, (raw, d: string) => codePoint(Number(d), raw))
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
@@ -205,8 +255,13 @@ const VALUE_OPTIONS = new Set([
  */
 const RETARGET_OPTIONS = new Set(['-f', '--file', '-N', '--non-recursive', '-af', '--at-file']);
 
-/** Names documentation uses as stand-ins for a real module. */
-const PLACEHOLDER = /[<>{}$*]|\.\.\.|^(?:module|my-module|your-module|module-name|some-module)$/i;
+/**
+ * Names documentation uses as stand-ins for a real module, tested against the
+ * whole selector and against its artifactId part (`:module`,
+ * `com.example:my-module`). Mirrors PLACEHOLDER_SEGMENT in gradle-projects.ts.
+ */
+const PLACEHOLDER =
+  /[<>{}$*%[\]]|\.\.\.|^path\/to\/|^(?:module|project|submodule|component|feature)(?:[-_]?(?:name|path|id))?$|^(?:my|your|some|example|sample)[-_]|^(?:foo|bar|baz|xxx|name)$/i;
 
 /** One module selector found in a Maven command. */
 export interface MavenSelector {
@@ -223,6 +278,9 @@ export interface MavenSelector {
 export function mavenSelectors(cmd: string): MavenSelector[] | null {
   const tokens = shellWords(cmd);
   if (!tokens || tokens.length === 0 || !MAVEN_HEAD.test(tokens[0])) return null;
+  // The command continues on a line we do not see (`-pl core \`), which may
+  // add `-f` or the real selector list.
+  if (tokens.some((t) => CONTINUATION.test(t))) return null;
 
   const out: MavenSelector[] = [];
   const addList = (option: string, value: string, isList: boolean): void => {
@@ -230,7 +288,9 @@ export function mavenSelectors(cmd: string): MavenSelector[] | null {
       let sel = raw.trim();
       if (isList) sel = sel.replace(/^[!+-]/, '');
       // `?sel` is optional in Maven 4: a miss is logged, not fatal.
-      if (!sel || sel.startsWith('?') || PLACEHOLDER.test(sel)) continue;
+      if (!sel || sel.startsWith('?')) continue;
+      const idPart = sel.slice(sel.lastIndexOf(':') + 1);
+      if (PLACEHOLDER.test(sel) || PLACEHOLDER.test(idPart)) continue;
       out.push({ selector: sel, option });
     }
   };
@@ -278,14 +338,9 @@ export function selectorMatches(
       (p) => templateMatches(p.artifactId, artifactId) && templateMatches(p.groupId, groupId),
     );
   }
-  const target = path.resolve(baseDir, selector);
-  let stat: fs.Stats;
-  try {
-    stat = fs.statSync(target);
-  } catch {
-    return false;
-  }
-  if (stat.isFile()) return reactor.some((p) => samePath(p.pomFile, target));
+  const target = realPath(path.resolve(baseDir, selector));
+  if (target === null) return false;
+  if (fs.statSync(target).isFile()) return reactor.some((p) => samePath(p.pomFile, target));
   return reactor.some((p) => samePath(p.basedir, target));
 }
 

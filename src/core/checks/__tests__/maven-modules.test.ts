@@ -46,17 +46,51 @@ describe('parsePom', () => {
     expect(parsePom(pom('<modules><module>flink-${scala}</module></modules>'))).toBeNull();
   });
 
-  it('is unreadable on Maven 4.1.0 automatic subproject discovery', () => {
+  it('is unreadable on Maven 4 automatic subproject discovery: an aggregator with no list', () => {
+    const v410 = (inner: string) =>
+      `<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.1.0</modelVersion>${inner}</project>`;
+    expect(parsePom(v410('<packaging>pom</packaging>'))).toBeNull();
+    // A module list inside a profile does not switch discovery off.
     expect(
-      parsePom(pom('<modelVersion>4.1.0</modelVersion><artifactId>root</artifactId>')),
+      parsePom(
+        v410(
+          '<packaging>pom</packaging><profiles><profile><modules><module>a</module></modules></profile></profiles>',
+        ),
+      ),
     ).toBeNull();
+    // The model version may come from the namespace alone (`mvnup` output).
+    expect(
+      parsePom(
+        '<project xmlns="http://maven.apache.org/POM/4.1.0"><packaging>pom</packaging></project>',
+      ),
+    ).toBeNull();
+    // A declared list, even an empty one, and a jar module are both readable.
+    expect(
+      parsePom(
+        v410('<packaging>pom</packaging><subprojects><subproject>a</subproject></subprojects>'),
+      ),
+    ).not.toBeNull();
+    expect(parsePom(v410('<packaging>pom</packaging><subprojects/>'))).not.toBeNull();
+    expect(parsePom(v410('<artifactId>leaf</artifactId>'))).not.toBeNull();
+    // A 4.0.0 parent POM with no modules is an ordinary parent.
+    expect(
+      parsePom(pom('<modelVersion>4.0.0</modelVersion><packaging>pom</packaging>')),
+    ).not.toBeNull();
+  });
+
+  it('skips quoted attribute values and decodes numeric character references', () => {
     expect(
       parsePom(
         pom(
-          '<modelVersion>4.1.0</modelVersion><subprojects><subproject>a</subproject></subprojects>',
+          '<artifactId>core&#45;api</artifactId><build><plugins><plugin><configuration><x expr="a > b"/></configuration></plugin></plugins></build><modules><module>core</module></modules>',
         ),
       ),
-    ).not.toBeNull();
+    ).toEqual({ artifactId: 'core-api', groupId: null, modules: ['core'] });
+  });
+
+  it('is unreadable when the element tree does not balance', () => {
+    expect(parsePom(pom('<modules><module>a</modules></module>'))).toBeNull();
+    expect(parsePom('<project><modules><module>a</module>')).toBeNull();
   });
 });
 
@@ -80,6 +114,15 @@ describe('mavenSelectors', () => {
         (s) => s.selector,
       ),
     ).toEqual(['core', 'web']);
+  });
+
+  it('skips id-shaped placeholders and bails on a line continuation', () => {
+    expect(
+      mavenSelectors('mvn -pl :module,com.example:my-module,:real -rf :module-name test'),
+    ).toEqual([{ selector: ':real', option: '-pl' }]);
+    expect(mavenSelectors('./mvnw -pl \\')).toBeNull();
+    expect(mavenSelectors('mvnw.cmd -pl core ^')).toBeNull();
+    expect(mavenSelectors('mvn -pl %MODULE%,[module],path/to/module test')).toEqual([]);
   });
 
   it('bails when the command re-roots or shrinks the reactor', () => {
@@ -149,6 +192,18 @@ describe('reactor reading and selector matching', () => {
     fs.mkdirSync(path.join(tmp, 'libs', 'json', 'src'), { recursive: true });
     expect(selectorMatches('libs/json/src', reactor, tmp)).toBe(false);
     expect(selectorMatches('nope', reactor, tmp)).toBe(false);
+  });
+
+  it('is unreadable when a POM is UTF-16, which reads as UTF-8 as an empty project', () => {
+    fs.writeFileSync(
+      path.join(tmp, 'pom.xml'),
+      Buffer.from(
+        `${String.fromCharCode(0xfeff)}${pom('<modules><module>core</module></modules>')}`,
+        'utf16le',
+      ),
+    );
+    write('core/pom.xml', pom('<artifactId>core</artifactId>'));
+    expect(readMavenReactor(tmp)).toBeNull();
   });
 
   it('is unreadable when a listed module has no POM', () => {
@@ -235,12 +290,51 @@ describe('checkCommands — commands/maven-module-not-found', () => {
     ]);
   });
 
-  it('is silent when .mvn/maven.config re-roots the reactor', async () => {
+  it('is silent when .mvn/maven.config re-roots the reactor, in any spelling', async () => {
+    for (const config of [
+      '-f\nplatform/pom.xml\n',
+      '-fplatform/pom.xml\n',
+      '--file=platform\n',
+      '-N\n',
+    ]) {
+      const found = await lint({
+        ...reactor,
+        '.mvn/maven.config': config,
+        'AGENTS.md': '`mvn -pl missing test`\n',
+      });
+      expect(found, config).toEqual([]);
+    }
+    // Fail-mode flags are not `-f`.
     const found = await lint({
       ...reactor,
-      '.mvn/maven.config': '-f\nplatform/pom.xml\n',
+      '.mvn/maven.config': '-fae -ntp\n',
       'AGENTS.md': '`mvn -pl missing test`\n',
     });
+    expect(found).toHaveLength(1);
+  });
+
+  it('resolves a nested context file’s ../ sibling path against the whole reactor', async () => {
+    const found = await lint(
+      {
+        'pom.xml': pom(
+          '<artifactId>root</artifactId><modules><module>core</module><module>web</module></modules>',
+        ),
+        'core/pom.xml': pom(
+          '<artifactId>core</artifactId><packaging>pom</packaging><modules><module>api</module></modules>',
+        ),
+        'core/api/pom.xml': pom('<artifactId>api</artifactId>'),
+        'web/pom.xml': pom('<artifactId>web</artifactId>'),
+        'core/AGENTS.md': '`mvn -pl ../web test` and `mvn -pl ../gone test`\n',
+      },
+      'core/AGENTS.md',
+    );
+    expect(found.map((i) => i.message)).toEqual([
+      '"mvn -pl ../gone test" — -pl "../gone" matches no module in the Maven reactor',
+    ]);
+  });
+
+  it('is silent on a path that leaves the linted directory', async () => {
+    const found = await lint({ ...reactor, 'AGENTS.md': '`mvn -pl ../sibling-repo/core test`\n' });
     expect(found).toEqual([]);
   });
 

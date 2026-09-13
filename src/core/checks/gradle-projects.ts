@@ -62,6 +62,10 @@ const OPEN_IDENTIFIERS = new Set([
   'Eval',
   'ScriptEngineManager',
   'createProjectDescriptor',
+  // A settings `buildscript {}` puts a jar on the settings classpath, which can
+  // contribute extension functions on Settings; `classpath` alone misses
+  // `add('classpath', ...)` and Kotlin `"classpath"(...)`.
+  'buildscript',
   'classpath',
   'invokeMethod',
   'metaClass',
@@ -93,12 +97,25 @@ export interface GradleProjectSet {
  * directory at or above the context file, bounded by the project root, that
  * holds a settings file. A nested independent build (koog's
  * `examples/simple-examples/`) therefore gets its own settings, not the root's.
+ *
+ * With `requireWrapper` (the command runs `./gradlew`), that directory must
+ * also hold the wrapper. A nested build without one -- `build-logic/`,
+ * `build-tools-internal/`, an included build -- cannot run `./gradlew` from
+ * its own directory, so its context file's `./gradlew` means the outer build,
+ * and which one is a guess: return null.
  */
-export function findGradleBuildRoot(contextFile: string, projectRoot: string): string | null {
+export function findGradleBuildRoot(
+  contextFile: string,
+  projectRoot: string,
+  requireWrapper = false,
+): string | null {
   const root = path.resolve(projectRoot);
   let dir = path.dirname(path.resolve(contextFile));
   for (;;) {
-    if (SETTINGS_FILES.some((f) => fs.existsSync(path.join(dir, f)))) return dir;
+    if (SETTINGS_FILES.some((f) => fs.existsSync(path.join(dir, f)))) {
+      if (!requireWrapper) return dir;
+      return WRAPPER_FILES.some((f) => fs.existsSync(path.join(dir, f))) ? dir : null;
+    }
     if (dir === root) return null;
     const parent = path.dirname(dir);
     const rel = path.relative(root, parent);
@@ -107,24 +124,59 @@ export function findGradleBuildRoot(contextFile: string, projectRoot: string): s
   }
 }
 
+const WRAPPER_FILES = ['gradlew', 'gradlew.bat'];
+
+/** How deep included builds are followed for their own included builds. */
+const MAX_INCLUDED_BUILD_DEPTH = 8;
+
 /**
  * Read a build's project set from its settings file, or null when it is not
  * statically enumerable. Also null when there is no settings file or there
  * are two (Groovy and Kotlin side by side is ambiguous).
+ *
+ * Gradle flattens composite builds: a build included BY an included build is
+ * addressable from the root (`:build-b:help` when build-a includes
+ * `../build-b`). So every literal `includeBuild` target is followed and its
+ * own included builds join `builds`; a target whose settings cannot be read
+ * makes the whole set unknowable.
  */
 export function readGradleProjectSet(buildRoot: string): GradleProjectSet | null {
   const present = SETTINGS_FILES.filter((f) => fs.existsSync(path.join(buildRoot, f)));
   if (present.length !== 1) return null;
-  let source: string;
+  const parsed = readSettingsFile(path.join(buildRoot, present[0]));
+  if (!parsed) return null;
+  if (isValidBuildSrc(path.join(buildRoot, 'buildSrc'))) parsed.builds.add('buildSrc');
+
+  const visited = new Set([path.resolve(buildRoot)]);
+  const queue = parsed.buildDirs.map((d) => ({ dir: path.resolve(buildRoot, d), depth: 1 }));
+  while (queue.length > 0) {
+    const { dir, depth } = queue.shift() as { dir: string; depth: number };
+    if (visited.has(dir)) continue;
+    visited.add(dir);
+    if (depth > MAX_INCLUDED_BUILD_DEPTH) return null;
+    const files = SETTINGS_FILES.filter((f) => fs.existsSync(path.join(dir, f)));
+    // An included build without a settings file includes nothing further.
+    if (files.length === 0) continue;
+    if (files.length > 1) return null;
+    const nested = readSettingsFile(path.join(dir, files[0]));
+    if (!nested) return null;
+    for (const name of nested.builds) parsed.builds.add(name);
+    for (const d of nested.buildDirs) queue.push({ dir: path.resolve(dir, d), depth: depth + 1 });
+  }
+
+  return { paths: parsed.paths, builds: parsed.builds, settingsFile: present[0] };
+}
+
+function readSettingsFile(file: string): ParsedSettings | null {
   try {
-    source = stripBom(fs.readFileSync(path.join(buildRoot, present[0]), 'utf-8'));
+    const buf = fs.readFileSync(file);
+    // A UTF-16 file read as UTF-8 lexes to no `include` at all -- an empty set
+    // that would report every project missing.
+    if (buf.includes(0)) return null;
+    return parseSettings(stripBom(buf.toString('utf-8')));
   } catch {
     return null;
   }
-  const parsed = parseSettings(source);
-  if (!parsed) return null;
-  if (isValidBuildSrc(path.join(buildRoot, 'buildSrc'))) parsed.builds.add('buildSrc');
-  return { ...parsed, settingsFile: present[0] };
 }
 
 /** Mirrors Gradle's BuildSrcDetector: a build file, a settings file, or any file under `src/`. */
@@ -139,21 +191,76 @@ function isValidBuildSrc(dir: string): boolean {
   return fs.existsSync(path.join(dir, 'src'));
 }
 
+/** A settings file read as a closed set. */
+export interface ParsedSettings {
+  paths: Set<string>;
+  builds: Set<string>;
+  /** Literal `includeBuild` targets as written, relative to the settings file's directory. */
+  buildDirs: string[];
+}
+
+/**
+ * Blocks whose body cannot rename a project, so a bare `name = ...` inside
+ * them (a repository's name, an included build's name) is harmless. Any other
+ * block -- `with(project(':a')) {`, `project(':a').run {`, `children.each {` --
+ * may have a project descriptor as its receiver, where `name =` renames it.
+ */
+const NAME_SAFE_BLOCKS = new Set([
+  'pluginManagement',
+  'dependencyResolutionManagement',
+  'repositories',
+  'maven',
+  'ivy',
+  'exclusiveContent',
+  'forRepository',
+  'filter',
+  'content',
+  'credentials',
+  'authentication',
+  'versionCatalogs',
+  'create',
+  'register',
+  'develocity',
+  'gradleEnterprise',
+  'buildScan',
+  'buildCache',
+  'local',
+  'remote',
+  'toolchainManagement',
+  'jvm',
+  'javaRepositories',
+  'includeBuild',
+  'dependencySubstitution',
+]);
+
+/** Control-flow blocks are transparent: they take the receiver of the block around them. */
+const TRANSPARENT_BLOCKS = new Set([
+  'if',
+  'else',
+  'for',
+  'while',
+  'try',
+  'catch',
+  'finally',
+  'when',
+]);
+
 /**
  * Parse settings source into a project set, or null when open. Exported for
  * unit tests; production code goes through readGradleProjectSet.
  */
-export function parseSettings(source: string): { paths: Set<string>; builds: Set<string> } | null {
+export function parseSettings(source: string): ParsedSettings | null {
   const tokens = tokenize(source);
   if (!tokens) return null;
 
   const paths = new Set<string>();
   const builds = new Set<string>();
+  const buildDirs: string[] = [];
   const renames: Array<{ from: string; to: string }> = [];
-  // Brace stack: for each open `{`, whether its opener addresses a project
-  // descriptor (`project(':a') {`, `with(project(':a')) {`, `children.each {`).
-  // A bare `name = ...` inside such a block renames a project.
-  const blocks: boolean[] = [];
+  // Brace stack: the identifier that opens each `{` (`maven`, `with`, `each`,
+  // `if`), or '' when there is none. Decides whether a bare `name =` inside
+  // it could rename a project.
+  const blocks: string[] = [];
   // Index just past the `pluginManagement {}` block, while inside it.
   let pluginManagementEnd = -1;
 
@@ -161,14 +268,22 @@ export function parseSettings(source: string): { paths: Set<string>; builds: Set
     const t = tokens[i];
 
     if (t.kind === 'punct') {
-      if (t.text === '{') blocks.push(openerAddressesProject(tokens, i));
+      if (t.text === '{') blocks.push(blockOpener(tokens, i));
       else if (t.text === '}') blocks.pop();
       continue;
     }
-    // Groovy dynamic dispatch: `settings.'include'('a')` / `settings."$m"(...)`.
     if (t.kind === 'string') {
       const before = tokens[i - 1];
+      // Groovy dynamic dispatch: `settings.'include'('a')` / `settings."$m"(...)`.
       if (before?.kind === 'punct' && (before.text === '.' || before.text === '?.')) return null;
+      // Subscript property access: `project(':a')['name'] = 'b'`.
+      if (
+        before?.kind === 'punct' &&
+        before.text === '[' &&
+        (t.text === 'name' || t.text === 'setName')
+      ) {
+        return null;
+      }
       continue;
     }
     if (t.kind !== 'ident') continue;
@@ -197,11 +312,10 @@ export function parseSettings(source: string): { paths: Set<string>; builds: Set
     }
 
     if (t.text === 'include' || t.text === 'includeFlat') {
-      // `copy { include '**' }` / `fileTree.include(...)` are PatternFilterable,
-      // not Settings. A receiver other than `settings` means a pattern filter;
-      // without a receiver we must assume Settings, and literal arguments are
-      // harmless either way (a superset of names only suppresses findings).
-      if (receiverDot && !(receiver?.kind === 'ident' && receiver.text === 'settings')) continue;
+      // Any receiver is treated as Settings (`this.include`, `it.include`
+      // inside `settings.with {}`). A PatternFilterable `include '**/*.jar'`
+      // in a `copy {}` block then adds a nonsense name, which is harmless: a
+      // superset of names only suppresses findings.
       const args = literalArguments(tokens, i + 1);
       if (!args) return null;
       for (const arg of args) {
@@ -218,6 +332,7 @@ export function parseSettings(source: string): { paths: Set<string>; builds: Set
       const base = path.posix.basename(args[0].replace(/\\/g, '/').replace(/\/+$/, ''));
       if (!base || base === '.' || base === '..') return null;
       builds.add(base);
+      buildDirs.push(args[0]);
       // `includeBuild('dir') { name = 'other' }` -- add the override too.
       const override = includeBuildNameOverride(tokens, i + 1);
       if (override === null) return null;
@@ -235,13 +350,23 @@ export function parseSettings(source: string): { paths: Set<string>; builds: Set
 
     if (t.text === 'name' || t.text === 'setName') {
       const next = tokens[i + 1];
+      const after = tokens[i + 2];
       const isAssign = next?.kind === 'punct' && next.text === '=';
-      const isSetter = t.text === 'setName' && next?.kind === 'punct' && next.text === '(';
-      if (!isAssign && !isSetter) continue;
+      // `name += '-lib'`, `name -= ...`: the tokenizer splits the operator.
+      const isCompound =
+        next?.kind === 'punct' && /^[-+*/%]$/.test(next.text) && after?.text === '=';
+      const isSetter = t.text === 'setName' && next !== undefined && next.line === t.line;
+      if (!isAssign && !isCompound && !isSetter) continue;
+
+      const local = prev?.kind === 'ident' && ['def', 'val', 'var'].includes(prev.text);
+      if (local) continue;
 
       if (receiverDot) {
         if (receiver?.kind === 'ident' && receiver.text === 'rootProject') continue; // root path is always ':'
+        if (isCompound) return null;
         const target = literalProjectCall(tokens, i - 2);
+        // Only `.name = '<lit>'`, `.setName('<lit>')` and the Groovy command
+        // form `.setName '<lit>'` (ending the statement) are readable renames.
         const value = isAssign
           ? literalValue(tokens, i + 2)
           : literalArguments(tokens, i + 1, 1)?.[0];
@@ -249,9 +374,11 @@ export function parseSettings(source: string): { paths: Set<string>; builds: Set
         renames.push({ from: normalizeProjectPath(target), to: value });
         continue;
       }
-      // A bare `name =` renames only inside a project-descriptor block; in a
-      // `maven { name = ... }` repository block it is harmless.
-      if (blocks.includes(true)) return null;
+      // A bare `name =` at the top level assigns a script variable. Inside a
+      // block it renames a project unless every enclosing block is known not
+      // to have a project receiver (`maven { name = ... }`).
+      const unsafe = blocks.some((b) => !NAME_SAFE_BLOCKS.has(b) && !TRANSPARENT_BLOCKS.has(b));
+      if (unsafe) return null;
     }
   }
 
@@ -268,7 +395,7 @@ export function parseSettings(source: string): { paths: Set<string>; builds: Set
     }
   }
 
-  return { paths, builds };
+  return { paths, builds, buildDirs };
 }
 
 /** `include 'a:b:c'` registers `:a`, `:a:b` and `:a:b:c` (DefaultSettings.include). */
@@ -415,9 +542,9 @@ function literalProjectCall(tokens: Token[], end: number): string | null {
 }
 
 /**
- * The literal `name = '...'` inside a trailing `{}` configuring an included
- * build. Returns '' when there is no block or no name assignment, null when
- * the block assigns a non-literal name.
+ * The literal name override inside a trailing `{}` configuring an included
+ * build: `name = 'x'`, `setName('x')` or `setName 'x'`. Returns '' when there
+ * is no block or no override, null when the block sets the name any other way.
  */
 function includeBuildNameOverride(tokens: Token[], argsStart: number): string | null {
   let i = argsStart;
@@ -425,12 +552,24 @@ function includeBuildNameOverride(tokens: Token[], argsStart: number): string | 
   else while (tokens[i]?.kind === 'string') i++;
   if (tokens[i]?.text !== '{') return '';
   const end = skipBalanced(tokens, i);
+  let found = '';
   for (let j = i + 1; j < end; j++) {
-    if (tokens[j].kind === 'ident' && tokens[j].text === 'name' && tokens[j + 1]?.text === '=') {
-      return literalValue(tokens, j + 2);
+    const t = tokens[j];
+    if (t.kind !== 'ident' || (t.text !== 'name' && t.text !== 'setName')) continue;
+    let value: string | null;
+    if (t.text === 'name' && tokens[j + 1]?.text === '=' && tokens[j + 2]?.text !== '=') {
+      value = literalValue(tokens, j + 2);
+    } else if (t.text === 'setName') {
+      value = literalArguments(tokens, j + 1, 1)?.[0] ?? null;
+    } else if (tokens[j + 1]?.kind === 'punct' && /^[-+*/%]$/.test(tokens[j + 1].text)) {
+      return null; // `name += ...`
+    } else {
+      continue; // a read, e.g. `println name`
     }
+    if (value === null) return null;
+    found = value;
   }
-  return '';
+  return found;
 }
 
 /**
@@ -445,9 +584,12 @@ function pluginsBlockIsBenign(tokens: Token[], braceIndex: number): boolean {
     if (t.text === 'id') {
       const id = literalValue(tokens, tokens[j + 1]?.text === '(' ? j + 2 : j + 1);
       if (!id) return false;
-      // `apply false` (Groovy) / `apply(false)` / `apply false` (Kotlin) on the same statement.
+      // `apply false` (Groovy) / `apply(false)` / `apply false` (Kotlin), in
+      // THIS entry only: stop at a `;` or the next entry on the same line.
       let applyFalse = false;
       for (let k = j + 1; k < end - 1 && tokens[k].line === t.line; k++) {
+        if (tokens[k].text === ';' || (tokens[k].kind === 'ident' && tokens[k].text === 'id'))
+          break;
         if (tokens[k].kind === 'ident' && tokens[k].text === 'apply') {
           const n = tokens[k + 1]?.text === '(' ? tokens[k + 2] : tokens[k + 1];
           applyFalse = n?.kind === 'ident' && n.text === 'false';
@@ -476,32 +618,29 @@ function appliesBenignPlugin(tokens: Token[], i: number): boolean {
   if (key?.kind !== 'ident' || key.text !== 'plugin') return false;
   if (sep?.text !== ':' && sep?.text !== '=') return false;
   const id = literalValue(tokens, j + 2);
+  // `apply plugin: 'x', from: 'y.gradle'` also runs a script.
+  if (tokens[j + 3]?.text === ',') return false;
   return id !== null && BENIGN_SETTINGS_PLUGINS.has(id);
 }
 
-/** Does the statement that opens the `{` at `braceIndex` address a project descriptor? */
-function openerAddressesProject(tokens: Token[], braceIndex: number): boolean {
-  const line = tokens[braceIndex].line;
-  for (let j = braceIndex - 1; j >= 0 && tokens[j].line === line; j--) {
-    const t = tokens[j];
-    if (
-      t.kind === 'ident' &&
-      [
-        'project',
-        'findProject',
-        'children',
-        'getChildren',
-        'allprojects',
-        'subprojects',
-        'descendants',
-        'rootProject',
-        'projectDescriptors',
-      ].includes(t.text)
-    ) {
-      return true;
+/**
+ * The identifier naming the block that the `{` at `braceIndex` opens: the
+ * token before it, or before the `(...)` group right before it
+ * (`includeBuild('x') {`, `with(project(':a')) {`, `if (c) {`). '' when the
+ * brace follows something else (`.each {` has `each`; a lambda after `=` has '').
+ */
+function blockOpener(tokens: Token[], braceIndex: number): string {
+  let j = braceIndex - 1;
+  if (tokens[j]?.text === ')') {
+    let depth = 0;
+    for (; j >= 0; j--) {
+      if (tokens[j].text === ')') depth++;
+      else if (tokens[j].text === '(' && --depth === 0) break;
     }
+    j--;
   }
-  return false;
+  const t = tokens[j];
+  return t?.kind === 'ident' ? t.text : '';
 }
 
 /**
@@ -538,6 +677,19 @@ function tokenize(src: string): Token[] | null {
       i = end + 2;
       continue;
     }
+    // A `/` where an operand belongs starts a Groovy slashy string (`/a'b/`),
+    // whose quotes would otherwise swallow real statements. Not lexed; the
+    // file is treated as unreadable.
+    if (c === '/') {
+      const last = tokens[tokens.length - 1];
+      const operandPosition =
+        !last ||
+        (last.kind === 'punct' &&
+          ['=', '==', '(', ',', '[', '{', ':', '~', '!', ';'].includes(last.text)) ||
+        (last.kind === 'ident' && last.text === 'return');
+      if (operandPosition) return null;
+    }
+    if (c === '$' && src[i + 1] === '/') return null; // dollar-slashy string
     if (c === '"' || c === "'") {
       const triple = src.startsWith(c.repeat(3), i);
       const delim = triple ? c.repeat(3) : c;
@@ -827,6 +979,9 @@ const BOOLEAN_LONG_OPTIONS = new Set([
   '--show-version',
 ]);
 
+/** A lone shell line-continuation marker: POSIX `\`, cmd `^`, PowerShell backtick. */
+export const CONTINUATION = /^[\\^`]$/;
+
 /** A task path token: `:a:b:task` or `a:b:task` with plain name characters only. */
 const TASK_PATH = /^:?[\w.-]+(?::[\w.-]+)+$|^:[\w.-]+$/;
 
@@ -857,6 +1012,9 @@ export interface GradleProjectRef {
 export function gradleProjectRefs(cmd: string): GradleProjectRef[] | null {
   const tokens = shellWords(cmd);
   if (!tokens || tokens.length === 0 || !GRADLE_HEAD.test(tokens[0])) return null;
+  // A trailing line continuation means the command goes on to a line we do
+  // not see, which may retarget it.
+  if (tokens.length > 1 && CONTINUATION.test(tokens[tokens.length - 1])) return null;
 
   const refs: GradleProjectRef[] = [];
   for (let i = 1; i < tokens.length; i++) {
@@ -864,6 +1022,12 @@ export function gradleProjectRefs(cmd: string): GradleProjectRef[] | null {
     if (tok.startsWith('-')) {
       const bare = tok.includes('=') ? tok.slice(0, tok.indexOf('=')) : tok;
       if (RETARGET_OPTIONS.has(bare)) return null;
+      // Short options take an attached value too: `-psamples`, `-Iinit.gradle`,
+      // `-xjavadoc`, `-Dk=v`. The value is inside the token; nothing to skip.
+      if (!tok.startsWith('--') && tok.length > 2) {
+        if (RETARGET_OPTIONS.has(tok.slice(0, 2))) return null;
+        continue;
+      }
       if (tok.includes('=')) continue;
       if (VALUE_OPTIONS.has(tok)) {
         i++;

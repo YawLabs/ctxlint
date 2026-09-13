@@ -95,6 +95,18 @@ project(':storage:api').name = 'storage-api'`;
     ]);
   });
 
+  it('reads a Groovy command-form setName rename and includes through any receiver', () => {
+    expect(paths(`include 'old'\nproject(':old').setName 'renamed'`)).toEqual([':old', ':renamed']);
+    expect(paths(`this.include 'x'\nsettings.include('y')`)).toEqual([':x', ':y']);
+  });
+
+  it('reads a setName override on an included build', () => {
+    expect([...(parseSettings(`includeBuild('x') { setName('y') }`)?.builds ?? [])]).toEqual([
+      'x',
+      'y',
+    ]);
+  });
+
   it('ignores commented-out includes and single-quoted dollars', () => {
     expect(paths(`// include 'gone'\n/* include 'also-gone' */\ninclude 'cost$'`)).toEqual([
       ':cost$',
@@ -141,6 +153,27 @@ describe('parseSettings — what makes the set open', () => {
     ['a non-literal included build', `includeBuild(buildDir)`],
     ['code loading', `evaluate(new File('more.gradle'))`],
     ['an unterminated string', `include 'a`],
+    [
+      'a compound rename in a loop',
+      `include 'core'\nrootProject.children.each { it.name += '-lib' }`,
+    ],
+    ['a subscript rename', `include 'old'\nproject(':old')['name'] = 'renamed'`],
+    ['a rename through with()', `include 'a'\nwith(project(':a')) { name = 'b' }`],
+    [
+      'a multi-line scope-function rename',
+      `include 'a'\nproject(':a')\n  .run {\n    name = 'b'\n  }`,
+    ],
+    [
+      'a classpath added through add()',
+      `buildscript { dependencies { add('classpath', 'g:a:1') } }`,
+    ],
+    [
+      'apply plugin with a from: script',
+      `apply plugin: 'com.gradle.develocity', from: 'more.gradle'`,
+    ],
+    ['an applied plugin after a `;`', `plugins { id 'my.conventions'; id 'other' apply false }`],
+    ['a Groovy slashy string', `def re = /it's/\ninclude 'a'`],
+    ['a non-literal included-build name', `includeBuild('x') { name = "n-\${v}" }`],
   ];
   for (const [what, src] of open) {
     it(`is open on ${what}`, () => {
@@ -180,6 +213,11 @@ describe('matchGradleName (port of Gradle NameMatcher)', () => {
     expect(matchGradleName('cl', ['client', 'clients'])).toBe('ambiguous');
   });
 
+  it('accepts matches only the kebab-prefix or case-insensitive camel bucket finds', () => {
+    expect(matchGradleName('mA', ['my-awesome-library'])).toBe('my-awesome-library');
+    expect(matchGradleName('Server', ['serverCore'])).toBe('serverCore');
+  });
+
   it('returns null only when nothing matches at all', () => {
     expect(matchGradleName('sever', projects)).toBeNull();
     expect(matchGradleName('apix', projects)).toBeNull();
@@ -214,10 +252,40 @@ describe('gradleProjectRefs', () => {
     ).toEqual([{ token: ':b:check', segments: ['b'], absolute: true }]);
   });
 
-  it('bails on every option that retargets the build', () => {
-    for (const opt of ['-p core', '--project-dir=core', '--include-build ../x', '-I init.gradle']) {
-      expect(gradleProjectRefs(`./gradlew ${opt} :a:check`)).toBeNull();
+  it('bails on every option that retargets the build, in every spelling', () => {
+    const spellings = [
+      '-p core',
+      '-pcore',
+      '--project-dir core',
+      '--project-dir=core',
+      '-c s.gradle',
+      '-cs.gradle',
+      '--settings-file s.gradle',
+      '--settings-file=s.gradle',
+      '-b b.gradle',
+      '-bb.gradle',
+      '--build-file b.gradle',
+      '--build-file=b.gradle',
+      '--include-build ../x',
+      '--include-build=../x',
+      '-I i.gradle',
+      '-Ii.gradle',
+      '--init-script i.gradle',
+      '--init-script=i.gradle',
+    ];
+    for (const opt of spellings) {
+      expect(gradleProjectRefs(`./gradlew ${opt} :a:check`), opt).toBeNull();
     }
+  });
+
+  it('keeps an attached short value inside its own token', () => {
+    expect(gradleProjectRefs('./gradlew -xjavadoc -Pflavor=free -Dk=v :a:check')).toEqual([
+      { token: ':a:check', segments: ['a'], absolute: true },
+    ]);
+  });
+
+  it('bails on a trailing line continuation', () => {
+    expect(gradleProjectRefs('./gradlew :a:check \\')).toBeNull();
   });
 
   it('skips placeholders, marked or not', () => {
@@ -265,6 +333,16 @@ describe('unresolvedGradleProject', () => {
     expect(unresolvedGradleProject(ref(':build-logic:nope:check'), set)).toBeNull();
     expect(unresolvedGradleProject(ref(':buildSrc:jar'), set)).toBeNull();
   });
+
+  it('stays silent on an ambiguous segment, first or nested', () => {
+    const ambiguous = {
+      paths: new Set([':server', ':server:api', ':service', ':service:api', ':service:apps']),
+      builds: new Set<string>(),
+      settingsFile: 'settings.gradle',
+    };
+    expect(unresolvedGradleProject(ref(':se:api:test'), ambiguous)).toBeNull();
+    expect(unresolvedGradleProject(ref(':service:ap:test'), ambiguous)).toBeNull();
+  });
 });
 
 describe('build root and settings discovery', () => {
@@ -299,10 +377,42 @@ describe('build root and settings discovery', () => {
     expect(readGradleProjectSet(tmp)?.builds.has('buildSrc')).toBe(true);
   });
 
+  it('is unreadable when the settings file is UTF-16', () => {
+    fs.writeFileSync(path.join(tmp, 'settings.gradle'), Buffer.from(`include 'core'`, 'utf16le'));
+    expect(readGradleProjectSet(tmp)).toBeNull();
+  });
+
   it('is unreadable with both a Groovy and a Kotlin settings file', () => {
     write('settings.gradle', `include 'a'`);
     write('settings.gradle.kts', `include("a")`);
     expect(readGradleProjectSet(tmp)).toBeNull();
+  });
+
+  it('adds builds included by included builds, which Gradle addresses from the root', () => {
+    write('settings.gradle', `include 'app'\nincludeBuild 'build-a'`);
+    write('build-a/settings.gradle', `includeBuild '../build-b'`);
+    write('build-b/settings.gradle.kts', `includeBuild("tools") { name = "tooling" }`);
+    expect([...(readGradleProjectSet(tmp)?.builds ?? [])].sort()).toEqual([
+      'build-a',
+      'build-b',
+      'tooling',
+      'tools',
+    ]);
+  });
+
+  it('is unreadable when an included build’s own settings are open', () => {
+    write('settings.gradle', `include 'app'\npluginManagement { includeBuild 'build-logic' }`);
+    write('build-logic/settings.gradle', `file('.').eachDir { includeBuild it }`);
+    expect(readGradleProjectSet(tmp)).toBeNull();
+  });
+
+  it('requires the wrapper next to the settings file for ./gradlew', () => {
+    write('settings.gradle', `include 'a'`);
+    write('build-logic/settings.gradle', `include 'conventions'`);
+    write('build-logic/AGENTS.md', '');
+    const nested = path.join(tmp, 'build-logic/AGENTS.md');
+    expect(findGradleBuildRoot(nested, tmp, true)).toBeNull();
+    expect(findGradleBuildRoot(nested, tmp, false)).toBe(path.join(tmp, 'build-logic'));
   });
 });
 
@@ -318,7 +428,8 @@ describe('checkCommands — commands/gradle-project-not-found', () => {
   });
 
   async function lint(files: Record<string, string>, contextFile = 'AGENTS.md') {
-    for (const [rel, content] of Object.entries(files)) {
+    // `./gradlew` is only checked where the wrapper exists.
+    for (const [rel, content] of Object.entries({ gradlew: '', ...files })) {
       const full = path.join(tmp, rel);
       fs.mkdirSync(path.dirname(full), { recursive: true });
       fs.writeFileSync(full, content);
@@ -399,6 +510,26 @@ describe('checkCommands — commands/gradle-project-not-found', () => {
     expect(found).toEqual([]);
   });
 
+  it('skips a command after a cd in a run of $ prompt lines', async () => {
+    const found = await lint({
+      'settings.gradle': `include 'core'`,
+      'AGENTS.md': '$ cd other-build\n$ ./gradlew :nope:test\n\nThen:\n\n$ ./gradlew :nope:test\n',
+    });
+    expect(found.map((i) => i.line)).toEqual([6]);
+  });
+
+  it('is silent for ./gradlew in a nested build that has no wrapper', async () => {
+    const found = await lint(
+      {
+        'settings.gradle': `include 'core'`,
+        'build-logic/settings.gradle': `include 'conventions'`,
+        'build-logic/AGENTS.md': '`./gradlew :core:test`\n',
+      },
+      'build-logic/AGENTS.md',
+    );
+    expect(found).toEqual([]);
+  });
+
   it('does not make exit-status-masked fire on a JVM command', async () => {
     const parsedFiles = {
       'settings.gradle': `include 'core'`,
@@ -415,5 +546,27 @@ describe('checkCommands — commands/gradle-project-not-found', () => {
       type: 'context',
     });
     expect(await checkCommands(parsed, tmp)).toEqual([]);
+  });
+
+  it('now lets exit-status-masked see a verifier chained AFTER a JVM command', async () => {
+    // Before extraction widened, this whole line was invisible. The masked
+    // `tsc | tail` is a real defect, so the new finding is correct -- but it is
+    // the one existing rule whose output the widening changes.
+    fs.writeFileSync(
+      path.join(tmp, 'package.json'),
+      JSON.stringify({ devDependencies: { typescript: '5' } }),
+    );
+    fs.writeFileSync(
+      path.join(tmp, 'AGENTS.md'),
+      '```bash\n./gradlew assemble && npx tsc --noEmit | tail -3 && echo "types ok"\n```\n',
+    );
+    const parsed = parseContextFile({
+      absolutePath: path.join(tmp, 'AGENTS.md'),
+      relativePath: 'AGENTS.md',
+      isSymlink: false,
+      type: 'context',
+    });
+    const ids = (await checkCommands(parsed, tmp)).map((i) => i.ruleId);
+    expect(ids).toEqual(['commands/exit-status-masked']);
   });
 });

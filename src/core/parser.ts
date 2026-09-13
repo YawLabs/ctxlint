@@ -99,7 +99,7 @@ const PATH_FIRST_SEGMENTS = new Set([
 // not name.
 const COMMAND_PREFIXES = /^\s*[\$>]\s+(.+)$/;
 const COMMON_COMMANDS =
-  /^(?:(?:npm|npx|pnpm|yarn|make|cargo|go\s+(?:run|build|test)|python|pytest|vitest|jest|mocha|tsc|eslint|prettier|bun|deno)\b|(?:\.[\\/])?(?:gradlew(?:\.bat)?|mvnw(?:\.cmd)?)(?=\s|$)|(?:gradle|mvn)(?=\s|$))/;
+  /^(?:(?:npm|npx|pnpm|yarn|make|cargo|go\s+(?:run|build|test)|python|pytest|vitest|jest|mocha|tsc|eslint|prettier|bun|deno)\b|(?:\.[\\/])?(?:gradlew(?:\.bat)?|mvnw(?:\.cmd)?)(?=\s|$)|(?:gradle|mvn(?:\.cmd)?)(?=\s|$))/;
 
 export function parseContextFile(file: DiscoveredFile): ParsedContextFile {
   const content = readFileContent(file.absolutePath);

@@ -704,7 +704,9 @@ function checkGradleProjects(
   if (refs === null) return null;
   if (refs.length === 0 || cdEarlierInFence(file.content, ref.line)) return [];
 
-  const buildRoot = findGradleBuildRoot(file.filePath, projectRoot);
+  // `./gradlew` runs only where the wrapper is; plain `gradle` runs anywhere.
+  const wrapper = !/^gradle(?:\s|$)/.test(ref.value);
+  const buildRoot = findGradleBuildRoot(file.filePath, projectRoot, wrapper);
   if (!buildRoot) return [];
   if (!cache.gradle.has(buildRoot)) cache.gradle.set(buildRoot, readGradleProjectSet(buildRoot));
   const set = cache.gradle.get(buildRoot);
@@ -765,7 +767,16 @@ function checkMavenModules(
 
   const issues: LintIssue[] = [];
   for (const { selector, option } of selectors) {
-    if (bases.some((b) => selectorMatches(selector, b.reactor, b.dir))) continue;
+    // Maven 4 collects the reactor from the root even when started in a
+    // subdirectory, and a path selector may point at a sibling (`../web`), so
+    // each base's paths are matched against every base's projects.
+    const allProjects = bases.flatMap((b) => b.reactor);
+    if (bases.some((b) => selectorMatches(selector, allProjects, b.dir))) continue;
+    // A path that leaves the linted directory from every base names a module
+    // this lint cannot see (ctxlint run on `server/`, doc says `-pl ../client`).
+    if (!selector.includes(':') && bases.every((b) => outside(projectRoot, b.dir, selector))) {
+      continue;
+    }
     const known = bases[0].reactor.flatMap((p) => [
       path.relative(bases[0].dir, p.basedir).replace(/\\/g, '/'),
       ...(p.artifactId && !p.artifactId.includes('${') ? [`:${p.artifactId}`] : []),
@@ -796,21 +807,37 @@ function checkMavenModules(
 function cdEarlierInFence(content: string, line: number): boolean {
   const lines = content.split('\n');
   const idx = line - 1;
+  const changesDir = (text: string): boolean => /(?:^|[\s;&|(])(?:cd|pushd)(?:\s|$)/.test(text);
   let fenceStart = -1;
   for (let i = 0; i < idx && i < lines.length; i++) {
     if (/^\s*```/.test(lines[i])) fenceStart = fenceStart < 0 ? i + 1 : -1;
   }
-  if (fenceStart < 0) return false;
-  for (let i = fenceStart; i < idx; i++) {
-    if (/(?:^|[\s;&|(])(?:cd|pushd)(?:\s|$)/.test(lines[i])) return true;
+  if (fenceStart >= 0) {
+    for (let i = fenceStart; i < idx; i++) if (changesDir(lines[i])) return true;
+    return false;
+  }
+  // Outside a fence, a run of `$`-prompt lines is one shell session too:
+  //     $ cd tools/other-build
+  //     $ ./gradlew :foo:check
+  for (let i = idx - 1; i >= 0 && /^\s*[$>]\s+\S/.test(lines[i]); i--) {
+    if (changesDir(lines[i].replace(/^\s*[$>]\s+/, ''))) return true;
   }
   return false;
+}
+
+function outside(projectRoot: string, base: string, selector: string): boolean {
+  const rel = path.relative(path.resolve(projectRoot), path.resolve(base, selector));
+  return rel.startsWith('..') || path.isAbsolute(rel);
 }
 
 function mavenConfigRetargets(dir: string): boolean {
   try {
     const config = fs.readFileSync(path.join(dir, '.mvn', 'maven.config'), 'utf-8');
-    return /(?:^|\s)(?:-f|--file|-pl|--projects|-N|--non-recursive)(?:\s|=|$)/.test(config);
+    // Separate (`-f pom.xml`), `=` and attached (`-fplatform/pom.xml`) forms;
+    // `-fae`, `-ff`, `-fn` and `-fos` are fail-mode flags, not `-f`.
+    return /(?:^|\s)(?:-f(?!(?:ae|f|n|os)(?:\s|$))|--file|-pl|--projects|-N|--non-recursive)/.test(
+      config,
+    );
   } catch {
     return false;
   }

@@ -146,6 +146,7 @@ describe('parser JVM build-tool command extraction', () => {
         '- `./gradlew :server:test`',
         '- `gradlew.bat build` and `.\\gradlew.bat check`',
         '- `./mvnw -pl core test` and `mvn verify` and `mvnw.cmd install`',
+        '- `mvn.cmd -pl web test`',
         '```bash',
         'gradle :app:run',
         './mvnw -pl web -am package',
@@ -159,6 +160,7 @@ describe('parser JVM build-tool command extraction', () => {
       './mvnw -pl core test',
       'mvn verify',
       'mvnw.cmd install',
+      'mvn.cmd -pl web test',
       'gradle :app:run',
       './mvnw -pl web -am package',
     ]);
