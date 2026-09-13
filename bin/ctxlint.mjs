@@ -22,6 +22,21 @@
  * once per session, this is the better config -- point at oam directly:
  *   { "command": "oam", "args": ["run", "<abs>/dist/index.js", "--", "serve"] }
  *
+ * ALREADY RUNNING ON OAM
+ * A host can resolve this package's `bin` and launch `oam run <this file>`
+ * instead of `node <this file>` -- Yaw MCP does, and so does oam's sidecar
+ * regression matrix. This launcher used to discover oam and spawn it anyway,
+ * so one server cost two runtime boots: measured on Windows, oam.exe with a
+ * NESTED oam.exe + conhost.exe underneath it. Now, when `process.versions.oam`
+ * clears the same MINIMUM OAM VERSION a discovered binary has to, the CLI is
+ * imported into THIS process exactly as the Node fallback is -- no discovery,
+ * no `oam --version` probe, no second oam. OAM_BIN is a discovery input, so it
+ * is not consulted on that path: the host has already chosen which oam runs.
+ *
+ * With no sandbox (below), nothing here needs a FRESH oam, so the only case
+ * that still spawns is a host oam below the floor, which takes the discovery
+ * path exactly as it always did.
+ *
  * NO SANDBOX HERE -- DELIBERATELY
  * oam 0.9.0's `--permission` is real hardening, but it does not fit a linter.
  * ctxlint's whole purpose is to read context files the caller names at run time
@@ -42,6 +57,7 @@
  *
  * SELECTION
  *   CTXLINT_RUNTIME=oam     require oam; fail loudly if it is missing
+ *                           (already running on oam satisfies it)
  *   CTXLINT_RUNTIME=node    never use oam
  *   CTXLINT_RUNTIME=auto    prefer oam, silently fall back (default)
  *   OAM_BIN=/path/to/oam    explicit binary, checked before any discovery
@@ -103,17 +119,27 @@ function findOam() {
 }
 
 /**
- * `oam --version` -> [major, minor, patch], or null when it cannot be read.
+ * Version text -> [major, minor, patch], or null when it holds no version.
  * A pre-release suffix (0.9.0-rc.1) truncates to its base version.
+ *
+ * Shared by the two places a version is read -- a discovered binary's
+ * `oam --version` output ("oam 0.15.1") and the host's own
+ * `process.versions.oam` ("0.15.1") -- so they cannot disagree about what a
+ * version string means, or which floor it has to clear.
  */
+function parseVersion(text) {
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec(text);
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+/** `oam --version` -> [major, minor, patch], or null when it cannot be read. */
 function oamVersion(cmd) {
   try {
     const out = execFileSync(cmd, ['--version'], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-    const m = /(\d+)\.(\d+)\.(\d+)/.exec(out);
-    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+    return parseVersion(out);
   } catch {
     // Not executable, wrong arch, or deleted since the stat. Caller degrades.
     return null;
@@ -128,6 +154,26 @@ function atLeast(v, min) {
     if (v[i] < min[i]) return false;
   }
   return true;
+}
+
+/**
+ * Where the CLI runs, decided BEFORE any discovery:
+ *   "in-process"  import it into THIS process
+ *   "discover"    find an oam binary, gate its version, spawn it -- or fall
+ *                 back to Node in-process when that fails
+ *
+ * `hostOam` is `process.versions.oam`: oam's own key, absent on Node, so on
+ * Node every mode but `node` is the discovery path it always was. There is no
+ * sandbox input because this launcher has no sandbox; see NO SANDBOX HERE
+ * above. The floor is OAM_MIN itself, not a parameter, so a host oam and a
+ * discovered one can never be held to different minimums.
+ *
+ * Pure on purpose: every input is passed in, so the whole decision is testable
+ * without booting a runtime.
+ */
+function runtimePlan({ mode, hostOam }) {
+  if (mode === 'node') return 'in-process';
+  return atLeast(parseVersion(hostOam ?? ''), OAM_MIN) ? 'in-process' : 'discover';
 }
 
 /**
@@ -183,7 +229,9 @@ async function runInProcess() {
 
 const mode = (process.env.CTXLINT_RUNTIME ?? 'auto').toLowerCase();
 
-if (mode === 'node') {
+const plan = runtimePlan({ mode, hostOam: process.versions.oam });
+
+if (plan === 'in-process') {
   await runInProcess();
 } else {
   const oam = findOam();
