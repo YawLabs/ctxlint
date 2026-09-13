@@ -76,11 +76,18 @@
  * MINIMUM OAM VERSION
  * The latest oam release, 0.15.2 -- bump OAM_MIN when oam ships a newer one.
  * Only the current oam is used and verified; an older one hands off or falls
- * back to Node. Below 0.9.0 `child_process.execFile` ran its arguments through
- * a SHELL, `exec` accepted `timeout` and ignored it, `spawnSync` truncated at
- * `maxBuffer` while reporting success, and `stdio: 'inherit'`/`'ignore'` both
- * behaved as `'pipe'` -- and this CLI does spawn: simple-git runs `git` for
- * its git-backed checks.
+ * back to Node. The floor is that support policy, not a fix for something the
+ * CLI was exposed to. Below 0.9.0 `child_process.execFile` ran its arguments
+ * through a SHELL, `exec` accepted `timeout` and ignored it, `spawnSync`
+ * truncated at `maxBuffer` while reporting success, and
+ * `stdio: 'inherit'`/`'ignore'` both behaved as `'pipe'`. The CLI reaches none
+ * of those: its only child process is `git`, started by simple-git through
+ * `spawn` with the default piped stdio, and on a real oam 0.8.2 `spawn` passed
+ * `git`'s arguments through no shell while `execFile` did (measured). The
+ * bundle's other `child_process` call sites -- vscode-languageserver's
+ * global-module lookup helpers and commander's executable subcommands -- are
+ * never called. This launcher's own handoff from an old oam host does meet
+ * the `inherit` bug, which is why that handoff pipes.
  *
  * SELECTION
  *   CTXLINT_RUNTIME=auto    newest usable oam, else Node (default)
@@ -512,14 +519,18 @@ async function handOffToNode(reason) {
   });
 }
 
-/** No usable oam, under a mode that allows Node. */
-async function fallBackToNode(hostOam) {
+/**
+ * No usable oam, or the chosen one would not start, under a mode that allows
+ * Node. `why` finishes the handoff note on an oam host, so it can say which of
+ * the two happened.
+ */
+async function fallBackToNode(hostOam, why) {
   if (hostOam === undefined) {
     await runInProcess();
     return;
   }
   await handOffToNode(
-    `this process is oam ${hostOam}, older than ${OAM_MIN.join('.')}, and no newer oam was found`,
+    `this process is oam ${hostOam}, older than ${OAM_MIN.join('.')}, and ${why}`,
   );
 }
 
@@ -559,7 +570,7 @@ if (plan === 'in-process') {
         await errSync(
           `ctxlint: failed to launch oam at ${chosen.path} (${err?.message ?? err}); using Node instead.\n`,
         );
-        await fallBackToNode(hostOam);
+        await fallBackToNode(hostOam, 'the newer oam would not start');
       },
     );
   } else {
@@ -586,6 +597,6 @@ if (plan === 'in-process') {
     // auto: falling back is correct, but silence is how someone never learns
     // their OAM_BIN is wrong or their oam is too old to use.
     if (notes.length > 0) await errSync(`ctxlint: ${notes.join('; ')}; using Node instead.\n`);
-    await fallBackToNode(hostOam).catch(fallbackFailed);
+    await fallBackToNode(hostOam, 'no newer oam was found').catch(fallbackFailed);
   }
 }

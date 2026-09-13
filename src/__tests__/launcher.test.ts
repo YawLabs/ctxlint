@@ -93,10 +93,9 @@ describe('launcher runtimePlan()', () => {
   });
 
   it('never runs in-process on a host oam below the floor', () => {
-    // Below the floor the host must hand off. Running there was the bug: an oam
-    // older than 0.9.0 runs child_process arguments through a shell, and
-    // anything older than the latest release is not what ctxlint is verified
-    // on.
+    // Below the floor the host must hand off. Running there was the bug: only
+    // the latest oam release is what ctxlint is used and verified on (see
+    // MINIMUM OAM VERSION in the launcher).
     for (const mode of ['auto', 'oam']) {
       for (const hostOam of ['0.15.1', '0.9.0', '0.8.2', '0.0.1']) {
         expect(runtimePlan({ mode, hostOam }), `mode=${mode} hostOam=${hostOam}`).toBe('discover');
@@ -378,6 +377,13 @@ describe('launcher with no usable oam', () => {
       expect(run.code, JSON.stringify(run)).toBe(0);
       expect(run.stdout.trim(), 'the Node fallback must still run the CLI').toBe(PKG.version);
       expect(run.stderr).toMatch(/failed to launch oam at .*using Node instead/);
+      // The handoff note says the found oam would not start. "No newer oam was
+      // found" would be false here: one was found, and it passed its version
+      // check.
+      expect(run.stderr).toMatch(
+        /this process is oam 0\.9\.0, older than 0\.15\.2, and the newer oam would not start; running on .*node/,
+      );
+      expect(run.stderr).not.toMatch(/no newer oam was found/);
     },
     TIMEOUT_MS,
   );
