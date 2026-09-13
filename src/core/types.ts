@@ -146,13 +146,7 @@ export type CheckName =
 // can never classify one. Cline's `.clinerules` context files are handled by
 // the context pillar, not here.
 export type McpClient =
-  | 'claude-code'
-  | 'claude-desktop'
-  | 'vscode'
-  | 'cursor'
-  | 'windsurf'
-  | 'amazonq'
-  | 'continue';
+  'claude-code' | 'claude-desktop' | 'vscode' | 'cursor' | 'windsurf' | 'amazonq' | 'continue';
 
 export type McpTransport = 'stdio' | 'http' | 'sse' | 'unknown';
 

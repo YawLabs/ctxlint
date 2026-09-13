@@ -204,8 +204,7 @@ function loadDeniedCommandPrefixes(projectRoot: string): string[] {
       continue; // missing file is expected
     }
     const data = parseJsonc(content, [], { allowTrailingComma: true }) as
-      | { permissions?: { deny?: unknown } }
-      | undefined;
+      { permissions?: { deny?: unknown } } | undefined;
     const deny = data?.permissions?.deny;
     if (!Array.isArray(deny)) continue;
     for (const entry of deny) {
