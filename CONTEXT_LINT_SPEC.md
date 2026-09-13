@@ -16,7 +16,7 @@ This specification defines a standard set of lint rules for validating AI agent 
 The specification includes:
 
 - A complete reference of context file formats across 16 AI coding clients (21+ file patterns)
-- 41 lint rules organized into 12 categories with defined severities
+- 43 lint rules organized into 12 categories with defined severities
 - A machine-readable rule and format catalog ([`context-lint-rules.json`](./context-lint-rules.json))
 - Auto-fix definitions for rules that support automated correction
 - Frontmatter schema requirements per client
@@ -292,6 +292,7 @@ Context files reference build and test commands (e.g., `npm run build`, `make te
 
 - Package manager scripts: `npm run`, `pnpm`, `yarn`, `bun`
 - Build tools: `make`, `cargo`, `go build`, `go test`
+- JVM build tools: `./gradlew`, `gradle`, `./mvnw`, `mvn` (and the Windows `gradlew.bat` / `mvnw.cmd` wrappers). Match the tool name only when it is followed by whitespace or the end of the command: `gradle.properties` and `gradle/libs.versions.toml` are file names written in the same backticks. A wrapper reached by a relative path (`../../gradlew`) runs from a directory the line does not name and is not extracted.
 - Test runners: `vitest`, `jest`, `pytest`, `mocha`
 - Other tools: `npx`, `python`, `tsc`, `eslint`, `prettier`, `deno`
 
@@ -311,7 +312,7 @@ Context files consume an agent's context window. Counting tokens helps teams und
 
 ## 3. Lint Rules
 
-41 rules organized into 12 categories.
+43 rules organized into 12 categories.
 
 Severity levels:
 
@@ -340,16 +341,18 @@ Validates that file paths referenced in context files exist in the project.
 
 Validates that commands referenced in context files are actually available in the project.
 
-| Rule ID                          | Severity | Trigger                                                                                                                                  | Message                                                                                        |
-| -------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `commands/script-not-found`      | error    | `npm run`, `pnpm`, `yarn`, or `bun` script name is not in `package.json#scripts`                                                         | `"{cmd}" — script "{name}" not found in package.json`                                          |
-| `commands/make-target-not-found` | error    | `make` target is not in Makefile                                                                                                         | `"{cmd}" — target "{name}" not found in Makefile`                                              |
-| `commands/no-makefile`           | error    | `make` command used but no Makefile exists                                                                                               | `"{cmd}" — no Makefile found in project`                                                       |
-| `commands/npx-not-in-deps`       | warning  | `npx` package is not in dependencies or `node_modules/.bin`                                                                              | `"{cmd}" — "{pkg}" not found in dependencies`                                                  |
-| `commands/tool-not-found`        | warning  | Common tool (`vitest`, `jest`, `eslint`, etc.) is not in dependencies or `node_modules/.bin`                                             | `"{cmd}" — "{tool}" not found in dependencies or node_modules/.bin`                            |
-| `commands/package-json-missing`  | info     | `package.json` is missing or unparseable AND the file references at least one command that would otherwise have been validated           | `package.json missing or unparseable — command checks skipped`                                 |
-| `commands/exit-status-masked`    | warning  | A verifier heads a pipeline whose last stage is a filter, and the pipeline is followed by a success claim that reads the filter's status | `"{cmd}" — exit status comes from "{filter}", not "{verifier}"; the success claim cannot fail` |
-| `commands/unknown-subcommand`    | error    | A documented invocation of a `package.json#bin` binary uses a subcommand the CLI does not dispatch                                       | `"{cmd}" — "{sub}" is not a subcommand of {bin} (known: {known})`                              |
+| Rule ID                             | Severity | Trigger                                                                                                                                  | Message                                                                                        |
+| ----------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `commands/script-not-found`         | error    | `npm run`, `pnpm`, `yarn`, or `bun` script name is not in `package.json#scripts`                                                         | `"{cmd}" — script "{name}" not found in package.json`                                          |
+| `commands/make-target-not-found`    | error    | `make` target is not in Makefile                                                                                                         | `"{cmd}" — target "{name}" not found in Makefile`                                              |
+| `commands/no-makefile`              | error    | `make` command used but no Makefile exists                                                                                               | `"{cmd}" — no Makefile found in project`                                                       |
+| `commands/npx-not-in-deps`          | warning  | `npx` package is not in dependencies or `node_modules/.bin`                                                                              | `"{cmd}" — "{pkg}" not found in dependencies`                                                  |
+| `commands/tool-not-found`           | warning  | Common tool (`vitest`, `jest`, `eslint`, etc.) is not in dependencies or `node_modules/.bin`                                             | `"{cmd}" — "{tool}" not found in dependencies or node_modules/.bin`                            |
+| `commands/package-json-missing`     | info     | `package.json` is missing or unparseable AND the file references at least one command that would otherwise have been validated           | `package.json missing or unparseable — command checks skipped`                                 |
+| `commands/exit-status-masked`       | warning  | A verifier heads a pipeline whose last stage is a filter, and the pipeline is followed by a success claim that reads the filter's status | `"{cmd}" — exit status comes from "{filter}", not "{verifier}"; the success claim cannot fail` |
+| `commands/unknown-subcommand`       | error    | A documented invocation of a `package.json#bin` binary uses a subcommand the CLI does not dispatch                                       | `"{cmd}" — "{sub}" is not a subcommand of {bin} (known: {known})`                              |
+| `commands/gradle-project-not-found` | error    | A Gradle task path's project part matches no project declared by a statically readable settings file                                     | `"{cmd}" — project "{path}" not found in {settingsFile}`                                       |
+| `commands/maven-module-not-found`   | error    | A Maven `-pl` / `-rf` selector matches no module of a statically readable reactor                                                        | `"{cmd}" — {option} "{selector}" matches no module in the Maven reactor`                       |
 
 **Notes:**
 
@@ -391,6 +394,41 @@ Sibling rule: [`session/unverified-gate-claimed-clean`](./AGENT_SESSION_LINT_SPE
 5. **Emit nothing** when the set could not be resolved, when the entry file is missing, or when the entry looks bundled or minified (size or line-length threshold). A wrong "that subcommand does not exist" is worse than silence, because the reader's correct doc looks broken. A thin `bin/foo.js` shim may be followed one hop to the real entry.
 
 **Never execute the binary** with `--help` to discover subcommands. The motivating bug is a CLI that _hangs_ on unrecognized input; shelling out to it is how a linter inherits that hang.
+
+#### `commands/gradle-project-not-found`
+
+JVM repositories rarely have a `package.json`, so every rule gated on one is silent there, and their context files are dense with `./gradlew :server:test`. Gradle reads the **last** colon segment of a task path as the task and every earlier segment as a project path, resolved one level at a time against the children of the project matched so far. A project segment that matches nothing fails the build before any task runs (`Cannot locate tasks that match ':sever:test' as project 'sever' not found in root project 'es'.`).
+
+Only the project part is checked. Task names are contributed by plugins at configuration time and have no static ground truth; the project set does, in `settings.gradle(.kts)`, when that file can be read as a **closed** set.
+
+**Detection algorithm:**
+
+1. Qualifying commands start with `./gradlew`, `gradlew`, `gradlew.bat` or `gradle`. Split into words honoring quotes, drop a trailing `# comment`, stop at the first `&&`, `||`, `|`, `;` or redirection.
+2. Skip the whole command when it retargets the build: `-p`/`--project-dir`, `-c`/`--settings-file`, `-b`/`--build-file`, `--include-build`, `-I`/`--init-script`; or when an earlier line of the same fenced block runs `cd`/`pushd`.
+3. Walk the words. Skip the value of a value-taking build option (`-x`, `-D`, `-P`, `-g`, `--console`, `--warning-mode`, `--max-workers`, ...). Any other long option is a task option (`--tests Foo`, `--dependency g:a`): skip the following word unless it is itself an option, since its value may contain a colon.
+4. A remaining word of the form `:a:b:task` or `a:b:task` (name characters only, so `:<module>:test` is skipped) is a task path; its project path is every segment but the last. Skip it when a project segment is an unmarked placeholder (`module-name`, `module`, `my-*`, `your-*`, ...). Relative paths are checked only when the context file sits in the build root, where they resolve against the root project.
+5. The build root is the nearest directory at or above the context file, bounded by the project root, that holds exactly one settings file.
+6. Read the settings file. Literal `include` (with implicit parents: `include 'a:b'` also registers `:a`), `includeFlat`, literal `includeBuild` names (directory basename, plus a literal `name =` override) and literal `project(':a').name = 'b'` renames build the set; `buildSrc/` adds a build name. Conditionals are flattened, which yields a superset. The set is **open**, and the rule emits nothing, on any non-literal `include`/`includeBuild`/rename argument, `apply from:`, a settings plugin not on a verified allowlist (Develocity, Gradle Enterprise, Common Custom User Data, foojay), `buildscript` classpath entries, `settingsEvaluated`/`beforeSettings`, a bare `name =` inside a project-descriptor block, Groovy dynamic dispatch (`settings.'include'(...)`, `invokeMethod`, `metaClass`), or code loading (`evaluate`, `GroovyShell`).
+7. Resolve each project segment the way Gradle's `NameMatcher` does: exact, then case-insensitive, prefix, camelCase and kebab-case abbreviation. The first segment's candidates also include included-build names and `buildSrc`; a path entering another build is not checked further. Report only when a segment matches **nothing**. An ambiguous abbreviation also fails the build, but adding one project can flip it, so it is not reported.
+
+**Accepted gap:** init scripts outside the repository (`~/.gradle/init.d`) can include projects in `beforeSettings`. No static reader can see them, the same way `commands/unknown-subcommand` accepts binaries resolved from `PATH`.
+
+**Never execute Gradle.** Configuring a build to ask it runs arbitrary build logic, needs a JDK and the network, and takes minutes.
+
+#### `commands/maven-module-not-found`
+
+`./mvnw -pl flink-core-api -Dtest=MemorySizeTest test` selects a reactor module. Maven matches a selector containing `:` as an id (`:artifactId` or `groupId:artifactId`) and anything else as a path, relative to the directory of the POM Maven starts from, that must be a reactor project's directory or POM file. A selector matching nothing fails the build (`Could not find the selected project in the reactor: x` in 3.9, `The requested required projects x do not exist.` in 4.0).
+
+**Detection algorithm:**
+
+1. Qualifying commands start with `./mvnw`, `mvnw`, `mvnw.cmd`, `mvn` or `mvn.cmd`. Tokenize as for Gradle.
+2. Skip the whole command on `-f`/`--file` (re-roots the reactor), `-N`/`--non-recursive` (shrinks it to one POM), `-af`/`--at-file`, when `.mvn/maven.config` sets `-f`, `-pl` or `-N`, or after a `cd` earlier in the same fence.
+3. Collect selectors from `-pl`/`--projects` (comma list; strip a leading `!`, `-` or `+`) and `-rf`/`--resume-from` (one selector). Skip the value of every other value-taking option (`-D`, `-P`, `-s`, `-T`, `-b`, ...). Skip `?`-prefixed selectors (optional in Maven 4) and placeholders (`<module>`, `{module}`, `...`).
+4. Candidate base directories are the project root plus every ancestor of the context file, up to the root, that holds a `pom.xml`. The doc does not say where the command runs, so a selector is reported only when it matches in **none** of them.
+5. Read each base's reactor: the root POM plus, recursively, every `<module>` and `<subproject>` of the project and of **every** profile (a superset). The reactor is unknowable, and the rule emits nothing, when a module path uses a `${property}`, a listed module's POM cannot be read, or a `modelVersion` 4.1.0 POM declares neither list (automatic subproject discovery).
+6. Match path selectors against project directories and POM files; match id selectors against `artifactId`/`groupId` as written, where each `${property}` inside an id may stand for any text (`flink-dist-scala_${scala.binary.version}`).
+
+**Never execute Maven.**
 
 ### 3.3 staleness — freshness detection
 

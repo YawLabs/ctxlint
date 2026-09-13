@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 See [Versioning policy](#versioning-policy) below.
 
+## [Unreleased]
+
+### Added
+
+- **Gradle and Maven commands are extracted and checked (#61).** The command extractor recognized a fixed tool list with no JVM build tool on it, so `./gradlew :server:test` and `./mvnw -pl flink-core-api test` were never extracted, and a JVM repository -- which rarely has a `package.json`, so every package.json-gated rule is silent there too -- linted clean by default. `./gradlew`, `gradle`, `./mvnw`, `mvn` and the Windows `gradlew.bat`/`mvnw.cmd` wrappers are now extracted. The tool name must be followed by whitespace or the end of the command, because `\b` also matches before `.` and `/`, and `gradle.properties` and `gradle/libs.versions.toml` are file names written in the same backticks. Two experimental rules consume the new references:
+  - **`commands/gradle-project-not-found` (error).** A task path's project part (`:server` in `:server:test`) names no project of the build. The project set is read from `settings.gradle(.kts)` only when it is a closed set: literal `include`/`includeFlat` with implicit parents, literal `includeBuild` names, literal renames, `buildSrc`, with conditionals flattened into a superset. Any construct that could add or rename an unseen project -- a non-literal include, `apply from:`, a settings plugin outside a verified allowlist, dynamic dispatch -- makes the rule silent for that build. Segments resolve the way Gradle's `NameMatcher` does (exact, case-insensitive, prefix, camelCase and kebab-case abbreviation), and only a segment matching nothing is reported; an ambiguous abbreviation is not. Commands that retarget the build (`-p`, `--include-build`, `-I`, a `cd` earlier in the fence) are skipped, and so are relative paths outside the build root and unmarked placeholders like `:module-name:jvmTest`.
+  - **`commands/maven-module-not-found` (error).** A `-pl`/`-rf` selector matches no reactor project, by directory, POM file, `:artifactId` or `groupId:artifactId`. The reactor comes from `<modules>`/`<subprojects>` of the root POM and every profile, recursively; a `${property}` in a module path, an unreadable module POM or Maven 4.1.0 automatic subproject discovery makes it unknowable and the rule silent. A property inside an artifactId (`flink-dist-scala_${scala.binary.version}`) is matched as a wildcard rather than silencing every id selector in the repository. `-f`, `-N`, `.mvn/maven.config` retargeting and `?`-optional selectors are skipped.
+
+  Measured against 25 JVM repositories with root `AGENTS.md`/`CLAUDE.md`/`copilot-instructions.md` (416 build-tool invocations): no findings, with 28 of 46 Gradle project references and all 76 Maven selectors actually evaluated -- the rest sit in builds whose settings are not statically enumerable (elasticsearch, JabRef, grails-core, ktor), which stay silent. Seeded typos in copies of kafka's and flink's docs fire with a `Did you mean` suggestion. On 69 real settings files the reader closes 23, every one also closed by an independent research classifier, with a project set that contains that classifier's in every case. Neither tool is ever executed.
+
+### Changed
+
+- **Widening extraction does not change any existing rule's output.** The only consumer of extracted command references is the `commands` check. A Gradle or Maven command matches none of its npm, npx, make or tool patterns, and none of `commands/exit-status-masked`'s verifiers -- its verifier list has no JVM tool, and it ignores `||`, so `./gradlew test || true` stays silent. `commands/package-json-missing` does not count a JVM command as one that needed a `package.json`.
+
 ## [0.25.2] - 2026-09-12
 
 ### Fixed
