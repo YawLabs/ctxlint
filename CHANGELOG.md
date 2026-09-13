@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 See [Versioning policy](#versioning-policy) below.
 
+## [Unreleased]
+
+### Fixed
+
+- **The README's pre-commit framework snippet pins the current release again (#63).** `rev:` pinned `v0.9.10` from April 2026 until a hand bump to `v0.25.0`, and was already three patch releases stale again by `0.25.3`, because `release.sh` synced the version into `package.json`, `.pre-commit-hooks.yaml` and `server.json` but never into `README.md`. Both the `rev:` and the example-output banner (`ctxlint vX.Y.Z`) now read `0.25.3` and are rewritten on every release.
+
+### Internal
+
+- **Pinned version refs are synced by `scripts/sync-version-refs.mjs`.** `release.sh` step 4 runs it with the version being released; it rewrites the `.pre-commit-hooks.yaml` npx pin (formerly an inline `node -e` block) plus the README `rev:` and banner, and writes nothing and exits 1 if any pattern matches nothing. The README `rev:` pattern is anchored to the `yawlabs/ctxlint` repo line, so another hook's `rev:` is never touched. `README.md` joins `BUMP_FILES` so the rewrite lands in the bump commit.
+- **A resumed release now retries that rewrite.** It used to sit inside step 4's `CURRENT_VERSION != VERSION` branch, so a run that bumped `package.json` and then failed the `.pre-commit-hooks.yaml` rewrite could never recover it: the resume skips that branch and committed `package.json` with the hook still pinned to the previous release. Reproduced against the previous `release.sh` in a scratch repository. The call now runs unconditionally, like the `server.json` sync, and is a no-op when every ref is already current.
+- The test suite fails when a pin drifts from `package.json` or a README edit breaks a pattern: `version-refs.test.ts` runs the script in `--check` mode and covers the rewrite, the missing-pattern failure (including that nothing is written), CRLF input and idempotence, and a line-exact assertion beside the `server.json` check in `entry.test.ts` pins the checked-in values independently of the script's patterns.
+
 ## [0.25.3] - 2026-09-13
 
 ### Added

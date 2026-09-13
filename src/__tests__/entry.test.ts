@@ -129,6 +129,31 @@ describe('package.json consistency', () => {
     expect(serverJson.packages[0].version).toBe(PKG.version);
   });
 
+  // Same failure mode, and release.sh step 4 syncs these too (through
+  // scripts/sync-version-refs.mjs). The README pins went unsynced from v0.9.10
+  // until a hand bump to v0.25.0, which was stale again by 0.25.3 (#63).
+  // Line-exact rather than toContain, so a matching version string elsewhere
+  // in the file cannot satisfy it; independent of the script's own patterns,
+  // which version-refs.test.ts covers.
+  it('pre-commit hook entry and README pins match package.json', () => {
+    const hooks = fs
+      .readFileSync(path.resolve(__dirname, '../../.pre-commit-hooks.yaml'), 'utf-8')
+      .split(/\r?\n/);
+    expect(hooks.filter((l) => l.trim().startsWith('entry:')).map((l) => l.trim())).toEqual([
+      `entry: npx @yawlabs/ctxlint@${PKG.version} --strict`,
+    ]);
+
+    const readme = fs
+      .readFileSync(path.resolve(__dirname, '../../README.md'), 'utf-8')
+      .split(/\r?\n/);
+    const repoLine = readme.findIndex(
+      (l) => l.trim() === '- repo: https://github.com/yawlabs/ctxlint',
+    );
+    expect(repoLine).toBeGreaterThanOrEqual(0);
+    expect(readme[repoLine + 1].trim()).toBe(`rev: v${PKG.version}`);
+    expect(readme.filter((l) => /^ctxlint v\d/.test(l))).toEqual([`ctxlint v${PKG.version}`]);
+  });
+
   // dist/index.js is a self-executing CLI dispatcher: it reads process.argv
   // at module top level and runs the linter (or MCP server) unconditionally,
   // exporting nothing. A "main" or "." export would make

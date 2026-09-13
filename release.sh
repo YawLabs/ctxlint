@@ -288,20 +288,23 @@ else
     pkg.version = '$VERSION';
     fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
   "
-  # Sync the pre-commit framework hook entry so its npx call pins to the
-  # version users get when they `rev: vX.Y.Z`. Without this the entry drifts
-  # to whatever @latest was when the user ran their install.
-  node -e "
-    const fs = require('fs');
-    const p = '.pre-commit-hooks.yaml';
-    const src = fs.readFileSync(p, 'utf-8');
-    const next = src.replace(/@yawlabs\/ctxlint@[0-9]+\.[0-9]+\.[0-9]+/, '@yawlabs/ctxlint@$VERSION');
-    if (next === src) { console.error('release.sh: failed to update .pre-commit-hooks.yaml — pattern not found'); process.exit(1); }
-    fs.writeFileSync(p, next);
-  "
   pnpm install --lockfile-only 2>/dev/null || true
   info "Version bumped"
 fi
+
+# Pinned version refs outside package.json: the .pre-commit-hooks.yaml npx
+# entry (so `rev: vX.Y.Z` runs exactly that release rather than whatever
+# @latest was at install time), and README.md's pre-commit `rev:` and
+# example-output banner, which went unsynced from v0.9.10 until a hand bump to
+# v0.25.0 (#63). The script fails -- writing nothing -- when any pattern is
+# missing.
+#
+# Unconditional, like server.json below. The .pre-commit-hooks.yaml rewrite
+# used to sit inside the bump branch, so a run that bumped package.json and
+# then failed that rewrite could never retry it: the resume sees
+# CURRENT_VERSION == VERSION, skips the branch, and commits package.json
+# without it. The script is idempotent, so a clean re-run writes nothing.
+node scripts/sync-version-refs.mjs "$VERSION" || fail "Pinned version refs not synced to $VERSION -- see the error above"
 
 # server.json is published to the MCP Registry in step 8 and must match the
 # tag's version. This runs UNCONDITIONALLY (not inside the bump else above)
@@ -346,7 +349,7 @@ if [ "$IS_CI" = "true" ]; then
   info "CI mode — skipping commit/tag/push (already tagged)"
 else
   # Commit if there are changes
-  BUMP_FILES="package.json pnpm-lock.yaml .pre-commit-hooks.yaml"
+  BUMP_FILES="package.json pnpm-lock.yaml .pre-commit-hooks.yaml README.md"
   [ -f server.json ] && BUMP_FILES="$BUMP_FILES server.json"
   # promote_changelog rewrote the heading in step 4; without CHANGELOG.md here
   # that edit is left uncommitted in the working tree and the next run's
