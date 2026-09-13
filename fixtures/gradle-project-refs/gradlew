@@ -1,0 +1,2 @@
+#!/bin/sh
+# Stand-in wrapper: the rule checks ./gradlew commands only where the wrapper exists.

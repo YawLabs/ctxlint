@@ -1,10 +1,25 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parse as parseJsonc } from 'jsonc-parser';
+import levenshteinPkg from 'fast-levenshtein';
 import { loadPackageJson, stripBom } from '../../utils/fs.js';
 import { analyzeMaskedExitStatus, pipefailInScope } from './exit-status.js';
 import { findBinInvocations, knownSubcommands, ownedBins } from './cli-subcommands.js';
 import type { BinInvocation } from './cli-subcommands.js';
+import {
+  findGradleBuildRoot,
+  gradleProjectRefs,
+  readGradleProjectSet,
+  unresolvedGradleProject,
+} from './gradle-projects.js';
+import type { GradleProjectSet } from './gradle-projects.js';
+import {
+  mavenBaseDirs,
+  mavenSelectors,
+  readMavenReactor,
+  selectorMatches,
+} from './maven-modules.js';
+import type { ReactorProject } from './maven-modules.js';
 import {
   htmlCommentLineMask,
   htmlCommentSpans,
@@ -13,6 +28,8 @@ import {
   stripInlineHtmlComments,
 } from '../../utils/markdown.js';
 import type { ParsedContextFile, LintIssue, CommandReference } from '../types.js';
+
+const levenshtein = levenshteinPkg.get;
 
 // Match npm/pnpm/yarn/bun script invocations. `run` is required for npm
 // (bare `npm install` is never a script reference), optional for
@@ -421,6 +438,8 @@ export async function checkCommands(
 
   issues.push(...checkUnknownSubcommand(file, projectRoot, pkgJson, deniedPrefixes, contentLines));
 
+  const jvmCache: JvmBuildCache = { gradle: new Map(), maven: new Map() };
+
   for (const ref of file.references.commands) {
     // Above the exit-status check too: a command inside a comment should
     // produce NO finding of any kind, not just no resolvability finding.
@@ -463,6 +482,20 @@ export async function checkCommands(
     // told never to run -- a doc that demonstrates a masked pipeline teaches the
     // masked pipeline.
     if (isDeniedCommand(cmd, deniedPrefixes) || isProhibitedRef(contentLines, ref)) continue;
+
+    // Gradle project paths and Maven module selectors. Each returns null when
+    // the command is not that tool's invocation, so an ordinary command falls
+    // through to the branches below.
+    const gradleIssues = checkGradleProjects(file, ref, projectRoot, jvmCache);
+    if (gradleIssues) {
+      issues.push(...gradleIssues);
+      continue;
+    }
+    const mavenIssues = checkMavenModules(file, ref, projectRoot, jvmCache);
+    if (mavenIssues) {
+      issues.push(...mavenIssues);
+      continue;
+    }
 
     // Check npm/pnpm/yarn script references
     const scriptMatch = cmd.match(NPM_SCRIPT_PATTERN);
@@ -645,6 +678,185 @@ function checkUnknownSubcommand(
     });
   }
   return issues;
+}
+
+/** Build models read at most once per checkCommands call, keyed by directory. */
+interface JvmBuildCache {
+  gradle: Map<string, GradleProjectSet | null>;
+  maven: Map<string, ReactorProject[] | null>;
+}
+
+/**
+ * commands/gradle-project-not-found -- a Gradle task path whose PROJECT part
+ * names no project of the build. See gradle-projects.ts for what counts as a
+ * readable settings file and why everything else is silent.
+ *
+ * Returns null when `ref` is not a Gradle invocation (or retargets the build
+ * with `-p`, `--include-build`, ...), so the caller keeps dispatching.
+ */
+function checkGradleProjects(
+  file: ParsedContextFile,
+  ref: CommandReference,
+  projectRoot: string,
+  cache: JvmBuildCache,
+): LintIssue[] | null {
+  const refs = gradleProjectRefs(ref.value);
+  if (refs === null) return null;
+  if (refs.length === 0 || cdEarlierInFence(file.content, ref.line)) return [];
+
+  // `./gradlew` runs only where the wrapper is; plain `gradle` runs anywhere.
+  const wrapper = !/^gradle(?:\s|$)/.test(ref.value);
+  const buildRoot = findGradleBuildRoot(file.filePath, projectRoot, wrapper);
+  if (!buildRoot) return [];
+  if (!cache.gradle.has(buildRoot)) cache.gradle.set(buildRoot, readGradleProjectSet(buildRoot));
+  const set = cache.gradle.get(buildRoot);
+  if (!set) return [];
+
+  // A relative path (`clients:test`) resolves against the project of the
+  // directory Gradle runs in. Only a context file sitting in the build root
+  // pins that directory; elsewhere it is a guess, so skip relative paths.
+  const atBuildRoot = path.resolve(path.dirname(file.filePath)) === path.resolve(buildRoot);
+
+  const issues: LintIssue[] = [];
+  for (const projectRef of refs) {
+    if (!projectRef.absolute && !atBuildRoot) continue;
+    const missing = unresolvedGradleProject(projectRef, set);
+    if (!missing) continue;
+    issues.push({
+      severity: 'error',
+      check: 'commands',
+      ruleId: 'commands/gradle-project-not-found',
+      line: ref.line,
+      message: `"${ref.value}" — project "${missing}" not found in ${set.settingsFile}`,
+      suggestion: closestSuggestion(missing, [...set.paths]),
+    });
+  }
+  return issues;
+}
+
+/**
+ * commands/maven-module-not-found -- a `-pl` / `-rf` selector that matches no
+ * project of the reactor. See maven-modules.ts.
+ *
+ * Returns null when `ref` is not a Maven invocation (or re-roots the reactor
+ * with `-f` / `-N`), so the caller keeps dispatching.
+ */
+function checkMavenModules(
+  file: ParsedContextFile,
+  ref: CommandReference,
+  projectRoot: string,
+  cache: JvmBuildCache,
+): LintIssue[] | null {
+  const selectors = mavenSelectors(ref.value);
+  if (selectors === null) return null;
+  if (selectors.length === 0 || cdEarlierInFence(file.content, ref.line)) return [];
+
+  const bases: Array<{ dir: string; reactor: ReactorProject[] }> = [];
+  for (const dir of mavenBaseDirs(file.filePath, projectRoot)) {
+    if (!fs.existsSync(path.join(dir, 'pom.xml'))) continue;
+    // `.mvn/maven.config` is prepended to every invocation; a `-f` or `-pl`
+    // there changes what the documented command resolves against.
+    if (mavenConfigRetargets(dir)) return [];
+    if (!cache.maven.has(dir)) cache.maven.set(dir, readMavenReactor(dir));
+    const reactor = cache.maven.get(dir);
+    // A POM whose reactor cannot be enumerated might contain the module.
+    if (!reactor) return [];
+    bases.push({ dir, reactor });
+  }
+  if (bases.length === 0) return [];
+
+  const issues: LintIssue[] = [];
+  for (const { selector, option } of selectors) {
+    // Maven 4 collects the reactor from the root even when started in a
+    // subdirectory, and a path selector may point at a sibling (`../web`), so
+    // each base's paths are matched against every base's projects.
+    const allProjects = bases.flatMap((b) => b.reactor);
+    if (bases.some((b) => selectorMatches(selector, allProjects, b.dir))) continue;
+    // A path that leaves the linted directory from every base names a module
+    // this lint cannot see (ctxlint run on `server/`, doc says `-pl ../client`).
+    if (!selector.includes(':') && bases.every((b) => outside(projectRoot, b.dir, selector))) {
+      continue;
+    }
+    const known = bases[0].reactor.flatMap((p) => [
+      path.relative(bases[0].dir, p.basedir).replace(/\\/g, '/'),
+      ...(p.artifactId && !p.artifactId.includes('${') ? [`:${p.artifactId}`] : []),
+    ]);
+    issues.push({
+      severity: 'error',
+      check: 'commands',
+      ruleId: 'commands/maven-module-not-found',
+      line: ref.line,
+      message: `"${ref.value}" — ${option} "${selector}" matches no module in the Maven reactor`,
+      suggestion: closestSuggestion(selector, known.filter(Boolean)),
+    });
+  }
+  return issues;
+}
+
+/**
+ * True when an earlier line of the fenced block holding `line` (1-indexed)
+ * changes directory. A snippet like
+ *
+ *     cd webapp/cas-server-webapp-tomcat
+ *     ./gradlew :foo:bootRun
+ *
+ * runs the build tool somewhere the line itself does not say, so neither the
+ * build root nor a relative module path can be trusted. Same fence scoping as
+ * pipefailInScope in exit-status.ts.
+ */
+function cdEarlierInFence(content: string, line: number): boolean {
+  const lines = content.split('\n');
+  const idx = line - 1;
+  const changesDir = (text: string): boolean => /(?:^|[\s;&|(])(?:cd|pushd)(?:\s|$)/.test(text);
+  let fenceStart = -1;
+  for (let i = 0; i < idx && i < lines.length; i++) {
+    if (/^\s*```/.test(lines[i])) fenceStart = fenceStart < 0 ? i + 1 : -1;
+  }
+  if (fenceStart >= 0) {
+    for (let i = fenceStart; i < idx; i++) if (changesDir(lines[i])) return true;
+    return false;
+  }
+  // Outside a fence, a run of `$`-prompt lines is one shell session too:
+  //     $ cd tools/other-build
+  //     $ ./gradlew :foo:check
+  for (let i = idx - 1; i >= 0 && /^\s*[$>]\s+\S/.test(lines[i]); i--) {
+    if (changesDir(lines[i].replace(/^\s*[$>]\s+/, ''))) return true;
+  }
+  return false;
+}
+
+function outside(projectRoot: string, base: string, selector: string): boolean {
+  const rel = path.relative(path.resolve(projectRoot), path.resolve(base, selector));
+  return rel.startsWith('..') || path.isAbsolute(rel);
+}
+
+function mavenConfigRetargets(dir: string): boolean {
+  try {
+    const config = fs.readFileSync(path.join(dir, '.mvn', 'maven.config'), 'utf-8');
+    // Separate (`-f pom.xml`), `=` and attached (`-fplatform/pom.xml`) forms;
+    // `-fae`, `-ff`, `-fn` and `-fos` are fail-mode flags, not `-f`.
+    return /(?:^|\s)(?:-f(?!(?:ae|f|n|os)(?:\s|$))|--file|-pl|--projects|-N|--non-recursive)/.test(
+      config,
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** `Did you mean "x"?` for the nearest candidate within a small edit distance. */
+function closestSuggestion(target: string, candidates: string[]): string | undefined {
+  let best: string | undefined;
+  let bestDist = Infinity;
+  for (const c of candidates) {
+    const d = levenshtein(target.toLowerCase(), c.toLowerCase());
+    if (d < bestDist) {
+      bestDist = d;
+      best = c;
+    }
+  }
+  if (best === undefined || bestDist > Math.max(2, Math.floor(target.length * 0.3)))
+    return undefined;
+  return `Did you mean "${best}"?`;
 }
 
 function loadMakefile(projectRoot: string): string | null {

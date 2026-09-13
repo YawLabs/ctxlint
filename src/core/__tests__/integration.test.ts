@@ -180,6 +180,18 @@ describe('CLI integration', () => {
     expect(exitCode).toBe(0);
   });
 
+  it('flags a missing Gradle project and a missing Maven module in the JVM fixtures', () => {
+    for (const [fixture, rule] of [
+      ['gradle-project-refs', 'commands/gradle-project-not-found'],
+      ['maven-module-refs', 'commands/maven-module-not-found'],
+    ]) {
+      const { stdout } = run(fixture, ['--format', 'json', '--checks', 'commands']);
+      const parsed = JSON.parse(stdout);
+      const ids = parsed.files.flatMap((f: any) => f.issues.map((i: any) => i.ruleId));
+      expect(ids).toEqual([rule]);
+    }
+  });
+
   it('respects --depth flag', () => {
     // With depth 0, only root directory is scanned (no subdirectories)
     const { stdout } = run('multiple-files', ['--format', 'json', '--depth', '0']);

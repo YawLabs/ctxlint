@@ -89,9 +89,17 @@ const PATH_FIRST_SEGMENTS = new Set([
 // patterns to recognize" and the validator's PKG_DEPENDENT_TOOL_PATTERN in
 // checks/commands.ts -- a tool listed there but missing here is never
 // extracted, so it would silently never be validated.
+//
+// The JVM build tools (`./gradlew`, `gradle`, `./mvnw`, `mvn`, plus the
+// Windows `.bat`/`.cmd` wrappers) end in a whitespace-or-end lookahead rather
+// than `\b`: `\b` also matches before `.` and `/`, so `gradle.properties` and
+// `gradle/libs.versions.toml` -- file names, written in the same backticks --
+// would extract as commands. A wrapper reached by a relative path
+// (`../../gradlew`) is not extracted: it runs from a directory the line does
+// not name.
 const COMMAND_PREFIXES = /^\s*[\$>]\s+(.+)$/;
 const COMMON_COMMANDS =
-  /^(npm|npx|pnpm|yarn|make|cargo|go\s+(run|build|test)|python|pytest|vitest|jest|mocha|tsc|eslint|prettier|bun|deno)\b/;
+  /^(?:(?:npm|npx|pnpm|yarn|make|cargo|go\s+(?:run|build|test)|python|pytest|vitest|jest|mocha|tsc|eslint|prettier|bun|deno)\b|(?:\.[\\/])?(?:gradlew(?:\.bat)?|mvnw(?:\.cmd)?)(?=\s|$)|(?:gradle|mvn(?:\.cmd)?)(?=\s|$))/;
 
 export function parseContextFile(file: DiscoveredFile): ParsedContextFile {
   const content = readFileContent(file.absolutePath);

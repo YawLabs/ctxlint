@@ -191,6 +191,26 @@
       "stability": "experimental"
     },
     {
+      "id": "commands/gradle-project-not-found",
+      "category": "commands",
+      "severity": "error",
+      "description": "A documented Gradle task path names a project that the build's settings file does not declare.",
+      "trigger": "A ./gradlew or gradle invocation has a task path (:a:b:task) whose project part matches no project, included build or buildSrc under Gradle's name matching (exact, case-insensitive, prefix, camelCase and kebab-case abbreviation), where the project set was read from a settings file that is statically enumerable.",
+      "message": "\"{cmd}\" — project \"{path}\" not found in {settingsFile}",
+      "fixable": false,
+      "stability": "experimental"
+    },
+    {
+      "id": "commands/maven-module-not-found",
+      "category": "commands",
+      "severity": "error",
+      "description": "A documented Maven -pl or -rf selector matches no module of the reactor.",
+      "trigger": "A ./mvnw or mvn invocation selects a module with -pl/--projects or -rf/--resume-from, and the selector matches no reactor project by relative directory, POM file, :artifactId or groupId:artifactId, where the reactor was read from the root POM's modules and subprojects (all profiles included) and is statically enumerable.",
+      "message": "\"{cmd}\" — {option} \"{selector}\" matches no module in the Maven reactor",
+      "fixable": false,
+      "stability": "experimental"
+    },
+    {
       "id": "staleness/stale",
       "category": "staleness",
       "severity": "warning",

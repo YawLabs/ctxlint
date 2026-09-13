@@ -116,3 +116,67 @@ describe('parser non-source path exclusions', () => {
     expect(paths).not.toContain('yaw.app/Contents/MacOS/yaw');
   });
 });
+
+describe('parser JVM build-tool command extraction', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-parser-jvm-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function commandsFor(content: string): string[] {
+    const p = path.join(tmpDir, 'AGENTS.md');
+    fs.writeFileSync(p, content);
+    const file: DiscoveredFile = {
+      absolutePath: p,
+      relativePath: 'AGENTS.md',
+      isSymlink: false,
+      type: 'context',
+    };
+    return parseContextFile(file).references.commands.map((r) => r.value);
+  }
+
+  it('extracts Gradle and Maven wrappers and tools from inline code and shell fences', () => {
+    const commands = commandsFor(
+      [
+        '- `./gradlew :server:test`',
+        '- `gradlew.bat build` and `.\\gradlew.bat check`',
+        '- `./mvnw -pl core test` and `mvn verify` and `mvnw.cmd install`',
+        '- `mvn.cmd -pl web test`',
+        '```bash',
+        'gradle :app:run',
+        './mvnw -pl web -am package',
+        '```',
+      ].join('\n'),
+    );
+    expect(commands).toEqual([
+      './gradlew :server:test',
+      'gradlew.bat build',
+      '.\\gradlew.bat check',
+      './mvnw -pl core test',
+      'mvn verify',
+      'mvnw.cmd install',
+      'mvn.cmd -pl web test',
+      'gradle :app:run',
+      './mvnw -pl web -am package',
+    ]);
+  });
+
+  it('does not extract build file names or tools reached by a relative path', () => {
+    const commands = commandsFor(
+      [
+        'Versions live in `gradle/libs.versions.toml`; JVM flags in `gradle.properties`.',
+        'The wrapper jar is `gradlew-wrapper.jar`; the daemon is `mvnd`.',
+        '```bash',
+        '../../gradlew bootRun',
+        'cd build-logic && ./gradlew build',
+        '```',
+      ].join('\n'),
+    );
+    expect(commands).toEqual([]);
+  });
+});
