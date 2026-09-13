@@ -258,7 +258,7 @@ Summary: 2 errors, 2 warnings, 1 info
 ## Options
 
 ```
-Usage: ctxlint [options] [path]
+Usage: ctxlint [options] [command] [path]
 
 Arguments:
   path                 Project directory to scan (default: ".")
@@ -287,12 +287,15 @@ Options:
   --hooks-global            Also scan the user-global ~/.claude/settings.json in the
                             dead-hook check (default scans project .claude/ only)
   --mcp-server              Start the MCP server (alias: `serve` subcommand)
+  --lsp                     Start in LSP server mode (JSON-RPC over stdio for editor integration)
+  --no-ignore-file          Disable .ctxlintignore suppression (see all findings)
   --watch                   Re-lint on context file changes
   -V, --version             Output the version number
   -h, --help                Display help
 
 Commands:
   init                 Set up a git pre-commit hook
+  serve                Start the MCP server (same as --mcp-server)
 ```
 
 **Available checks:** `paths`, `commands`, `staleness`, `tokens`, `tier-tokens`, `redundancy`, `contradictions`, `frontmatter`, `ci-coverage`, `ci-secrets`, `content-secrets`, `hook-coverage`, `mcp-schema`, `mcp-security`, `mcp-commands`, `mcp-deprecated`, `mcp-env`, `mcp-urls`, `mcp-consistency`, `mcp-redundancy`, `session-missing-secret`, `session-diverged-file`, `session-missing-workflow`, `session-stale-memory`, `session-duplicate-memory`, `session-loop-detection`, `session-memory-index-overflow`, `session-shared-temp-path`, `session-unverified-gate-claimed-clean`, `session-default-branch-accumulation`, `session-unresolvable-sha`, `session-large-read`, `skill-frontmatter`, `skill-broken-ref`, `skill-trigger-collision`, `skill-orphaned`, `skill-dead-tool-restriction`
@@ -390,6 +393,9 @@ Create a `.ctxlintrc` or `.ctxlintrc.json` in your project root:
 {
   "checks": ["paths", "commands", "tokens", "contradictions", "frontmatter"],
   "ignore": ["redundancy"],
+  "ignoreRules": [
+    { "check": "paths", "match": "^docs/archive/", "reason": "archived docs cite removed files" }
+  ],
   "strict": true,
   "tokenThresholds": {
     "info": 500,
@@ -416,6 +422,11 @@ The `exclude` array is its counterpart: globs of context files to drop from the 
 | ------------------------------- | ---------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `checks`                        | `string[]` | all checks | Checks to run. Check names include `paths`, `commands`, `tokens`, `tier-tokens`, `redundancy`, `contradictions`, `frontmatter`, `staleness`, `ci-coverage`, `ci-secrets`, `content-secrets`, `hook-coverage`, plus any `mcp-*` / `session-*` / `skill-*`. |
 | `ignore`                        | `string[]` | `[]`       | Checks to skip, evaluated after `checks`.                                                                                                                                                                                                                 |
+| `ignoreRules`                   | `object[]` | `[]`       | Per-finding suppression, finer than `ignore`: each rule drops only the findings it matches, and the first matching rule wins. Rules that never fire, and rules missing a `reason`, are listed in the text report and in JSON `_meta.ignoreReport`.        |
+| `ignoreRules[].check`           | `string`   | required   | The check the rule applies to, by exact name (`paths`, `session-stale-memory`, ...).                                                                                                                                                                      |
+| `ignoreRules[].match`           | `string`   | none       | Regex tested against the finding's message. A rule with neither `match` nor `pathPattern` drops every finding of its check; with both, both must match.                                                                                                   |
+| `ignoreRules[].pathPattern`     | `string`   | none       | Regex tested against each path a finding names; the rule fires only when every path matches. Honored only for `session-stale-memory`: on any other check the rule never fires, and loading the config prints a warning.                                   |
+| `ignoreRules[].reason`          | `string`   | none       | Why the finding is suppressed. Optional, but rules without one are listed in the report for review.                                                                                                                                                       |
 | `strict`                        | `boolean`  | `false`    | Exit non-zero on any warning or error.                                                                                                                                                                                                                    |
 | `tokenThresholds`               | `object`   | see below  | Per-file and cross-file token thresholds.                                                                                                                                                                                                                 |
 | `tokenThresholds.info`          | `number`   | `1000`     | Per-file info threshold for `tokens/info`.                                                                                                                                                                                                                |
@@ -433,6 +444,7 @@ The `exclude` array is its counterpart: globs of context files to drop from the 
 | `sessionOnly`                   | `boolean`  | `false`    | Run only session checks, skip context and MCP checks (same as `--session-only`).                                                                                                                                                                          |
 | `skills`                        | `boolean`  | `false`    | Enable agent-skill checks (`~/.claude/skills` + `~/.claude/agents`); same as `--skills`.                                                                                                                                                                  |
 | `skillsOnly`                    | `boolean`  | `false`    | Run only agent-skill checks, skip everything else (same as `--skills-only`).                                                                                                                                                                              |
+| `hooksGlobal`                   | `boolean`  | `false`    | Also scan the user-global `~/.claude/settings.json` in the dead-hook check (same as `--hooks-global`).                                                                                                                                                    |
 
 Config file resolution order: `.ctxlintrc` → `.ctxlintrc.json` in the project root. Use `--config <path>` to point elsewhere. CLI flags override config fields.
 

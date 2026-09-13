@@ -54,7 +54,8 @@ export interface CtxlintConfig {
 //   being listed here -- missing-element rejection. The conditional is the
 //   structural way to express "every key in CtxlintConfig must appear in this
 //   array's element union".
-const KNOWN_CONFIG_KEYS = [
+// Exported for the README Config Reference drift test (config.test.ts).
+export const KNOWN_CONFIG_KEYS = [
   'checks',
   'ignore',
   'ignoreRules',
