@@ -112,6 +112,37 @@ describe('CLI help and version', () => {
     const { stdout } = run(['--version']);
     expect(stdout.trim()).toBe(VERSION);
   });
+
+  // The README Options block reads as a transcript of --help, and drifted from
+  // it: --lsp and --no-ignore-file were missing, and `serve` from Commands
+  // (#64). Compared as sets of flag and command names, since the README wording
+  // and wrapping are its own. `serve` is the one README-only command: index.ts
+  // routes it before commander, so --help cannot list it.
+  it('README Options block lists every flag and command --help does', () => {
+    const { stdout } = run(['--help']);
+    const readme = fs.readFileSync(path.resolve(__dirname, '../../README.md'), 'utf-8');
+    const block = readme.match(/\n## Options\n+```\n([\s\S]*?)\n```/)?.[1];
+    expect(block).toBeDefined();
+
+    // Flags: the long name at the start of each option row, e.g. `  -V, --version`.
+    const flags = (text: string) =>
+      [...text.matchAll(/^ {2}(?:-\w, )?(--[a-z][a-z-]*)/gm)].map((m) => m[1]).sort();
+    // Commands: the first word of each row under `Commands:`.
+    const commands = (text: string) =>
+      (text.split(/^Commands:\n/m)[1] ?? '')
+        .split('\n')
+        .map((l) => l.match(/^ {2}([a-z][a-z-]*)\b/)?.[1])
+        .filter((c): c is string => c !== undefined)
+        .sort();
+
+    const helpFlags = flags(stdout.split(/^Commands:$/m)[0]);
+    expect(helpFlags).toContain('--lsp');
+    expect(flags(block!.split(/^Commands:$/m)[0])).toEqual(helpFlags);
+
+    const helpCommands = commands(stdout);
+    expect(helpCommands).toContain('init');
+    expect(commands(block!)).toEqual([...new Set([...helpCommands, 'serve'])].sort());
+  });
 });
 
 describe('package.json consistency', () => {

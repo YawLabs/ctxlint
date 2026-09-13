@@ -2,7 +2,18 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { loadConfig } from '../config.js';
+import { KNOWN_CONFIG_KEYS, loadConfig } from '../config.js';
+
+const README = fs.readFileSync(path.resolve(__dirname, '../../../README.md'), 'utf-8');
+
+/** Body of the README section starting at `heading`, up to the next heading of any level. */
+function readmeSection(heading: string): string {
+  const start = README.indexOf(`\n${heading}\n`);
+  if (start === -1) throw new Error(`README heading not found: ${heading}`);
+  const body = README.slice(start + heading.length + 2);
+  const next = body.search(/^#{1,6} /m);
+  return next === -1 ? body : body.slice(0, next);
+}
 
 let tmpDir: string;
 
@@ -145,5 +156,37 @@ describe('loadConfig', () => {
     const messages = warn.mock.calls.map((args) => args.join(' ')).join('\n');
     expect(messages).not.toContain('pathPattern is only honored for');
     warn.mockRestore();
+  });
+});
+
+describe('README Config File section', () => {
+  // The README table is the only reference for these keys, and it went two
+  // keys short (ignoreRules, hooksGlobal) with nothing noticing (#64). Rows are
+  // matched by their first cell; dotted and `[]` rows document sub-fields.
+  it('Config Reference lists exactly the keys loadConfig accepts', () => {
+    const fields = readmeSection('### Config Reference')
+      .split('\n')
+      .map((line) => line.match(/^\|\s*`([^`]+)`\s*\|/)?.[1])
+      .filter((f): f is string => f !== undefined);
+    const topLevel = fields.filter((f) => !/[.[]/.test(f));
+    expect([...topLevel].sort()).toEqual([...KNOWN_CONFIG_KEYS].sort());
+    // Every sub-field row hangs off a documented key.
+    for (const f of fields.filter((f) => /[.[]/.test(f))) {
+      expect(KNOWN_CONFIG_KEYS).toContain(f.split(/[.[]/)[0]);
+    }
+  });
+
+  it('the example config loads without unknown-key or ignoreRules warnings', () => {
+    const example = readmeSection('## Config File').match(/```json\n([\s\S]*?)\n```/)?.[1];
+    expect(example).toBeDefined();
+    fs.writeFileSync(path.join(tmpDir, '.ctxlintrc.json'), example!);
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const config = loadConfig(tmpDir);
+      expect(config?.ignoreRules?.length).toBeGreaterThan(0);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
