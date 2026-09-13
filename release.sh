@@ -126,8 +126,11 @@ sync_version_files() {
       # tr: a native Windows jq.exe writes CRLF (jq 1.7.1, measured 2026-09-13).
       # git normalizes the committed blob, but the working-tree file stays CRLF
       # and fails the NEXT release's step 3, whose `prettier --check .` expects LF.
-      jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' server.json | tr -d '\r' > server.tmp
-      mv server.tmp server.json
+      # Explicit handlers, as in promote_changelog: the ERR trap's "Release failed
+      # at line N" banner does not fire inside a function (no `set -E`).
+      jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' server.json | tr -d '\r' > server.tmp \
+        || { rm -f server.tmp; fail "server.json sync to $VERSION failed -- see the error above"; }
+      mv server.tmp server.json || fail "Could not replace server.json"
       info "server.json synced to $VERSION"
     fi
   fi
