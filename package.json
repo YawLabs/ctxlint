@@ -1,6 +1,6 @@
 {
   "name": "@yawlabs/ctxlint",
-  "version": "0.25.1",
+  "version": "0.25.2",
   "mcpName": "io.github.YawLabs/ctxlint",
   "description": "Linter for AI agent context files and MCP configs: CLAUDE.md, AGENTS.md, .cursorrules, .mcp.json - catches broken paths, wrong commands, leaked secrets",
   "bin": {
