@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 See [Versioning policy](#versioning-policy) below.
 
+## [Unreleased]
+
+### Fixed
+
+- **A host that launched the bin on oam got a second, nested oam.** A host can resolve this package's `bin` and run `oam run bin/ctxlint.mjs -- serve` instead of `node bin/ctxlint.mjs` -- Yaw MCP does, and so does oam's sidecar regression matrix. The launcher never asked what it was already running on: it discovered an oam binary and spawned it anyway, so one server cost two runtime boots, measured on Windows as `oam.exe` with a nested `oam.exe` + `conhost.exe` underneath it. The launcher now reads `process.versions.oam` first, and when it clears the same 0.9.0 floor a discovered binary has to, the CLI is imported into the current process exactly as the Node fallback is -- no discovery, no `oam --version` probe, no second oam. `CTXLINT_RUNTIME=oam` is satisfied by already running on oam, and `OAM_BIN` is not consulted on that path, since it is a discovery input and the host has already chosen which oam runs. This launcher has no sandbox, so nothing in it needs a fresh oam: the only case that still spawns is a host oam below the floor, which takes the discovery path exactly as before. On Node, where `process.versions.oam` is absent, nothing changes. The decision is a pure `runtimePlan()`, and one `parseVersion` now reads both a discovered binary's `oam --version` output and the host's own version string, so the two cannot disagree about what a version means or which floor it has to clear.
+
+### Internal
+
+- **Prettier formatting is gated in the test script (#69).** `test` and `test:run` now run `prettier --check .` before vitest, and a new `format:check` script runs it alone. The repo was formatted once to make the gate satisfiable. `.prettierignore` excludes generated output and `fixtures/`, whose deliberately malformed linter inputs `prettier --write` would repair -- it strips the trailing comma that `fixtures/mcp-configs/invalid-json/.mcp.json` exists to carry -- and `.gitattributes` pins `eol=lf`, so a `core.autocrlf=true` checkout does not fail the check on byte-identical content.
+- **`src/core/types.ts` and `src/core/checks/commands.ts` pass that gate under the locked Prettier.** The repo-wide format in #69 ran on a stale Prettier 3.8.4 install, while `pnpm-lock.yaml` pins 3.9.5, which lays out a union type that fits on one line differently. The two files 3.8.4 accepted and 3.9.5 rejects left `test:run` red on a fresh install. Both are now formatted by the locked version; no code changed.
+- **`pnpm-lock.yaml` installs with `--frozen-lockfile` again.** Snapshot keys still named `eslint@10.6.0` and `@types/node@26.1.0` as peers after both had been bumped to `10.7.0` and `26.1.1`, so a frozen install on a clean clone failed with `ERR_PNPM_LOCKFILE_MISSING_DEPENDENCY`. Only those peer suffixes changed; no resolved version did.
+- The launcher's `runtimePlan()` decision has unit tests, and the wiring is covered by running the real bin under a preloaded `process.versions.oam`. Cutting the wiring or dropping the floor check turns the suite red.
+
 ## [0.25.0] - 2026-09-11
 
 ### Added
