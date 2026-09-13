@@ -316,7 +316,10 @@ node scripts/sync-version-refs.mjs "$VERSION" || fail "Pinned version refs not s
 if [ -f server.json ]; then
   CURRENT_SERVER_VERSION=$(jq -r '.version' server.json 2>/dev/null || echo "")
   if [ "$CURRENT_SERVER_VERSION" != "$VERSION" ]; then
-    jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' server.json > server.tmp
+    # tr: a native Windows jq.exe writes CRLF (jq 1.7.1, measured 2026-09-13).
+    # git normalizes the committed blob, but the working-tree file stays CRLF
+    # and fails the NEXT release's step 3, whose `prettier --check .` expects LF.
+    jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' server.json | tr -d '\r' > server.tmp
     mv server.tmp server.json
     info "server.json synced to $VERSION"
   fi
