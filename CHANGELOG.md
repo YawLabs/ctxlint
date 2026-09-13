@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 See [Versioning policy](#versioning-policy) below.
 
+## [Unreleased]
+
+### Fixed
+
+- **The README's pre-commit framework snippet pins the current release again (#63).** `rev:` pinned `v0.9.10` from April 2026 until a hand bump to `v0.25.0`, and was already three patch releases stale again by `0.25.3`, because `release.sh` synced the version into `package.json`, `.pre-commit-hooks.yaml` and `server.json` but never into `README.md`. Both the `rev:` and the example-output banner (`ctxlint vX.Y.Z`) are now rewritten to the version being released, every release.
+
+### Internal
+
+- **Pinned version refs are synced by `scripts/sync-version-refs.mjs`.** `release.sh` runs it with the version being released; it rewrites the `.pre-commit-hooks.yaml` npx pin (formerly an inline `node -e` block) plus the README `rev:` and banner, and writes nothing and exits 1 if any pattern matches nothing. The README `rev:` pattern is anchored to the `yawlabs/ctxlint` repo line, so another hook's `rev:` is never touched. `README.md` joins `BUMP_FILES` so the rewrite lands in the bump commit.
+- **Resuming a release that died partway through step 4 no longer stops at step 3.** When a run bumped `package.json` and then failed before the version-file syncs finished (an interrupt, a locked file, `jq` missing from `PATH`), the re-run sees `CURRENT_VERSION == VERSION` and resumes -- but step 3's tests, which run before step 4, check that `server.json` matches `package.json`, so a resume could never get past them to reach the sync that would have fixed it. The version-file syncs (the refs above and `server.json`) now live in one idempotent `sync_version_files` function, which step 4 calls after the bump and a resume also calls during pre-flight, before step 1.
+- The test suite fails when a pin drifts from `package.json` or a README edit breaks a pattern: `version-refs.test.ts` runs the script in `--check` mode, both against the repository and against a drifted scratch copy, and covers the rewrite, the missing-pattern failure (including that nothing is written), CRLF input, idempotence and running through a symlinked or junctioned checkout; a line-exact assertion beside the `server.json` check in `entry.test.ts` pins the checked-in values independently of the script's patterns.
+- **`release.sh` no longer leaves `server.json` with CRLF line endings on Windows.** Its step-4 sync writes the file through `jq`, and a native Windows `jq.exe` (1.7.1, measured) emits CRLF. The committed blob is normalized to LF by `.gitattributes`, so nothing wrong reached the repository, but the working-tree copy stayed CRLF, and the next release's step 3 -- whose `test:run` begins with `prettier --check .` -- would fail on it. That was the state after the `0.25.3` release. The `jq` output is now piped through `tr -d '\r'`.
+
 ## [0.25.3] - 2026-09-13
 
 ### Added
