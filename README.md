@@ -461,7 +461,7 @@ redundancy .claude/**    # redundancy findings in files under .claude/
 ```
 
 - **`checkName`** is a name from the **Available checks** list under [Options](#options) (`paths`, `tokens`, `mcp-security`, ...), not a rule ID. A name that is not a check is not rejected: the rule never matches, so it is reported as never fired.
-- **`fileGlob`** is optional. Without one, the rule covers every file. With one, it covers only findings in files whose path matches — the project-relative path ctxlint prints, with forward slashes on every platform, and dotfiles included. Cross-file findings from `contradictions` and `redundancy/duplicate-content` are reported against `(project)`, which no glob matches.
+- **`fileGlob`** is optional. Without one, the rule covers every file. With one, it covers only findings in files whose path matches — the project-relative path ctxlint prints, with forward slashes on every platform, and dotfiles included. Cross-file findings from `contradictions` and `redundancy/duplicate-content` are reported against the path `(project)`; match them with that literal (`contradictions (project)`).
 - **`# reason`** needs a space before the `#`. In `paths#legacy`, the whole token is read as the check name. Only the first two tokens are read, so there is no message regex here; use [`ignoreRules`](#config-reference) for that.
 - Rules with a glob are applied first, in file order, then rules without one together with `ignoreRules`. A finding is dropped by the first rule that matches it.
 - Dropped counts, rules that dropped nothing, and rules without a reason are listed in the same "Ignore rules" report as `ignoreRules`.

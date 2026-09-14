@@ -16,6 +16,12 @@ See [Versioning policy](#versioning-policy) below.
 
 - README: `.ctxlintignore` was named in the Options block and the `exclude` prose, but its format was documented nowhere. A new "Ignore file" section covers the `checkName [fileGlob] [# reason]` line format, what the glob is matched against, the space required before `#`, rule order relative to `ignoreRules`, the shared report, `--no-ignore-file` and `--watch`. `ignore-file.test.ts` (new) covers the parser and loads the README example expecting real check names and a reason on every line; `audit.test.ts` gains the first end-to-end `.ctxlintignore` tests, including both reporting fixes above.
 
+## [0.26.0] - 2026-09-13
+
+### Changed
+
+- README: the X follow badge moved from the badge row at the top of the file to the bottom (#74). No code changed between 0.25.5 and this release; the heading is here so the version sequence in this file stays unbroken.
+
 ## [0.25.5] - 2026-09-13
 
 ### Fixed
