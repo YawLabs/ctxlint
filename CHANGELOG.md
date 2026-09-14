@@ -12,6 +12,10 @@ See [Versioning policy](#versioning-policy) below.
 
 - npm and MCP Registry listing metadata: bugs URL, core keywords, and server.json title/repository/websiteUrl
 
+### Internal
+
+- **`release.sh` gives npm propagation twice the time before the MCP Registry publish.** Step 8 waits for npm to serve the new version before registering it, then retries the registry publish when it answers that the version is not on npm yet. The v0.27.0 release exhausted the 60s wait and succeeded only on the last of three retries, about 150s after the publish, while v0.25.4 the same day cleared the wait in under 60s. The wait is now 120s and there are four retries (30s, 60s, 90s apart), 300s in all; the extra time elapses only on a run that is still propagating. Both loops were exercised against a stubbed `mcp-publisher`: a publish that fails three times still succeeds on the fourth attempt, and one that fails four times exits through the existing failure message that names what has already landed.
+
 ## [0.27.0] - 2026-09-13
 
 ### Fixed

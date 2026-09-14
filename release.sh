@@ -646,21 +646,27 @@ else
   # run with npm AND the GitHub release already landed, and step 9 never
   # reached.
   #
-  # Same 10 x 6s shape as the CI-publish poll in step 6, and placed HERE rather
+  # 20 x 6s -- twice the CI-publish poll in step 6 -- and placed HERE rather
   # than in one of step 6's branches so it covers every path into step 8:
   # workstation publish, CI publish, and a resume run whose publish happened in
   # an earlier invocation. A poll that runs out does not fail -- it warns and
   # lets the publish speak, since the retry below is the real backstop.
+  #
+  # Why 120s: the 60s this used to be was exhausted by the v0.27.0 run
+  # (2026-09-13), which then needed the LAST of the three retries below, about
+  # 150s after the publish -- while v0.25.4 the same day cleared the poll in
+  # under 60s. The waits only elapse on a run that is still propagating.
+  NPM_POLLS=20
   NPM_SERVING=false
-  for i in 1 2 3 4 5 6 7 8 9 10; do
+  for ((i = 1; i <= NPM_POLLS; i++)); do
     if npm_version_live; then NPM_SERVING=true; break; fi
-    [ "$i" -eq 1 ] && info "Waiting for npm to serve v${VERSION} before registering it (up to 60s)"
+    [ "$i" -eq 1 ] && info "Waiting for npm to serve v${VERSION} before registering it (up to $((NPM_POLLS * 6))s)"
     sleep 6
   done
   if [ "$NPM_SERVING" = "true" ]; then
     info "npm registry serves @yawlabs/ctxlint@${VERSION} -- safe to register"
   else
-    warn "npm registry still does not serve @yawlabs/ctxlint@${VERSION} after 60s -- attempting the registry publish anyway"
+    warn "npm registry still does not serve @yawlabs/ctxlint@${VERSION} after $((NPM_POLLS * 6))s -- attempting the registry publish anyway"
   fi
 
   # The failure message has to name what ALREADY landed: at this point npm and
@@ -672,13 +678,15 @@ else
   MCP_FIX_CMD="cd '$SCRIPT_DIR' && '$MP' login github -token \"\$(gh auth token)\" && '$MP' publish"
   MCP_FAIL_MSG="mcp-publisher publish failed for v${VERSION}. ALREADY LANDED: npm @yawlabs/ctxlint@${VERSION} and GitHub release v${VERSION} -- ONLY the MCP Registry entry is missing, so do NOT re-run this script. Fix the cause, then complete just this step with: ${MCP_FIX_CMD}"
 
-  # Three attempts, spaced 30s then 60s, and ONLY for the propagation shape.
+  # Four attempts, spaced 30s, 60s, then 90s (180s in all), and ONLY for the
+  # propagation shape.
   #
   # Why more than one retry: the gate above reads npm from this machine's CDN
   # edge, so it can go green while the registry's own view still lags. Going
   # green early is what SHRINKS the budget -- a single 30s retry would cover
   # barely a third of the 30-90s window npm itself quotes. The waits only
-  # elapse on a run that is already failing.
+  # elapse on a run that is already failing. The fourth attempt is the margin
+  # the v0.27.0 run (2026-09-13) had none of: it succeeded on attempt 3 of 3.
   #
   # Every other failure -- bad server.json, namespace not owned, auth -- fails
   # identically after any wait, so it exits on the first attempt rather than
@@ -687,7 +695,7 @@ else
   MCP_PUBLISH_LOG=$(mktemp)
   MCP_DONE=false
   MCP_ATTEMPT=1
-  MCP_MAX_ATTEMPTS=3
+  MCP_MAX_ATTEMPTS=4
   while true; do
     if "$MP" publish 2>&1 | tee "$MCP_PUBLISH_LOG"; then
       MCP_DONE=true
