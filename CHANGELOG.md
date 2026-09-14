@@ -11,6 +11,7 @@ See [Versioning policy](#versioning-policy) below.
 ### Changed
 
 - npm and MCP Registry listing metadata: bugs URL, core keywords, and server.json title/repository/websiteUrl
+- **`release.sh` writes a `## [x.y.z]` entry for every release, and the GitHub release notes come from it.** Step 4 promotes `[Unreleased]` when it has content, leaving a fresh, empty `[Unreleased]` heading above the new section for the next change, and otherwise generates the section from the commit subjects since the previous tag; Keep-a-Changelog link references, when the file has them, are moved along with it. Step 7 then takes the release notes from that entry instead of from `git log` subjects, and its backstop fails on any missing entry rather than only when `[Unreleased]` had content. Before this, a release with nothing under `[Unreleased]` got no entry at all -- the `[0.26.0]` section below was backfilled by hand in #75 -- and its release page listed raw commit subjects, its own version-bump commit included, which is how v0.26.0's was published. Promoting also consumed the `[Unreleased]` heading, so the next change had to add it back (#76).
 
 ### Internal
 
