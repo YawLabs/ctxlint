@@ -435,6 +435,9 @@ sync_version_files
 # was in when it failed -- the tag and the npm publish had already landed, and
 # the resume could not fix the heading because the promotion lived nowhere.
 promote_changelog
+# Fail here, before anything is committed or tagged, if the entry still did
+# not land; the step-7 copy of this check guards the notes on a re-entered run.
+assert_changelog_promoted
 
 # Rebuild AFTER the bump: build.mjs bakes package.json's version into the
 # bundle (the __VERSION__ define), so the step-2 dist -- built while
