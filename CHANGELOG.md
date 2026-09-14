@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 See [Versioning policy](#versioning-policy) below.
 
+## [Unreleased]
+
+### Fixed
+
+- **Glob-scoped `.ctxlintignore` rules show up in the "Ignore rules" report when they drop nothing.** A rule with a file glob (`tokens sub/*.md`) counted as fired as soon as its glob matched any file, whether or not it dropped a finding, so a rule that suppressed nothing was never listed as drift -- unlike every other ignore rule, which counts as fired only when it drops something. And when the only rules loaded were glob-scoped and none dropped anything, the report was skipped entirely, hiding a rule whose glob matched no file and any rule missing a reason. A glob-scoped rule now counts as fired only when it drops a finding, and the report is built whenever any rule is loaded. Glob-scoped rules are applied one at a time in file order, so the first matching rule still wins and is the one credited. As a result, JSON `_meta.ignoreReport` and the text footer now also appear for a run whose only rules are glob-scoped.
+
+### Internal
+
+- README: `.ctxlintignore` was named in the Options block and the `exclude` prose, but its format was documented nowhere. A new "Ignore file" section covers the `checkName [fileGlob] [# reason]` line format, what the glob is matched against, the space required before `#`, rule order relative to `ignoreRules`, the shared report, `--no-ignore-file` and `--watch`. `ignore-file.test.ts` (new) covers the parser and loads the README example expecting real check names and a reason on every line; `audit.test.ts` gains the first end-to-end `.ctxlintignore` tests, including both reporting fixes above.
+
+## [0.26.0] - 2026-09-13
+
+### Changed
+
+- README: the X follow badge moved from the badge row at the top of the file to the bottom (#74). No code changed between 0.25.5 and this release; the heading is here so the version sequence in this file stays unbroken.
+
 ## [0.25.5] - 2026-09-13
 
 ### Fixed

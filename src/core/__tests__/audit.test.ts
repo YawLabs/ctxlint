@@ -144,3 +144,70 @@ describe('runAudit exclude', () => {
     expect(contradictionsIn(result).length).toBeGreaterThan(0);
   });
 });
+
+describe('runAudit .ctxlintignore', () => {
+  let root: string;
+
+  beforeEach(() => {
+    _resetRedundancyCachesForTesting();
+    resetPathsCache();
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-ignorefile-'));
+    fs.mkdirSync(path.join(root, 'src'));
+    fs.mkdirSync(path.join(root, 'sub'));
+    fs.writeFileSync(path.join(root, 'package.json'), '{"name":"x"}');
+    fs.writeFileSync(path.join(root, 'src', 'index.ts'), 'export {}\n');
+    fs.writeFileSync(path.join(root, 'CLAUDE.md'), '# Root\n\nSee `src/root-missing.ts`.\n');
+    fs.writeFileSync(path.join(root, 'sub', 'CLAUDE.md'), '# Sub\n\nSee `src/sub-missing.ts`.\n');
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const audit = async (ignoreFile: string, noIgnoreFile = false) => {
+    fs.writeFileSync(path.join(root, '.ctxlintignore'), ignoreFile);
+    const result = await runAudit(root, ['paths'], { noIgnoreFile });
+    const remaining = result.files.flatMap((f) => f.issues.map((i) => `${f.path}: ${i.message}`));
+    return { remaining, report: result._meta?.ignoreReport };
+  };
+
+  it('a glob-scoped rule drops findings only in files its glob matches', async () => {
+    const { remaining, report } = await audit('paths sub/*.md # sub docs\n');
+    expect(remaining).toEqual(['CLAUDE.md: src/root-missing.ts does not exist']);
+    expect(report).toEqual({ dropped: 1, unusedRules: [], rulesMissingReason: [] });
+  });
+
+  it('reports a glob-scoped rule whose glob matches a file but drops nothing', async () => {
+    // Used to count as fired because its glob matched sub/CLAUDE.md.
+    const { remaining, report } = await audit('tokens sub/*.md # never drops\n');
+    expect(remaining).toHaveLength(2);
+    expect(report?.unusedRules).toEqual([{ check: 'tokens', reason: 'never drops' }]);
+  });
+
+  it('builds the report when the only rules are glob-scoped and nothing is dropped', async () => {
+    // Used to skip the report entirely, hiding both lists below.
+    const { report } = await audit('paths nomatch/*.md\n');
+    expect(report).toEqual({
+      dropped: 0,
+      unusedRules: [{ check: 'paths' }],
+      rulesMissingReason: [{ check: 'paths' }],
+    });
+  });
+
+  it('keeps first-matching-rule-wins across glob-scoped rules', async () => {
+    // Both rules match sub/CLAUDE.md's one finding; the first drops it, so the
+    // second has nothing left and is the one reported unused.
+    const { remaining, report } = await audit(
+      'paths sub/*.md # first\npaths sub/CLAUDE.md # second\n',
+    );
+    expect(remaining).toEqual(['CLAUDE.md: src/root-missing.ts does not exist']);
+    expect(report?.dropped).toBe(1);
+    expect(report?.unusedRules).toEqual([{ check: 'paths', reason: 'second' }]);
+  });
+
+  it('noIgnoreFile skips the file entirely', async () => {
+    const { remaining, report } = await audit('paths # everything\n', true);
+    expect(remaining).toHaveLength(2);
+    expect(report).toBeUndefined();
+  });
+});
