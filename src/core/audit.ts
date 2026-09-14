@@ -548,23 +548,23 @@ export async function runAudit(
   if (globScopedRules.length > 0) {
     const firedGlobRules = new Set<IgnoreFileRule>();
     for (const fr of fileResults) {
-      // Collect the glob rules that apply to this specific file path.
-      const applicableRules: IgnoreRule[] = [];
+      // Apply the glob rules matching this file one at a time, in file order.
+      // Each rule sees only what earlier rules kept, which is the same
+      // first-matching-rule-wins outcome as one combined pass -- and it tells
+      // us which rule dropped what.
       for (const rule of globScopedRules) {
-        if (matchesGlob(fr.path, rule._fileGlob!)) {
-          const { _fileGlob: _, ...plainRule } = rule;
-          applicableRules.push(plainRule);
-          firedGlobRules.add(rule);
-        }
+        if (!matchesGlob(fr.path, rule._fileGlob!)) continue;
+        const { _fileGlob: _, ...plainRule } = rule;
+        const applied = applyIgnoreRules(fr.issues, [plainRule]);
+        fr.issues = applied.kept;
+        globDropped += applied.dropped;
+        if (applied.dropped > 0) firedGlobRules.add(rule);
       }
-      if (applicableRules.length === 0) continue;
-      const applied = applyIgnoreRules(fr.issues, applicableRules);
-      fr.issues = applied.kept;
-      globDropped += applied.dropped;
     }
-    // Unused glob rules: those that never matched any file path's glob AND
-    // whose plain-rule also never fired. Since firedGlobRules tracks which
-    // rules matched at least one file, unfired = not in the set.
+    // Unused glob rules: those that dropped no finding in any file -- whether
+    // their glob matched nothing or matched files with nothing to drop. Same
+    // meaning as an unused rule in the flat pass below. Counting a glob match
+    // as firing hid a rule that suppresses nothing from the drift report.
     globUnusedRules = globScopedRules
       .filter((r) => !firedGlobRules.has(r))
       .map(({ _fileGlob: _unused, ...rest }) => rest);
@@ -581,7 +581,10 @@ export async function runAudit(
   // Merge config-based rules with global (non-glob) file rules from .ctxlintignore.
   const allIgnoreRules: IgnoreRule[] = [...(options.ignoreRules ?? []), ...globalFileRules];
   let ignoreReport: IgnoreReport | undefined;
-  if (allIgnoreRules.length > 0 || globDropped > 0) {
+  // Built whenever any rule was loaded, not only when one dropped something:
+  // with only glob-scoped rules and nothing dropped, the report used to be
+  // skipped, hiding exactly the never-fired and missing-reason rules it lists.
+  if (allIgnoreRules.length > 0 || globScopedRules.length > 0) {
     let flatDropped = 0;
     let flatUnusedRules: IgnoreRule[] = [];
     let flatRulesMissingReason: IgnoreRule[] = [];
