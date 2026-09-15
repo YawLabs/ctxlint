@@ -574,7 +574,6 @@ All specs include machine-readable rule catalogs for programmatic consumption:
 ## Also By Yaw Labs
 
 - [Yaw](https://yaw.sh) — The AI-native terminal
-- [Spend](https://spend.sh) — AI spend tracking, cost estimation, and provider comparison across 10+ providers
 - [Token Limit News](https://tokenlimit.news) — Weekly AI dev tooling newsletter
 
 ## License
