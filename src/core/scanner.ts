@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
-import { glob } from 'glob';
+import { glob } from 'glob/raw';
 import { isSymlink, readSymlinkTarget } from '../utils/fs.js';
 import { matchesGlob } from './ignore-file.js';
 
