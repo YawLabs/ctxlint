@@ -1,7 +1,7 @@
 import * as path from 'node:path';
 import levenshteinPkg from 'fast-levenshtein';
 const levenshtein = levenshteinPkg.get;
-import { globIterate } from 'glob';
+import { globIterate } from 'glob/raw';
 import { fileExists, isDirectory, getAllProjectFiles } from '../../utils/fs.js';
 import { findRenamesBatch, resetRenameCache } from '../../utils/git.js';
 import type { ParsedContextFile, LintIssue } from '../types.js';
