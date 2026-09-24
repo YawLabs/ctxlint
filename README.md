@@ -1,5 +1,9 @@
 # ctxlint
 
+[![Add to Yaw MCP](https://yaw.sh/yaw-mcp-button.svg)](https://yaw.sh/mcp/install?name=ctxlint&command=npx&args=-y%2C%40yawlabs%2Fctxlint%2Cserve&description=Lint%20AI%20agent%20context%20files%20and%20MCP%20configs%20against%20your%20codebase&source=https%3A%2F%2Fgithub.com%2FYawLabs%2Fctxlint)
+
+One click adds this to your local Yaw MCP config so it's available in every Yaw Terminal session. Or install manually below.
+
 [![npm version](https://img.shields.io/npm/v/@yawlabs/ctxlint)](https://www.npmjs.com/package/@yawlabs/ctxlint)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![GitHub stars](https://img.shields.io/github/stars/YawLabs/ctxlint)](https://github.com/YawLabs/ctxlint/stargazers)
@@ -8,10 +12,6 @@
 **Lint your AI agent context files, MCP server configs, and session data against your actual codebase.** Context linting + MCP config linting + session auditing. 16 AI tools, 8 MCP clients, cross-project consistency, auto-fix. Works as a CLI, CI step, pre-commit hook, or MCP server.
 
 Your `CLAUDE.md` is lying to your agent. Your `.mcp.json` has a hardcoded API key. ctxlint catches both.
-
-[![Add to Yaw MCP](https://yaw.sh/yaw-mcp-button.svg)](https://yaw.sh/mcp/install?name=ctxlint&command=npx&args=-y%2C%40yawlabs%2Fctxlint%2Cserve&description=Lint%20AI%20agent%20context%20files%20and%20MCP%20configs%20against%20your%20codebase&source=https%3A%2F%2Fgithub.com%2FYawLabs%2Fctxlint)
-
-One click adds this to your local Yaw MCP config so it's available in every Yaw Terminal session. Or install manually below.
 
 ## Why ctxlint?
 
@@ -574,10 +574,9 @@ All specs include machine-readable rule catalogs for programmatic consumption:
 ## Also By Yaw Labs
 
 - [Yaw](https://yaw.sh) — The AI-native terminal
-- [Token Limit News](https://tokenlimit.news) — Weekly AI dev tooling newsletter
 
 ## License
 
 MIT
 
-[![Follow @TokenLimitNews on X](https://img.shields.io/badge/follow-%40TokenLimitNews-000000?logo=x&logoColor=white)](https://x.com/TokenLimitNews)
+[![Follow @YawLabs on X](https://img.shields.io/badge/follow-%40YawLabs-000000?logo=x&logoColor=white)](https://x.com/YawLabs)
