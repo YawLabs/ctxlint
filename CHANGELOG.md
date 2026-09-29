@@ -8,6 +8,8 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.27.3] - 2026-09-29
+
 ### Internal
 
 - **`release.sh` reads npm's per-version document wherever it asks whether this version is published, and a resume no longer dies on npm's E403.** Step 6's "already published -- skipping" check used `npm view`, which reads the whole packument that registry.npmjs.org serves from Cloudflare's edge for up to 300s, so a re-run right after a later step failed could publish again and stop on npm's "cannot publish over the previously published versions" E403 as if it were a token problem. That check now goes through `npm_version_live` (the uncached per-version document the MCP Registry itself fetches, now also cache-busted and capped at 20s), and the workstation publish loop treats that E403 as the skip it should have been, with a warning in place of the success line. Step 8's MCP Registry retry now also waits out the live registry's (v1.8.1) wording for trouble on npm's side -- "Likely transient, retry later" (429, 5xx, an inconclusive 404) and "failed to fetch package metadata from NPM" -- and its not-found shape needs `not found (status: N)` with the version in the same output, so a package missing outright still fails on the first attempt. It also waits out the registry's own HTTP 429, 502, 503 and 504, and logs in again before the first attempt and every retry, since its login comes before the npm gate and registry tokens last 5 minutes.
