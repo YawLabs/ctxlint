@@ -818,6 +818,12 @@ else
   # missing outright names no version) would buy those waits too; the
   # "Likely transient" texts match on their own, since 429 and 5xx name only
   # the package.
+  # ctxlint logs in BEFORE its npm gate above, which can run past the
+  # registry token's 5 minutes on its own; refresh it right before the first
+  # attempt too, not only between retries.
+  "$MP" login github -token "${MCP_REGISTRY_TOKEN:-}" >/dev/null 2>&1 \
+    || warn "mcp-publisher login refresh failed -- the next attempt may be refused as unauthorized"
+
   # The registry's OWN transient answers are retried on the same clock too:
   # HTTP 429, 502, 503 or 504 on the publish call. Cutting @yawlabs/mcp 1.0.17
   # (2026-09-29) met a 504 from the registry's nginx gateway while its search
@@ -847,16 +853,17 @@ else
       MCP_DONE=true
       break
     fi
+    # The registry's own 429/502/503/504 on the publish call, if that is what
+    # this attempt got: empty otherwise. `|| true` because no match is the
+    # normal case, and the failing grep would then make the assignment fail,
+    # which `set -e` turns into the end of the script.
+    MCP_GATEWAY_STATUS=$(grep -oE 'server returned status (429|502|503|504)([^0-9]|$)' "$MCP_PUBLISH_LOG" | head -n 1 | grep -oE '[0-9]{3}' || true)
     # Not a shape waiting cures, or out of attempts.
     # The not-found shape counts only when the validator's own "version '<v>'"
     # names this version. A bare version match is not enough: the registry's
     # publisher after v1.8.1 (registry main) prints "Publishing <name>@<v> to"
     # before any error, and this script downloads the latest release, so a
     # missing-package 404 would then buy all the waits.
-    # The registry's own 429/502/503/504 on the publish call, if that is what
-    # this attempt got: empty otherwise. `|| true` because no match is the
-    # normal case, and under pipefail it would otherwise end the script.
-    MCP_GATEWAY_STATUS=$(grep -oE 'server returned status (429|502|503|504)([^0-9]|$)' "$MCP_PUBLISH_LOG" | head -n 1 | grep -oE '[0-9]{3}' || true)
     if ! { { grep -qE 'not found \(status: *[0-9]+\)' "$MCP_PUBLISH_LOG" && grep -qF "version '${VERSION}'" "$MCP_PUBLISH_LOG"; } \
         || grep -qE 'Likely transient, retry later|failed to fetch package metadata from NPM' "$MCP_PUBLISH_LOG" \
         || [ -n "$MCP_GATEWAY_STATUS" ]; }; then
