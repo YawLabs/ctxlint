@@ -8,6 +8,10 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+### Internal
+
+- `release.sh` waits up to 600 s, not 120, for npm to serve a new version before the MCP Registry step, and polls npm's uncached per-version document up to 120 times 5 s apart in its final check instead of reading the CDN-cached `npm view` once after 3 s. On 2026-09-29 the @yawlabs/fetch-mcp 0.8.2 release spent 295 s of its 300 s gate waiting for npm to serve the new version. Release tooling only; the server itself is unchanged.
+
 ## [0.27.3] - 2026-09-29
 
 ### Internal

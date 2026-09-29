@@ -624,14 +624,14 @@ elif [ -f ".github/workflows/release.yml" ] && grep -q "npm publish\|NODE_AUTH_T
   # which npm's CDN edge can serve up to 300s stale, and report "not found"
   # for a version that is live, turning a good release into a spurious warning.
   NPM_LIVE=false
-  for i in 1 2 3 4 5 6 7 8 9 10; do
+  for i in $(seq 1 100); do
     if npm_version_live; then NPM_LIVE=true; break; fi
     sleep 6
   done
   if [ "$NPM_LIVE" = "true" ]; then
     info "Published @yawlabs/ctxlint@${VERSION} via CI Release run $RUN_ID"
   else
-    warn "CI Release run $RUN_ID succeeded but the npm registry still does not serve @yawlabs/ctxlint@${VERSION} after 60s. Likely propagation lag -- verify in a minute that https://registry.npmjs.org/@yawlabs%2Fctxlint/${VERSION} answers 200. Publish is authoritative on CI's exit code."
+    warn "CI Release run $RUN_ID succeeded but the npm registry still does not serve @yawlabs/ctxlint@${VERSION} after 600s. Likely propagation lag -- verify in a minute that https://registry.npmjs.org/@yawlabs%2Fctxlint/${VERSION} answers 200. Publish is authoritative on CI's exit code."
   fi
 else
   # Workstation IS the publisher (no CI fallback). Retry only on EOTP/EAUTH/OTP
@@ -757,29 +757,31 @@ else
   "$MP" login github -token "$MCP_REGISTRY_TOKEN" >/dev/null 2>&1 \
     || fail "mcp-publisher login failed -- check MCP_REGISTRY_TOKEN scopes (needs read:org for YawLabs)"
 
-  # npm propagation gate. npm accepts a publish and then takes ~30-90s to serve
-  # the new version ("Your package is being processed and may take a few
+  # npm propagation gate. npm accepts a publish and then can take minutes to
+  # serve the new version ("Your package is being processed and may take a few
   # minutes to become available"). Until it does, the MCP Registry rejects the
   # publish with HTTP 400 "NPM package '@yawlabs/ctxlint' exists, but version
   # 'X.Y.Z' was not found (status: 404)" -- which is what killed the v0.25.0
   # run with npm AND the GitHub release already landed, and step 9 never
   # reached.
   #
-  # 20 x 6s -- twice the CI-publish poll in step 6 -- and placed HERE rather
-  # than in one of step 6's branches so it covers every path into step 8:
+  # 100 x 6s (600 s), and placed HERE rather than in one of step 6's branches
+  # so it covers every path into step 8:
   # workstation publish, CI publish, and a resume run whose publish happened in
   # an earlier invocation. A poll that runs out does not fail -- it warns and
   # lets the publish speak, since the retry below is the real backstop.
   #
-  # Why 120s: the 60s this used to be was exhausted by the v0.27.0 run
-  # (2026-09-13), which then needed the LAST of the three retries below, about
-  # 150s after the publish -- while v0.25.4 the same day cleared the poll in
-  # under 60s. The waits only elapse on a run that is still propagating.
-  NPM_POLLS=20
+  # Why 600s: the @yawlabs/fetch-mcp 0.8.2 release (2026-09-29) spent 295 s of
+  # its own 300 s gate waiting for npm to serve its new version. Before that
+  # this was 120s, raised from 60s after the v0.27.0 run (2026-09-13) ran it
+  # out and was accepted by the registry only on attempt 3 of 3 of the publish
+  # retries below (there are four now), about 150s after the publish. The
+  # waits only elapse on a run that is still propagating.
+  NPM_POLLS=100
   NPM_SERVING=false
   for ((i = 1; i <= NPM_POLLS; i++)); do
     if npm_version_live; then NPM_SERVING=true; break; fi
-    [ "$i" -eq 1 ] && info "Waiting for npm to serve v${VERSION} before registering it (up to $((NPM_POLLS * 6))s)"
+    [ "$i" -eq 1 ] && info "Waiting for npm to serve v${VERSION} before registering it (up to ${NPM_POLLS} reads 6s apart)"
     sleep 6
   done
   if [ "$NPM_SERVING" = "true" ]; then
@@ -803,7 +805,7 @@ else
   # Why more than one retry: the gate above reads npm from this machine's CDN
   # edge, so it can go green while the registry's own view still lags. Going
   # green early is what SHRINKS the budget -- a single 30s retry would cover
-  # barely a third of the 30-90s window npm itself quotes. The waits only
+  # a fraction of the minutes npm's own notice warns of. The waits only
   # elapse on a run that is already failing. The fourth attempt is the margin
   # the v0.27.0 run (2026-09-13) had none of: it succeeded on attempt 3 of 3.
   #
@@ -900,14 +902,21 @@ fi
 # =============================================================================
 step 9 "Verify"
 
-# Wait a moment for npm registry to propagate
-sleep 3
-
-NPM_VERSION=$(npm view @yawlabs/ctxlint version 2>/dev/null || echo "")
+# npm_version_live (the uncached per-version document), not `npm view`, whose
+# packument the CDN can serve up to 300 s stale -- polled up to 120 times 5s
+# apart (about 600s of sleeps, plus each read) rather than read once after 3s:
+# the @yawlabs/fetch-mcp 0.8.2 release (2026-09-29) spent 295 s of its 300 s
+# gate waiting for npm to serve its new version, and the gate in step 8 only
+# warns when it runs out.
+NPM_VERSION=""
+for i in $(seq 1 120); do
+  if npm_version_live; then NPM_VERSION="$VERSION"; break; fi
+  if [ "$i" -lt 120 ]; then sleep 5; fi
+done
 if [ "$NPM_VERSION" = "$VERSION" ]; then
   info "npm: @yawlabs/ctxlint@${NPM_VERSION}"
 else
-  warn "npm shows ${NPM_VERSION:-nothing} (expected $VERSION — may still be propagating)"
+  warn "npm does not serve @yawlabs/ctxlint@${VERSION} after 120 reads of https://registry.npmjs.org/@yawlabs%2Fctxlint/${VERSION} -- may still be propagating"
 fi
 
 PKG_VERSION=$(node -p "require('./package.json').version")
