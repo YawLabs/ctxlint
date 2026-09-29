@@ -502,15 +502,21 @@ else
 fi
 
 # =============================================================================
-# True when the npm registry ITSELF serves this version. Used by step 6's
-# post-publish verification and by step 8's gate before registering.
+# True when the npm registry ITSELF serves this version: a 200 from the
+# per-version document, the exact URL the MCP Registry's npm validator fetches.
+# Used by step 6's "already published -- skipping" check and its CI-handoff
+# verification, and by step 8's gate before registering.
 #
-# Deliberately NOT a bare `npm view`: npm answers from its own on-disk HTTP
-# cache, which this run primes with a packument fetched BEFORE the publish (the
-# lookup that decides "already published -- skipping"). Measured on the v0.25.0
-# run: a cache-busted registry read saw the new version while `npm view` was
-# still serving the stale one. `--prefer-online` is the no-curl fallback -- it
-# forces revalidation instead of trusting the cache.
+# Deliberately NOT `npm view`: that reads the whole packument, which
+# registry.npmjs.org serves from Cloudflare's edge for up to 300s
+# (Cache-Control: public, max-age=300; measured 2026-09-28 still HIT with
+# no-cache request headers). npm's own `view` already revalidates, so the
+# staleness is the CDN edge, not npm's disk cache -- it is what the v0.25.0 run
+# measured, a cache-busted read seeing the new version while `npm view` did
+# not. The per-version document is served uncached (CF-Cache-Status DYNAMIC).
+# The `_` query is belt-and-braces against that changing; npm ignores it. The
+# no-curl fallback still reads the packument, so it can lag the same way.
+# Probe-only: any failure reads as "not served".
 #
 # registry.npmjs.org is hardcoded on purpose: server.json declares registryType
 # "npm" with no registryBaseUrl, so public npm is exactly the source the MCP
@@ -524,9 +530,9 @@ fi
 npm_version_live() {
   local code
   if command -v curl >/dev/null 2>&1; then
-    code=$(curl -sS -o /dev/null -w '%{http_code}' \
+    code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 \
       -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
-      "https://registry.npmjs.org/@yawlabs%2fctxlint/${VERSION}" 2>/dev/null || echo "000")
+      "https://registry.npmjs.org/@yawlabs%2Fctxlint/${VERSION}?_=$(date +%s)${RANDOM}" 2>/dev/null || true)
     [ "$code" = "200" ]
   else
     [ "$(npm view "@yawlabs/ctxlint@${VERSION}" version --prefer-online 2>/dev/null || echo "")" = "$VERSION" ]
@@ -542,7 +548,7 @@ step 6 "Publish to npm"
 #                                       is set; --provenance for sigstore).
 #   2. IS_CI=false + release.yml     -> CI will publish on the tag we just pushed.
 #      exists with CI publish path      Watch `gh run watch` for that run and
-#                                       verify via `npm view`. Workstation MUST
+#                                       verify via npm_version_live. Workstation MUST
 #                                       NOT also publish -- stale ~/.npmrc fails
 #                                       E404, valid one races CI for the same
 #                                       version. CI is authoritative.
@@ -559,7 +565,10 @@ if ! grep -q "\"${PKG_VERSION_NOW}\"" dist/index.js 2>/dev/null; then
   fail "dist/index.js lacks baked version \"${PKG_VERSION_NOW}\" -- stale build; step 4's post-bump rebuild should have refreshed it. Investigate before publishing."
 fi
 
-PUBLISHED_VERSION=$(npm view "@yawlabs/ctxlint@${VERSION}" version 2>/dev/null || echo "")
+# npm_version_live, not `npm view`: a packument read can lag a publish by up to
+# 300s, so a re-run right after a later step failed would publish again and
+# meet npm's E403 (the workstation loop below treats that as this skip too).
+if npm_version_live; then PUBLISHED_VERSION="$VERSION"; else PUBLISHED_VERSION=""; fi
 if [ "$PUBLISHED_VERSION" = "$VERSION" ]; then
   info "v${VERSION} already published on npm — skipping"
   # Resume-path safety: a prior interrupted run may have published but never
@@ -611,9 +620,9 @@ elif [ -f ".github/workflows/release.yml" ] && grep -q "npm publish\|NODE_AUTH_T
   # the package is live on npm regardless of how long the registry mirror
   # takes to surface it. Verification here is a courtesy check; warn rather
   # than fail when the mirror lags (existing memory: lag can exceed a minute).
-  # npm_version_live, not a bare `npm view`: the latter can answer from the
-  # packument this run already cached and report "not found" for a version
-  # that is live, turning a good release into a spurious warning.
+  # npm_version_live, not a bare `npm view`: the latter reads the packument,
+  # which npm's CDN edge can serve up to 300s stale, and report "not found"
+  # for a version that is live, turning a good release into a spurious warning.
   NPM_LIVE=false
   for i in 1 2 3 4 5 6 7 8 9 10; do
     if npm_version_live; then NPM_LIVE=true; break; fi
@@ -622,17 +631,29 @@ elif [ -f ".github/workflows/release.yml" ] && grep -q "npm publish\|NODE_AUTH_T
   if [ "$NPM_LIVE" = "true" ]; then
     info "Published @yawlabs/ctxlint@${VERSION} via CI Release run $RUN_ID"
   else
-    warn "CI Release run $RUN_ID succeeded but the npm registry still does not serve @yawlabs/ctxlint@${VERSION} after 60s. Likely propagation lag -- verify with 'npm view @yawlabs/ctxlint@${VERSION} --prefer-online' in a minute. Publish is authoritative on CI's exit code."
+    warn "CI Release run $RUN_ID succeeded but the npm registry still does not serve @yawlabs/ctxlint@${VERSION} after 60s. Likely propagation lag -- verify in a minute that https://registry.npmjs.org/@yawlabs%2Fctxlint/${VERSION} answers 200. Publish is authoritative on CI's exit code."
   fi
 else
   # Workstation IS the publisher (no CI fallback). Retry only on EOTP/EAUTH/OTP
   # for fresh WebAuthn sessions; fail fast on everything else.
   ATTEMPT=1
   MAX_ATTEMPTS=3
+  NPM_ALREADY_THERE=false
   while true; do
     PUBLISH_LOG=$(mktemp)
     if npm publish --access public 2>&1 | tee "$PUBLISH_LOG"; then
       rm -f "$PUBLISH_LOG"
+      break
+    fi
+    # npm's own word that the version is already there: the E403 "You
+    # cannot publish over the previously published versions". Reachable
+    # when the skip check above missed a version npm holds -- its read
+    # path lagging the write, or this host unable to read it -- which is
+    # the state an immediate re-run after a failed later step starts from.
+    # Treated as the skip it should have been, not as a token problem.
+    if grep -q 'cannot publish over the previously published versions' "$PUBLISH_LOG"; then
+      rm -f "$PUBLISH_LOG"
+      NPM_ALREADY_THERE=true
       break
     fi
     if ! grep -qE 'EOTP|EAUTH|one-time password|OTP' "$PUBLISH_LOG"; then
@@ -647,7 +668,11 @@ else
     ATTEMPT=$((ATTEMPT + 1))
     sleep 30
   done
-  info "Published @yawlabs/ctxlint@${VERSION} to npm (workstation)"
+  if [ "$NPM_ALREADY_THERE" = "true" ]; then
+    warn "npm already holds @yawlabs/ctxlint@${VERSION} (its E403 said so) though the pre-publish read did not show it -- treating the publish as done"
+  else
+    info "Published @yawlabs/ctxlint@${VERSION} to npm (workstation)"
+  fi
 fi
 
 # =============================================================================
@@ -773,7 +798,7 @@ else
   MCP_FAIL_MSG="mcp-publisher publish failed for v${VERSION}. ALREADY LANDED: npm @yawlabs/ctxlint@${VERSION} and GitHub release v${VERSION} -- ONLY the MCP Registry entry is missing, so do NOT re-run this script. Fix the cause, then complete just this step with: ${MCP_FIX_CMD}"
 
   # Four attempts, spaced 30s, 60s, then 90s (180s in all), and ONLY for the
-  # propagation shape.
+  # shapes waiting cures.
   #
   # Why more than one retry: the gate above reads npm from this machine's CDN
   # edge, so it can go green while the registry's own view still lags. Going
@@ -782,10 +807,17 @@ else
   # elapse on a run that is already failing. The fourth attempt is the margin
   # the v0.27.0 run (2026-09-13) had none of: it succeeded on attempt 3 of 3.
   #
-  # Every other failure -- bad server.json, namespace not owned, auth -- fails
-  # identically after any wait, so it exits on the first attempt rather than
-  # buying a silent 90s. The version has to appear in the SAME output as the
-  # not-found text, or an unrelated "was not found" would buy those waits too.
+  # The live registry (v1.8.1; wording from registry PR #1411) answers that
+  # lag with "exists, but version '<v>' was not found (status: 404)", and a
+  # bad moment on npm's side with "... Likely transient, retry later" (429,
+  # 5xx, an inconclusive 404) or "failed to fetch package metadata from NPM"
+  # (no status at all). Every other failure -- bad server.json, namespace not
+  # owned, auth -- fails identically after any wait, so it exits on the first
+  # attempt rather than buying a silent 90s. The version has to appear in the
+  # SAME output as the not-found text, or an unrelated "not found" (a package
+  # missing outright names no version) would buy those waits too; the
+  # "Likely transient" texts match on their own, since 429 and 5xx name only
+  # the package.
   MCP_PUBLISH_LOG=$(mktemp)
   MCP_DONE=false
   MCP_ATTEMPT=1
@@ -804,8 +836,9 @@ else
       MCP_DONE=true
       break
     fi
-    # Not the propagation shape, or out of attempts.
-    if ! { grep -qE 'was not found|status: *404' "$MCP_PUBLISH_LOG" && grep -qF "$VERSION" "$MCP_PUBLISH_LOG"; }; then
+    # Not a shape waiting cures, or out of attempts.
+    if ! { { grep -qE 'not found \(status: *[0-9]+\)' "$MCP_PUBLISH_LOG" && grep -qF "$VERSION" "$MCP_PUBLISH_LOG"; } \
+        || grep -qE 'Likely transient, retry later|failed to fetch package metadata from NPM' "$MCP_PUBLISH_LOG"; }; then
       break
     fi
     if [ "$MCP_ATTEMPT" -ge "$MCP_MAX_ATTEMPTS" ]; then break; fi
