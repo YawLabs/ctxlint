@@ -12,6 +12,10 @@ See [Versioning policy](#versioning-policy) below.
 
 - **`release.sh` reads npm's per-version document wherever it asks whether this version is published, and a resume no longer dies on npm's E403.** Step 6's "already published -- skipping" check used `npm view`, which reads the whole packument that registry.npmjs.org serves from Cloudflare's edge for up to 300s, so a re-run right after a later step failed could publish again and stop on npm's "cannot publish over the previously published versions" E403 as if it were a token problem. That check now goes through `npm_version_live` (the uncached per-version document the MCP Registry itself fetches, now also cache-busted and capped at 20s), and the workstation publish loop treats that E403 as the skip it should have been, with a warning in place of the success line. Step 8's MCP Registry retry now also waits out the live registry's (v1.8.1) wording for trouble on npm's side -- "Likely transient, retry later" (429, 5xx, an inconclusive 404) and "failed to fetch package metadata from NPM" -- and its not-found shape needs `not found (status: N)` with the version in the same output, so a package missing outright still fails on the first attempt. It also waits out the registry's own HTTP 429, 502, 503 and 504, and logs in again before the first attempt and every retry, since its login comes before the npm gate and registry tokens last 5 minutes.
 
+### Documentation
+
+- **The README's Add to Yaw MCP button now sits directly under the title, and the follow badge links to @YawLabs.** The one-click install button and its one-line caption moved up from further down the page, so they are the first thing under the name on npm and GitHub, and the X badge at the bottom points at [@YawLabs](https://x.com/YawLabs) instead of @TokenLimitNews, and the Token Limit News link is gone. npm shows the README from the published package, which is why it takes a release to carry this there; the package's code is unchanged from 0.27.2.
+
 ## [0.27.2] - 2026-09-15
 
 ### Security
