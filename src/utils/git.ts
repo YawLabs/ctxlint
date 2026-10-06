@@ -1,5 +1,5 @@
 import * as path from 'node:path';
-import simpleGit, { type SimpleGit } from 'simple-git';
+import { simpleGit, type SimpleGit } from 'simple-git';
 
 /**
  * Normalize a path for cross-platform git comparison:
