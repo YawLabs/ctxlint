@@ -8,6 +8,10 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+### Changed
+
+- **The oam floor moves from 0.15.2 to 0.18.0, so the `ctxlint` launcher no longer runs the CLI on an older oam.** ctxlint is verified on one oam release at a time, and the floor keeps the launcher off anything older than that release. 0.18.0 is verified on the published aarch64-pc-windows-msvc binary, checksum matched against the release SHA256SUMS, through the launcher with `OAM_BIN` pointing at it and `CTXLINT_RUNTIME=oam`: `ctxlint serve` completes a full MCP handshake listing all 7 tools (the same 7 as on Node), `ctxlint_audit` on this repo answers identically to Node apart from its `scannedAt` timestamp (its git-backed checks run `git` through simple-git on oam), and the server process is that binary (`oam-aarch64-pc-windows-msvc.exe run .../dist/index.js -- serve` as the launcher's child). A host that launches `oam run bin/ctxlint.mjs` on 0.18.0 runs the CLI in-process, as before. **If the launcher finds only an oam from 0.15.2 to 0.17.x, it now falls back to Node under the default `CTXLINT_RUNTIME=auto`, and exits with an error under `CTXLINT_RUNTIME=oam`** -- it says so on stderr, naming the version it found and the floor (measured with oam 0.17.0: `is oam 0.17.0, older than 0.18.0; using Node instead.`); an oam 0.17.x host running the launcher hands the CLI off to Node the same way. On Node every check and every MCP tool answers the same, so nothing is lost but the runtime. A client that runs `oam run /path/to/ctxlint/dist/index.js` directly bypasses the launcher and keeps the oam it names. Run `oam self-update`, or set `CTXLINT_RUNTIME=node` to make the choice explicit.
+
 ### Internal
 
 - `release.sh` waits up to 600 s, not 120, for npm to serve a new version before the MCP Registry step, and polls npm's uncached per-version document up to 120 times 5 s apart in its final check instead of reading the CDN-cached `npm view` once after 3 s. On 2026-09-29 the @yawlabs/fetch-mcp 0.8.2 release spent 295 s of its 300 s gate waiting for npm to serve the new version. Release tooling only; the server itself is unchanged.
