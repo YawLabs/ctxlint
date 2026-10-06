@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import simpleGit from 'simple-git';
+import { simpleGit } from 'simple-git';
 import { checkUnresolvableSha, extractShaCitations } from '../unresolvable-sha.js';
 import { encodeProjectDir } from '../../../session-parser.js';
 import { resetGit } from '../../../../utils/git.js';
