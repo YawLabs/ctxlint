@@ -8,6 +8,14 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+### Security
+
+- **`simple-git` moves from 3.36.0 to 4.0.2, and `pnpm audit` goes from 10 findings (3 critical, 4 high, 3 moderate) to 0.** `simple-git` is bundled into `dist/index.js`, so this reaches every install. The bump closes GHSA-x6jw-m9v5-85vh (critical), GHSA-g4wm-2vf7-vfgr and GHSA-858h-whjf-mvg5 (high) in `simple-git` and GHSA-v5rq-49vh-5v5c (critical) in its `@simple-git/argv-parser`; no patched 3.x exists, since 3.36.0 is the last 3.x release and GHSA-x6jw is fixed only in 4.0.1. The bundled MCP SDK moves from 1.30.0 to 1.32.1 (GHSA-6qxp-vccf-f47h, high), and its bundled `fast-uri` from 3.1.7 to 3.1.8 (GHSA-hrr3-gc8f-f4qj). Development-scope only: `proxy-addr` 2.0.8 (GHSA-jqcg-44mw-7w3h), `ip-address` 10.7.3 (GHSA-j6r3-76f7-8jcv, GHSA-h3mg-xc3c-68pw) and `source-map-js` 1.2.2 (GHSA-68fv-2mgg-jv7q). The `pnpm.overrides` floors for `ip-address` and `fast-uri` move to the patched versions.
+
+### Changed
+
+- **git now runs without inherited `GIT_*` environment variables.** `simple-git` 4 strips every inherited `GIT_*` variable (and `EDITOR`, `VISUAL`, `PAGER`, `SSH_ASKPASS`) before it spawns git, and ctxlint accepts that rather than allow-listing any back. A repository reached only through `GIT_DIR`/`GIT_WORK_TREE`, or one that needs `GIT_CONFIG_COUNT`/`KEY`/`VALUE` (a common way to set `safe.directory` in containers), is no longer seen as a git repository: the staleness and rename checks skip, as they do outside any repository. Run ctxlint from inside the work tree, or set `safe.directory` in a git config file, instead. In return, a parent repository's `GIT_DIR` no longer leaks into ctxlint's lookups when it runs from a git hook.
+
 ### Internal
 
 - `release.sh` waits up to 600 s, not 120, for npm to serve a new version before the MCP Registry step, and polls npm's uncached per-version document up to 120 times 5 s apart in its final check instead of reading the CDN-cached `npm view` once after 3 s. On 2026-09-29 the @yawlabs/fetch-mcp 0.8.2 release spent 295 s of its 300 s gate waiting for npm to serve the new version. Release tooling only; the server itself is unchanged.
