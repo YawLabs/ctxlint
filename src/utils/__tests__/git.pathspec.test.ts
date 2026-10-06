@@ -8,7 +8,7 @@ import { vi, describe, it, expect, beforeEach } from 'vitest';
 const { rawMock } = vi.hoisted(() => ({ rawMock: vi.fn() }));
 
 vi.mock('simple-git', () => ({
-  default: vi.fn(() => ({ raw: rawMock })),
+  simpleGit: vi.fn(() => ({ raw: rawMock })),
 }));
 
 import { getCommitsSinceBatch, resetGit } from '../git.js';
