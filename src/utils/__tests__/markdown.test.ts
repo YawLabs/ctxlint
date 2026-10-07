@@ -125,6 +125,21 @@ describe('nonProseLineMask', () => {
   it('ignores a stray --> that never had an opener', () => {
     expect(mask('prose\nan arrow --> in prose\nmore prose')).toEqual([false, false, false]);
   });
+
+  // Deleting the inner pair would splice `<!` and `-- y` into a `<!--` that
+  // was never written and latch every following line as comment.
+  it('does not synthesize an opener from a malformed nested comment', () => {
+    expect(mask('<!<!-- x -->-- y\nNEVER run `x`.\nprose')).toEqual([false, false, false]);
+  });
+
+  it('still latches when an unclosed opener follows a complete pair', () => {
+    expect(mask('a <!-- x --> b <!-- open\nswallowed\n-->\nprose')).toEqual([
+      true,
+      true,
+      true,
+      false,
+    ]);
+  });
 });
 
 describe('stripInlineHtmlComments', () => {
@@ -155,5 +170,20 @@ describe('stripInlineHtmlComments', () => {
   // following lines. Blanking it here would strand a multi-line comment open.
   it('leaves an unclosed opener alone', () => {
     expect(stripInlineHtmlComments('a <!-- unclosed')).toBe('a <!-- unclosed');
+  });
+
+  it('blanks a malformed nested comment without leaving an opener behind', () => {
+    const line = '<!<!-- x -->-- y --> tail';
+    const out = stripInlineHtmlComments(line);
+    expect(out).toHaveLength(line.length);
+    expect(out).toBe('<!##########-- y --> tail');
+    expect(out).not.toContain('<!--');
+  });
+
+  it('blanks overlapping-looking openers up to the first closer', () => {
+    const line = '<!-- a <!-- b --> c -->';
+    const out = stripInlineHtmlComments(line);
+    expect(out).toHaveLength(line.length);
+    expect(out).toBe('#'.repeat(17) + ' c -->');
   });
 });
