@@ -148,7 +148,11 @@ function classifyLines(lines: string[]): LineClass[] {
     // is a real rule with a note appended, and masking the whole line lost it).
     // Callers that scan such a line should first blank the comment's own text
     // with stripInlineHtmlComments.
-    if (HTML_COMMENT.test(probe.replace(HTML_COMMENT_PAIR, ''))) {
+    //
+    // Pairs are blanked with filler, not deleted: deleting splices the text on
+    // either side together, so `<!<!-- x -->-- y` would synthesize a `<!--`
+    // that was never written and latch the rest of the file as comment.
+    if (HTML_COMMENT.test(stripInlineHtmlComments(probe))) {
       out[i].comment = true;
       inHtmlComment = true;
     }
@@ -171,7 +175,18 @@ const HTML_COMMENT = /<!--/;
  * text cannot be read as an instruction.
  */
 export function stripInlineHtmlComments(line: string): string {
-  return line.replace(HTML_COMMENT_PAIR, (m) => '#'.repeat(m.length));
+  // Repeated to a fixed point. Because the filler is length-preserving and
+  // contains neither `<!--` nor `-->`, it cannot create a new pair, so the
+  // second pass always finds nothing and the result equals a single pass. The
+  // loop makes the guarantee hold without relying on that argument (and is the
+  // shape CodeQL's js/incomplete-multi-character-sanitization recognises).
+  let out = line;
+  let previous: string;
+  do {
+    previous = out;
+    out = out.replace(HTML_COMMENT_PAIR, (m) => '#'.repeat(m.length));
+  } while (out !== previous);
+  return out;
 }
 
 /**

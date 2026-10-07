@@ -126,7 +126,20 @@ interface PomModel {
  * the module list cannot be trusted.
  */
 export function parsePom(xml: string): PomModel | null {
-  const cleaned = xml.replace(/<!--[\s\S]*?-->/g, '').replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, '');
+  // Strip comments to a fixed point. Removal splices the text on either side
+  // of a comment together, so one pass over a malformed nesting such as
+  // `<!<!-- x -->-- <module>y</module> -->` leaves a fresh `<!-- ... -->` whose
+  // contents the walker would then read as live elements.
+  let cleaned = xml;
+  let previous: string;
+  do {
+    previous = cleaned;
+    cleaned = cleaned.replace(/<!--[\s\S]*?-->/g, '');
+  } while (cleaned !== previous);
+  cleaned = cleaned.replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, '');
+  // An opener still standing has no closer: not well-formed XML, and the
+  // elements after it may or may not be commented out.
+  if (cleaned.includes('<!--')) return null;
   // Attribute values are skipped as quoted runs, so a `>` inside one does not
   // end the tag.
   const tagRe = /<(\/?)([A-Za-z_][\w.:-]*)((?:[^>"']|"[^"]*"|'[^']*')*?)(\/?)>/g;

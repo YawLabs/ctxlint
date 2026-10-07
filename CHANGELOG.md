@@ -8,6 +8,10 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+### Fixed
+
+- HTML/XML comment stripping no longer mis-handles a malformed nested comment such as `<!<!-- x -->-- y`. Context-file line classification blanks complete `<!-- ... -->` pairs with length-preserving filler instead of deleting them before testing for an unclosed opener, so deletion can no longer splice `<!` and `--` into a `<!--` that was never written and latch the rest of the file as comment. The Maven POM reader (`maven-modules`) strips comments to a fixed point, so a comment re-formed by one removal pass is not read as live `<module>` entries, and treats a POM with an unclosed `<!--` as unreadable instead of reading the elements after it. `stripInlineHtmlComments` also loops to a fixed point; its output is unchanged, since its filler cannot form a new pair. Resolves CodeQL `js/incomplete-multi-character-sanitization` alerts #4, #5 and #6 (ctxlint renders no HTML, so these were correctness edge cases, not injection).
+
 ## [0.27.5] - 2026-10-07
 
 ### Internal

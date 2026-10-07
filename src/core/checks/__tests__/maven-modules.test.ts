@@ -92,6 +92,36 @@ describe('parsePom', () => {
     expect(parsePom(pom('<modules><module>a</modules></module>'))).toBeNull();
     expect(parsePom('<project><modules><module>a</module>')).toBeNull();
   });
+
+  // A single removal pass over a malformed nesting splices `<!` and `-- ...`
+  // into a fresh comment; comments are stripped to a fixed point, so nothing
+  // inside it is read as a live module.
+  it('strips a comment that one removal pass would leave behind', () => {
+    const model = parsePom(
+      pom(`<artifactId>root</artifactId>
+<modules><module>a</module></modules>
+<!<!-- x -->-- <modules><module>ghost</module></modules> -->`),
+    );
+    expect(model?.modules).toEqual(['a']);
+  });
+
+  // The elements after an unclosed opener balance on their own, so only the
+  // leftover-opener check stops `b` being read as a live module.
+  it('is unreadable when a comment is never closed', () => {
+    expect(
+      parsePom(
+        pom('<modules><module>a</module></modules>\n<!-- <modules><module>b</module></modules>'),
+      ),
+    ).toBeNull();
+  });
+
+  it('does not treat a <!-- inside CDATA as an unclosed comment', () => {
+    expect(
+      parsePom(
+        pom('<artifactId>root</artifactId><description><![CDATA[use <!-- here]]></description>'),
+      )?.artifactId,
+    ).toBe('root');
+  });
 });
 
 describe('mavenSelectors', () => {
