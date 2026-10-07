@@ -213,12 +213,17 @@ describe('findRenames (real git mv, unscoped rename match)', { timeout: 30000 },
       const { execFileSync } = await import('node:child_process');
       // The path reaches cmd through an environment variable, so the command
       // text we build is a constant rather than a string spliced from a
-      // filesystem path. The variable stays unquoted: mkdtemp paths carry no
-      // spaces, and quoting here interacts badly with execFileSync's own
-      // Windows argument joining (the output grows stray quote characters).
+      // filesystem path. It is read with delayed expansion (/v:on, !VAR!),
+      // not %VAR%: cmd substitutes %VAR% before it parses the line, so a `&`
+      // or `)` in the value would still act as a command operator, while a
+      // !VAR! value is substituted after parsing and stays plain data. /d
+      // skips AutoRun so no registry-configured command runs first. The
+      // variable stays unquoted: mkdtemp paths carry no spaces, and quoting
+      // here interacts badly with execFileSync's own Windows argument joining
+      // (the output grows stray quote characters).
       const shortForm = execFileSync(
         'cmd',
-        ['/c', 'for %I in (%CTXLINT_8DOT3_PROBE%) do @echo %~sI'],
+        ['/d', '/v:on', '/c', 'for %I in (!CTXLINT_8DOT3_PROBE!) do @echo %~sI'],
         {
           encoding: 'utf-8',
           env: { ...process.env, CTXLINT_8DOT3_PROBE: realTmpDir },
