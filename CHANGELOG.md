@@ -8,6 +8,8 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.27.5] - 2026-10-07
+
 ### Internal
 
 - The Windows 8.3 short-path probe in the `findRenames` tests now reads the temp-dir path with cmd delayed expansion (`cmd /d /v:on`, `!VAR!`) instead of `%VAR%`. cmd substitutes `%VAR%` before it parses the line, so moving the path into an environment variable (#89) kept the command text constant but still let a `&` or `)` in the path act as a command operator; a `!VAR!` value is substituted after parsing and stays data (CodeQL `js/shell-command-injection-from-environment`, alert #3). `/d` also skips any registry AutoRun command. Test-only; the CLI and server are unchanged.
