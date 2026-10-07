@@ -211,12 +211,19 @@ describe('findRenames (real git mv, unscoped rename match)', { timeout: 30000 },
     'finds a rename when projectRoot is an 8.3 short-path alias',
     async () => {
       const { execFileSync } = await import('node:child_process');
-      // Path goes unquoted into the cmd one-liner: mkdtemp paths carry no
+      // The path reaches cmd through an environment variable, so the command
+      // text we build is a constant rather than a string spliced from a
+      // filesystem path. The variable stays unquoted: mkdtemp paths carry no
       // spaces, and quoting here interacts badly with execFileSync's own
       // Windows argument joining (the output grows stray quote characters).
-      const shortForm = execFileSync('cmd', ['/c', `for %I in (${realTmpDir}) do @echo %~sI`], {
-        encoding: 'utf-8',
-      }).trim();
+      const shortForm = execFileSync(
+        'cmd',
+        ['/c', 'for %I in (%CTXLINT_8DOT3_PROBE%) do @echo %~sI'],
+        {
+          encoding: 'utf-8',
+          env: { ...process.env, CTXLINT_8DOT3_PROBE: realTmpDir },
+        },
+      ).trim();
       if (!shortForm || shortForm.toLowerCase() === realTmpDir.toLowerCase()) {
         return; // no short alias on this volume -- nothing to exercise
       }

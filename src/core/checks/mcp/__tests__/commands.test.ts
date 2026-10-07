@@ -250,29 +250,28 @@ describe('checkMcpCommands', () => {
   });
 
   it('does not flag URL args as missing file paths', async () => {
+    const urlArgs = [
+      'https://api.example.com/openapi.json',
+      's3://bucket/spec.json',
+      'git://git.example.com/repo.git',
+    ];
     const config = makeConfig({
       servers: [
         {
           name: 'wrapper',
           transport: 'stdio',
           command: 'node',
-          args: [
-            './wrap.js',
-            'https://api.example.com/openapi.json',
-            's3://bucket/spec.json',
-            'git://git.example.com/repo.git',
-          ],
+          args: ['./wrap.js', ...urlArgs],
           line: 3,
           raw: {},
         },
       ],
     });
     const issues = await checkMcpCommands(config, '/project');
-    const urlFalsePositives = issues.filter(
-      (i) =>
-        i.message.includes('api.example.com') ||
-        i.message.includes('s3://') ||
-        i.message.includes('git://'),
+    // Match the exact quoted arg the missing-path message embeds, so each
+    // URL is checked whole rather than by a host-name fragment.
+    const urlFalsePositives = issues.filter((i) =>
+      urlArgs.some((u) => i.message.includes(`arg "${u}"`)),
     );
     expect(urlFalsePositives).toHaveLength(0);
   });
