@@ -311,6 +311,11 @@ describe('launcher with no usable oam', () => {
       expect(run.code, JSON.stringify(run)).toBe(1);
       expect(run.stdout.trim(), 'nothing may be served').toBe('');
       expect(run.stderr).toMatch(/CTXLINT_RUNTIME=oam but no usable oam \(0\.18\.0 or newer\)/);
+      // The remedy names the cause that was seen: a missing OAM_BIN, not an
+      // install that nothing suggests is needed.
+      expect(run.stderr).toMatch(/Point OAM_BIN at an existing oam binary, or unset it\./);
+      expect(run.stderr).not.toMatch(/oamjs\.org/);
+      expect(run.stderr).toMatch(/Or use CTXLINT_RUNTIME=node to run on Node\./);
     },
     TIMEOUT_MS,
   );
@@ -401,4 +406,195 @@ describe('launcher with no usable oam', () => {
       TIMEOUT_MS,
     );
   }
+});
+
+type RemedyFor = (ctx: {
+  passedOver: (number[] | null)[];
+  overrideMissing: boolean;
+  shim: string | null;
+}) => string;
+
+/**
+ * The real `remedyFor`, with `process` passed in so a platform the suite is
+ * not running on can be posed. Everything else it reads is the launcher's own.
+ */
+function loadRemedyFor(proc: { platform: string; arch: string }): RemedyFor {
+  const pieces = extract([
+    OAM_MIN_DECL,
+    /function remedyFor\(\{ passedOver, overrideMissing, shim \}\) \{[\s\S]*?\n\}/,
+  ]);
+  return new Function('process', `${pieces}\nreturn remedyFor;`)(proc) as RemedyFor;
+}
+
+describe('launcher remedyFor()', () => {
+  const win = loadRemedyFor({ platform: 'win32', arch: 'x64' });
+  const none = { passedOver: [], overrideMissing: false, shim: null };
+
+  it('sends an outdated oam to `oam self-update`, not to the website', () => {
+    const text = win({ ...none, passedOver: [[0, 17, 0]] });
+    expect(text).toMatch(/Run `oam self-update` to get oam 0\.18\.0 or newer\./);
+    expect(text).not.toMatch(/oamjs\.org/);
+  });
+
+  it('sends an unrunnable oam to check the binary, not to update it', () => {
+    const text = win({ ...none, passedOver: [null] });
+    expect(text).toMatch(/Check that it is an executable oam binary/);
+    expect(text).not.toMatch(/self-update/);
+    expect(text).not.toMatch(/oamjs\.org/);
+  });
+
+  it('names every cause that was seen, once each', () => {
+    const text = win({
+      passedOver: [[0, 9, 0], null, [0, 17, 1]],
+      overrideMissing: true,
+      shim: null,
+    });
+    expect(text.match(/self-update/g)).toHaveLength(1);
+    expect(text).toMatch(/Check that it is an executable oam binary/);
+    expect(text).toMatch(/Point OAM_BIN at an existing oam binary/);
+  });
+
+  it('points at the install only when nothing was found', () => {
+    expect(win(none)).toMatch(/Install oam from https:\/\/oamjs\.org/);
+    // A .cmd/.bat shim is an install in a shape the launcher cannot run; its
+    // own note already says what to do, and "install oam" would not help.
+    expect(win({ ...none, shim: 'C:\\bin\\oam.cmd' })).not.toMatch(/oamjs\.org/);
+  });
+
+  it('does not send linux-arm64 after a build that does not exist', () => {
+    const text = loadRemedyFor({ platform: 'linux', arch: 'arm64' })(none);
+    expect(text).toMatch(/oam publishes no build for linux-arm64/);
+    expect(text).not.toMatch(/oamjs\.org/);
+    expect(loadRemedyFor({ platform: 'linux', arch: 'x64' })(none)).toMatch(/oamjs\.org/);
+  });
+
+  it('always offers CTXLINT_RUNTIME=node last', () => {
+    for (const ctx of [none, { ...none, passedOver: [[0, 17, 0]] }]) {
+      expect(win(ctx).trimEnd().split('\n').at(-1)).toBe(
+        'Or use CTXLINT_RUNTIME=node to run on Node.',
+      );
+    }
+  });
+});
+
+describe('launcher stripPermissionFlags()', () => {
+  const strip = new Function(
+    `${extract([/function stripPermissionFlags\(nodeOptions\) \{[\s\S]*?\n\}/])}\nreturn stripPermissionFlags;`,
+  )() as (nodeOptions: string) => string;
+
+  it('removes --permission and every --allow-* token', () => {
+    expect(
+      strip('--permission --allow-fs-read=* --allow-child-process --allow-net=example.com:443'),
+    ).toBe('');
+    expect(strip('--experimental-permission --allow-worker')).toBe('');
+  });
+
+  it('keeps every other flag, in order', () => {
+    expect(strip('--max-old-space-size=4096 --permission --no-warnings --allow-addons')).toBe(
+      '--max-old-space-size=4096 --no-warnings',
+    );
+  });
+
+  it('drops the separate value of --allow-fs-read / --allow-fs-write, and nothing else', () => {
+    expect(strip('--allow-fs-read /tmp --allow-fs-write "C:\\a b" --enable-source-maps')).toBe(
+      '--enable-source-maps',
+    );
+    // A boolean --allow-* never swallows the flag after it.
+    expect(strip('--allow-child-process --no-warnings')).toBe('--no-warnings');
+  });
+
+  it('leaves a quoted value holding spaces whole', () => {
+    expect(strip('--require "C:\\my dir\\hook.js" --permission')).toBe(
+      '--require "C:\\my dir\\hook.js"',
+    );
+  });
+});
+
+describe('launcher handoff from an oam host', () => {
+  function isolated(extra: Record<string, string> = {}): Record<string, string> {
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-launcher-home-'));
+    return {
+      PATH: path.dirname(process.execPath),
+      USERPROFILE: empty,
+      HOME: empty,
+      LOCALAPPDATA: empty,
+      ...extra,
+    };
+  }
+  const missingOam = path.join(os.tmpdir(), 'no-such-dir', 'oam.exe');
+
+  it.skipIf(!buildAvailable)(
+    'strips oam permission flags from NODE_OPTIONS before handing off to Node',
+    async () => {
+      // oam 0.18.0 appends its --permission/--allow-* execArgv to a child's
+      // NODE_OPTIONS. --allow-net is oam-only, and Node 22 refuses to start
+      // with it there (exit 9), so an unstripped handoff never runs the CLI.
+      // Set inside the preload so the launcher itself, a real Node, starts.
+      const run = await runLauncher(
+        '0.9.0',
+        isolated({ OAM_BIN: missingOam }),
+        'process.env.NODE_OPTIONS = "--allow-net=example.com:443 --permission --allow-fs-read=*";',
+      );
+      expect(run.code, JSON.stringify(run)).toBe(0);
+      expect(run.stdout.trim(), 'the Node child must run the CLI').toBe(PKG.version);
+      expect(run.stderr).toMatch(/LAUNCHER_ARGV1=.*ctxlint\.mjs/);
+    },
+    TIMEOUT_MS,
+  );
+
+  it.skipIf(!buildAvailable)(
+    'pipes the handoff from a pre-0.9.0 oam host and still delivers its output',
+    async () => {
+      // 0.9.0 and newer inherit stdio (see the handoff cases above); below it
+      // the launcher copies the child's streams itself.
+      const run = await runLauncher('0.8.2', isolated({ OAM_BIN: missingOam }));
+      expect(run.code, JSON.stringify(run)).toBe(0);
+      expect(run.stdout.trim()).toBe(PKG.version);
+      expect(run.stderr).toMatch(/this process is oam 0\.8\.2, older than 0\.18\.0/);
+    },
+    TIMEOUT_MS,
+  );
+});
+
+describe('launcher discovery honours OAM_INSTALL_DIR', () => {
+  it.skipIf(!buildAvailable)(
+    'finds an oam installed only in OAM_INSTALL_DIR',
+    async () => {
+      // A stand-in "oam": the Node binary under oam's name. It answers
+      // --version with v2x.y.z, which clears the floor, so discovery picks it
+      // and spawns `oam run <entry> -- --version`, which Node cannot run --
+      // the same unmistakable spawn signature the OAM_BIN cases use.
+      const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-launcher-home-'));
+      const installDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-oam-install-'));
+      const exeName = process.platform === 'win32' ? 'oam.exe' : 'oam';
+      const fake = path.join(installDir, exeName);
+      try {
+        fs.linkSync(process.execPath, fake);
+      } catch {
+        fs.copyFileSync(process.execPath, fake);
+        fs.chmodSync(fake, 0o755);
+      }
+      const env = {
+        PATH: path.dirname(process.execPath),
+        USERPROFILE: empty,
+        HOME: empty,
+        LOCALAPPDATA: empty,
+        OAM_BIN: '',
+      };
+      try {
+        const without = await runLauncher(undefined, env);
+        expect(servedByCli(without), `control: no oam anywhere, ${JSON.stringify(without)}`).toBe(
+          true,
+        );
+        const withDir = await runLauncher(undefined, { ...env, OAM_INSTALL_DIR: installDir });
+        expect(servedByCli(withDir), `expected a spawn, got ${JSON.stringify(withDir)}`).toBe(
+          false,
+        );
+        expect(withDir.stderr).not.toMatch(/^ctxlint: /m);
+      } finally {
+        fs.rmSync(installDir, { recursive: true, force: true });
+      }
+    },
+    TIMEOUT_MS,
+  );
 });

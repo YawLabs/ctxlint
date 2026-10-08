@@ -352,3 +352,83 @@ describe('MCP server tools', () => {
     });
   });
 });
+
+/**
+ * Send raw JSON-RPC lines to the server and return every response by id.
+ * The helpers above hand back the PARSED tool text, which loses what these
+ * tests are about: the text's own key order and formatting, and the
+ * initialize result.
+ */
+function rpcResponses(requests: object[]): Map<number, any> {
+  const input = requests.map((r) => JSON.stringify(r)).join('\n') + '\n';
+  let stdout: string;
+  try {
+    stdout = execFileSync('node', [SERVER_JS, '--mcp-server'], {
+      input,
+      encoding: 'utf-8',
+      timeout: 60000,
+    });
+  } catch (err: any) {
+    stdout = err.stdout || '';
+  }
+  const byId = new Map<number, any>();
+  for (const line of stdout.trim().split('\n').filter(Boolean)) {
+    try {
+      const parsed = JSON.parse(line);
+      if (typeof parsed.id === 'number') byId.set(parsed.id, parsed);
+    } catch {
+      continue;
+    }
+  }
+  return byId;
+}
+
+const INIT = {
+  jsonrpc: '2.0',
+  id: 1,
+  method: 'initialize',
+  params: {
+    protocolVersion: '2024-11-05',
+    capabilities: {},
+    clientInfo: { name: 'test', version: '1.0' },
+  },
+};
+
+describe('MCP server output shape', () => {
+  it('sends the routing instructions in the initialize result', () => {
+    const init = rpcResponses([INIT]).get(1);
+    const instructions: string = init?.result?.instructions;
+    expect(typeof instructions).toBe('string');
+    expect(instructions).toMatch(/ctxlint_token_report/);
+    expect(instructions).toMatch(/dryRun/);
+  });
+
+  it('puts summary first in an audit result, compact rather than indented', () => {
+    // Yaw MCP cuts an oversized result from the tail, so whatever comes last
+    // is what a large project loses. The counters must not be that part.
+    const responses = rpcResponses([
+      INIT,
+      {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: {
+          name: 'ctxlint_audit',
+          arguments: { projectPath: path.join(FIXTURES, 'broken-paths'), checks: ['paths'] },
+        },
+      },
+    ]);
+    const text: string = responses.get(2)?.result?.content?.[0]?.text;
+    expect(text.startsWith('{"summary":{')).toBe(true);
+    expect(text).not.toContain('\n');
+    const parsed = JSON.parse(text);
+    expect(Object.keys(parsed)).toEqual([
+      'summary',
+      'version',
+      'scannedAt',
+      'projectRoot',
+      'files',
+    ]);
+    expect(parsed.summary.errors).toBeGreaterThan(0);
+  });
+});

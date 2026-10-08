@@ -25,7 +25,11 @@
     "lint": "eslint src/",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "mcp": "node dist/index.js --mcp-server"
+    "mcp": "node dist/index.js --mcp-server",
+    "check:oam-floor": "node scripts/check-oam-floor.mjs",
+    "verify:oam-floor": "node scripts/verify-oam-floor.mjs",
+    "precompliance": "node build.mjs",
+    "compliance": "mcp-compliance test --strict --min-grade A --output compliance-badge.svg node dist/index.js serve"
   },
   "keywords": [
     "claude-md",
@@ -94,6 +98,7 @@
     "@types/node": "^26.0.0",
     "@types/picomatch": "^4.0.3",
     "@vitest/coverage-v8": "^4.1.11",
+    "@yawlabs/mcp-compliance": "^0.20.4",
     "chalk": "^5.6.2",
     "commander": "^15.0.0",
     "esbuild": "^0.28.1",
