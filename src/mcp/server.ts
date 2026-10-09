@@ -21,6 +21,8 @@ import { clearTranscriptCache } from '../core/transcript.js';
 import type { CheckName, McpCheckName, SessionCheckName, SkillCheckName } from '../core/types.js';
 import * as path from 'node:path';
 import { VERSION } from '../version.js';
+import { INSTRUCTIONS } from './instructions.js';
+import type { LintResult } from '../core/types.js';
 
 // Per-tool enums, not a single union. Previously every tool accepted every
 // check name — so calling `ctxlint_audit` with `checks: ['mcp-schema']`
@@ -120,10 +122,30 @@ function resolveWithinRoot(filePath: string, root: string): string {
   return resolved;
 }
 
-const server = new McpServer({
-  name: 'ctxlint',
-  version: VERSION,
-});
+/**
+ * The text block an audit tool returns: `summary` first, then the rest of the
+ * result in its usual order, compact rather than indented.
+ *
+ * Yaw MCP caps a tool result (YAW_MCP_MAX_RESULT_BYTES, default 100000) by
+ * cutting the last text block from the tail, so on a large project the part
+ * that gets dropped is whatever comes last. LintResult puts `summary` after
+ * the per-file issue list, which made the five counters the first casualty.
+ * Indentation was a third or more of the bytes on a typical audit. There is
+ * deliberately no structuredContent copy: that passes through the cap
+ * uncapped, so duplicating the payload there would only double the bytes.
+ */
+export function auditText(result: LintResult): string {
+  const { summary, ...rest } = result;
+  return JSON.stringify({ summary, ...rest });
+}
+
+const server = new McpServer(
+  {
+    name: 'ctxlint',
+    version: VERSION,
+  },
+  { instructions: INSTRUCTIONS },
+);
 
 server.tool(
   'ctxlint_audit',
@@ -153,7 +175,7 @@ server.tool(
         exclude: config?.exclude,
         ignoreRules: config?.ignoreRules,
       });
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+      return { content: [{ type: 'text' as const, text: auditText(result) }] };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return {
@@ -393,7 +415,7 @@ server.tool(
         mcpGlobal: includeGlobal || false,
         ignoreRules: config?.ignoreRules,
       });
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+      return { content: [{ type: 'text' as const, text: auditText(result) }] };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return {
@@ -438,7 +460,7 @@ server.tool(
         sessionOnly: true,
         ignoreRules: config?.ignoreRules,
       });
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+      return { content: [{ type: 'text' as const, text: auditText(result) }] };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return {
@@ -489,7 +511,7 @@ server.tool(
         skillsOnly: true,
         ignoreRules: config?.ignoreRules,
       });
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+      return { content: [{ type: 'text' as const, text: auditText(result) }] };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return {

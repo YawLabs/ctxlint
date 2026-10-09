@@ -55,12 +55,29 @@
  * newest usable oam, or to Node found on PATH, or exits with an error when
  * there is neither.
  *
- * That handoff PIPES stdio rather than inheriting it. Before 0.9.0 oam treated
- * `stdio: 'inherit'` as `'pipe'`, so an inherited handoff from such a host
- * connected the child to pipes nobody reads: measured on @yawlabs/aws-mcp's
- * identical launcher with a real oam 0.8.2 host, the MCP handshake never
- * answered. Piping the streams explicitly completes it, to both oam and Node.
- * A Node host keeps `inherit`, which hands over the same fds untouched.
+ * From a host oam older than 0.9.0 that handoff PIPES stdio rather than
+ * inheriting it. Before 0.9.0 oam treated `stdio: 'inherit'` as `'pipe'`, so
+ * an inherited handoff from such a host connected the child to pipes nobody
+ * reads: measured on @yawlabs/aws-mcp's identical launcher with a real oam
+ * 0.8.2 host, the MCP handshake never answered. Piping the streams explicitly
+ * completes it, to both oam and Node. oam 0.9.0 and newer honor `inherit`
+ * (oam CHANGELOG [0.9.0]), so a host at or above it -- like a Node host --
+ * hands over the same fds untouched instead of copying every MCP/LSP byte
+ * through this process. An oam host whose version cannot be read pipes: it
+ * never proved it is past the bug.
+ *
+ * NODE_OPTIONS FROM AN OAM HOST
+ * oam 0.18.0 appends its own `--permission` / `--allow-*` execArgv entries to
+ * every child's NODE_OPTIONS, for any program, and an oam child reads them back
+ * from there. A Node child handed such a NODE_OPTIONS either runs under a
+ * permission model nobody asked it for or, for an oam-only flag such as
+ * `--allow-net`, refuses to start at all (Node 22: "--allow-net= is not allowed
+ * in NODE_OPTIONS", exit 9). So when THIS process is oam, every child gets an
+ * env copy with those tokens removed from NODE_OPTIONS -- see childEnv. That
+ * removes what was inherited through the environment. It cannot stop the host
+ * oam re-appending its OWN execArgv flags at spawn time, which happens only
+ * when this launcher was itself started with `--permission` -- and then the
+ * grants following it to the child is the point.
  *
  * NO SANDBOX HERE -- DELIBERATELY
  * oam's `--permission` is real hardening, but it does not fit a linter.
@@ -86,8 +103,8 @@
  * `git`'s arguments through no shell while `execFile` did (measured). The
  * bundle's other `child_process` call sites -- vscode-languageserver's
  * global-module lookup helpers and commander's executable subcommands -- are
- * never called. This launcher's own handoff from an old oam host does meet
- * the `inherit` bug, which is why that handoff pipes.
+ * never called. This launcher's own handoff from a pre-0.9.0 oam host does
+ * meet the `inherit` bug, which is why that handoff pipes.
  *
  * SELECTION
  *   CTXLINT_RUNTIME=auto    newest usable oam, else Node (default)
@@ -142,7 +159,9 @@ function pathKey(p) {
  * usually has oam/target/release on PATH, and cargo replaces that binary
  * underneath running processes. Both forms are checked on Windows: the
  * installer defaults to %LOCALAPPDATA%\oam\bin there, but oam's docs name
- * ~/.oam/bin first and OAM_INSTALL_DIR can pick either.
+ * ~/.oam/bin first. OAM_INSTALL_DIR, oam's own install-target variable (oam
+ * docs/cli-reference.md), is searched before both when it is set: an oam
+ * installed there and not on PATH was otherwise never found.
  *
  * PATH is resolved manually rather than by spawning `which`/`where`, which would
  * cost a subprocess on every launch just to decide whether to spawn.
@@ -160,6 +179,7 @@ function discoverOamPaths() {
       join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'oam', 'bin', exe),
     );
   }
+  if (process.env.OAM_INSTALL_DIR) installed.unshift(join(process.env.OAM_INSTALL_DIR, exe));
   const onPath = (process.env.PATH ?? '')
     .split(delimiter)
     .filter(Boolean)
@@ -310,7 +330,16 @@ function findNodeOnPath() {
   return null;
 }
 
-/** Why a candidate was passed over, for stderr. */
+/**
+ * Why a candidate was passed over, for stderr.
+ *
+ * Two different causes, and they need different remedies. A null `version` is
+ * NOT "old": oamVersion returns null when the binary could not be run at all
+ * (not executable, wrong arch, wedged, deleted between the stat and the probe)
+ * or when its --version output did not parse. Telling that user to
+ * `oam self-update` sends them after the one cause it definitely is not, so the
+ * wording splits here, and so does the remedy in `remedyFor`.
+ */
 function unusableReason(path, version, label = path) {
   const min = OAM_MIN.join('.');
   return version
@@ -320,22 +349,36 @@ function unusableReason(path, version, label = path) {
 
 /**
  * Choose the oam to spawn: a usable OAM_BIN, else the newest usable discovered
- * binary. Returns the choice (or null) plus stderr notes: `overrideNote` about
- * an unusable OAM_BIN, and `skipped` describing what was found and rejected
- * when nothing was usable.
+ * binary. Returns the choice (or null) plus what stderr needs:
+ *   overrideNote     why OAM_BIN was passed over, or null
+ *   skipped          why each discovered binary was passed over, when none was
+ *                    chosen
+ *   passedOver       the `version` of every existing binary rejected (OAM_BIN
+ *                    included), so a hard failure can name the right remedy
+ *   overrideMissing  OAM_BIN was set to a path that does not exist
  */
 function chooseOam() {
   const override = process.env.OAM_BIN;
   let overrideNote = null;
+  let overrideMissing = false;
+  const passedOver = [];
   if (override) {
     if (!existsSync(override)) {
       overrideNote = `OAM_BIN=${override} does not exist`;
+      overrideMissing = true;
     } else {
       const version = oamVersion(override);
       if (atLeast(version, OAM_MIN)) {
-        return { chosen: { path: override, version }, overrideNote, skipped: [] };
+        return {
+          chosen: { path: override, version },
+          overrideNote,
+          skipped: [],
+          passedOver,
+          overrideMissing,
+        };
       }
       overrideNote = unusableReason(override, version, `OAM_BIN=${override}`);
+      passedOver.push(version);
     }
   }
   const overrideKey = override ? pathKey(override) : null;
@@ -344,7 +387,85 @@ function chooseOam() {
     .map((path) => ({ path, version: oamVersion(path) }));
   const chosen = pickNewest(candidates);
   const skipped = chosen ? [] : candidates.map((c) => unusableReason(c.path, c.version));
-  return { chosen, overrideNote, skipped };
+  if (!chosen) passedOver.push(...candidates.map((c) => c.version));
+  return { chosen, overrideNote, skipped, passedOver, overrideMissing };
+}
+
+/**
+ * What would fix "no usable oam", one line per cause that was actually seen.
+ *
+ * An outdated oam is fixed by `oam self-update`, an unrunnable one by checking
+ * the binary, a missing OAM_BIN by pointing it somewhere real -- and only when
+ * NOTHING was found is installing the remedy. On Linux other than x64 there is
+ * no oam build to install (oam publishes darwin arm64/x64, windows arm64/x64
+ * and linux x64), so that line says so rather than sending someone after a
+ * download that does not exist.
+ */
+function remedyFor({ passedOver, overrideMissing, shim }) {
+  const lines = [];
+  if (passedOver.some((v) => v !== null)) {
+    lines.push(`Run \`oam self-update\` to get oam ${OAM_MIN.join('.')} or newer.\n`);
+  }
+  if (passedOver.some((v) => v === null)) {
+    lines.push('Check that it is an executable oam binary for this platform.\n');
+  }
+  if (overrideMissing) lines.push('Point OAM_BIN at an existing oam binary, or unset it.\n');
+  if (lines.length === 0 && !shim) {
+    lines.push(
+      process.platform === 'linux' && process.arch !== 'x64'
+        ? `oam publishes no build for linux-${process.arch}, so there is nothing to install here; set OAM_BIN=/path/to/oam if you built one yourself.\n`
+        : 'Install oam from https://oamjs.org, or set OAM_BIN=/path/to/oam.\n',
+    );
+  }
+  lines.push('Or use CTXLINT_RUNTIME=node to run on Node.\n');
+  return lines.join('');
+}
+
+/**
+ * NODE_OPTIONS with every `--permission` / `--allow-*` token removed. See
+ * NODE_OPTIONS FROM AN OAM HOST above.
+ *
+ * Tokens split on whitespace outside double quotes, as Node splits the
+ * variable. `--allow-fs-read` / `--allow-fs-write` also take their value as the
+ * next token (`--allow-fs-read /tmp`), so that is dropped with them; every
+ * other `--allow-*` without `=` is a boolean and stands alone.
+ */
+function stripPermissionFlags(nodeOptions) {
+  const tokens = nodeOptions.match(/(?:[^\s"]+|"[^"]*")+/g) ?? [];
+  const takesValue = new Set(['--allow-fs-read', '--allow-fs-write']);
+  const kept = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    const name = token.split('=')[0];
+    if (name === '--permission' || name === '--experimental-permission') continue;
+    if (name.startsWith('--allow-')) {
+      const next = tokens[i + 1];
+      if (!token.includes('=') && takesValue.has(name) && next && !next.startsWith('-')) i++;
+      continue;
+    }
+    kept.push(token);
+  }
+  return kept.join(' ');
+}
+
+/**
+ * The env every child is spawned with: process.env itself on Node, and on an
+ * oam host a copy whose NODE_OPTIONS has lost the permission flags. The one
+ * place both spawn sites get their env from, so the oam and Node handoffs
+ * cannot drift apart. The key is matched case-insensitively on Windows, where
+ * the environment is.
+ */
+function childEnv() {
+  if (process.versions.oam === undefined) return process.env;
+  const env = { ...process.env };
+  const key = Object.keys(env).find((k) =>
+    isWin ? k.toUpperCase() === 'NODE_OPTIONS' : k === 'NODE_OPTIONS',
+  );
+  if (key === undefined) return env;
+  const stripped = stripPermissionFlags(env[key]);
+  if (stripped) env[key] = stripped;
+  else delete env[key];
+  return env;
 }
 
 /** Run the CLI in THIS process. The zero-overhead fallback. */
@@ -375,10 +496,12 @@ const fallbackFailed = (e) => {
  */
 async function launchChild(cmd, args, onLaunchFailed) {
   // THIS process being an oam means one below the floor (a supported oam host
-  // runs the CLI in-process) or one handing CTXLINT_RUNTIME=node off, and an old
-  // oam's `stdio: 'inherit'` does not hand over the fds. Pipe explicitly there;
+  // runs the CLI in-process) or one handing CTXLINT_RUNTIME=node off. Only an
+  // oam older than 0.9.0 fails to hand over the fds on `stdio: 'inherit'`, so
+  // pipe explicitly from that host, and from one whose version cannot be read;
   // see ALREADY RUNNING ON OAM.
-  const piped = process.versions.oam !== undefined;
+  const hostOamVersion = process.versions.oam;
+  const piped = hostOamVersion !== undefined && !atLeast(parseVersion(hostOamVersion), [0, 9, 0]);
   let child = null;
   try {
     child = spawn(cmd, args, {
@@ -387,7 +510,7 @@ async function launchChild(cmd, args, onLaunchFailed) {
       // identical to running it directly. Piping preserves both as well: bytes
       // are copied unchanged, and stdin's end propagates to the child.
       stdio: piped ? ['pipe', 'pipe', 'pipe'] : 'inherit',
-      env: process.env,
+      env: childEnv(),
       windowsHide: true,
     });
   } catch (err) {
@@ -546,7 +669,7 @@ if (plan === 'in-process') {
     belowFloor ? `this process is oam ${hostOam}, older than ${OAM_MIN.join('.')}` : '',
   );
 } else {
-  const { chosen, overrideNote, skipped } = chooseOam();
+  const { chosen, overrideNote, skipped, passedOver, overrideMissing } = chooseOam();
 
   if (chosen) {
     if (overrideNote) {
@@ -590,7 +713,7 @@ if (plan === 'in-process') {
       await errSync(
         `ctxlint: CTXLINT_RUNTIME=oam but no usable oam (${OAM_MIN.join('.')} or newer) was found.\n` +
           notes.map((note) => `  ${note}\n`).join('') +
-          'Install or update from https://oamjs.org, set OAM_BIN=/path/to/oam, or use CTXLINT_RUNTIME=node.\n',
+          remedyFor({ passedOver, overrideMissing, shim }),
       );
       process.exit(1);
     }

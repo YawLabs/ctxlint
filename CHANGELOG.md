@@ -8,6 +8,19 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+### Changed
+
+- **The MCP server now sends `instructions`, and the four audit tools return `summary` first.** The initialize result carries a short plain-ASCII routing note (well under 2000 bytes): which audit tool covers which file class, that `ctxlint_fix` writes unless `dryRun` is true, and that `ctxlint_token_report` is the cheap probe. Yaw MCP renders a server's instructions once per namespace per session. `ctxlint_audit`, `ctxlint_mcp_audit`, `ctxlint_session_audit` and `ctxlint_skill_audit` serialize their result as `{summary, version, scannedAt, projectRoot, files, ...}` without the two-space indent: Yaw MCP caps a tool result at 100000 bytes by default and cuts from the tail, so on a large project the summary counters used to be the first thing lost. The fields and their values are unchanged; a client that parses the JSON sees no difference, and one that read the raw text sees one compact line.
+- **The `ctxlint` launcher's "no usable oam" error now names the fix for what it found.** Under `CTXLINT_RUNTIME=oam` it used to print "Install or update from https://oamjs.org" for every cause. It now says `oam self-update` when an outdated oam was found, to check the binary when one would not run, to point `OAM_BIN` somewhere real when it names a missing file, and to install oam only when none was found -- and on Linux other than x64, where oam publishes no build, that there is nothing to install. `CTXLINT_RUNTIME=node` is offered last in every case.
+- **The launcher finds an oam installed to `OAM_INSTALL_DIR`.** oam's own install-target variable is now searched first, before `%LOCALAPPDATA%\oam\bin`, `~/.oam/bin` and PATH; an oam installed there and not on PATH was never found.
+- **A handoff from an oam host no longer passes oam's permission flags on to Node.** oam 0.18.0 appends its `--permission` / `--allow-*` execArgv entries to every child's NODE_OPTIONS. When the launcher runs on oam (an oam below the floor, or `CTXLINT_RUNTIME=node`), it now spawns its child with those tokens removed from the inherited NODE_OPTIONS; Node 22 refuses to start at all with an oam-only flag such as `--allow-net` there (exit 9). It cannot stop the host oam re-adding its own flags, which happens only when the launcher itself was started under `--permission`.
+- **The handoff from an oam host inherits stdio unless that oam is older than 0.9.0.** Piping was a workaround for pre-0.9.0 oam treating `stdio: 'inherit'` as `'pipe'`; from 0.9.0 on the launcher hands over the same fds instead of copying every MCP/LSP byte through itself. An oam host whose version cannot be read still pipes.
+
+### Internal
+
+- `release.sh` step 3 now also runs `scripts/check-oam-floor.mjs` (ported from @yawlabs/aws-mcp: `OAM_MIN` agrees with every floor claim in the launcher and its test, and is not behind the latest oam release -- `CTXLINT_ALLOW_STALE_OAM=1` releases on an old floor deliberately), `scripts/verify-oam-floor.mjs` (hosts `bin/ctxlint.mjs serve` through `oam run` on the release machine's oam and completes initialize + tools/list; a machine with no oam is a warning, an oam below the floor fails), and `@yawlabs/mcp-compliance` `^0.20.4`, now a devDependency on the line Yaw MCP grades with, at `--strict --min-grade A`, rewriting `compliance-badge.svg` from the run. An unreachable GitHub API, a missing oam, a missing mcp-compliance install and skipped compliance tests each print a warning rather than passing silently. The offline half of the floor check also runs in the test suite (`src/__tests__/oam-floor.test.ts`). New scripts: `check:oam-floor`, `verify:oam-floor`, `compliance`.
+- The compliance badge is regraded with mcp-compliance 0.20.4 against the current seven tools: grade A (100%), 45/45 passed, 5 capability-gated tests skipped. The previous badge dated from 2026-04-16, before `ctxlint_skill_audit` existed.
+
 ## [0.27.6] - 2026-10-07
 
 ### Fixed

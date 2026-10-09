@@ -317,7 +317,7 @@ if [ "$IS_CI" != "true" ] && [ "$RESUMING" != "true" ]; then
   echo -e "${YELLOW}About to release v${VERSION}. This will:${NC}"
   echo "  1. Lint & type-check"
   echo "  2. Build"
-  echo "  3. Test"
+  echo "  3. Test, oam floor, MCP compliance"
   echo "  4. Bump version in package.json"
   echo "  5. Commit, tag, and push"
   echo "  6. Publish to npm"
@@ -401,10 +401,77 @@ info "Build complete"
 # =============================================================================
 # Step 3: Test
 # =============================================================================
-step 3 "Test"
+step 3 "Test, oam floor, MCP compliance"
 
 pnpm run test:run
 info "All tests passed"
+
+# ---- oam floor ----
+# Two halves. check-oam-floor.mjs keeps OAM_MIN consistent across the repo
+# (its offline half also runs in the suite above, through oam-floor.test.ts)
+# and, online, not behind the latest oam release. verify-oam-floor.mjs hosts
+# `bin/ctxlint.mjs serve` through `oam run` on THIS machine's oam and completes
+# initialize + tools/list -- oam's own sidecar matrix runs ctxlint only on oam's
+# release cadence, so this is the check on ctxlint's. Neither may pass
+# silently when it could not look: an unreachable GitHub API and a machine
+# with no oam are both warnings, never a quiet green.
+FLOOR_OUT=$(node scripts/check-oam-floor.mjs 2>&1) || {
+  printf '%s\n' "$FLOOR_OUT"
+  fail "oam floor check failed -- see above. Set CTXLINT_ALLOW_STALE_OAM=1 to release on the old floor deliberately."
+}
+printf '%s\n' "$FLOOR_OUT"
+if grep -q "staleness not checked" <<< "$FLOOR_OUT"; then
+  warn "oam floor staleness NOT checked (GitHub API unreachable) -- the floor may be behind the latest oam release"
+else
+  info "oam floor consistent and current"
+fi
+
+VERIFY_OUT=$(node scripts/verify-oam-floor.mjs 2>&1) || {
+  printf '%s\n' "$VERIFY_OUT"
+  fail "oam floor verification failed -- see above."
+}
+printf '%s\n' "$VERIFY_OUT"
+if grep -q "\[verify:oam-floor\] SKIP" <<< "$VERIFY_OUT"; then
+  warn "oam handshake NOT verified on this machine -- ctxlint ships on the oam floor unchecked by this release"
+else
+  info "oam hosts ctxlint serve (initialize + tools/list)"
+fi
+
+# ---- MCP compliance ----
+# Grade the server with @yawlabs/mcp-compliance, pinned in devDependencies to
+# the version line Yaw MCP grades with, and rewrite compliance-badge.svg from
+# that run (step 5 commits it with the bump). Yaw MCP caches a grade per
+# namespace and can refuse to spawn a server below YAW_MCP_MIN_COMPLIANCE, so a
+# release that changes tool shapes should not go out on a stale grade. --strict
+# and --min-grade A fail the release on any required failure or a grade below A.
+# The run is local stdio and needs no network; a missing install and any
+# skipped test are warnings, never a silent pass.
+MCPC=node_modules/.bin/mcp-compliance
+if [ ! -x "$MCPC" ]; then
+  warn "mcp-compliance is not installed (pnpm install) -- compliance NOT graded, badge NOT refreshed"
+else
+  COMPLIANCE_JSON=$(mktemp)
+  if "$MCPC" test --format json --strict --min-grade A --output compliance-badge.svg \
+      node dist/index.js serve > "$COMPLIANCE_JSON"; then
+    COMPLIANCE_SUMMARY=$(node -e '
+      const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+      const s = r.summary || {};
+      console.log(`grade ${r.grade} (${r.score}%), ${s.passed}/${s.total} passed, ${s.skipped || 0} skipped, ${(r.warnings || []).length} warning(s), mcp-compliance ${r.toolVersion}`);
+      for (const w of r.warnings || []) console.log(`WARN ${w}`);
+      if (s.skipped) console.log("SKIPPED");
+    ' "$COMPLIANCE_JSON")
+    rm -f "$COMPLIANCE_JSON"
+    info "MCP compliance: ${COMPLIANCE_SUMMARY%%$'\n'*}"
+    (grep '^WARN ' <<< "$COMPLIANCE_SUMMARY" || true) | sed 's/^WARN /    /'
+    if grep -q "^SKIPPED" <<< "$COMPLIANCE_SUMMARY"; then
+      warn "some compliance tests were skipped (capability-gated) -- they did not grade this release"
+    fi
+  else
+    cat "$COMPLIANCE_JSON"
+    rm -f "$COMPLIANCE_JSON"
+    fail "MCP compliance below grade A or a required test failed -- see above."
+  fi
+fi
 
 # =============================================================================
 # Step 4: Bump version
@@ -460,6 +527,8 @@ if [ "$IS_CI" = "true" ]; then
 else
   # Commit if there are changes
   BUMP_FILES="package.json pnpm-lock.yaml .pre-commit-hooks.yaml README.md"
+  # Step 3 rewrote the badge from this release's compliance run.
+  [ -f compliance-badge.svg ] && BUMP_FILES="$BUMP_FILES compliance-badge.svg"
   [ -f server.json ] && BUMP_FILES="$BUMP_FILES server.json"
   # promote_changelog wrote the [${VERSION}] entry in step 4; without
   # CHANGELOG.md here that edit is left uncommitted in the working tree and the
