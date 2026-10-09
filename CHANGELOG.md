@@ -8,6 +8,8 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-10-09
+
 ### Changed
 
 - **The MCP server now sends `instructions`, and the four audit tools return `summary` first.** The initialize result carries a short plain-ASCII routing note (well under 2000 bytes): which audit tool covers which file class, that `ctxlint_fix` writes unless `dryRun` is true, and that `ctxlint_token_report` is the cheap probe. Yaw MCP renders a server's instructions once per namespace per session. `ctxlint_audit`, `ctxlint_mcp_audit`, `ctxlint_session_audit` and `ctxlint_skill_audit` serialize their result as `{summary, version, scannedAt, projectRoot, files, ...}` without the two-space indent: Yaw MCP caps a tool result at 100000 bytes by default and cuts from the tail, so on a large project the summary counters used to be the first thing lost. The fields and their values are unchanged; a client that parses the JSON sees no difference, and one that read the raw text sees one compact line.
