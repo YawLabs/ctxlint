@@ -52,6 +52,22 @@ describe('the oam floor is consistent across this repo', () => {
     expect(r.code, `check-oam-floor reported drift in this repo:\n${r.out}`).toBe(0);
     expect(r.out).toMatch(/no drift/);
   });
+
+  it('still runs when invoked through a junctioned or symlinked path', () => {
+    // Node realpaths the main module's URL but not argv[1]; a raw compare of the
+    // two skipped main() from such a checkout and exited 0 with no output.
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-floor-link-'));
+    dirs.push(parent);
+    const link = path.join(parent, 'scripts');
+    fs.symlinkSync(path.dirname(CHECKER), link, 'junction');
+    const r = spawnSync(
+      process.execPath,
+      [path.join(link, 'check-oam-floor.mjs'), '--offline', '--root', REPO_ROOT],
+      { encoding: 'utf8', timeout: 60_000 },
+    );
+    expect(r.status, `${r.stdout}${r.stderr}`).toBe(0);
+    expect(r.stdout).toMatch(/oam floor \(OAM_MIN in bin\/ctxlint\.mjs\)/);
+  });
 });
 
 describe('check-oam-floor catches drift', () => {

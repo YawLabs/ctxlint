@@ -8,6 +8,18 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+### Changed
+
+- **The `ctxlint` launcher's oam floor is now 0.19.1, up from 0.18.0.** `OAM_MIN` tracks the latest oam release, and ctxlint 0.28.0 was re-verified on oam 0.19.1 through the launcher (`npm run verify:oam-floor`: initialize + tools/list, plus a `tools/call`). An oam host at 0.19.0, a 0.19.0 dev build or 0.18.x now hands off or falls back to Node instead of running the CLI in-process.
+
+### Fixed
+
+- **`server.json` now launches the MCP server.** Its npm package carries the positional `serve` argument, so a registry client that runs `npx @yawlabs/ctxlint` from it starts the MCP server instead of a one-shot lint of its working directory.
+
+### Internal
+
+- `scripts/check-oam-floor.mjs` now runs when invoked through a junctioned or symlinked checkout. Its direct-run guard compared `process.argv[1]` with the main module's URL, which Node realpaths and `argv[1]` is not, so from such a path the check skipped `main()` and exited 0 with no output. Both sides are now realpath'd (ported from yaw-mcp 1.1.2's `verify-oam-floor` guard).
+
 ## [0.28.0] - 2026-10-09
 
 ### Changed

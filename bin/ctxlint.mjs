@@ -91,7 +91,7 @@
  * real.
  *
  * MINIMUM OAM VERSION
- * The latest oam release, 0.18.0 -- bump OAM_MIN when oam ships a newer one.
+ * The latest oam release, 0.19.1 -- bump OAM_MIN when oam ships a newer one.
  * Only the current oam is used and verified; an older one hands off or falls
  * back to Node. The floor is that support policy, not a fix for something the
  * CLI was exposed to. Below 0.9.0 `child_process.execFile` ran its arguments
@@ -123,7 +123,7 @@ import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /** Oldest oam this launcher will use. See MINIMUM OAM VERSION above. */
-const OAM_MIN = [0, 18, 0];
+const OAM_MIN = [0, 19, 1];
 
 /**
  * Bound on each `oam --version` probe. A healthy oam answers in milliseconds;

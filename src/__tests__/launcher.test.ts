@@ -80,11 +80,11 @@ describe('launcher runtimePlan()', () => {
     // asking what it was already running on. `auto` and `oam` both have to take
     // the shortcut -- `oam` demands oam, and the host already is one.
     //
-    // 0.18.0 pins the floor as inclusive (it IS the supported release), and
-    // 0.100.0 pins a numeric compare: it sorts BEFORE 0.18.0 as a string, so a
+    // 0.19.1 pins the floor as inclusive (it IS the supported release), and
+    // 0.100.0 pins a numeric compare: it sorts BEFORE 0.19.1 as a string, so a
     // compare over the raw text would treat a newer oam as too old.
     for (const mode of ['auto', 'oam']) {
-      for (const hostOam of ['0.18.0', '0.19.0', '0.100.0', '1.0.0', '0.19.0-dev']) {
+      for (const hostOam of ['0.19.1', '0.20.0', '0.100.0', '1.0.0', '0.20.0-dev']) {
         expect(runtimePlan({ mode, hostOam }), `mode=${mode} hostOam=${hostOam}`).toBe(
           'in-process',
         );
@@ -97,7 +97,16 @@ describe('launcher runtimePlan()', () => {
     // the latest oam release is what ctxlint is used and verified on (see
     // MINIMUM OAM VERSION in the launcher).
     for (const mode of ['auto', 'oam']) {
-      for (const hostOam of ['0.17.0', '0.15.2', '0.9.0', '0.8.2', '0.0.1']) {
+      for (const hostOam of [
+        '0.19.0',
+        '0.19.0-dev',
+        '0.18.0',
+        '0.17.0',
+        '0.15.2',
+        '0.9.0',
+        '0.8.2',
+        '0.0.1',
+      ]) {
         expect(runtimePlan({ mode, hostOam }), `mode=${mode} hostOam=${hostOam}`).toBe('discover');
       }
     }
@@ -115,7 +124,7 @@ describe('launcher runtimePlan()', () => {
 
   it('runs CTXLINT_RUNTIME=node on Node: in-process on a Node host, handed off from any oam host', () => {
     expect(runtimePlan({ mode: 'node', hostOam: undefined })).toBe('in-process');
-    for (const hostOam of ['0.8.2', '0.18.0', '1.0.0', 'dev']) {
+    for (const hostOam of ['0.8.2', '0.19.1', '1.0.0', 'dev']) {
       expect(runtimePlan({ mode: 'node', hostOam }), `hostOam=${hostOam}`).toBe('handoff-node');
     }
   });
@@ -126,7 +135,7 @@ describe('launcher pickNewest()', () => {
   const at = (p: string, version: number[] | null): Candidate => ({ path: p, version });
 
   it('pins the floor to the latest oam release', () => {
-    expect(floor).toEqual([0, 18, 0]);
+    expect(floor).toEqual([0, 19, 1]);
   });
 
   it('takes the newest usable oam, not the first one found', () => {
@@ -134,23 +143,23 @@ describe('launcher pickNewest()', () => {
     // copy in an earlier location (the installed dir is searched before PATH)
     // hid a newer one later.
     const chosen = pickNewest([
-      at('installed', [0, 18, 0]),
-      at('path-a', [0, 19, 0]),
-      at('path-b', [0, 18, 9]),
+      at('installed', [0, 19, 1]),
+      at('path-a', [0, 20, 0]),
+      at('path-b', [0, 19, 9]),
     ]);
     expect(chosen?.path).toBe('path-a');
   });
 
   it('compares numerically and keeps search order on a tie', () => {
-    expect(pickNewest([at('a', [0, 19, 0]), at('b', [0, 100, 0])])?.path).toBe('b');
-    expect(pickNewest([at('first', [0, 18, 0]), at('second', [0, 18, 0])])?.path).toBe('first');
+    expect(pickNewest([at('a', [0, 20, 0]), at('b', [0, 100, 0])])?.path).toBe('b');
+    expect(pickNewest([at('first', [0, 19, 1]), at('second', [0, 19, 1])])?.path).toBe('first');
   });
 
   it('skips binaries below the floor or with no readable version', () => {
     expect(
-      pickNewest([at('old', [0, 9, 0]), at('broken', null), at('good', [0, 18, 0])])?.path,
+      pickNewest([at('old', [0, 9, 0]), at('broken', null), at('good', [0, 19, 1])])?.path,
     ).toBe('good');
-    expect(pickNewest([at('old', [0, 17, 0]), at('broken', null)])).toBeNull();
+    expect(pickNewest([at('old', [0, 19, 0]), at('broken', null)])).toBeNull();
     expect(pickNewest([])).toBeNull();
   });
 });
@@ -254,7 +263,7 @@ describe('launcher on an oam host', () => {
     it.skipIf(!buildAvailable)(
       `runs in-process instead of spawning a nested oam (env ${JSON.stringify(extraEnv)})`,
       async () => {
-        const run = await runLauncher('0.18.0', extraEnv);
+        const run = await runLauncher('0.19.1', extraEnv);
         expect(servedByCli(run), JSON.stringify(run)).toBe(true);
         expect(run.stderr).toMatch(/LAUNCHER_ARGV1=.*dist[\\/]index\.js/);
       },
@@ -310,7 +319,7 @@ describe('launcher with no usable oam', () => {
       );
       expect(run.code, JSON.stringify(run)).toBe(1);
       expect(run.stdout.trim(), 'nothing may be served').toBe('');
-      expect(run.stderr).toMatch(/CTXLINT_RUNTIME=oam but no usable oam \(0\.18\.0 or newer\)/);
+      expect(run.stderr).toMatch(/CTXLINT_RUNTIME=oam but no usable oam \(0\.19\.1 or newer\)/);
       // The remedy names the cause that was seen: a missing OAM_BIN, not an
       // install that nothing suggests is needed.
       expect(run.stderr).toMatch(/Point OAM_BIN at an existing oam binary, or unset it\./);
@@ -327,7 +336,7 @@ describe('launcher with no usable oam', () => {
       expect(run.code, JSON.stringify(run)).toBe(0);
       expect(run.stdout.trim(), 'the Node child must still run the CLI').toBe(PKG.version);
       expect(run.stderr).toMatch(
-        /this process is oam 0\.9\.0, older than 0\.18\.0, and no newer oam was found; running on .*node/,
+        /this process is oam 0\.9\.0, older than 0\.19\.1, and no newer oam was found; running on .*node/,
       );
       // Run by the child, not in the launcher process: argv[1] was never
       // pointed at dist/index.js.
@@ -386,7 +395,7 @@ describe('launcher with no usable oam', () => {
       // found" would be false here: one was found, and it passed its version
       // check.
       expect(run.stderr).toMatch(
-        /this process is oam 0\.9\.0, older than 0\.18\.0, and the newer oam would not start; running on .*node/,
+        /this process is oam 0\.9\.0, older than 0\.19\.1, and the newer oam would not start; running on .*node/,
       );
       expect(run.stderr).not.toMatch(/no newer oam was found/);
     },
@@ -398,7 +407,7 @@ describe('launcher with no usable oam', () => {
     it.skipIf(!buildAvailable)(
       `hands CTXLINT_RUNTIME=${value} off to Node even on a supported oam host`,
       async () => {
-        const run = await runLauncher('0.18.0', isolated({ CTXLINT_RUNTIME: value }));
+        const run = await runLauncher('0.19.1', isolated({ CTXLINT_RUNTIME: value }));
         expect(run.code, JSON.stringify(run)).toBe(0);
         expect(run.stdout.trim()).toBe(PKG.version);
         expect(run.stderr).toMatch(/LAUNCHER_ARGV1=.*ctxlint\.mjs/);
@@ -432,7 +441,7 @@ describe('launcher remedyFor()', () => {
 
   it('sends an outdated oam to `oam self-update`, not to the website', () => {
     const text = win({ ...none, passedOver: [[0, 17, 0]] });
-    expect(text).toMatch(/Run `oam self-update` to get oam 0\.18\.0 or newer\./);
+    expect(text).toMatch(/Run `oam self-update` to get oam 0\.19\.1 or newer\./);
     expect(text).not.toMatch(/oamjs\.org/);
   });
 
@@ -550,7 +559,7 @@ describe('launcher handoff from an oam host', () => {
       const run = await runLauncher('0.8.2', isolated({ OAM_BIN: missingOam }));
       expect(run.code, JSON.stringify(run)).toBe(0);
       expect(run.stdout.trim()).toBe(PKG.version);
-      expect(run.stderr).toMatch(/this process is oam 0\.8\.2, older than 0\.18\.0/);
+      expect(run.stderr).toMatch(/this process is oam 0\.8\.2, older than 0\.19\.1/);
     },
     TIMEOUT_MS,
   );

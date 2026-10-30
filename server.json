@@ -15,6 +15,12 @@
       "registryType": "npm",
       "identifier": "@yawlabs/ctxlint",
       "version": "0.28.0",
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "serve"
+        }
+      ],
       "transport": {
         "type": "stdio"
       }
