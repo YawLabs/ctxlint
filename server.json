@@ -9,12 +9,12 @@
     "id": "1202330554"
   },
   "websiteUrl": "https://yaw.sh/mcp-servers/ctxlint/",
-  "version": "0.28.0",
+  "version": "0.28.1",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@yawlabs/ctxlint",
-      "version": "0.28.0",
+      "version": "0.28.1",
       "packageArguments": [
         {
           "type": "positional",
