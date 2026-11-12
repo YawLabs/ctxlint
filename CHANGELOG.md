@@ -8,6 +8,14 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+### Changed
+
+- **The `ctxlint` launcher's oam floor is now 0.19.5, up from 0.19.1.** `OAM_MIN` tracks the latest oam release, and ctxlint was re-verified on oam 0.19.5 through the launcher (`npm run verify:oam-floor`: initialize + tools/list). An oam host at 0.19.4 or earlier now hands off or falls back to Node instead of running the CLI in-process.
+
+### Security
+
+- Dev-dependency updates for the open Dependabot and `pnpm audit` advisories: vite 8.3.8, vitest and `@vitest/coverage-v8` 4.1.12, zod 4.6.7, and overrides for hono, `@hono/node-server` (now 2.x), fast-uri, undici, body-parser, qs, ip-address and minimatch, plus glob 14.0.5 (was 13.0.6). Of these, glob, zod, fast-uri and minimatch are bundled into `dist/index.js` and so reach the published package; the rest are build and test tooling only.
+
 ## [0.28.1] - 2026-10-30
 
 ### Changed
