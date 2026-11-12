@@ -233,7 +233,7 @@ Checks whose signal is what the agent did (commands run, files written or read) 
 ## Example Output
 
 ```
-ctxlint v0.28.1
+ctxlint v0.28.2
 
 Scanning /Users/you/my-app...
 
@@ -379,7 +379,7 @@ Add to your `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/yawlabs/ctxlint
-    rev: v0.28.1
+    rev: v0.28.2
     hooks:
       - id: ctxlint
 ```
