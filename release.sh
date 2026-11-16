@@ -317,7 +317,7 @@ if [ "$IS_CI" != "true" ] && [ "$RESUMING" != "true" ]; then
   echo -e "${YELLOW}About to release v${VERSION}. This will:${NC}"
   echo "  1. Lint & type-check"
   echo "  2. Build"
-  echo "  3. Test, oam floor, MCP compliance"
+  echo "  3. Test, oam and Yaw MCP floors, MCP compliance"
   echo "  4. Bump version in package.json"
   echo "  5. Commit, tag, and push"
   echo "  6. Publish to npm"
@@ -401,7 +401,7 @@ info "Build complete"
 # =============================================================================
 # Step 3: Test
 # =============================================================================
-step 3 "Test, oam floor, MCP compliance"
+step 3 "Test, oam and Yaw MCP floors, MCP compliance"
 
 pnpm run test:run
 info "All tests passed"
@@ -435,6 +435,23 @@ if grep -q "\[verify:oam-floor\] SKIP" <<< "$VERIFY_OUT"; then
   warn "oam handshake NOT verified on this machine -- ctxlint ships on the oam floor unchecked by this release"
 else
   info "oam hosts ctxlint serve (initialize + tools/list)"
+fi
+
+# ---- Yaw MCP floor ----
+# Drift (YAW_MCP_MIN vs the README claim and the @yawlabs/mcp-compliance
+# devDependency) fails the release, and the suite above already ran that half
+# (yaw-mcp-floor.test.ts). A newer @yawlabs/mcp on npm is only a WARNING --
+# nothing at runtime reads this floor -- so it prints and the release
+# continues. Offline it says so and passes.
+YAW_FLOOR_OUT=$(node scripts/check-yaw-mcp-floor.mjs 2>&1) || {
+  printf '%s\n' "$YAW_FLOOR_OUT"
+  fail "Yaw MCP floor drift -- see above."
+}
+printf '%s\n' "$YAW_FLOOR_OUT"
+if grep -q "WARNING" <<< "$YAW_FLOOR_OUT"; then
+  warn "Yaw MCP floor is behind the latest @yawlabs/mcp -- continuing"
+else
+  info "Yaw MCP floor has no drift"
 fi
 
 # ---- MCP compliance ----

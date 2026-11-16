@@ -27,6 +27,7 @@
     "format:check": "prettier --check .",
     "mcp": "node dist/index.js --mcp-server",
     "check:oam-floor": "node scripts/check-oam-floor.mjs",
+    "check:yaw-mcp-floor": "node scripts/check-yaw-mcp-floor.mjs",
     "verify:oam-floor": "node scripts/verify-oam-floor.mjs",
     "precompliance": "node build.mjs",
     "compliance": "mcp-compliance test --strict --min-grade A --output compliance-badge.svg node dist/index.js serve"
