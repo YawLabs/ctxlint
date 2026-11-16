@@ -8,6 +8,10 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+### Changed
+
+- **The `ctxlint` launcher's oam floor is now 0.20.2, up from 0.19.5.** `OAM_MIN` tracks the latest oam release, and ctxlint was re-verified on oam 0.20.2 through the launcher (`npm run verify:oam-floor`: initialize + tools/list). An oam host at 0.20.1 or earlier now hands off or falls back to Node instead of running the CLI in-process.
+
 ## [0.28.2] - 2026-11-11
 
 ### Changed
