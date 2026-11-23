@@ -11,7 +11,7 @@ cd <repo-name>
 
 # 2. Install dependencies -- pnpm, from the lockfile (package.json `packageManager`
 #    pins the version; `corepack enable` provides it). npm ignores pnpm-lock.yaml and
-#    the `pnpm.overrides` security pins, so it installs a different tree.
+#    the `overrides` security pins in pnpm-workspace.yaml, so it installs a different tree.
 pnpm install --frozen-lockfile
 
 # 3. Create a branch
