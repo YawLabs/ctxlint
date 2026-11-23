@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { runAudit } from '../audit.js';
+import { contextTokenTotal, runAudit } from '../audit.js';
 import { applyFixes } from '../fixer.js';
 import { formatJson, formatSarif, formatText, formatTokenReport } from '../reporter.js';
 import { VERSION } from '../../version.js';
@@ -420,6 +420,37 @@ describe('runAudit call-site wiring', () => {
     expect(result.summary.totalTokens).toBe(claude.tokens);
   });
 
+  it('counts a symlinked alias with an ABSOLUTE in-root target once (aggregate and totalTokens)', async (ctx) => {
+    fs.writeFileSync(path.join(root, 'CLAUDE.md'), `# Rules\n\n${'Keep it short. '.repeat(40)}\n`);
+    try {
+      // `ln -s "$PWD/CLAUDE.md" AGENTS.md` / `mklink AGENTS.md C:\full\path`.
+      fs.symlinkSync(path.join(root, 'CLAUDE.md'), path.join(root, 'AGENTS.md'));
+    } catch {
+      ctx.skip(); // no symlink privilege (Windows without developer mode)
+    }
+    const result = await runAudit(root, ['tokens'], { tokenThresholds: { aggregate: 1 } });
+    const claude = result.files.find((f) => f.path === 'CLAUDE.md')!;
+    const agents = result.files.find((f) => f.path === 'AGENTS.md')!;
+    expect(agents.isSymlink).toBe(true);
+    expect(result.summary.totalTokens).toBe(claude.tokens);
+    // The aggregate must agree with totalTokens: one file, so no warning.
+    const aggregate = result.files
+      .flatMap((f) => f.issues)
+      .filter((i) => i.ruleId === 'tokens/aggregate');
+    expect(aggregate).toEqual([]);
+  });
+
+  it('still fires tokens/aggregate for two distinct files (no false negative)', async () => {
+    fs.writeFileSync(path.join(root, 'CLAUDE.md'), `# Rules\n\n${'Keep it short. '.repeat(40)}\n`);
+    fs.writeFileSync(path.join(root, 'AGENTS.md'), `# Agents\n\n${'Be precise. '.repeat(40)}\n`);
+    const result = await runAudit(root, ['tokens'], { tokenThresholds: { aggregate: 1 } });
+    const aggregate = result.files
+      .flatMap((f) => f.issues)
+      .filter((i) => i.ruleId === 'tokens/aggregate');
+    expect(aggregate).toHaveLength(1);
+    expect(aggregate[0].message).toContain('2 context files');
+  });
+
   it('drops MCP configs matched by the exclude option', async () => {
     const cfg = '{"mcpServers":{"a":{"command":"node","args":["x.js"]}}}\n';
     fs.writeFileSync(path.join(root, '.mcp.json'), cfg);
@@ -529,6 +560,31 @@ describe('runAudit token totals agree across formats', () => {
     expect(report).toMatch(new RegExp(`Total\\s+${n.toLocaleString()}\\b`));
     // The MCP config is not a context file, so it is not a token-table row.
     expect(report).not.toContain('.mcp.json');
+  });
+});
+
+describe('contextTokenTotal symlink dedupe', () => {
+  const root = path.resolve(os.tmpdir(), 'ctxlint-proj');
+  const files = (target: string) => [
+    { path: 'CLAUDE.md', tokens: 100, isSymlink: false },
+    { path: 'AGENTS.md', tokens: 100, isSymlink: true, symlinkTarget: target },
+  ];
+
+  it('counts an alias with a relative in-root target once', () => {
+    expect(contextTokenTotal(files('CLAUDE.md'), root)).toBe(100);
+  });
+
+  it('counts an alias with an absolute in-root target once', () => {
+    expect(contextTokenTotal(files(path.join(root, 'CLAUDE.md')), root)).toBe(100);
+  });
+
+  it('still counts an alias whose absolute target is outside the root', () => {
+    const outside = path.resolve(os.tmpdir(), 'elsewhere', 'CLAUDE.md');
+    expect(contextTokenTotal(files(outside), root)).toBe(200);
+  });
+
+  it('still counts an alias whose absolute target is an uncounted in-root file', () => {
+    expect(contextTokenTotal(files(path.join(root, 'docs', 'CLAUDE.md')), root)).toBe(200);
   });
 });
 

@@ -62,7 +62,11 @@ const TOOL_GATES: Record<string, Gate> = {
  */
 const SILENT_ON_SUCCESS = new Set(['eslint', 'tsc', 'vue-tsc']);
 
-/** Output that means the runner died rather than reported. */
+/**
+ * Output that means the runner died rather than reported. Matched anywhere,
+ * but only on a run that already failed: a passing run's output can name a
+ * test "handles segfault in child".
+ */
 const CRASH_SIGNATURES = [
   /\bsegmentation fault\b/i,
   /\bsegfault/i,
@@ -72,6 +76,26 @@ const CRASH_SIGNATURES = [
   /\bFATAL ERROR:/, // V8 / node fatal error (heap OOM and friends)
   /\bnode:? fatal error\b/i,
   /\bcore dumped\b/i,
+];
+
+/**
+ * Crash banners in the shapes a shell, the OS or V8 prints them. These count
+ * even when the harness did not flag the result as an error (`| tail` and
+ * friends discard the crashed runner's status), because a test name cannot
+ * take these shapes.
+ */
+const CRASH_BANNERS = [
+  // `Segmentation fault (core dumped)`, bash's `bash: line 1:  1234 Segmentation fault ...`
+  /^(?:\S+: line \d+:\s+\d+\s+)?Segmentation fault\b/m,
+  /^\w+: segmentation fault\b/im, // zsh
+  /\(core dumped\)\s*$/im,
+  /^FATAL ERROR:/m, // V8 / node
+  /^\s*#?\s*node:? fatal error\b/im,
+  /\b(?:killed by|terminated by|received) signal:? SIGSEGV\b/i,
+  /\bexit(?:ed with)? (?:code|status):? (?:3221225477|-1073741819|0xC0000005)\b/i,
+  // npm's report of a script killed by an access violation (Windows ARM64
+  // native crash): `npm error code 3221225477`, older `npm ERR! code ...`.
+  /^npm (?:error|ERR!) (?:code|errno) (?:3221225477|-1073741819)\b/m,
 ];
 
 /** Script names (npm/pnpm/yarn/bun run X, make X) that are gates. */
@@ -169,6 +193,21 @@ const GATE_NOUNS: Record<Gate, string> = {
   build: 'builds?',
 };
 
+/**
+ * Gate nouns that are also everyday words ("the new build", "the types"), and
+ * every other gate noun. See the gap in claimsPass.
+ */
+const GENERIC_GATE_NOUNS: Partial<Record<Gate, string>> = {
+  typecheck: 'types',
+  build: 'builds?',
+};
+const STRONG_GATE_NOUNS: Record<Gate, string> = {
+  lint: GATE_NOUNS.lint,
+  typecheck: 'type-?check(?:ing)?|type check|tsc',
+  test: GATE_NOUNS.test,
+  build: '(?!)',
+};
+
 const PASS_WORDS =
   'clean|pass(?:es|ed|ing)?|green|succeed(?:s|ed)?|succeeded|ok|fine|good|no (?:errors|issues|failures)';
 
@@ -192,8 +231,10 @@ const NEGATED_PREFIX = /\b(?:not|no|none of the|never)\s+(?:all\s+)?(?:the\s+)?$
 const INTENT =
   /\b(?:will|'ll|going to|gonna|need(?:s)? to|should|let me|let's|try(?:ing)? to|to make|(?<![`'"])make\s+(?:sure|the|it|them|this|that|these|those|all|every\w*|our|my|your|\w+\s+(?:pass|green|clean|succeed|work))|until|once|if|so that|want to|plan to|next)\b/i;
 
+/** Every gate noun across all gates, as one alternation. */
+const ANY_GATE_NOUNS = Object.values(GATE_NOUNS).join('|');
 /** Every gate noun across all gates, to tell whether a clause names any gate. */
-const ANY_GATE = new RegExp(`\\b(?:${Object.values(GATE_NOUNS).join('|')})\\b`, 'i');
+const ANY_GATE = new RegExp(`\\b(?:${ANY_GATE_NOUNS})\\b`, 'i');
 
 /**
  * Split prose into clauses. A claim and its negation must sit in the same
@@ -211,7 +252,25 @@ function clauses(text: string): string[] {
 /** True when `text` asserts that `gate` passed. */
 function claimsPass(text: string, gate: Gate): boolean {
   const noun = GATE_NOUNS[gate];
-  const nounFirst = new RegExp(`\\b(?:${noun})\\b[^.\\n]{0,40}?\\b(?:${PASS_WORDS})\\b`, 'gi');
+  // The noun, an optional coordinated list of other gates ("build and tests
+  // pass", "lint, typecheck and tests all pass"), then a short gap to the pass
+  // word. The gap stops at another gate's noun: in "the test helper and lint
+  // is clean" the pass word belongs to lint, not to the tests. The everyday
+  // nouns "build" and "types" stop it only when they take a singular verb of
+  // their own ("the build is clean"); in "tests against the new build now
+  // pass" they are part of the test claim.
+  const others = (Object.keys(GATE_NOUNS) as Gate[]).filter((g) => g !== gate);
+  const strongOthers = others.map((g) => STRONG_GATE_NOUNS[g]).join('|');
+  const generic = others
+    .map((g) => GENERIC_GATE_NOUNS[g])
+    .filter(Boolean)
+    .join('|');
+  const ownsVerb = `\\s+(?:(?:is|was|are|were)(?:\\s+(?:now|also|still|all))?\\s+(?:${PASS_WORDS})|(?:now\\s+|also\\s+|still\\s+)?(?:passes|succeeds))\\b`;
+  // Every gate has another gate with a generic noun, so `generic` is non-empty.
+  const stop = `\\b(?:${strongOthers})\\b|\\b(?:${generic})${ownsVerb}`;
+  const list = `(?:(?:\\s*[,&/+]\\s*(?:and\\s+)?|\\s+and\\s+)(?:the\\s+)?(?:${ANY_GATE_NOUNS})\\b)*`;
+  const gap = `(?:(?!${stop})[^.\\n]){0,40}?`;
+  const nounFirst = new RegExp(`\\b(?:${noun})\\b${list}${gap}\\b(?:${PASS_WORDS})\\b`, 'gi');
   const passFirst = new RegExp(`\\b(?:clean|passing|green)\\s+(?:${noun})\\b`, 'gi');
   for (const clause of clauses(text)) {
     for (const re of [nounFirst, passFirst]) {
@@ -264,13 +323,15 @@ const ADJACENCY = 12;
 
 /**
  * Why an invocation produced no usable pass/fail signal, or null when it did.
- * A crash banner at either end of the output (`outputExcerpt`) wins; then the
- * harness error flag; then emptiness, except for tools that print nothing
- * when they pass.
+ * A crash banner at either end of the output (`outputExcerpt`) wins -- any
+ * crash signature on a run the harness flagged as an error, only a
+ * banner-shaped one otherwise; then the harness error flag; then emptiness,
+ * except for tools that print nothing when they pass.
  */
 function unverifiedReason(ev: TranscriptEvent, inv: Invocation): string | null {
   const out = ev.outputExcerpt ?? '';
-  if (CRASH_SIGNATURES.some((re) => re.test(out))) return 'the invocation crashed';
+  const signatures = ev.isError === true ? CRASH_SIGNATURES : CRASH_BANNERS;
+  if (signatures.some((re) => re.test(out))) return 'the invocation crashed';
   if (ev.isError === true) return 'the invocation reported an error';
   if (ev.emptyOutput === true && !SILENT_ON_SUCCESS.has(inv.program)) {
     return 'the invocation produced no output';

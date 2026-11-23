@@ -172,8 +172,14 @@ function extract(line: string, patterns: Array<[RegExp, string]>): Touch[] {
   return found;
 }
 
+/**
+ * A project path for comparison. Case-folded on win32, where the drive letter
+ * (and any segment) may be cased differently by ctxlint and by the harness --
+ * the transcript side folds the same way (`projectDirCandidates`).
+ */
 function normalizeProject(p: string): string {
-  return resolve(p).replace(/\\/g, '/');
+  const slashed = resolve(p).replace(/\\/g, '/');
+  return process.platform === 'win32' ? slashed.toLowerCase() : slashed;
 }
 
 export async function checkSharedTempPath(ctx: SessionContext): Promise<LintIssue[]> {

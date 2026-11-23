@@ -19,6 +19,7 @@ import {
   checkTokens,
   checkAggregateTokens,
   resolveTokenThresholds,
+  withoutSymlinkAliases,
   type TokenThresholds,
 } from './checks/tokens.js';
 import { checkTierTokens, checkAggregateTierTokens } from './checks/tier-tokens.js';
@@ -264,34 +265,15 @@ async function runSingleFileChecks(
  * whose target is another counted file (AGENTS.md -> CLAUDE.md) counted once,
  * the same rule tokens/aggregate applies. MCP configs and the synthetic
  * buckets are not context, so callers pass context files only. This is
- * `summary.totalTokens`, the number every output format prints.
+ * `summary.totalTokens`, the number every output format prints. Pass
+ * `projectRoot` so an alias with an ABSOLUTE in-root target is deduped too;
+ * without it only relative targets can be resolved.
  */
 export function contextTokenTotal(
   files: ReadonlyArray<Pick<FileResult, 'path' | 'tokens' | 'isSymlink' | 'symlinkTarget'>>,
+  projectRoot?: string,
 ): number {
-  // Case-insensitive default filesystems (win32, darwin) fold like the scanner.
-  const nocase = process.platform === 'win32' || process.platform === 'darwin';
-  const key = (p: string) => {
-    const s = p.replace(/\\/g, '/');
-    return nocase ? s.toLowerCase() : s;
-  };
-  const counted = new Set(files.map((f) => key(f.path)));
-  let total = 0;
-  for (const f of files) {
-    if (f.isSymlink && f.symlinkTarget) {
-      const target = f.symlinkTarget.replace(/\\/g, '/');
-      if (!path.posix.isAbsolute(target) && !/^[A-Za-z]:/.test(target)) {
-        const resolved = key(
-          path.posix.normalize(
-            path.posix.join(path.posix.dirname(f.path.replace(/\\/g, '/')), target),
-          ),
-        );
-        if (resolved !== key(f.path) && counted.has(resolved)) continue;
-      }
-    }
-    total += f.tokens;
-  }
-  return total;
+  return withoutSymlinkAliases(files, projectRoot).reduce((sum, f) => sum + f.tokens, 0);
 }
 
 /**
@@ -425,8 +407,10 @@ export async function runAudit(
     // Cross-file context checks: each reads the whole parsed set.
     const crossFileIssues: LintIssue[] = [];
     if (activeChecks.includes('tokens')) {
-      // The symlink fields let it count AGENTS.md -> CLAUDE.md once.
-      const aggIssue = checkAggregateTokens(contextResults, thresholds);
+      // An alias (AGENTS.md -> CLAUDE.md) counts once; passing the root lets
+      // an ABSOLUTE in-root link target be caught too -- the same set
+      // summary.totalTokens sums (contextTokenTotal).
+      const aggIssue = checkAggregateTokens(contextResults, thresholds, projectRoot);
       if (aggIssue) crossFileIssues.push(aggIssue);
     }
     if (activeChecks.includes('tier-tokens')) {
@@ -650,7 +634,7 @@ export async function runAudit(
   const result = finalizeResult(
     projectRoot,
     fileResults,
-    contextTokenTotal(contextResults),
+    contextTokenTotal(contextResults, projectRoot),
     options,
   );
   const skew = detectVersionSkew(projectRoot);
@@ -926,7 +910,7 @@ export async function runAuditOnContent(
   const thresholds = resolveTokenThresholds(options.tokenThresholds);
   const issues = await runSingleFileChecks(parsed, root, activeChecks, thresholds, options);
   const fr = toFileResult(parsed, issues);
-  return finalizeResult(root, [fr], contextTokenTotal([fr]), options);
+  return finalizeResult(root, [fr], contextTokenTotal([fr], root), options);
 }
 
 /**

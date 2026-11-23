@@ -877,6 +877,147 @@ describe('checkMcpSecurity', () => {
     expect(await checkMcpSecurity(config, '/project')).toEqual([]);
   });
 
+  // --- plural secret names (KEYS, SECRETS, TOKENS, CREDS) ---
+
+  it.each([
+    'API_KEYS',
+    'DB_SECRETS',
+    'ACCESS_KEYS',
+    'SERVICE_TOKENS',
+    'DB_CREDS',
+    'DB_CRED',
+    'apiKeys',
+    'ACCESSKEYS',
+    'GITHUBTOKENS',
+    'DBPASSWORDS',
+  ])('flags a high-entropy value under the plural name %s', async (envName) => {
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'svc',
+          transport: 'stdio',
+          command: 'npx',
+          env: { [envName]: 'aVeryLongBase64EncodedStringThatLooksLikeASecret123456' },
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    expect(issues.map((i) => i.ruleId)).toEqual(['mcp-security/hardcoded-api-key']);
+  });
+
+  it.each(['MONKEYS', 'HOTKEYS', 'API_KEY_PATHS', 'TOKEN_URLS', 'SACRED', 'ACCESS'])(
+    'does not flag a high-entropy value under the non-secret name %s',
+    async (envName) => {
+      const config = makeConfig({
+        servers: [
+          {
+            name: 'svc',
+            transport: 'stdio',
+            command: 'npx',
+            env: { [envName]: 'aVeryLongBase64EncodedStringThatLooksLikeASecret123456' },
+            line: 3,
+            raw: {},
+          },
+        ],
+      });
+      expect(await checkMcpSecurity(config, '/project')).toEqual([]);
+    },
+  );
+
+  // --- an Authorization value that is only a scheme word ---
+
+  function authConfig(value: string, isGitTracked = true): ParsedMcpConfig {
+    return makeConfig({
+      isGitTracked,
+      servers: [
+        {
+          name: 'c',
+          transport: 'http',
+          url: 'https://api.example.com/mcp',
+          headers: { Authorization: value },
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+  }
+
+  it.each(['Bearer', 'basic', 'Token', 'Digest', ' Bearer '])(
+    'reports Authorization: %j as a scheme with no credential, not as a secret',
+    async (value) => {
+      const issues = await checkMcpSecurity(authConfig(value), '/project');
+      expect(issues).toHaveLength(1);
+      expect(issues[0]).toMatchObject({
+        severity: 'warning',
+        ruleId: 'mcp-security/empty-auth-credential',
+        message: `Server "c": Authorization header is "${value.trim()}" with no credential`,
+      });
+      // Nothing to fix mechanically -- and a fix must never replace the scheme.
+      expect(issues[0].fix).toBeUndefined();
+    },
+  );
+
+  it('reports a scheme glued to its ${VAR} with no space', async () => {
+    const issues = await checkMcpSecurity(authConfig('Bearer${TOKEN}'), '/project');
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({
+      severity: 'warning',
+      ruleId: 'mcp-security/empty-auth-credential',
+      message:
+        'Server "c": Authorization header "Bearer${TOKEN}" has no space between the scheme and the credential',
+    });
+  });
+
+  it('reports an empty credential in an untracked config too (a correctness bug, not a leak)', async () => {
+    const issues = await checkMcpSecurity(authConfig('Bearer', false), '/project');
+    expect(issues.map((i) => i.ruleId)).toEqual(['mcp-security/empty-auth-credential']);
+  });
+
+  it.each(['Bearer ${TOKEN}', 'Basic ${CREDS}', '${AUTH}', '${PRE}Bearer', 'Bearer\t${TOKEN}'])(
+    'does not report a well-formed or fully env-supplied Authorization: %j',
+    async (value) => {
+      expect(await checkMcpSecurity(authConfig(value), '/project')).toEqual([]);
+    },
+  );
+
+  it('anchors the empty-credential finding on the header line of real source', async () => {
+    const config = parsed({
+      mcpServers: {
+        c: { url: 'https://api.example.com/mcp', headers: { Authorization: 'Bearer' } },
+      },
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    expect(issues.map((i) => [i.ruleId, i.line])).toEqual([
+      ['mcp-security/empty-auth-credential', 6],
+    ]);
+    expect(issues[0].fix).toBeUndefined();
+  });
+
+  it('still flags a literal credential after a scheme word', async () => {
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'c',
+          transport: 'http',
+          url: 'https://api.example.com/mcp',
+          headers: {
+            Authorization: 'Token q8Zt3LmP0vXa9WcR7yKd2HbN5sFj1GeU',
+            'Proxy-Authorization': 'Bearer q8Zt3LmP0vXa9WcR7yKd2HbN5sFj1GeU',
+          },
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpSecurity(config, '/project');
+    expect(issues.map((i) => i.ruleId).sort()).toEqual([
+      'mcp-security/hardcoded-api-key',
+      'mcp-security/hardcoded-bearer',
+    ]);
+  });
+
   // --- fixes on real (pretty-printed) source ---
 
   function parsed(json: unknown, relativePath = '.mcp.json'): ParsedMcpConfig {

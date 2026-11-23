@@ -270,7 +270,12 @@ export async function runCli() {
     .command('init')
     .description('Set up a git pre-commit hook that runs ctxlint --strict')
     .argument('[path]', 'Project directory', '.')
-    .action(async (projectPath: string) => {
+    .option(
+      '--shared-hooks',
+      'Allow installing into a hooks directory outside this repository (a core.hooksPath other repos share)',
+      false,
+    )
+    .action(async (projectPath: string, opts: { sharedHooks?: boolean }) => {
       const resolvedRoot = path.resolve(projectPath);
       if (!existsAsDirectory(resolvedRoot)) {
         console.error(
@@ -283,61 +288,103 @@ export async function runCli() {
       // that assumption crashed with ENOTDIR in a linked worktree or submodule
       // (.git is a file there), reported success while git ran a different
       // directory under core.hooksPath, and failed outright from a
-      // subdirectory of the repo. `--git-path hooks` covers all three; its
-      // output is relative to the directory git ran in.
-      const hooksDir = resolveHooksDir(resolvedRoot);
-      if (hooksDir === null) {
+      // subdirectory of the repo. `--git-path hooks` covers all three.
+      const layout = resolveGitLayout(resolvedRoot);
+      if (layout === null) {
         console.error('Error: not a git repository. Run "git init" first.');
         process.exit(1);
       }
+      const { hooksDir } = layout;
+      const toplevel = realpathLoose(layout.toplevel);
 
-      fs.mkdirSync(hooksDir, { recursive: true });
+      // A core.hooksPath outside the repo (typically a user-level one) is
+      // shared by every repo that uses it: a hook pinned to this project must
+      // not land there without an explicit opt-in.
+      const hooksReal = realpathLoose(hooksDir);
+      if (
+        !opts.sharedHooks &&
+        !isWithinDir(toplevel, hooksReal) &&
+        !isWithinDir(realpathLoose(layout.commonDir), hooksReal)
+      ) {
+        const origin = hooksPathOrigin(resolvedRoot);
+        console.error(
+          `Error: git runs this repository's hooks from ${hooksDir}, which is outside the repository` +
+            (origin ? ` (core.hooksPath is set in ${origin})` : ' (core.hooksPath)') +
+            '. A hook written there runs for every repository that shares that directory.' +
+            ' Re-run with --shared-hooks to install there anyway.',
+        );
+        process.exit(1);
+      }
+
+      // Create only the hooks directory itself, never a whole missing tree: a
+      // core.hooksPath whose parent is missing is a misconfiguration or a
+      // misread path, and building it reported success for a hook git never
+      // runs.
+      if (!existsAsDirectory(hooksDir)) {
+        if (!existsAsDirectory(path.dirname(hooksDir))) {
+          console.error(
+            `Error: the hooks directory ${hooksDir} does not exist and neither does its parent. Check core.hooksPath (git config --show-origin core.hooksPath).`,
+          );
+          process.exit(1);
+        }
+        fs.mkdirSync(hooksDir);
+      }
+
+      // git runs hooks from the worktree root, so a hook for a subdirectory
+      // (a monorepo package) must name that subdirectory itself.
+      const target = path.relative(toplevel, realpathLoose(resolvedRoot)).split(path.sep).join('/');
+      const command = hookCommandFor(target);
 
       const hookPath = path.join(fs.realpathSync(hooksDir), 'pre-commit');
-      // Pin the hook to the version of ctxlint that wrote it, so a repo
-      // checked out months later doesn't silently pull a newer ctxlint whose
-      // rule set drifted. Users can re-run `ctxlint init` to bump the pin.
-      // --yes: a hook has no terminal to answer npx's install prompt, so on a
-      // machine without the pinned version cached the commit would stall.
-      const fullHookContent = `#!/bin/sh
-# ctxlint pre-commit hook
-npx --yes @yawlabs/ctxlint@${VERSION} --strict
-`;
-      const appendHookContent = `
-# ctxlint pre-commit hook
-npx --yes @yawlabs/ctxlint@${VERSION} --strict
-`;
+      const block = `# ctxlint pre-commit hook\n${command}\n`;
+      if (target) {
+        console.log(
+          `Git runs hooks from the repository root (${toplevel}), so the hook lints ${target} by its path.`,
+        );
+      }
 
       if (fs.existsSync(hookPath)) {
         const existing = fs.readFileSync(hookPath, 'utf-8');
-        // Detect the actual hook command (a non-comment `npx @yawlabs/ctxlint`
-        // invocation), not any 'ctxlint' substring -- a hook that merely
+        // Detect the actual hook commands (non-comment `npx @yawlabs/ctxlint`
+        // invocations), not any 'ctxlint' substring -- a hook that merely
         // mentions ctxlint in a comment or an unrelated tool name still needs
         // the real command appended.
-        const installed = existing.match(
-          /^[^#\r\n]*\bnpx\s+(?:-y\s+|--yes\s+)?@yawlabs\/ctxlint(?:@(\d+\.\d+\.\d+))?/m,
+        const commands = [...existing.matchAll(HOOK_COMMAND_RE)];
+        const oldPins = [
+          ...new Set(commands.map((m) => m[3]).filter((p): p is string => !!p && p !== VERSION)),
+        ];
+        const missingYes = commands.some((m) => !m[2]);
+        // Re-running init is the documented way to bump the pin; it also adds
+        // --yes to hooks written before it existed (a hook cannot answer
+        // npx's install prompt). An existing `-y` is equivalent and kept as
+        // is, so a current hook is never rewritten behind an "already" message.
+        let updated = existing.replace(
+          HOOK_COMMAND_RE,
+          (_m, prefix: string, yes: string | undefined, pin: string | undefined, rest: string) =>
+            `${prefix}${yes ?? '--yes'} @yawlabs/ctxlint${pin ? `@${VERSION}` : ''}${rest}`,
         );
-        if (installed) {
-          const pinned = installed[1];
-          if (pinned && pinned !== VERSION) {
-            // Re-running init is the documented way to bump the pin.
-            fs.writeFileSync(
-              hookPath,
-              existing.replace(/(@yawlabs\/ctxlint@)\d+\.\d+\.\d+/g, `$1${VERSION}`),
-            );
-            console.log(`Updated ctxlint pre-commit hook pin from ${pinned} to ${VERSION}.`);
-          } else {
-            console.log('Pre-commit hook already includes ctxlint.');
-          }
-          console.log(`Hook: ${hookPath}`);
-          return;
+        const covered = commands.some((m) => hookTargetOf(m[4]) === target);
+        if (!covered) updated += `\n${block}`;
+        if (updated !== existing) fs.writeFileSync(hookPath, updated);
+
+        if (oldPins.length > 0) {
+          console.log(
+            `Updated ctxlint pre-commit hook pin from ${oldPins.join(', ')} to ${VERSION}.`,
+          );
         }
-        // Append to existing hook (without shebang — the existing hook already has one)
-        fs.appendFileSync(hookPath, appendHookContent);
-        console.log('Added ctxlint to existing pre-commit hook.');
+        if (missingYes) {
+          console.log('Added --yes to the ctxlint hook command so npx never prompts to install.');
+        }
+        if (!covered) {
+          // Append to existing hook (without shebang — the existing hook already has one)
+          console.log('Added ctxlint to existing pre-commit hook.');
+        } else if (oldPins.length === 0 && !missingYes) {
+          console.log(`Pre-commit hook already includes ctxlint${target ? ` for ${target}` : ''}.`);
+        }
         console.log(`Hook: ${hookPath}`);
+        if (covered) return;
       } else {
-        fs.writeFileSync(hookPath, fullHookContent, { mode: 0o755 });
+        fs.writeFileSync(hookPath, `#!/bin/sh\n${block}`, { mode: 0o755 });
         console.log(`Created pre-commit hook at ${hookPath}`);
       }
 
@@ -357,15 +404,122 @@ npx --yes @yawlabs/ctxlint@${VERSION} --strict
 }
 
 /**
- * The directory git runs hooks from for the repo containing `cwd`, honouring
- * linked worktrees, submodules and core.hooksPath; null outside a repo. Any
- * other git failure (a corrupt config, safe.directory "dubious ownership")
+ * A non-comment `npx [-y|--yes] @yawlabs/ctxlint[@x.y.z] <args>` hook line.
+ * Groups: 1 everything up to the package spec, 2 the yes flag, 3 the pin,
+ * 4 the rest of the line. Unanchored at the end so a CRLF hook keeps its \r.
+ */
+const HOOK_COMMAND_RE =
+  /^([^#\r\n]*\bnpx[ \t]+)(?:(-y|--yes)[ \t]+)?@yawlabs\/ctxlint(?:@(\d+\.\d+\.\d+))?([^\r\n]*)/gm;
+
+/** ctxlint options that take a value, so the value is not read as the path. */
+const VALUE_OPTIONS = new Set(['--checks', '--format', '--ignore', '--config', '--depth']);
+
+/**
+ * The hook command for the project at `target` (relative to the repo root,
+ * '' for the root). Pinned to the version of ctxlint that wrote it, so a repo
+ * checked out months later doesn't silently pull a newer ctxlint whose rule
+ * set drifted (re-run `ctxlint init` to bump it). --yes: a hook has no
+ * terminal to answer npx's install prompt, so on a machine without the
+ * pinned version cached the commit would stall.
+ */
+function hookCommandFor(target: string): string {
+  const arg = !target
+    ? ''
+    : /^[\w./@%+=:,-]+$/.test(target)
+      ? ` ${target}`
+      : ` '${target.replace(/'/g, `'\\''`)}'`;
+  return `npx --yes @yawlabs/ctxlint@${VERSION} --strict${arg}`;
+}
+
+/**
+ * The project path a hook command's arguments name, normalised the way
+ * init computes its target ('' for the repo root), so a hook for
+ * packages/foo is not mistaken for one covering packages/bar or the root.
+ */
+function hookTargetOf(args: string): string {
+  // Stop at a comment or the next shell command.
+  const cmd = args.split(/\s#|;|&&|\|\||\|/)[0];
+  const tokens = [...cmd.matchAll(/'([^']*)'|"((?:[^"\\]|\\.)*)"|(\S+)/g)].map(
+    (m) => m[1] ?? m[2]?.replace(/\\(.)/g, '$1') ?? m[3],
+  );
+  let positional: string | undefined;
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (VALUE_OPTIONS.has(t)) i++;
+    else if (!t.startsWith('-')) {
+      positional = t;
+      break;
+    }
+  }
+  if (positional === undefined) return '';
+  const norm = path.posix.normalize(positional.replace(/\\/g, '/')).replace(/\/+$/, '');
+  return norm === '.' ? '' : norm.replace(/^\.\//, '');
+}
+
+/**
+ * Convert an MSYS-style drive path (`/c/Users/...`), which Git for Windows
+ * returns verbatim from a core.hooksPath written that way, to `C:/Users/...`.
+ * path.resolve would otherwise read it as `C:\c\Users\...`. A no-op off win32.
+ */
+export function fromMsysPath(p: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform !== 'win32') return p;
+  return p.replace(/^\/([a-zA-Z])(?=\/|$)\/?/, (_m, drive: string) => `${drive.toUpperCase()}:/`);
+}
+
+/** realpath of `p`, or of its deepest existing ancestor with the rest re-joined. */
+function realpathLoose(p: string): string {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    const parent = path.dirname(p);
+    return parent === p ? p : path.join(realpathLoose(parent), path.basename(p));
+  }
+}
+
+function isWithinDir(dir: string, p: string): boolean {
+  const rel = path.relative(dir, p);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+/**
+ * Where core.hooksPath is set (`git config --show-origin`), e.g.
+ * `file:C:/Users/me/.gitconfig`, or null when git cannot say.
+ */
+function hooksPathOrigin(cwd: string): string | null {
+  try {
+    const out = execFileSync('git', ['config', '--show-origin', 'core.hooksPath'], {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const last = out.trim().split(/\r?\n/).pop() ?? '';
+    const origin = last.split('\t')[0];
+    return origin || null;
+  } catch {
+    return null;
+  }
+}
+
+interface GitLayout {
+  /** The worktree root, where git runs hooks from. */
+  toplevel: string;
+  /** The common git dir (shared by linked worktrees). */
+  commonDir: string;
+  /** The directory git runs hooks from. */
+  hooksDir: string;
+}
+
+/**
+ * Where the repo containing `cwd` lives and runs hooks from, honouring linked
+ * worktrees, submodules and core.hooksPath; null outside a repo. Any other git
+ * failure (a corrupt config, safe.directory "dubious ownership", a bare repo)
  * throws with git's own message: "run git init" would be wrong advice there.
  */
-function resolveHooksDir(cwd: string): string | null {
+function resolveGitLayout(cwd: string): GitLayout | null {
+  const args = ['rev-parse', '--show-toplevel', '--git-common-dir', '--git-path', 'hooks'];
   let out: string;
   try {
-    out = execFileSync('git', ['rev-parse', '--git-path', 'hooks'], {
+    out = execFileSync('git', args, {
       cwd,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -378,12 +532,19 @@ function resolveHooksDir(cwd: string): string | null {
     }
     const stderr = String((err as { stderr?: unknown }).stderr ?? '').trim();
     if (/not a git repository/i.test(stderr)) return null;
-    throw new Error(`git rev-parse --git-path hooks failed: ${stderr || String(err)}`, {
+    throw new Error(`git ${args.join(' ')} failed: ${stderr || String(err)}`, {
       cause: err,
     });
   }
-  const rel = out.trim();
-  return rel ? path.resolve(cwd, rel) : null;
+  // Each line is absolute or relative to `cwd`; on Windows any of them can
+  // come back MSYS-style.
+  const [toplevel, commonDir, hooksDir] = out
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => path.resolve(cwd, fromMsysPath(l)));
+  if (!toplevel || !commonDir || !hooksDir) return null;
+  return { toplevel, commonDir, hooksDir };
 }
 
 /**

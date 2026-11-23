@@ -334,15 +334,19 @@ describe('hook-coverage/dead-hook', () => {
   );
 
   it.skipIf(process.platform !== 'win32')(
-    'still flags a genuinely missing MSYS /c/ directory target (win32)',
+    'flags a missing MSYS /c/ script but not a cd to a missing directory (win32)',
     async () => {
-      // Control for the test above: the same cd-entry shape pointing at a
-      // directory that does NOT exist must keep flagging.
+      // A cd target is command text the rule matches whether or not the
+      // directory exists, so it is not reported. A script the rule runs, spelled
+      // the same MSYS way, still is: the translation must not hide it.
       const absDir = path.join(tmpDir, 'no', 'such', 'dir');
       const msysDir = `/${absDir[0].toLowerCase()}${absDir.slice(2).replace(/\\/g, '/')}`;
-      writeSettings({ permissions: { allow: [`Bash(cd ${msysDir}*)`] } });
+      writeSettings({
+        permissions: { allow: [`Bash(cd ${msysDir}*)`, `Bash(bash ${msysDir}/gate.sh*)`] },
+      });
       const issues = await checkHookCoverage(tmpDir, homeDir);
       expect(issues).toHaveLength(1);
+      expect(issues[0].message).toContain('gate.sh');
       expect(issues[0].message).toContain('does not exist on disk');
     },
   );
@@ -539,6 +543,94 @@ describe('hook-coverage/dead-hook false positives on correct settings', () => {
     expect(issues[0].message).toContain('"./.claude/hooks/nope.sh"');
   });
 
+  it.skipIf(process.platform !== 'win32')(
+    'does not report a live hook reached through a UNC path',
+    async () => {
+      const abs = writeHookScript('.claude/hooks/gate.ps1');
+      // \\localhost\C$\... -- the admin share of the drive the temp dir is on.
+      const unc = `\\\\localhost\\${abs[0]}$${abs.slice(2)}`;
+      if (!fs.existsSync(unc)) return; // admin shares disabled on this host
+      writeSettings({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: 'Bash',
+              hooks: [{ command: `pwsh -File ${unc}` }, { command: `pwsh -File "${unc}"` }],
+            },
+          ],
+        },
+      });
+      expect(await checkHookCoverage(tmpDir, homeDir)).toEqual([]);
+    },
+  );
+
+  it('does not report a Bash allow rule whose argument is data, not a script it runs', async () => {
+    writeSettings({
+      permissions: {
+        allow: [
+          'Bash(ls /api/v1)',
+          'Bash(rm -rf ./dist/)',
+          'Bash(cat ./notes/x)',
+          // A script extension on a DATA argument is still data, not execution.
+          'Bash(rm ./dist/bundle.js)',
+          'Bash(cat ./scripts/gone.sh)',
+          'Bash(bash -c "echo ./scripts/gone.sh")',
+        ],
+      },
+    });
+    expect(await checkHookCoverage(tmpDir, homeDir)).toEqual([]);
+  });
+
+  it('reports a missing script run through an interpreter or launcher, whatever its extension', async () => {
+    writeSettings({
+      permissions: {
+        allow: [
+          'Bash(bash ./scripts/run-gate)',
+          'Bash(sudo ./bin/deploy)',
+          'Bash(sudo -u ops ./bin/deploy-as)',
+          'Bash(env FOO=1 ./bin/envd)',
+          'Bash(node --trace-warnings ./tools/gen.mjs)',
+          'Bash(npx ./tools/local-bin)',
+          'PowerShell(pwsh -NoProfile -File ./scripts/gate.ps1)',
+        ],
+      },
+    });
+    const issues = await checkHookCoverage(tmpDir, homeDir);
+    expect(issues.map((i) => i.message.match(/"([^"]+)"/)?.[1])).toEqual([
+      './scripts/run-gate',
+      './bin/deploy',
+      './bin/deploy-as',
+      './bin/envd',
+      './tools/gen.mjs',
+      './tools/local-bin',
+      './scripts/gate.ps1',
+    ]);
+    for (const i of issues) expect(i.message).toContain('runs a script that is missing');
+  });
+
+  it('reports a Bash allow rule that executes a missing script, worded as a missing script', async () => {
+    writeSettings({
+      permissions: {
+        allow: [
+          'Bash(bash ./scripts/gone.sh)',
+          'Bash(./bin/run-gate --fast)',
+          'Bash(FOO=1 ./bin/x)',
+        ],
+      },
+    });
+    const issues = await checkHookCoverage(tmpDir, homeDir);
+    expect(issues.map((i) => i.message.match(/"([^"]+)"/)?.[1])).toEqual([
+      './scripts/gone.sh',
+      './bin/run-gate',
+      './bin/x',
+    ]);
+    for (const i of issues) {
+      expect(i.message).toContain('runs a script that is missing');
+      expect(i.message).not.toContain('matches nothing');
+      expect(i.suggestion).not.toContain('grants nothing');
+    }
+  });
+
   it('does not stat redirection targets', async () => {
     writeHookScript('.claude/hooks/gate.sh');
     writeSettings({
@@ -626,6 +718,34 @@ describe('hook-coverage helpers (pure, any OS)', () => {
     expect(hookShellWords('pwsh C:\\hooks\\gate.ps1').map((w) => w.text)).toEqual([
       'pwsh',
       'C:\\hooks\\gate.ps1',
+    ]);
+  });
+
+  it('hookShellWords keeps a leading UNC `\\\\` prefix', () => {
+    expect(hookShellWords('pwsh -File \\\\host\\share\\gate.ps1').map((w) => w.text)).toEqual([
+      'pwsh',
+      '-File',
+      '\\\\host\\share\\gate.ps1',
+    ]);
+    // Double-quoted (the usual form when the path has spaces) keeps it too.
+    expect(hookShellWords('pwsh -File "\\\\host\\share\\my gate.ps1"').map((w) => w.text)).toEqual([
+      'pwsh',
+      '-File',
+      '\\\\host\\share\\my gate.ps1',
+    ]);
+    // Mid-word, `\\` is still an escaped backslash, quoted or not.
+    expect(hookShellWords('echo a\\\\b').map((w) => w.text)).toEqual(['echo', 'a\\b']);
+    expect(hookShellWords('echo "a\\\\b"').map((w) => w.text)).toEqual(['echo', 'a\\b']);
+  });
+
+  it('hookShellWords marks the words in command position', () => {
+    const words = hookShellWords('FOO=1 ./a.sh x 2>&1 && ./b.sh | c; (d)');
+    expect(words.filter((w) => w.commandStart).map((w) => w.text)).toEqual([
+      'FOO=1',
+      './a.sh',
+      './b.sh',
+      'c',
+      'd',
     ]);
   });
 

@@ -1013,6 +1013,19 @@ describe('applyFixes', () => {
       expect(messages).not.toContain(GHP);
     });
 
+    it('shows a CamelCase paths fix in full (key-shaped masking is mcp-only)', () => {
+      const OLD = 'src/AddUserAuthenticationV2Migratoin.ts';
+      const NEW = 'src/AddUserAuthenticationV2Migration.ts';
+      const filePath = writeFixture('CLAUDE.md', `See \`${OLD}\`\n`);
+      const messages = captureLogs(() =>
+        applyFixes(oneFix(filePath, { line: 1, oldText: OLD, newText: NEW, column: 6 }), {
+          dryRun: true,
+        }),
+      );
+      expect(messages).toContain(OLD);
+      expect(messages).toContain(NEW);
+    });
+
     it('prints a header naming each file before its lines', () => {
       fs.mkdirSync(path.join(tmpDir, 'docs'));
       const a = writeFixture('CLAUDE.md', 'See `src/a.ts`\n');

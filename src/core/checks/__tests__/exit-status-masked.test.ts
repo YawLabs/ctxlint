@@ -7,6 +7,7 @@ import { checkCommands } from '../commands.js';
 import {
   analyzeMaskedExitStatus,
   fenceBlocks,
+  fenceLineIndex,
   pipefailInScope,
   splitPipes,
   splitSegments,
@@ -208,6 +209,23 @@ describe('analyzeMaskedExitStatus', () => {
     );
   });
 
+  it.each([['No TypeScript errors - clean'], ['Error-free, passed'], ['no lint errors, OK']])(
+    'flags a zero count with words between, or an error-free claim (%s)',
+    (message) => {
+      expect(analyzeMaskedExitStatus(`npx tsc --noEmit | tail -5 && echo "${message}"`)?.kind).toBe(
+        'success-claim',
+      );
+    },
+  );
+
+  it('still treats a real failure word before the success word as a negation', () => {
+    for (const message of ['FAIL: not clean', 'errors found, not clean', 'no tests passed']) {
+      expect(
+        analyzeMaskedExitStatus(`npx tsc --noEmit | grep -q x && echo "${message}"`),
+      ).toBeNull();
+    }
+  });
+
   it('is silent on a bare `; echo done` with no status read', () => {
     // `;` alone claims nothing about the pipeline -- only an explicit `$?` does.
     expect(analyzeMaskedExitStatus('npx tsc --noEmit | head -20; echo done')).toBeNull();
@@ -245,6 +263,13 @@ describe('pipefailInScope', () => {
     expect(pipefailInScope(doc.replace(/\n/g, '\r\n'), 5)).toBe(true);
   });
 
+  it('accepts a precomputed line array and fence index', () => {
+    const lines = doc.split('\n');
+    const index = fenceLineIndex(fenceBlocks(lines), lines.length);
+    expect(pipefailInScope(lines, 5, index)).toBe(true);
+    expect(pipefailInScope(lines, 8, index)).toBe(false);
+  });
+
   it('is not fooled by a fence-looking line inside an HTML comment', () => {
     // The comment's ``` used to toggle the hand-rolled tracker, so the real
     // fence below read as CLOSED and its pipefail was never seen.
@@ -262,6 +287,13 @@ describe('fenceBlocks', () => {
       { open: 1, close: 3, info: 'bash title' },
       { open: 5, close: 7, info: '' },
     ]);
+  });
+
+  it('fenceLineIndex maps each body line to its block and nothing else', () => {
+    const lines = ['x', '```bash', 'a', '```', 'y'];
+    const blocks = fenceBlocks(lines);
+    const index = fenceLineIndex(blocks, lines.length);
+    expect(index.map((b) => (b ? b.open : null))).toEqual([null, null, 1, null, null]);
   });
 });
 
@@ -346,6 +378,41 @@ describe('checkCommands — commands/exit-status-masked in a temp project', () =
       { devDependencies: { typescript: '^5' } },
     );
     expect(issues).toEqual([]);
+  });
+
+  // A next line with its OWN masked pipeline is reported once, on that line --
+  // not a second time on the unrelated line above it.
+  it('does not re-report the next line`s own pipeline on the previous line', async () => {
+    const issues = await run('```bash\nnpm test\nnpx eslint . | head -5; echo "exit=$?"\n```\n', {
+      scripts: { test: 'vitest run' },
+      devDependencies: { eslint: '^9', vitest: '^3' },
+    });
+    expect(issues.map((i) => i.line)).toEqual([3]);
+    expect(issues[0].message).toContain('"npx eslint . | head -5; echo "exit=$?""');
+  });
+
+  it('flags a next-line `$?` read that is itself piped, like the one-line form', async () => {
+    const issues = await run(
+      '```bash\nnpm test | tee out.log\necho "status: $?" | tee status.txt\n```\n',
+      { scripts: { test: 'vitest run' }, devDependencies: { vitest: '^3' } },
+    );
+    expect(issues.map((i) => i.line)).toEqual([2]);
+    expect(issues[0].message).toContain('exit status comes from "tee"');
+  });
+
+  it('reports each line once when both the pipeline and the next line mask their status', async () => {
+    const issues = await run(
+      '```bash\nnpx tsc --noEmit | head -20\nnpx eslint . | head -5; echo "exit=$?"\n```\n',
+      { devDependencies: { typescript: '^5', eslint: '^9' } },
+    );
+    expect(issues.map((i) => i.line)).toEqual([3]);
+  });
+
+  it('still flags the next-line `$?` read when it is followed by more commands', async () => {
+    const issues = await run('```bash\nnpx tsc --noEmit | head -20\necho "exit=$?"; ls\n```\n', {
+      devDependencies: { typescript: '^5' },
+    });
+    expect(issues.map((i) => i.line)).toEqual([2]);
   });
 
   it('stays silent when pipefail is set earlier in the same fence', async () => {

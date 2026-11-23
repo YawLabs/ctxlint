@@ -1,7 +1,7 @@
 import { statSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
 import { isOutsideRelative } from '../../../utils/fs.js';
-import { readProjectTranscript, truncationNote } from '../../transcript.js';
+import { COMMIT_SUMMARY_LINE, readProjectTranscript, truncationNote } from '../../transcript.js';
 import type { TranscriptEvent } from '../../transcript.js';
 import type { LintIssue, SessionContext } from '../../types.js';
 
@@ -46,6 +46,16 @@ function isCommit(cmd: string): boolean {
   // `git commit` in any position (chained with && or ;), but NOT
   // `git commit --dry-run`, which lands nothing.
   return /\bgit\s+commit\b/.test(cmd) && !/--dry-run\b/.test(cmd);
+}
+
+/**
+ * True when the command's output carried git's commit summary line. The
+ * transcript reader sets `commitLanded` from the FULL output, so a long hook
+ * or push log around the line cannot hide it; the excerpt test is a fallback
+ * for events built without that field.
+ */
+function commitLanded(ev: TranscriptEvent): boolean {
+  return ev.commitLanded === true || COMMIT_SUMMARY_LINE.test(ev.outputExcerpt ?? '');
 }
 
 /** True when `arg`, read relative to the project, names an existing file. */
@@ -154,7 +164,10 @@ export async function checkDefaultBranchAccumulation(ctx: SessionContext): Promi
     if (ev.kind === 'command') {
       // A commit that failed (hook rejected it, nothing staged) landed
       // nothing, so the pending set stands; a failed checkout moved nothing.
-      if (ev.isError === true) continue;
+      // The error flag covers the whole chain, though: in `git commit && git
+      // push` with the push rejected, the commit's own `[branch sha]` line
+      // shows it landed.
+      if (ev.isError === true && !(isCommit(ev.text) && commitLanded(ev))) continue;
       if (isCommit(ev.text)) {
         // A commit lands the shared working tree, whichever session typed it.
         for (const a of acc.values()) a.pending.clear();

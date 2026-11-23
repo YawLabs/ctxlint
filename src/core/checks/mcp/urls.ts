@@ -9,19 +9,27 @@ const ALLOWED_PROTOCOLS: ReadonlySet<string> = new Set(['http:', 'https:', 'ws:'
  * The URL as safe to echo in a finding: query string and fragment (where
  * `?token=` / `#access_token=` ride) and any `user:pass@` userinfo replaced
  * with `...`. Works on the raw string because the URL is by definition one
- * `new URL` rejected. Userinfo is taken per `/`-segment, which also catches a
- * malformed scheme (`http//u:p@host`, `https:/u:p@host`).
+ * `new URL` rejected. Everything from the end of the scheme prefix (`x://`,
+ * or a malformed `x//` / `x:/`, else the start of the string) to the LAST
+ * `@` before the query is cut, so a `/` inside an unencoded password
+ * (`https://u:pa/ss@host`) cannot split the userinfo and leak half of it.
+ *
+ * A `?`/`#` inside an unencoded password (`https://u:pa?ss@host`) looks
+ * exactly like a query holding an `@` (`https://host?t=pa@ss`): when no `@`
+ * precedes the first `?`/`#` but one follows it, either reading could be
+ * right, and each one's secret is the other one's visible part. Only the
+ * scheme prefix is safe under both, so that is all that is shown.
  */
 function redactUrlForDisplay(url: string): string {
-  const cut = url.search(/[?#]/);
-  const head = cut === -1 ? url : `${url.slice(0, cut + 1)}...`;
-  return head
-    .split('/')
-    .map((seg) => {
-      const at = seg.lastIndexOf('@');
-      return at > 0 ? `...${seg.slice(at)}` : seg;
-    })
-    .join('/');
+  const prefix = url.match(/^[A-Za-z][A-Za-z0-9+.-]*:?\/+/)?.[0] ?? '';
+  const rest = url.slice(prefix.length);
+  const cut = rest.search(/[?#]/);
+  const beforeQuery = cut === -1 ? rest : rest.slice(0, cut);
+  const query = cut === -1 ? '' : `${rest[cut]}...`;
+  const at = beforeQuery.lastIndexOf('@');
+  if (at !== -1) return `${prefix}...${beforeQuery.slice(at)}${query}`;
+  if (cut !== -1 && rest.includes('@', cut)) return `${prefix}...`;
+  return prefix + beforeQuery + query;
 }
 
 export async function checkMcpUrls(

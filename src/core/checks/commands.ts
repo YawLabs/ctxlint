@@ -7,10 +7,12 @@ import { closestMatch } from './closest-match.js';
 import {
   analyzeMaskedExitStatus,
   fenceBlocks,
+  fenceLineIndex,
   NPM_LIFECYCLE_SHORTHANDS,
   pipefailInScope,
+  splitSegments,
 } from './exit-status.js';
-import type { FenceBlock, MaskedExitStatus } from './exit-status.js';
+import type { FenceIndex, MaskedExitStatus } from './exit-status.js';
 import { findBinInvocations, knownSubcommands, ownedBins } from './cli-subcommands.js';
 import type { BinInvocation } from './cli-subcommands.js';
 import {
@@ -675,6 +677,9 @@ export async function checkCommands(
   );
 
   const jvmCache: JvmBuildCache = { gradle: new Map(), maven: new Map() };
+  // Fence scopes, computed once per file: the masked-exit, pipefail and
+  // earlier-`cd` lookups below each need the block around a ref's line.
+  const fenceAt = fenceLineIndex(fenceBlocks(contentLines), contentLines.length);
 
   for (const ref of file.references.commands) {
     // Above the exit-status check too: a command inside a comment should
@@ -689,8 +694,8 @@ export async function checkCommands(
     // the two are independent and may both fire on one line.
     const masked =
       analyzeMaskedExitStatus(cmd, pkgJson?.scripts) ??
-      maskedByNextLine(contentLines, ref, pkgJson?.scripts);
-    if (masked && !pipefailInScope(file.content, ref.line)) {
+      maskedByNextLine(contentLines, fenceAt, ref, pkgJson?.scripts);
+    if (masked && !pipefailInScope(contentLines, ref.line, fenceAt)) {
       const why =
         masked.kind === 'success-claim'
           ? 'the success claim cannot fail'
@@ -724,20 +729,21 @@ export async function checkCommands(
     // Gradle project paths and Maven module selectors. Each returns null when
     // the command is not that tool's invocation, so an ordinary command falls
     // through to the branches below.
-    const gradleIssues = checkGradleProjects(file, ref, projectRoot, jvmCache);
+    // Scripts, make targets and build-tool modules resolve in the directory the
+    // command runs in, which a `cd` earlier in the same snippet moves somewhere
+    // unknown.
+    const cdEarlier = (): boolean => cdEarlierInFence(contentLines, fenceAt, ref.line);
+
+    const gradleIssues = checkGradleProjects(file, ref, projectRoot, jvmCache, cdEarlier);
     if (gradleIssues) {
       issues.push(...gradleIssues);
       continue;
     }
-    const mavenIssues = checkMavenModules(file, ref, projectRoot, jvmCache);
+    const mavenIssues = checkMavenModules(file, ref, projectRoot, jvmCache, cdEarlier);
     if (mavenIssues) {
       issues.push(...mavenIssues);
       continue;
     }
-
-    // Scripts and make targets resolve in the directory the command runs in,
-    // which a `cd` earlier in the same snippet moves somewhere unknown.
-    const cdEarlier = (): boolean => cdEarlierInFence(file.content, ref.line);
 
     // npm/pnpm/yarn/bun script references
     const scriptMatch = cmd.match(NPM_SCRIPT_PATTERN);
@@ -889,21 +895,24 @@ function npmLifecycleResolves(scope: PackageScope, script: string): boolean {
  */
 function maskedByNextLine(
   lines: string[],
+  fenceAt: FenceIndex,
   ref: CommandReference,
   scripts: Record<string, string> | undefined,
 ): MaskedExitStatus | null {
   const idx = ref.line - 1;
-  const block = enclosingFence(lines, idx);
+  const block = fenceAt[idx];
   if (!block || idx + 1 >= block.close) return null;
   const nextCmd = lines[idx + 1].trim().replace(/^[$>]\s+/, '');
   if (!nextCmd) return null;
-  const masked = analyzeMaskedExitStatus(`${ref.value}; ${nextCmd}`, scripts);
+  // Only the next line's FIRST command reads this line's `$?` -- even when it
+  // is piped (`echo "status: $?" | tee status.txt`). Joining just that segment
+  // also keeps a next line that masks its own status
+  // (`npx eslint . | head; echo $?`) from being re-reported on this line: its
+  // own `$?` read lives in a later segment, so it stays its own finding.
+  const first = splitSegments(nextCmd)[0]?.text ?? '';
+  if (!first) return null;
+  const masked = analyzeMaskedExitStatus(`${ref.value}; ${first}`, scripts);
   return masked?.kind === 'status-echo' ? masked : null;
-}
-
-/** The fenced block whose body holds 0-based line `idx`, if any. */
-function enclosingFence(lines: string[], idx: number): FenceBlock | undefined {
-  return fenceBlocks(lines).find((b) => b.open < idx && idx < b.close);
 }
 
 /**
@@ -990,10 +999,11 @@ function checkGradleProjects(
   ref: CommandReference,
   projectRoot: string,
   cache: JvmBuildCache,
+  cdEarlier: () => boolean,
 ): LintIssue[] | null {
   const refs = gradleProjectRefs(ref.value);
   if (refs === null) return null;
-  if (refs.length === 0 || cdEarlierInFence(file.content, ref.line)) return [];
+  if (refs.length === 0 || cdEarlier()) return [];
 
   // `./gradlew` runs only where the wrapper is; plain `gradle` runs anywhere.
   const wrapper = gradleUsesWrapper(ref.value);
@@ -1037,10 +1047,11 @@ function checkMavenModules(
   ref: CommandReference,
   projectRoot: string,
   cache: JvmBuildCache,
+  cdEarlier: () => boolean,
 ): LintIssue[] | null {
   const selectors = mavenSelectors(ref.value);
   if (selectors === null) return null;
-  if (selectors.length === 0 || cdEarlierInFence(file.content, ref.line)) return [];
+  if (selectors.length === 0 || cdEarlier()) return [];
 
   const bases: Array<{ dir: string; reactor: ReactorProject[] }> = [];
   for (const dir of mavenBaseDirs(file.filePath, projectRoot)) {
@@ -1100,11 +1111,10 @@ function checkMavenModules(
  * build root nor a relative module path can be trusted. Same fence scoping as
  * pipefailInScope in exit-status.ts.
  */
-function cdEarlierInFence(content: string, line: number): boolean {
-  const lines = content.split('\n');
+function cdEarlierInFence(lines: string[], fenceAt: FenceIndex, line: number): boolean {
   const idx = line - 1;
   const changesDir = (text: string): boolean => /(?:^|[\s;&|(])(?:cd|pushd)(?:\s|$)/.test(text);
-  const block = enclosingFence(lines, idx);
+  const block = fenceAt[idx];
   if (block) {
     for (let i = block.open + 1; i < idx; i++) if (changesDir(lines[i])) return true;
     return false;

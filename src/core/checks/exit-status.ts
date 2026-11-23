@@ -190,9 +190,13 @@ const SUCCESS_WORD =
  */
 const NEGATION_BEFORE = /\b(not|never|no|fail|failed|fails|failure|error|errors|isn'?t|aren'?t)\b/i;
 
-/** "0 errors", "no issues", "zero failures", "0 failed", "errors: 0". */
+/**
+ * "0 errors", "no TypeScript errors", "zero lint failures", "0 failed",
+ * "errors: 0", and the hyphenated "error-free". Up to two words may sit between
+ * the count and the noun ("no TypeScript type errors").
+ */
 const ZERO_COUNT =
-  /\b(?:0|no|zero)\s+(?:errors?|issues?|problems?|warnings?|failures?|failed|failing)\b|\b(?:errors?|issues?|problems?|warnings?|failures?|failed):?\s*0\b/gi;
+  /\b(?:0|no|zero)\s+(?:[\w.'-]+\s+){0,2}(?:errors?|issues?|problems?|warnings?|failures?|failed|failing)\b|\b(?:errors?|issues?|problems?|warnings?|failures?|failed):?\s*0\b|\b(?:errors?|issues?|problems?|warnings?|failures?)-free\b/gi;
 
 /** `set -o pipefail` in any of its spellings (`-eo`, `-euo`, `-o`). */
 const PIPEFAIL = /\bset\s+[-\w\s]*\bpipefail\b/;
@@ -445,13 +449,22 @@ export function analyzeMaskedExitStatus(
  * across fences, and a `pipefail` in an unrelated snippet elsewhere in the doc
  * says nothing about this one. A command outside any fence has no shell scope
  * to inherit, so it returns false.
+ *
+ * A caller checking many lines of one file passes the split lines and a
+ * {@link fenceLineIndex} built once, so the fence scan is not redone per line.
  */
-export function pipefailInScope(content: string, line: number): boolean {
-  const lines = content.split('\n');
+export function pipefailInScope(
+  content: string | string[],
+  line: number,
+  fenceAt?: FenceIndex,
+): boolean {
+  const lines = typeof content === 'string' ? content.split('\n') : content;
   const idx = line - 1;
   if (idx < 0 || idx >= lines.length) return false;
 
-  const block = fenceBlocks(lines).find((b) => b.open < idx && idx < b.close);
+  const block = fenceAt
+    ? fenceAt[idx]
+    : fenceBlocks(lines).find((b) => b.open < idx && idx < b.close);
   if (!block) return false;
   for (let i = block.open + 1; i < idx; i++) {
     if (PIPEFAIL.test(lines[i])) return true;
@@ -510,4 +523,16 @@ export function fenceBlocks(lines: string[]): FenceBlock[] {
     i = j < lines.length && fenced(j) ? j + 1 : j;
   }
   return out;
+}
+
+/** 0-indexed line -> the fenced block whose BODY holds it (delimiters map to undefined). */
+export type FenceIndex = ReadonlyArray<FenceBlock | undefined>;
+
+/** Build a {@link FenceIndex} from {@link fenceBlocks} output, once per file. */
+export function fenceLineIndex(blocks: FenceBlock[], lineCount: number): FenceIndex {
+  const index: Array<FenceBlock | undefined> = new Array(lineCount).fill(undefined);
+  for (const b of blocks) {
+    for (let i = b.open + 1; i < b.close && i < lineCount; i++) index[i] = b;
+  }
+  return index;
 }

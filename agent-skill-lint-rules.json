@@ -56,7 +56,7 @@
       "category": "skill",
       "severity": "warning",
       "description": "A relative path reference (./ or ../) in a SKILL.md / agent body does not resolve to a file or directory relative to the skill/agent file. Reuses the path-reference detection shape from the context-file pillar; only explicitly-relative refs are verified to avoid false positives on prose.",
-      "trigger": "A ./ or ../ path token in the body does not exist on disk relative to the skill directory. Tokens in unlabeled fences and in code, shell or data fences (js, ts, py, bash, console, json, yaml, ...; ``` or ~~~ of any length), in HTML-comment lines and in inline-code command spans are not resolved.",
+      "trigger": "A ./ or ../ path token in the body does not exist on disk relative to the skill directory. Tokens in unlabeled fences and in code, shell or data fences (js, ts, py, bash, console, json, yaml, ...; ``` or ~~~ of any length), in HTML-comment lines and in inline-code command spans are not resolved. After an invocation verb (run, start, call, launch, ...) only executable-shaped spans are skipped; .md, .json, .txt and trailing-/ references there are still checked.",
       "message": "{file}: references \"{path}\" which does not exist relative to the skill directory",
       "fixable": false,
       "stability": "experimental"
@@ -66,7 +66,7 @@
       "category": "skill",
       "severity": "warning",
       "description": "Two or more skills/agents declare the same trigger phrase (a quoted phrase in the description, or a trigger/triggers field). When triggers collide, only one wins -- invocation becomes non-deterministic.",
-      "trigger": "A normalized trigger phrase (lowercased, whitespace-collapsed) is declared by more than one distinct skill/agent file.",
+      "trigger": "A normalized trigger phrase (lowercased, whitespace-collapsed) is declared by more than one distinct skill/agent file. Quoted phrases governed by a negation (Not for \"x\", \"y\" or \"z\") are not triggers.",
       "message": "Trigger phrase \"{trigger}\" is declared by {count} skills/agents — only one will win",
       "fixable": false,
       "stability": "experimental"

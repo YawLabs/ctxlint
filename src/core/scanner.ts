@@ -154,7 +154,7 @@ function resolveRealRoot(projectRoot: string): string {
  *     `.claude/rules/x.md` a plain file whose content still lives outside the
  *     tree. A CLAUDE.md symlinked to ~/.ssh/config or /etc/passwd would
  *     otherwise have its out-of-tree content read, tokenized, and echoed into
- *     findings; or
+ *     findings. Reported on stderr so the drop is not silent; or
  *   - a file over MAX_FILE_BYTES (reading it would stall the stdio server),
  *     reported on stderr so the drop is not silent.
  * `realProjectRoot` must be realpath-resolved so an in-root target is not
@@ -172,7 +172,13 @@ function isExcludedScanTarget(
   } catch {
     return true; // broken / unreadable link
   }
-  if (isOutsideRelative(path.relative(realProjectRoot, real))) return true;
+  if (isOutsideRelative(path.relative(realProjectRoot, real))) {
+    // Same channel as the size-cap drop below: a file under a symlinked or
+    // junctioned dir (.claude/rules -> a shared rules dir) otherwise vanishes
+    // from the corpus and the run reports "No issues found".
+    console.error(`Warning: skipping ${relativePath}: resolves outside the project root`);
+    return true;
+  }
   let size: number;
   try {
     size = fs.statSync(normalized).size;

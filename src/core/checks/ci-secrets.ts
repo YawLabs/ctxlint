@@ -147,7 +147,13 @@ function contextMentionsSecret(files: ParsedContextFile[], secretName: string): 
     // ordinary prose ("request a token") count as documentation while a
     // conventional "Set TOKEN" doc mention would not.
     const exactCase = new RegExp(`\\b${escaped.toUpperCase()}\\b`);
-    const backticked = new RegExp(`\`[^\`\\n]*\\b${escaped}\\b[^\`\\n]*\``, 'i');
+    // A code span documents the secret only when the WHOLE span is the name
+    // (`token`, `$TOKEN`, `${TOKEN}`, `secrets.TOKEN`, `TOKEN=...`). A span
+    // that merely contains the word (`gh auth token`) is a command, not doc.
+    const backticked = new RegExp(
+      `\`\\s*(?:\\$\\{?${escaped}\\}?|secrets\\.${escaped}|${escaped}(?:=[^\`\\n]*)?)\\s*\``,
+      'i',
+    );
     const secretsRef = new RegExp(`\\bsecrets\\.${escaped}\\b`, 'i');
     return files.some(
       (f) => exactCase.test(f.content) || backticked.test(f.content) || secretsRef.test(f.content),

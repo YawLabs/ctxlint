@@ -121,6 +121,26 @@ describe('readProjectTranscript', () => {
     expect(read.filesRead).toBe(0);
   });
 
+  it('flags a landed commit from the full output, even when the excerpt drops it', async () => {
+    const project = '/repo/commit-landed';
+    // A long hook log before the summary line and a long push log after it:
+    // the 1000+1000 excerpt cuts the middle, where the summary line sits.
+    const hookLog = 'lint-staged: running\n'.repeat(200);
+    const pushLog = 'remote: rejected (fetch first)\n'.repeat(200);
+    const out = `${hookLog}[main 1a2b3c4] add feature\n 1 file changed\n${pushLog}`;
+    const home = withTranscript(project, [
+      bash('git commit -m x && git push', 'c1'),
+      result('c1', out, true),
+      bash('git push', 'c2'),
+      result('c2', 'Everything up-to-date'),
+    ]);
+    const read = await readProjectTranscript(project, home);
+    const [commit, push] = read.events.filter((e) => e.kind === 'command');
+    expect(commit.outputExcerpt).not.toContain('[main 1a2b3c4]');
+    expect(commit.commitLanded).toBe(true);
+    expect(push.commitLanded).toBeUndefined();
+  });
+
   it('skips malformed lines instead of discarding the file', async () => {
     const project = '/repo/malformed';
     const home = mkdtempSync(join(tmpdir(), 'ctxlint-transcript-'));

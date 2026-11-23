@@ -302,11 +302,21 @@ const INLINE_PATH = /^\.{1,2}\/[\w@./-]*(?:\.[A-Za-z0-9]+|\/)$/;
 // ...and not one the prose says to run ("Run `./scripts/build.sh`").
 const INVOCATION_BEFORE =
   /\b(?:run|runs|running|execute|executes|invoke|invokes|call|calls|launch|start)\b[^.;:!?]*$/i;
+// The invocation guard applies only to executable-shaped spans. A document,
+// data file or directory (`./guide.md`, `./x.json`, `./dir/`) is never run,
+// so "Before you start, read `./guide.md`" is still a reference.
+const EXECUTABLE_EXT =
+  /\.(?:sh|bash|zsh|fish|py|js|mjs|cjs|ts|mts|cts|rb|pl|php|ps1|psm1|bat|cmd|exe|jar)$/i;
 
 function inlineCodeRef(line: string, start: number, content: string): string | null {
   const value = content.trim();
   if (!INLINE_PATH.test(value)) return null;
-  if (INVOCATION_BEFORE.test(line.slice(Math.max(0, start - 40), start))) return null;
+  if (
+    EXECUTABLE_EXT.test(value) &&
+    INVOCATION_BEFORE.test(line.slice(Math.max(0, start - 40), start))
+  ) {
+    return null;
+  }
   return value;
 }
 
@@ -424,12 +434,33 @@ function isExampleLang(lang: string): boolean {
 
 // --- Rule 3: trigger-phrase collisions ---------------------------------------
 
-// A quoted phrase introduced by a negation in the same sentence ('Not for
-// "general questions"', 'Do not use for "x"') says when the skill must NOT
-// fire, so it is not a trigger.
-const NEGATED_BEFORE_QUOTE =
-  /(?:\b(?:not|never|avoid|except|unless|instead\s+of|rather\s+than)\b|n['’]t\b)[^.;!?]*$/i;
+// A quoted phrase introduced by a negation ('Not for "general questions"',
+// 'Do not use for "x"') says when the skill must NOT fire, so it is not a
+// trigger. The look-back for a negation stops at the previous quoted phrase
+// and at any clause separator (. ; ! ? , -- —), so in
+// 'Not "build only" -- also on "cut a release"' the second phrase is still a
+// trigger. A negation does carry through a list: a phrase joined to a negated
+// one by list glue alone (',', 'or', 'and', 'nor') is negated too, so every
+// item of 'Not for "a", "b", or "c"' is excluded.
+const NEGATION = /(?:\b(?:not|never|avoid|except|unless|instead\s+of|rather\s+than)\b|n['’]t\b)/i;
+const CLAUSE_SEPARATOR = /[.;!?,—–]|--/g;
 const NEGATION_WINDOW = 40;
+const LIST_GLUE = /^[\s,]*(?:(?:or|and|nor)\b[\s,]*)?$/i;
+
+function negatedQuote(
+  desc: string,
+  quoteAt: number,
+  prevQuoteEnd: number,
+  prevNegated: boolean,
+): boolean {
+  if (prevNegated && prevQuoteEnd > 0 && LIST_GLUE.test(desc.slice(prevQuoteEnd, quoteAt))) {
+    return true;
+  }
+  let before = desc.slice(Math.max(0, quoteAt - NEGATION_WINDOW, prevQuoteEnd), quoteAt);
+  const parts = before.split(CLAUSE_SEPARATOR);
+  before = parts[parts.length - 1];
+  return NEGATION.test(before);
+}
 
 /**
  * Extract candidate trigger phrases from a skill/agent's frontmatter. Claude
@@ -448,10 +479,14 @@ function extractTriggers(fm: Frontmatter): string[] {
   // merge") aren't read as phrase delimiters -- a naive [\"'] class extracted
   // phantom triggers like "s branch can" and could shift the scan past a real
   // double-quoted trigger that followed a contraction.
+  let prevQuoteEnd = 0;
+  let prevNegated = false;
   for (const q of desc.matchAll(/"([^"]{3,})"|(?:^|\W)'([^']{3,})'(?!\w)/g)) {
     const quoteAt = q.index + q[0].indexOf(q[1] === undefined ? "'" : '"');
-    const before = desc.slice(Math.max(0, quoteAt - NEGATION_WINDOW), quoteAt);
-    if (NEGATED_BEFORE_QUOTE.test(before)) continue;
+    const negated = negatedQuote(desc, quoteAt, prevQuoteEnd, prevNegated);
+    prevQuoteEnd = q.index + q[0].length;
+    prevNegated = negated;
+    if (negated) continue;
     phrases.add(normalizeTrigger(q[1] ?? q[2]));
   }
   for (const key of ['trigger', 'triggers']) {

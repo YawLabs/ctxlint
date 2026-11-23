@@ -89,6 +89,17 @@ describe('session/shared-temp-path', () => {
     expect(issues).toHaveLength(0);
   });
 
+  it.runIf(process.platform === 'win32')(
+    'matches history whose project differs only in drive-letter case (win32)',
+    async () => {
+      const issues = await checkSharedTempPath({
+        ...ctx([cmd('cp a /tmp/x.bak', 'c:\\repo\\a'), cmd('cp /tmp/x.bak b', 'c:\\repo\\a')]),
+        currentProject: 'C:\\repo\\a',
+      });
+      expect(issues).toHaveLength(1);
+    },
+  );
+
   it('does not flag paths under a per-session scratch directory', async () => {
     const scratch =
       '/tmp/claude/83003bca346503b0/c9ee8590-f33a-44a7-89bb-67bea27d2e6f/scratchpad/pkg.bak';

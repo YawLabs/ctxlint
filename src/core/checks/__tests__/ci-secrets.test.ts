@@ -322,6 +322,29 @@ describe('checkCiSecrets', () => {
     }
   });
 
+  // A command span that merely contains the word is not documentation.
+  it('does NOT count a code span that only contains a generic name (`gh auth token`)', async () => {
+    writeWorkflow('ci.yml', 'env:\n  AUTH: ${{ secrets.TOKEN }}\n  K: ${{ secrets.API_KEY }}');
+    const issues = await checkCiSecrets(
+      [makeFile('CLAUDE.md', 'Log in with `gh auth token` and `export api_key_file=x`.')],
+      tempDir,
+    );
+    expect(issues.map((i) => /"(\w+)"/.exec(i.message)![1]).sort()).toEqual(['API_KEY', 'TOKEN']);
+  });
+
+  it('counts a code span that is the generic name in $NAME / secrets.NAME / NAME= form', async () => {
+    writeWorkflow('ci.yml', 'env:\n  AUTH: ${{ secrets.TOKEN }}');
+    for (const doc of [
+      'Read `$token` at runtime.',
+      'Read `${token}` at runtime.',
+      'Configure `token=<value>` in .env.',
+      'Use ` token ` here.',
+    ]) {
+      const issues = await checkCiSecrets([makeFile('CLAUDE.md', doc)], tempDir);
+      expect(issues, doc).toHaveLength(0);
+    }
+  });
+
   it('does not count a separator-less run-on (npmtoken) as documenting NPM_TOKEN', async () => {
     writeWorkflow('release.yml', 'env:\n  T: ${{ secrets.NPM_TOKEN }}');
     const issues = await checkCiSecrets([makeFile('CLAUDE.md', 'Uses npmtoken.')], tempDir);

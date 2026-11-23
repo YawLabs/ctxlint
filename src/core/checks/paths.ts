@@ -58,8 +58,15 @@ function samePath(a: string, b: string): boolean {
  * CI. Comparing against readdir names applies Linux's rule everywhere. Paths
  * outside the project root (already skipped by the caller) keep host rules.
  * Directory listings are cached for the life of the checker.
+ *
+ * `realSpelling(p)` answers the follow-up question for a path that failed the
+ * exact check: the in-root path that matches it ignoring case (project-root-
+ * relative, `/`-separated), or null when there is none.
  */
-function caseExactChecker(projectRoot: string): (p: string) => boolean {
+function caseExactChecker(projectRoot: string): {
+  exact: (p: string) => boolean;
+  realSpelling: (p: string) => string | null;
+} {
   const root = path.resolve(projectRoot);
   const listings = new Map<string, Set<string> | null>();
   const entries = (dir: string): Set<string> | null => {
@@ -72,7 +79,7 @@ function caseExactChecker(projectRoot: string): (p: string) => boolean {
     }
     return listings.get(dir) ?? null;
   };
-  return (p: string): boolean => {
+  const exact = (p: string): boolean => {
     const rel = path.relative(root, path.resolve(p));
     if (rel === '' || isOutsideRelative(rel)) return true;
     let dir = root;
@@ -82,6 +89,23 @@ function caseExactChecker(projectRoot: string): (p: string) => boolean {
     }
     return true;
   };
+  const realSpelling = (p: string): string | null => {
+    const rel = path.relative(root, path.resolve(p));
+    if (rel === '' || isOutsideRelative(rel)) return null;
+    let dir = root;
+    const out: string[] = [];
+    for (const seg of rel.split(path.sep)) {
+      const names = entries(dir);
+      if (!names) return null;
+      const lower = seg.toLowerCase();
+      const real = names.has(seg) ? seg : [...names].find((n) => n.toLowerCase() === lower);
+      if (real === undefined) return null;
+      out.push(real);
+      dir = path.join(dir, real);
+    }
+    return out.join('/');
+  };
+  return { exact, realSpelling };
 }
 
 let cachedProjectFiles: { root: string; files: string[] } | null = null;
@@ -124,6 +148,11 @@ interface PendingRenameCheck {
   baseDir: string;
   relTarget: string;
   isImport: boolean;
+  /**
+   * Set when the ref differs from a real path only in case: `text` is the ref
+   * rewritten to the real spelling, in the ref's own coordinate space and form.
+   */
+  caseMatch: { text: string } | null;
 }
 
 export async function checkPaths(
@@ -144,7 +173,7 @@ export async function checkPaths(
   // contextDir and projectRoot -- so compute once here, not per ref.
   const inRootDotConfigDir =
     samePath(path.dirname(contextDir), projectRoot) && path.basename(contextDir).startsWith('.');
-  const caseExact = caseExactChecker(projectRoot);
+  const { exact: caseExact, realSpelling } = caseExactChecker(projectRoot);
 
   // Accumulator for refs that need rename lookups (not-found, non-glob, non-dir).
   // These are batched into a single findRenamesBatch call after the synchronous
@@ -229,6 +258,9 @@ export async function checkPaths(
       // is platform-specific: a C:/x/*.ts form only classifies absolute on
       // Windows.) Only existence is tested, so iterate and stop at the first
       // case-exact match instead of collecting every path the glob expands to.
+      // `nocase: false`: glob defaults to case-insensitive wildcard matching on
+      // win32/darwin, so `src/*.TS` matched `src/app.ts` there and not on Linux.
+      // caseExact below covers the literal segments; this covers the wildcards.
       const ignore = globIgnoreFor(normalizedRef.replace(/^\.\//, ''));
       const cwds = path.isAbsolute(normalizedRef) ? [undefined] : baseDirs;
       let hasMatch = false;
@@ -237,6 +269,7 @@ export async function checkPaths(
           cwd,
           absolute: true,
           nodir: false,
+          nocase: false,
           ignore,
         })) {
           if (caseExact(match)) {
@@ -287,7 +320,21 @@ export async function checkPaths(
     // conservative basename fallback.
     const resolvedPath = path.resolve(primaryBase, normalizedRef);
     const relTarget = path.relative(projectRoot, resolvedPath).replace(/\\/g, '/');
-    pending.push({ ref, normalizedRef, baseDir: primaryBase, relTarget, isImport });
+    // A ref one case-change away from a real path opens on Windows/macOS, so
+    // "does not exist" would be false there; it is reported as a case mismatch
+    // with the real spelling. Same base precedence as the existence check.
+    let caseMatch: PendingRenameCheck['caseMatch'] = null;
+    for (const [i, p] of resolvedCandidates.entries()) {
+      const real = realSpelling(p);
+      if (real === null) continue;
+      // The rewrite keeps the ref's own coordinate space and shape (`./`, `@`).
+      let text = path.relative(baseDirs[i], path.join(projectRoot, real)).replace(/\\/g, '/');
+      if (/^\.\//.test(normalizedRef) && !text.startsWith('.')) text = `./${text}`;
+      if (isImport) text = `@${text}`;
+      caseMatch = { text };
+      break;
+    }
+    pending.push({ ref, normalizedRef, baseDir: primaryBase, relTarget, isImport, caseMatch });
   }
 
   // Batch rename lookup -- single git subprocess for all pending refs.
@@ -301,7 +348,27 @@ export async function checkPaths(
       { relativeTo: 'project' },
     );
 
-    for (const { ref, normalizedRef, baseDir, relTarget, isImport } of pending) {
+    for (const { ref, normalizedRef, baseDir, relTarget, isImport, caseMatch } of pending) {
+      if (caseMatch) {
+        issues.push({
+          severity: 'error',
+          check: 'paths',
+          ruleId: 'paths/not-found',
+          line: ref.line,
+          // Name the spelling the fix writes (ref-relative): a project-root
+          // spelling would point a subdirectory doc at the wrong place.
+          message: `${ref.value} differs only in case from ${caseMatch.text}, so it fails on case-sensitive file systems`,
+          suggestion: `Did you mean ${caseMatch.text}?`,
+          fix: {
+            file: file.filePath,
+            line: ref.line,
+            oldText: ref.value,
+            newText: caseMatch.text,
+            column: ref.column,
+          },
+        });
+        continue;
+      }
       const rename = batchResult.get(relTarget) ?? null;
 
       let suggestion: string | undefined;

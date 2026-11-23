@@ -423,10 +423,85 @@ function classifySpan(span: string, framingGap: string): SpanKind {
   if (COMMAND_HEADS.has(head)) return 'command';
   if (/\.(?:sh|bash|ps1|bat|cmd)$/i.test(head)) return 'command';
   if (!/[()]/.test(head) && RUN_VERB.test(framingGap)) return 'command';
-  if (!/[()]/.test(head) && (head.includes('/') || /\.[A-Za-z0-9]{1,8}$/.test(head))) {
-    return 'file';
-  }
+  if (!/[()]/.test(head) && looksLikeFile(head)) return 'file';
   return 'code';
+}
+
+/**
+ * Extensions that make a dotted token a file name. Anything else after the
+ * last dot (`JSON.parse`, `fs.readFile`) is a member access, i.e. code;
+ * CODE_OBJECT_STEMS covers members that collide with an extension
+ * (`console.log`, `process.env`).
+ */
+const FILE_EXTENSIONS = new Set(
+  (
+    'md mdc mdx txt rst adoc json jsonc json5 yaml yml toml ini cfg conf env lock log csv tsv ' +
+    'xml html htm css scss sass less js mjs cjs jsx ts mts cts tsx py pyi rb go rs java kt kts ' +
+    'swift c h cc cpp hpp cs php sh bash zsh fish ps1 psm1 bat cmd sql graphql gql proto vue ' +
+    'svelte astro lua pl dart scala ex exs erl hs clj gradle properties tf tfvars hcl ' +
+    'dockerfile png jpg jpeg gif svg ico pdf zip gz tgz tar wasm pem crt db sqlite sqlite3 bak ' +
+    'ipynb gitignore gitattributes editorconfig npmrc nvmrc prettierrc eslintrc babelrc ' +
+    'mod sum lockb snap csproj fsproj vbproj sln plist nix xcodeproj pbxproj gemspec ' +
+    'podspec cabal mk cmake bazel bzl sbt whl jar war exe dll dylib p12 pfx cer'
+  ).split(' '),
+);
+
+/** Stems that make `<stem>.<member>` a member access even when the member is an extension. */
+const CODE_OBJECT_STEMS = new Set([
+  'console',
+  'process',
+  'window',
+  'document',
+  'globalThis',
+  'self',
+  'this',
+  'logger',
+  'logging',
+  'log',
+  'Math',
+  'JSON',
+  'Object',
+  'Array',
+  'Promise',
+  // `np.sum`, `_.sum`: library namespaces whose members collide with `sum`/`mod`.
+  '_',
+  'lodash',
+  'np',
+  'numpy',
+  'pd',
+  'torch',
+  'math',
+]);
+
+/**
+ * A path (contains `/`), a dotfile (`.env`, `.env.local`), or a name whose
+ * last extension is a known file extension (`package-lock.json`, `app.log`).
+ */
+function looksLikeFile(token: string): boolean {
+  if (token.includes('/')) return true;
+  if (/^\.[A-Za-z0-9]/.test(token)) return true;
+  const m = /^([^.]+)(?:\.[^.]+)*\.([A-Za-z0-9]{1,12})$/.exec(token);
+  if (!m) return false;
+  if (CODE_OBJECT_STEMS.has(m[1])) return false;
+  return FILE_EXTENSIONS.has(m[2].toLowerCase());
+}
+
+/**
+ * The span as a whole word: letters, digits and `_` flanking it kill the
+ * match, so `any` is not found inside "company".
+ */
+function spanPattern(span: string): RegExp {
+  return new RegExp(`(?<![A-Za-z0-9_])${escapeRegex(span)}(?![A-Za-z0-9_])`);
+}
+
+/**
+ * Does a hook with this matcher see file edits? Empty or `*` selects every
+ * tool (and Stop hooks have no matcher); otherwise it must select Edit, Write
+ * or MultiEdit -- the hook shape the code/file suggestion asks for.
+ */
+function hookSeesEdits(matcher: string): boolean {
+  const m = matcher.trim();
+  return m === '' || m === '*' || ['Edit', 'Write', 'MultiEdit'].some((t) => matcherSelects(m, t));
 }
 
 interface ParsedCommand {
@@ -797,22 +872,40 @@ function isEnforced(target: EnforcementTarget, settings: Settings[], hooks: Hook
       // Defensive: a deny entry naming the span (`Bash(foo:*)`) says the user
       // treats it as a command, whatever classifySpan decided.
       if (entries.some((e) => denyEnforces(e, parseCommand(target.span)))) return true;
-      return hooks.some(
-        (h) => h.command.includes(target.span) || h.scripts.some((t) => t.includes(target.span)),
-      );
+      // Likewise an Edit(...) deny on a dotted span (`schema.prisma2`) says
+      // the user treats it as a file the extension list does not know.
+      if (
+        target.prohibitive &&
+        target.span.includes('.') &&
+        entries.some((e) => fileDenyEnforces(e, target.span))
+      ) {
+        return true;
+      }
+      return hookNamesSpan(hooks, target.span);
     case 'file':
       if (target.prohibitive && entries.some((e) => fileDenyEnforces(e, target.span))) {
         return true;
       }
-      return hooks.some(
-        (h) => h.command.includes(target.span) || h.scripts.some((t) => t.includes(target.span)),
-      );
+      return hookNamesSpan(hooks, target.span);
     case 'tool':
       if (entries.some((e) => e.trim() === target.span || e.trim() === `${target.span}(*)`)) {
         return true;
       }
       return hooks.some((h) => matcherSelects(h.matcher, target.span));
   }
+}
+
+/**
+ * A code or file span is credited only by a hook that sees edits and names
+ * the span as a whole word in its command or script text.
+ */
+function hookNamesSpan(hooks: HookTexts, span: string): boolean {
+  const pattern = spanPattern(span);
+  return hooks.some(
+    (h) =>
+      hookSeesEdits(h.matcher) &&
+      (pattern.test(h.command) || h.scripts.some((t) => pattern.test(t))),
+  );
 }
 
 /** Does a hook with this matcher see Bash calls? Empty or `*` selects every tool. */

@@ -909,6 +909,36 @@ describe('scanner hardening', () => {
     }
   });
 
+  it('warns on stderr when it drops a file that resolves outside the project root', async () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-outside-warn-'));
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      fs.mkdirSync(path.join(outside, 'rules'), { recursive: true });
+      fs.writeFileSync(path.join(outside, 'rules', 'style.md'), '# shared');
+      fs.mkdirSync(path.join(tmpDir, '.claude'));
+      try {
+        fs.symlinkSync(
+          path.join(outside, 'rules'),
+          path.join(tmpDir, '.claude', 'rules'),
+          'junction',
+        );
+      } catch {
+        return; // links unsupported in this env
+      }
+      fs.writeFileSync(path.join(tmpDir, 'CLAUDE.md'), '# root');
+      const files = await scanForContextFiles(tmpDir);
+      expect(files.map((f) => f.relativePath)).toEqual(['CLAUDE.md']);
+      const messages = warn.mock.calls.map((a) => a.join(' ')).join(' | ');
+      expect(messages).toContain('skipping .claude/rules/style.md');
+      expect(messages).toContain('resolves outside the project root');
+      // The kept in-root file draws no warning.
+      expect(messages).not.toContain('skipping CLAUDE.md');
+    } finally {
+      warn.mockRestore();
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
   it('sorts by code unit, not locale (uppercase before lowercase)', async () => {
     fs.writeFileSync(path.join(tmpDir, 'CLAUDE.md'), '# c');
     fs.writeFileSync(path.join(tmpDir, 'aaa.md'), '# a');

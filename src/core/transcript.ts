@@ -73,6 +73,12 @@ export interface TranscriptEvent {
    */
   outputExcerpt?: string;
   /**
+   * `command` only: true when the FULL result text carries git's commit
+   * summary line (`[<branch> <sha>] <subject>`). Computed before the excerpt
+   * is cut, so a long hook or push log cannot hide a commit that landed.
+   */
+  commitLanded?: boolean;
+  /**
    * `file-read` only: `countTokens` of the result text -- what the Read put
    * into the prompt of every later turn. Undefined when unpaired.
    */
@@ -113,6 +119,13 @@ const WRITE_TOOLS: Record<string, string> = {
 const READ_TOOLS: Record<string, string> = {
   Read: 'file_path',
 };
+
+/**
+ * git's commit summary line: `[<branch> <sha>] <subject>`, also
+ * `[<branch> (root-commit) <sha>]` and `[detached HEAD <sha>]`.
+ */
+export const COMMIT_SUMMARY_LINE =
+  /^\[(?:detached HEAD|[^\s\]]+)(?: \(root-commit\))? [0-9a-f]{7,40}\] /m;
 
 /** Characters kept from each end of a command's output (`outputExcerpt`). */
 const OUTPUT_EXCERPT_CHARS = 1000;
@@ -579,6 +592,7 @@ function collect(rec: Record<string, unknown>, st: ReadState): void {
           out.length <= OUTPUT_EXCERPT_CHARS * 2
             ? out
             : `${out.slice(0, OUTPUT_EXCERPT_CHARS)}\n${out.slice(-OUTPUT_EXCERPT_CHARS)}`;
+        if (COMMIT_SUMMARY_LINE.test(out)) ev.commitLanded = true;
       }
       if (ev.kind === 'file-read') {
         // Counted here, while the text is in hand, because the text itself is

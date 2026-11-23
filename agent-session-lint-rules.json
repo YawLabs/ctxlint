@@ -79,7 +79,7 @@
       "category": "session",
       "severity": "warning",
       "description": "Same command run 3+ times consecutively in agent history.",
-      "trigger": "Agent history for the current project (entries lacking a project path or timestamp are excluded), grouped into sessions (by provider + session ID, split at >30-minute timestamp gaps), shows the same command 3+ times in a row within a single session segment. Only command-shaped entries take part (!bash, /slash, a known program head, or a ./path executable); prompts break runs but never match. Single-command sessions are additionally merged per provider into one stream (split at the same gaps) so rapid one-shot respawn loops are caught. The message shows the command head (first 3 words, at most 60 chars, \"...\" when cut).",
+      "trigger": "Agent history for the current project (entries lacking a project path or timestamp are excluded), grouped into sessions (by provider + session ID, split at >30-minute timestamp gaps), shows the same command 3+ times in a row within a single session segment. Only command-shaped entries take part (!bash, /slash, a known program head, or a ./path executable); prompts break runs but never match. Single-command sessions are additionally merged per provider into one stream (split at the same gaps) so rapid one-shot respawn loops are caught. The message shows the command head (first 3 words, at most 60 chars, \"...\" when cut), with NAME=value assignments shown as NAME=... (leading ones not counted), URL userinfo as scheme://...@ and credential-flag values (-u, -p, --user, --password, --token, --auth, --api-key, --secret) as .... On Windows the project path is matched case-insensitively.",
       "message": "Command run {count} times consecutively: \"{command}\"",
       "fixable": false,
       "stability": "experimental"
@@ -113,7 +113,7 @@
       "category": "session",
       "severity": "error",
       "description": "A fixed, non-session-scoped temp path is written and later read back.",
-      "trigger": "The current project's history writes a literal path under a shared temp root (/tmp, /var/tmp, $TMPDIR, $TEMP, $TMP, %TEMP%, C:/Users/*/AppData/Local/Temp, Windows/Temp, and their /c/ forms) with no per-run component, then reads the same path back. Paths under a scratchpad directory, or carrying a UUID or a 16+ hex run, are not flagged. Read verbs include cat, type, source, cp/copy source, tail, head, grep, diff and node|bash|sh|python <path>.",
+      "trigger": "The current project's history writes a literal path under a shared temp root (/tmp, /var/tmp, $TMPDIR, $TEMP, $TMP, %TEMP%, C:/Users/*/AppData/Local/Temp, Windows/Temp, and their /c/ forms) with no per-run component, then reads the same path back. Paths under a scratchpad directory, or carrying a UUID or a 16+ hex run, are not flagged. Read verbs include cat, type, source, cp/copy source, tail, head, grep, diff and node|bash|sh|python <path>. On Windows the project path is matched case-insensitively.",
       "message": "Fixed temp path \"{path}\" is written and later read back",
       "fixable": false,
       "stability": "stable"
@@ -123,7 +123,7 @@
       "category": "session",
       "severity": "warning",
       "description": "A quality gate is asserted as passing while its invocation failed, crashed or produced no output.",
-      "trigger": "A gate (the invoked lint/typecheck/test/build program, an npm/pnpm/yarn/bun script, a make target, or a cargo/go subcommand) errors, crashes (crash signatures count even in non-empty output) or emits nothing — empty output counts only for tools that are not silent on success (tsc, vue-tsc and eslint are exempt) — and later agent prose in the same session claims that gate passed. The claim must name the failed gate and must not be negated or stated as future intent ('make' is intent only in verb position).",
+      "trigger": "A gate (the invoked lint/typecheck/test/build program, an npm/pnpm/yarn/bun script, a make target, or a cargo/go subcommand) errors, crashes (on an is_error run any crash signature counts; otherwise only a line-anchored banner such as Segmentation fault, FATAL ERROR:, (core dumped) or exit code 3221225477) or emits nothing — empty output counts only for tools that are not silent on success (tsc, vue-tsc and eslint are exempt) — and later agent prose in the same session claims that gate passed. The claim must name the failed gate (another gate's noun does not pair with the pass word; 'build and tests pass' counts for each) and must not be negated or stated as future intent ('make' is intent only in verb position).",
       "message": "'{gate}' asserted as passing, but the invocation produced no output",
       "messageVariants": [
         "'{gate}' asserted as passing, but the invocation reported an error",
@@ -137,7 +137,7 @@
       "category": "session",
       "severity": "warning",
       "description": "Many files edited on the default branch with no intervening commit.",
-      "trigger": "Ten or more distinct files inside the project are written in one session while on main/master without a successful commit or branch-away in between. Creating a branch (checkout -b/-B/--orphan, switch -c/-C/--create/--force-create/--orphan, worktree add) resets at once; git switch <x> / git checkout <x> reset only when the session's next branch stamp is off the default branch. An operand naming an existing file is never a branch move, and a failed checkout or commit does not reset. Each session accumulates separately; a successful commit in any session clears all. The message names the branch the writes landed on.",
+      "trigger": "Ten or more distinct files inside the project are written in one session while on main/master without a successful commit or branch-away in between. Creating a branch (checkout -b/-B/--orphan, switch -c/-C/--create/--force-create/--orphan, worktree add) resets at once; git switch <x> / git checkout <x> reset only when the session's next branch stamp is off the default branch. An operand naming an existing file is never a branch move, and a failed checkout or commit does not reset (except a chained git commit && git push whose full output carries git's [branch sha] line). Each session accumulates separately; a successful commit in any session clears all. The message names the branch the writes landed on.",
       "message": "{count} files edited on '{branch}' with no intervening commit",
       "fixable": false,
       "stability": "stable"

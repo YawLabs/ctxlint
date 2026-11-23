@@ -353,6 +353,37 @@ describe('checkFrontmatter -- YAML value forms', () => {
     expect(issues).toEqual([]);
   });
 
+  it('folds an indented key-shaped line into a block-scalar description', async () => {
+    const issues = await checkFrontmatter(
+      mdc('description: >-\n  Note: applies to the\n  TypeScript sources\nalwaysApply: true'),
+      '/project',
+    );
+    expect(issues).toEqual([]);
+  });
+
+  it('folds an indented key-shaped line into an empty-value description', async () => {
+    const issues = await checkFrontmatter(
+      mdc('description:\n  Note: applies to the TypeScript sources\nalwaysApply: true'),
+      '/project',
+    );
+    expect(issues).toEqual([]);
+  });
+
+  it('ends the block scalar when indentation returns to the key column', async () => {
+    // alwaysApply at column 0 is a key again (its bad value is still
+    // validated) and description keeps the folded `Note: x` text.
+    const issues = await checkFrontmatter(
+      mdc('description: |\n  Note: x\nalwaysApply: maybe'),
+      '/project',
+    );
+    expect(issues.map((i) => i.ruleId)).toEqual(['frontmatter/invalid-value']);
+  });
+
+  it('still reports an empty block-scalar description', async () => {
+    const issues = await checkFrontmatter(mdc('description: >-\nalwaysApply: true'), '/project');
+    expect(issues.map((i) => i.ruleId)).toEqual(['frontmatter/missing-field']);
+  });
+
   it('still reports an empty description', async () => {
     const issues = await checkFrontmatter(mdc('description:\nalwaysApply: true'), '/project');
     expect(issues.map((i) => i.ruleId)).toEqual(['frontmatter/missing-field']);

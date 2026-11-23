@@ -42,6 +42,17 @@ const HIGH_ENTROPY_PATTERN = /^[A-Za-z0-9+/=_-]{21,}$/;
 // some unrelated ${VAR} sits elsewhere in the url.
 const URL_SECRET_PARAMS = /[?&](key|token|api_key|apikey|secret|password|access_token)=([^&]*)/gi;
 
+// An Authorization value that is nothing but an HTTP auth scheme word
+// (the IANA registry names plus the common `Token`; case-insensitive per
+// RFC 9110).
+const AUTH_SCHEME_ONLY =
+  /^\s*(?:bearer|basic|token|digest|negotiate|ntlm|hoba|mutual|vapid|scram-sha-1|scram-sha-256|dpop|gnap|privatetoken|concealed)\s*$/i;
+
+// The same scheme words immediately followed by an env ref with no whitespace
+// ("Bearer${TOKEN}"): the header reaches the server as "Bearer<token>".
+const AUTH_SCHEME_GLUED_TO_REF =
+  /^\s*(?:bearer|basic|token|digest|negotiate|ntlm|hoba|mutual|vapid|scram-sha-1|scram-sha-256|dpop|gnap|privatetoken|concealed)\$\{/i;
+
 // `scheme://userinfo@` -- userinfo stops at the first / ? # of the authority.
 const URL_USERINFO = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)@/i;
 
@@ -63,6 +74,7 @@ const SECRET_NAME_TOKENS: ReadonlySet<string> = new Set([
   'AUTHORIZATION',
   'CREDENTIAL',
   'CREDENTIALS',
+  'CRED',
   'APIKEY',
   'PRIVATE',
   'SIGNING',
@@ -190,15 +202,30 @@ function nameTokens(name: string): string[] {
     .map((t) => t.toUpperCase());
 }
 
+// A token with one trailing S dropped (KEYS -> KEY, CREDS -> CRED), so
+// plural names (API_KEYS, DB_SECRETS, *_TOKENS) match like their singulars.
+function singular(token: string): string {
+  return token.length > 1 && token.endsWith('S') ? token.slice(0, -1) : token;
+}
+
+function tokenSuggestsSecret(t: string): boolean {
+  return (
+    SECRET_NAME_TOKENS.has(t) ||
+    (!NON_SECRET_COMPOUNDS.has(t) && SECRET_NAME_SUFFIXES.some((s) => t.endsWith(s)))
+  );
+}
+
 function nameSuggestsSecret(name: string): boolean {
   const tokens = nameTokens(name);
   if (tokens.length === 0) return false;
-  if (NON_SECRET_NAME_SUFFIXES.has(tokens[tokens.length - 1])) return false;
-  return tokens.some(
-    (t) =>
-      SECRET_NAME_TOKENS.has(t) ||
-      (!NON_SECRET_COMPOUNDS.has(t) && SECRET_NAME_SUFFIXES.some((s) => t.endsWith(s))),
-  );
+  const last = tokens[tokens.length - 1];
+  if (NON_SECRET_NAME_SUFFIXES.has(last) || NON_SECRET_NAME_SUFFIXES.has(singular(last))) {
+    return false;
+  }
+  // Both forms are tried: PASS must match as itself, KEYS as KEY. A plural
+  // of an ordinary word (MONKEYS, HOTKEYS) singularizes onto the
+  // NON_SECRET_COMPOUNDS entry and stays out.
+  return tokens.some((t) => tokenSuggestsSecret(t) || tokenSuggestsSecret(singular(t)));
 }
 
 // A value that names where a secret lives, not the secret: a home-,
@@ -349,6 +376,33 @@ export async function checkMcpSecurity(
     });
   }
 
+  // An Authorization header that resolves to no usable credential: a bare
+  // scheme word ("Bearer") or a scheme glued to its ${VAR} with no space
+  // ("Bearer${TOKEN}" sends "Bearerabc..."). Either way every request goes out
+  // unauthenticated or malformed. A correctness bug, not a leak, so it is
+  // reported whether or not the file is git-tracked.
+  for (const server of config.servers) {
+    for (const [headerName, headerValue] of Object.entries(server.headers ?? {})) {
+      if (!isAuthorizationHeader(headerName)) continue;
+      const bare = AUTH_SCHEME_ONLY.test(headerValue);
+      const glued = !bare && AUTH_SCHEME_GLUED_TO_REF.test(headerValue);
+      if (!bare && !glued) continue;
+      const loc = locateServerValue(config, server, ['headers', headerName]);
+      issues.push({
+        severity: 'warning',
+        check: 'mcp-security',
+        ruleId: 'mcp-security/empty-auth-credential',
+        line: loc?.line ?? server.line,
+        message: bare
+          ? `Server "${server.name}": ${headerName} header is "${headerValue.trim()}" with no credential`
+          : `Server "${server.name}": ${headerName} header "${headerValue}" has no space between the scheme and the credential`,
+        suggestion: bare
+          ? `Add the credential from an env var, e.g. "${headerValue.trim()} ${'${TOKEN}'}", or remove the header`
+          : `Put a space after the scheme: "${headerValue.replace(/^(\s*[A-Za-z][A-Za-z0-9._-]*)\$\{/, '$1 ${')}"`,
+      });
+    }
+  }
+
   for (const server of config.servers) {
     const nameFor = makeNamer();
     const apiKeyIssue = (fix: FixAction | undefined): LintIssue => ({
@@ -369,6 +423,11 @@ export async function checkMcpSecurity(
           // credential. Safe only when the credentials are ENTIRELY env refs:
           // stripping the ${...} spans leaves nothing but whitespace. A
           // literal next to a stray ${VAR} still has residue, so it flags.
+          //
+          // A value whose only literal is a scheme word ("Bearer",
+          // "Bearer${TOKEN}") carries no hardcoded credential, so it is not
+          // reported -- and a fix there would replace the scheme itself.
+          if (AUTH_SCHEME_ONLY.test(residue)) continue;
           const schemeMatch = headerValue.match(/^([A-Za-z][A-Za-z0-9._-]*)(\s+)(.+)$/);
           const credentials = schemeMatch ? schemeMatch[3] : headerValue;
           if (stripEnvVarRefs(credentials).trim().length === 0) continue;

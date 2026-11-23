@@ -169,7 +169,7 @@
       "category": "mcp-security",
       "severity": "error",
       "description": "A git-tracked config file contains a literal credential: a value matching a known API key pattern, a non-Bearer Authorization value, or a high-entropy value whose name suggests a secret.",
-      "trigger": "In a git-tracked file: (1) an Authorization or Proxy-Authorization header value whose scheme is not Bearer (Basic, Token, ...) or that has no scheme, with literal credentials; (2) any other header, an env value or an arg containing a known API key pattern (sk-ant-, sk-proj-, sk-, ghp_, ghu_, github_pat_, xoxb-, xoxp-, AKIA, AGE-SECRET-KEY-1, glpat-, sq0atp-, JWT eyJ...eyJ...); or (3) a header or env value that is high-entropy (21+ characters of [A-Za-z0-9+/=_-], ${...} spans stripped, not a filesystem path with two or more segments and no + or =) under a name that suggests a secret. The name gate matches whole name tokens (split on _, - and camelCase): KEY, TOKEN, SECRET, PASSWORD, PASSWD, PASS, PASSPHRASE, AUTH, AUTHORIZATION, CREDENTIAL, CREDENTIALS, APIKEY, PRIVATE, SIGNING, SESSION, COOKIE; a separator-less token ending in TOKEN, SECRET, PASSWORD, PASSWD, PASS, KEY or CREDENTIALS also counts, except ordinary words (MONKEY, HOTKEY, BYPASS, COMPASS, ...). A name whose last token is PATH, DIR, DIRECTORY, FILE, FILENAME, NAME, URL, URI, HOST, PORT or SERVICE is excluded.",
+      "trigger": "In a git-tracked file: (1) an Authorization or Proxy-Authorization header value whose scheme is not Bearer (Basic, Token, ...) or that has no scheme, with literal credentials; (2) any other header, an env value or an arg containing a known API key pattern (sk-ant-, sk-proj-, sk-, ghp_, ghu_, github_pat_, xoxb-, xoxp-, AKIA, AGE-SECRET-KEY-1, glpat-, sq0atp-, JWT eyJ...eyJ...); or (3) a header or env value that is high-entropy (21+ characters of [A-Za-z0-9+/=_-], ${...} spans stripped, not a filesystem path with two or more segments and no + or =) under a name that suggests a secret. The name gate matches whole name tokens (split on _, - and camelCase): KEY, TOKEN, SECRET, PASSWORD, PASSWD, PASS, PASSPHRASE, AUTH, AUTHORIZATION, CRED, CREDENTIAL, CREDENTIALS, APIKEY, PRIVATE, SIGNING, SESSION, COOKIE; a separator-less token ending in TOKEN, SECRET, PASSWORD, PASSWD, PASS, KEY or CREDENTIALS also counts, except ordinary words (MONKEY, HOTKEY, BYPASS, COMPASS, ...). A plural token counts like its singular (API_KEYS, DB_SECRETS, *_TOKENS, *_CREDS); plural ordinary words stay out. An Authorization or Proxy-Authorization value whose only literal is an auth scheme word (Bearer, Basic, Token, Digest, ...), with or without an adjacent ${VAR}, is not reported here (see mcp-security/empty-auth-credential). A name whose last token is PATH, DIR, DIRECTORY, FILE, FILENAME, NAME, URL, URI, HOST, PORT or SERVICE is excluded.",
       "message": "Server \"{name}\" has a hardcoded API key in a git-tracked file",
       "fixable": true,
       "fixDescription": "Replace only the literal secret with an env var reference in the client's own syntax (${VAR}, ${env:VAR} or ${{ secrets.VAR }}), keeping any adjacent ${VAR} and an Authorization scheme. Names: an env secret keeps its env key; a non-Bearer Authorization value -> <SERVER>_CREDENTIALS; another header -> <SERVER>_<HEADER> with a leading X- dropped; an arg -> named after its flag, else <SERVER>_API_KEY. Colliding names within a server get _2, _3; a leading digit gets a _ prefix. The fix sits on the value's own line and column. No fix for claude-desktop, amazonq or cline (no env interpolation), or when the literal is split around a ${VAR}.",
@@ -195,6 +195,20 @@
       "description": "Git-tracked status of the config file could not be determined, so the git-gated secret rules were skipped without an answer.",
       "trigger": "git ls-files fails for a reason other than \"untracked\" or \"not a repository\" (git unavailable, permissions, timeout). A determined \"untracked\" does not fire this rule.",
       "message": "Could not determine git-tracked status of {file}; hardcoded-secret rules were skipped",
+      "fixable": false,
+      "clients": ["all"],
+      "stability": "experimental"
+    },
+    {
+      "id": "mcp-security/empty-auth-credential",
+      "category": "mcp-security",
+      "severity": "warning",
+      "description": "An Authorization header carries no usable credential: only a scheme word, or a scheme glued to its env ref with no space. Every request goes out unauthenticated or with a malformed header. A correctness bug, not a leak, so it is reported whether or not the file is git-tracked.",
+      "trigger": "An Authorization or Proxy-Authorization header value is only an HTTP auth scheme word (Bearer, Basic, Token, Digest, Negotiate, NTLM, ..., case-insensitive), or a scheme immediately followed by an env ref with no space (Bearer${TOKEN}).",
+      "message": "Server \"{name}\": {header} header is \"{scheme}\" with no credential",
+      "messageVariants": [
+        "Server \"{name}\": {header} header \"{value}\" has no space between the scheme and the credential"
+      ],
       "fixable": false,
       "clients": ["all"],
       "stability": "experimental"
@@ -312,7 +326,7 @@
       "category": "mcp-urls",
       "severity": "error",
       "description": "Server URL is not a valid URL for an MCP transport.",
-      "trigger": "The URL (with no env var placeholders) cannot be parsed, or parses with a scheme other than http, https, ws or wss (e.g. localhost:3000/mcp, file://...). The echoed URL has its query string, fragment and userinfo replaced with \"...\".",
+      "trigger": "The URL (with no env var placeholders) cannot be parsed, or parses with a scheme other than http, https, ws or wss (e.g. localhost:3000/mcp, file://...). The echoed URL has its query string, fragment and userinfo replaced with \"...\" (everything from the scheme to the last @ before the query is cut); when a ? or # makes the userinfo and the query ambiguous, only the scheme is shown (\"https://...\").",
       "message": "Server \"{name}\": invalid URL \"{url}\"",
       "fixable": false,
       "clients": ["all"],

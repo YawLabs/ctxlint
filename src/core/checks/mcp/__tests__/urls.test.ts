@@ -91,6 +91,45 @@ describe('checkMcpUrls', () => {
     expect(malformed[1].message).toContain('@exa mple.com/mcp');
   });
 
+  it.each([
+    ['https://user:s3cr/etpw@example.com/mcp', '@example.com/mcp'],
+    ['https://user:a/b/c@exa mple.com/mcp?token=QVALUE', '@exa mple.com/mcp?...'],
+    ['http//user:s3cr/etpw@host /mcp', '@host /mcp'],
+    ['https:/user:s3cr/etpw@host /mcp', '@host /mcp'],
+    ['user:s3cr/etpw@host /mcp', '...@host /mcp'],
+  ])('never echoes userinfo with a / in an unencoded password: %s', async (url, tail) => {
+    const config = makeConfig({
+      servers: [{ name: 'u1', transport: 'http', url, line: 3, raw: {} }],
+    });
+    const issues = await checkMcpUrls(config, '/project');
+    const malformed = issues.filter((i) => i.ruleId === 'mcp-urls/malformed-url');
+    expect(malformed).toHaveLength(1);
+    const msg = malformed[0].message;
+    for (const leak of ['user', 's3cr', 'etpw', 'QVALUE', '/b/']) expect(msg).not.toContain(leak);
+    expect(msg).toContain(tail);
+  });
+
+  it.each([
+    // The ?/# lives inside the password: neither half may be echoed.
+    ['https://user:pa?ss@exa mple.com/mcp', 'https://...'],
+    ['https://user:pa#ss@exa mple.com/mcp', 'https://...'],
+    ['user:pa?ss@host /mcp', '...'],
+    // An @ inside the query is still behind the query redaction.
+    ['https://exa mple.com/mcp?token=pa@ss', 'https://...'],
+    // Userinfo closed before the query: host and path stay visible.
+    ['https://user:pass@exa mple.com/mcp?e=pa@ss', 'https://...@exa mple.com/mcp?...'],
+  ])('never echoes userinfo or query with ?/# in an unencoded password: %s', async (url, shown) => {
+    const config = makeConfig({
+      servers: [{ name: 'u1', transport: 'http', url, line: 3, raw: {} }],
+    });
+    const issues = await checkMcpUrls(config, '/project');
+    const malformed = issues.filter((i) => i.ruleId === 'mcp-urls/malformed-url');
+    expect(malformed).toHaveLength(1);
+    const msg = malformed[0].message;
+    for (const leak of ['user', 'pa', 'ss']) expect(msg).not.toContain(leak);
+    expect(msg).toContain(`invalid URL "${shown}"`);
+  });
+
   it('skips URL validation when env var references present', async () => {
     const config = makeConfig({
       servers: [

@@ -324,6 +324,54 @@ describe('session/unverified-gate-claimed-clean: silent-on-success tools', () =>
     );
     expect(issues).toHaveLength(1);
   });
+
+  it('does not read a passing run whose test names mention a crash as crashed', async () => {
+    const out =
+      ' ✓ handles segfault in child (2ms)\n ✓ reports core dumped status (1ms)\n' +
+      ' Test Files  1 passed (1)\n      Tests  2 passed (2)';
+    const issues = await withProject(
+      [...gate('npx vitest run', out), ...say('All tests pass.')],
+      checkUnverifiedGateClaimedClean,
+    );
+    expect(issues).toHaveLength(0);
+  });
+
+  it('still flags a crash banner on a run the harness did not mark as failed', async () => {
+    for (const out of [
+      'bash: line 1:  1234 Segmentation fault      (core dumped) npx biome check src/',
+      'Checked 3 files\nFATAL ERROR: Reached heap limit Allocation failed',
+    ]) {
+      const issues = await withProject(
+        [...gate('npx biome check src/', out), ...say('Lint is clean.')],
+        checkUnverifiedGateClaimedClean,
+      );
+      expect(issues, out).toHaveLength(1);
+      expect(issues[0].message, out).toContain('crash');
+    }
+  });
+
+  it("flags npm's access-violation report on a piped run the harness did not fail", async () => {
+    for (const out of [
+      'npm error code 3221225477\nnpm error path C:\\x',
+      'npm ERR! code 3221225477\nnpm ERR! path C:\\x',
+    ]) {
+      const issues = await withProject(
+        [...gate('npm test 2>&1 | tail -5', out), ...say('All tests pass.')],
+        checkUnverifiedGateClaimedClean,
+      );
+      expect(issues, out).toHaveLength(1);
+      expect(issues[0].message, out).toContain('crash');
+    }
+  });
+
+  it('flags a crash signature anywhere in the output of a failed run', async () => {
+    const issues = await withProject(
+      [...gate('npx vitest run', 'worker exited: segfault in pool', true), ...say('Tests pass.')],
+      checkUnverifiedGateClaimedClean,
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('crash');
+  });
 });
 
 describe('session/unverified-gate-claimed-clean: gate recognition', () => {
@@ -403,6 +451,55 @@ describe('session/unverified-gate-claimed-clean: claim matching', () => {
     );
     expect(issues).toHaveLength(1);
     expect(issues[0].message).toContain('lint');
+  });
+
+  it("does not pair one gate's noun with another gate's pass word", async () => {
+    const issues = await withProject(
+      [
+        ...gate('npm test', 'FAIL', true),
+        ...say('I updated the test helper and lint is clean now.'),
+      ],
+      checkUnverifiedGateClaimedClean,
+    );
+    expect(issues).toHaveLength(0);
+  });
+
+  it('reads the everyday nouns build/types inside a test claim as part of it', async () => {
+    for (const text of [
+      'Tests against the new build now pass.',
+      'Tests for the new types all pass.',
+    ]) {
+      const issues = await withProject(
+        [...gate('npx vitest run', 'FAIL', true), ...say(text)],
+        checkUnverifiedGateClaimedClean,
+      );
+      expect(issues, text).toHaveLength(1);
+    }
+  });
+
+  it('still lets a build/types clause own its own pass word', async () => {
+    for (const text of [
+      'I updated the test helper and the build is clean now.',
+      'I fixed the test fixture and types are clean.',
+    ]) {
+      const issues = await withProject(
+        [...gate('npx vitest run', 'FAIL', true), ...say(text)],
+        checkUnverifiedGateClaimedClean,
+      );
+      expect(issues, text).toHaveLength(0);
+    }
+  });
+
+  it('still reads a coordinated list of gates as a claim about each', async () => {
+    // The failed gate is the FIRST noun of the list, so the claim is read only
+    // through the coordination, not through an adjacent "tests pass".
+    for (const text of ['The build and tests pass.', 'Build, typecheck and tests all pass.']) {
+      const issues = await withProject(
+        [...gate('npm run build', 'ERR', true), ...say(text)],
+        checkUnverifiedGateClaimedClean,
+      );
+      expect(issues, text).toHaveLength(1);
+    }
   });
 
   it('does not tie a lint failure to a claim about tests', async () => {
@@ -584,6 +681,22 @@ describe('session/default-branch-accumulation', () => {
     );
     expect(issues).toHaveLength(1);
     expect(issues[0].message).toContain('12 files');
+  });
+
+  it('counts a chained commit that landed even when a later segment failed', async () => {
+    const out =
+      '[main 1a2b3c4] wip\n 6 files changed, 12 insertions(+)\n' +
+      'To github.com:o/r.git\n ! [rejected]        main -> main (fetch first)\n' +
+      "error: failed to push some refs to 'github.com:o/r.git'";
+    const issues = await withProject(
+      [
+        ...edits(6, 'main', 0),
+        ...gate('git commit -am wip && git push', out, true),
+        ...edits(6, 'main', 100),
+      ],
+      checkDefaultBranchAccumulation,
+    );
+    expect(issues).toHaveLength(0);
   });
 
   it('starts each session with an empty pending set', async () => {

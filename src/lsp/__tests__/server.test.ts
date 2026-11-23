@@ -368,6 +368,46 @@ describe('ctxlint --lsp', () => {
     TEST_MS,
   );
 
+  // didSave is when the project on disk changes and the caches kept across
+  // keystrokes are rebuilt; the client only sends it when `save` is advertised.
+  it(
+    'advertises save notifications and audits a keystroke burst once',
+    async () => {
+      const client = startServer(['--lsp']);
+      const id = client.request('initialize', {
+        processId: process.pid,
+        rootUri: null,
+        capabilities: {},
+      });
+      const response = await client.waitFor((m) => m.id === id, 'initialize response');
+      expect(response.result.capabilities.textDocumentSync).toMatchObject({
+        openClose: true,
+        change: 1,
+        save: { includeText: false },
+      });
+      client.send({ method: 'initialized', params: {} });
+
+      const uri = pathToFileURL(path.join(project, 'CLAUDE.md')).href;
+      client.open(uri, DISK_CLAUDE);
+      for (let v = 2; v <= 6; v++) {
+        client.change(uri, `# Project\n\n- Source: \`src/burst-${v}.ts\`\n`, v);
+      }
+      await client.waitFor(
+        (m) =>
+          m.method === 'textDocument/publishDiagnostics' &&
+          m.params?.uri === uri &&
+          messagesOf(m).includes('burst-6'),
+        'publishDiagnostics for the last edit',
+      );
+      await sleep(SETTLE_MS);
+      expect(client.published(uri)).toHaveLength(1);
+      client.send({ method: 'textDocument/didSave', params: { textDocument: { uri } } });
+      const shutdown = client.request('shutdown', null);
+      expect((await client.waitFor((m) => m.id === shutdown, 'shutdown')).error).toBeUndefined();
+    },
+    TEST_MS,
+  );
+
   it(
     'keeps --lsp --stdio working',
     async () => {

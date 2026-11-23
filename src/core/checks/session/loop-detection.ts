@@ -14,8 +14,10 @@ const MAX_HISTORY_ENTRIES = 5000;
 // without a gap break a daily one-shot command would read as a 3+ repeat.
 const SESSION_GAP_MS = 30 * 60 * 1000;
 
+/** A project path for comparison; case-folded on win32, where drive case varies. */
 function normalizeProject(p: string): string {
-  return resolve(p).replace(/\\/g, '/');
+  const slashed = resolve(p).replace(/\\/g, '/');
+  return process.platform === 'win32' ? slashed.toLowerCase() : slashed;
 }
 
 /**
@@ -124,16 +126,36 @@ function isCommandShaped(display: string): boolean {
   return false;
 }
 
+/** A `NAME=value` shell assignment word. */
+const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=\S*$/;
+/** Flags whose value is a credential (`curl -u user:pw`, `--token x`). */
+const CREDENTIAL_FLAG = /^(?:-u|-p|--user|--password|--passwd|--token|--auth|--api-key|--secret)$/;
+
 /**
  * The part of a command shown in a finding: its first three words, at most 60
  * characters. Enough to recognise the command; its arguments can carry
  * secrets (`-b <token>`) or the rest of a pasted prompt, and the finding does
- * not need them.
+ * not need them. Credentials that can still fall inside those words are
+ * masked: every `NAME=value` assignment is shown as `NAME=...` (leading ones
+ * do not count toward the three words), URL userinfo as `scheme://...@`, and
+ * the value of a credential flag (`-u user:pw`, `--token=x`) as `...`.
  */
 function commandHead(command: string): string {
-  const words = command.trim().split(/\s+/);
-  let head = words.slice(0, 3).join(' ');
-  let cut = words.length > 3;
+  let words = command.trim().split(/\s+/);
+  const bang = words[0]?.startsWith('!') ? '!' : '';
+  if (bang) words = [words[0].slice(1), ...words.slice(1)].filter((w) => w !== '');
+  let i = 0;
+  while (i < words.length && ASSIGNMENT.test(words[i])) i++;
+  const shown = words.slice(0, i + 3).map((w, k, arr) => {
+    if (k > 0 && CREDENTIAL_FLAG.test(arr[k - 1])) return '...';
+    const assign = ASSIGNMENT.exec(w);
+    if (assign) return `${assign[1]}=...`;
+    const flag = /^(-{1,2}[A-Za-z][\w-]*)=/.exec(w);
+    if (flag && CREDENTIAL_FLAG.test(flag[1])) return `${flag[1]}=...`;
+    return w.replace(/(\b[A-Za-z][\w+.-]*:\/\/)[^/\s@]*@/g, '$1...@');
+  });
+  let head = bang + shown.join(' ');
+  let cut = words.length > i + 3;
   if (head.length > 60) {
     head = head.slice(0, 57);
     cut = true;

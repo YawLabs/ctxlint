@@ -1,4 +1,6 @@
+import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { isOutsideRelative } from '../../utils/fs.js';
 import type { ParsedContextFile, LintIssue } from '../types.js';
 
 export interface TokenThresholds {
@@ -118,41 +120,80 @@ export interface AggregateTokenInput {
   tokens: number;
   /** When true and `symlinkTarget` resolves to another counted path, skipped. */
   isSymlink?: boolean;
-  /** Raw link target as read by readlink (relative to the link's directory). */
+  /** Raw link target as read by readlink: relative to the link's directory, or absolute. */
   symlinkTarget?: string;
 }
 
 /**
- * Project-relative, forward-slash path a symlink points at, or null when the
- * target is absolute (it cannot be related to the relative paths in the set).
+ * `files` minus every symlink whose target is another file in the set: the
+ * same content under a second name (AGENTS.md -> CLAUDE.md), which would
+ * otherwise be counted twice. A relative target is resolved against the
+ * link's directory; an ABSOLUTE target (`ln -s "$PWD/CLAUDE.md" AGENTS.md`,
+ * `mklink` with a full path) is made project-relative against `projectRoot`
+ * as given and its realpath (macOS /tmp -> /private/tmp), so pass the root
+ * whenever one is known -- without it only relative targets can be resolved.
+ *
+ * The single definition behind both summary.totalTokens (audit.ts
+ * contextTokenTotal) and tokens/aggregate, so the two never disagree.
  */
-function resolveLinkTarget(f: AggregateTokenInput): string | null {
-  if (!f.isSymlink || !f.symlinkTarget) return null;
-  const target = f.symlinkTarget.replace(/\\/g, '/');
-  if (path.posix.isAbsolute(target) || /^[A-Za-z]:/.test(target)) return null;
-  return path.posix.normalize(
-    path.posix.join(path.posix.dirname(f.path.replace(/\\/g, '/')), target),
-  );
+export function withoutSymlinkAliases<
+  T extends { path: string; isSymlink?: boolean; symlinkTarget?: string },
+>(files: ReadonlyArray<T>, projectRoot?: string): T[] {
+  // Case-insensitive default filesystems (win32, darwin) fold like the scanner.
+  const nocase = process.platform === 'win32' || process.platform === 'darwin';
+  const key = (p: string) => {
+    const s = p.replace(/\\/g, '/');
+    return nocase ? s.toLowerCase() : s;
+  };
+  const roots = projectRoot ? rootForms(projectRoot) : [];
+  const relativeToRoot = (abs: string): string | null => {
+    const target = path.resolve(abs.replace(/^\\\\\?\\/, ''));
+    for (const r of roots) {
+      const rel = path.relative(r, target);
+      if (!isOutsideRelative(rel)) return rel.replace(/\\/g, '/');
+    }
+    return null;
+  };
+  const counted = new Set(files.map((f) => key(f.path)));
+  const kept: T[] = [];
+  for (const f of files) {
+    if (f.isSymlink && f.symlinkTarget) {
+      const target = f.symlinkTarget.replace(/\\/g, '/');
+      let resolved: string | null = null;
+      if (!path.posix.isAbsolute(target) && !/^[A-Za-z]:/.test(target)) {
+        resolved = key(
+          path.posix.normalize(
+            path.posix.join(path.posix.dirname(f.path.replace(/\\/g, '/')), target),
+          ),
+        );
+      } else {
+        const rel = relativeToRoot(f.symlinkTarget);
+        if (rel !== null) resolved = key(path.posix.normalize(rel));
+      }
+      if (resolved !== null && resolved !== key(f.path) && counted.has(resolved)) continue;
+    }
+    kept.push(f);
+  }
+  return kept;
+}
+
+function rootForms(projectRoot: string): string[] {
+  const forms = [path.resolve(projectRoot)];
+  try {
+    const real = fs.realpathSync(projectRoot);
+    if (real !== forms[0]) forms.push(real);
+  } catch {
+    // root missing (tests pass synthetic roots); the given form is enough
+  }
+  return forms;
 }
 
 export function checkAggregateTokens(
   files: AggregateTokenInput[],
   thresholds: TokenThresholds = DEFAULT_TOKEN_THRESHOLDS,
+  projectRoot?: string,
 ): LintIssue | null {
-  // A symlink whose target is another counted file (AGENTS.md -> CLAUDE.md) is
-  // the same content under a second name: counting both doubles the total.
-  // Case-insensitive default filesystems (win32, darwin) fold like scanner globs.
-  const nocase = process.platform === 'win32' || process.platform === 'darwin';
-  const fold = (p: string) => (nocase ? p.toLowerCase() : p);
-  const counted = new Set(files.map((f) => fold(f.path.replace(/\\/g, '/'))));
-  const unique = files.filter((f) => {
-    const target = resolveLinkTarget(f);
-    return !(
-      target &&
-      fold(target) !== fold(f.path.replace(/\\/g, '/')) &&
-      counted.has(fold(target))
-    );
-  });
+  const unique = withoutSymlinkAliases(files, projectRoot);
   const total = unique.reduce((sum, f) => sum + f.tokens, 0);
   if (total >= thresholds.aggregate && unique.length > 1) {
     return {

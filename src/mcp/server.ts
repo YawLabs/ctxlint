@@ -342,6 +342,7 @@ server.tool(
           isSymlink: f.isSymlink,
           symlinkTarget: f.symlinkTarget,
         })),
+        root,
       );
 
       return {

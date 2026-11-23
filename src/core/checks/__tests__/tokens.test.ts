@@ -1,5 +1,12 @@
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { checkTokens, checkAggregateTokens, DEFAULT_TOKEN_THRESHOLDS } from '../tokens.js';
+import {
+  checkTokens,
+  checkAggregateTokens,
+  DEFAULT_TOKEN_THRESHOLDS,
+  withoutSymlinkAliases,
+} from '../tokens.js';
 import { makeParsedFile } from './token-fixtures.js';
 
 describe('checkTokens', () => {
@@ -114,5 +121,53 @@ describe('checkAggregateTokens', () => {
     ]);
     expect(issue).not.toBeNull();
     expect(issue!.message).toContain('6,000 tokens');
+  });
+
+  it('counts a symlink with an ABSOLUTE in-root target once when given the root', () => {
+    // `ln -s "$PWD/CLAUDE.md" AGENTS.md` / `mklink` with a full path: called
+    // directly (not only via runAudit), the aggregate still drops the alias.
+    const root = path.resolve(os.tmpdir(), 'ctxlint-abs-alias-root');
+    const files = [
+      { path: 'CLAUDE.md', tokens: 3000 },
+      {
+        path: 'AGENTS.md',
+        tokens: 3000,
+        isSymlink: true,
+        symlinkTarget: path.join(root, 'CLAUDE.md'),
+      },
+    ];
+    expect(checkAggregateTokens(files, DEFAULT_TOKEN_THRESHOLDS, root)).toBeNull();
+    // Without a root the absolute target cannot be related to the set.
+    expect(checkAggregateTokens(files)).not.toBeNull();
+  });
+
+  it('still counts an absolute-target symlink that points outside the root', () => {
+    const root = path.resolve(os.tmpdir(), 'ctxlint-abs-alias-root');
+    const outside = path.resolve(os.tmpdir(), 'ctxlint-abs-alias-elsewhere', 'CLAUDE.md');
+    const issue = checkAggregateTokens(
+      [
+        { path: 'CLAUDE.md', tokens: 3000 },
+        { path: 'AGENTS.md', tokens: 3000, isSymlink: true, symlinkTarget: outside },
+      ],
+      DEFAULT_TOKEN_THRESHOLDS,
+      root,
+    );
+    expect(issue).not.toBeNull();
+  });
+});
+
+describe('withoutSymlinkAliases', () => {
+  it('is the shared filter: drops in-root aliases, keeps everything else in order', () => {
+    const root = path.resolve(os.tmpdir(), 'ctxlint-abs-alias-root');
+    const kept = withoutSymlinkAliases(
+      [
+        { path: 'CLAUDE.md' },
+        { path: 'AGENTS.md', isSymlink: true, symlinkTarget: path.join(root, 'CLAUDE.md') },
+        { path: 'GEMINI.md', isSymlink: true, symlinkTarget: 'CLAUDE.md' },
+        { path: 'docs/notes.md', isSymlink: true, symlinkTarget: 'missing.md' },
+      ],
+      root,
+    );
+    expect(kept.map((f) => f.path)).toEqual(['CLAUDE.md', 'docs/notes.md']);
   });
 });

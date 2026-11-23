@@ -29,10 +29,24 @@ function classifyFile(f: FileResult): FileGroup {
     if (issue.check.startsWith('session-')) return 'session';
     if (issue.check.startsWith('skill-')) return 'skill';
     if (issue.check.startsWith('mcp-')) return 'mcp';
+    // A project settings file carrying hook-coverage findings (audit.ts files
+    // them under the file's own path) belongs to the context pillar, so
+    // settings.json and settings.local.json land in the same group.
+    if (issue.check === 'hook-coverage') return 'context';
   }
 
   // Empty-issue fallback: classify by path so --verbose still groups correctly.
   const norm = f.path.replace(/\\/g, '/');
+  // A PROJECT .claude/settings(.local).json is never scanned as an MCP config;
+  // only the global ~/.claude/settings.json is (scanGlobalMcpConfigs).
+  if (
+    isSettingsFile(norm) &&
+    !norm.startsWith('~') &&
+    !norm.startsWith('/') &&
+    !/^[A-Za-z]:/.test(norm)
+  ) {
+    return 'context';
+  }
   if (
     norm === '.mcp.json' ||
     norm.endsWith('/.mcp.json') ||
@@ -333,13 +347,17 @@ function isKeyShaped(run: string): boolean {
  * need match a known-token pattern for redactSecrets to catch them. Env-var refs are never touched, so the part a syntax fix
  * changes stays readable.
  */
-export function redactLiteralCredentials(text: string): string {
+export function redactLiteralCredentials(
+  text: string,
+  options: { keyShaped?: boolean } = {},
+): string {
   let out = text.replace(URL_USERINFO_PASSWORD, (m, head: string, pw: string) =>
     hasLiteral(pw) ? `${head}${redactSecretValue(pw)}@` : m,
   );
   out = out.replace(URL_SECRET_PARAM, (m, head: string, value: string) =>
     hasLiteral(value) ? `${head}${redactSecretValue(value)}` : m,
   );
+  if (options.keyShaped === false) return out;
   // Key-shaped runs: scan only the literal segments between env refs.
   let result = '';
   let last = 0;
@@ -352,6 +370,19 @@ export function redactLiteralCredentials(text: string): string {
   return result + maskSegment(out.slice(last));
 }
 
+/**
+ * The display form of a non-secret fix's oldText / newText for `check`:
+ * known-format tokens (redactSecrets) and URL credentials (userinfo password,
+ * secret-named query param) are masked for every check. The key-shaped-run
+ * heuristic is applied only to MCP config fixes, whose values are server
+ * URLs, headers and env entries where a bare random-looking run is a
+ * credential; elsewhere (a paths/* rewrite of `src/AddUser2FactorAuth.ts`)
+ * it would mask ordinary CamelCase names and make the fix unusable.
+ */
+export function redactFixText(check: string, text: string): string {
+  return redactLiteralCredentials(redactSecrets(text), { keyShaped: check.startsWith('mcp-') });
+}
+
 function redactIssueForOutput(issue: LintIssue): LintIssue {
   const out: LintIssue = { ...issue, message: redactSecrets(issue.message) };
   if (issue.suggestion !== undefined) out.suggestion = redactSecrets(issue.suggestion);
@@ -361,8 +392,8 @@ function redactIssueForOutput(issue: LintIssue): LintIssue {
       ...issue.fix,
       oldText: SECRET_FIX_CHECKS.has(issue.check)
         ? redactSecretValue(issue.fix.oldText)
-        : redactLiteralCredentials(redactSecrets(issue.fix.oldText)),
-      newText: redactLiteralCredentials(redactSecrets(issue.fix.newText)),
+        : redactFixText(issue.check, issue.fix.oldText),
+      newText: redactFixText(issue.check, issue.fix.newText),
     };
   }
   return out;

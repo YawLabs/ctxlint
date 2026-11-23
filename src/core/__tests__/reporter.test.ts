@@ -4,6 +4,7 @@ import {
   formatJson,
   formatTokenReport,
   formatSarif,
+  redactFixText,
   redactLiteralCredentials,
   redactResultForOutput,
 } from '../reporter.js';
@@ -902,6 +903,76 @@ describe('formatText — context token accounting excludes MCP configs', () => {
     expect(plain).toContain('dead hook');
     expect(stripAnsi(formatTokenReport(result))).not.toContain('settings.json');
   });
+
+  const hookRow = (p: string, msg: string) => ({
+    path: p,
+    isSymlink: false,
+    tokens: 0,
+    lines: 12,
+    issues: [
+      {
+        severity: 'warning' as const,
+        check: 'hook-coverage' as const,
+        ruleId: 'hook-coverage/dead-hook',
+        line: 4,
+        message: msg,
+      },
+    ],
+  });
+
+  it('does not count a hook-coverage settings file as an MCP config', () => {
+    const result = makeResult({
+      files: [
+        { path: 'CLAUDE.md', isSymlink: false, tokens: 500, lines: 20, issues: [] },
+        hookRow('.claude/settings.json', 'dead hook A'),
+        hookRow('.claude/settings.local.json', 'dead hook B'),
+      ],
+      summary: { errors: 0, warnings: 2, info: 0, totalTokens: 500, estimatedWaste: 0 },
+    });
+    const plain = stripAnsi(formatText(result));
+    expect(plain).not.toContain('MCP config');
+    expect(plain).not.toContain('MCP Configs');
+    expect(plain).toContain('dead hook A');
+    expect(plain).toContain('dead hook B');
+  });
+
+  it('files both settings files under one group when an MCP group also renders', () => {
+    const result = makeResult({
+      files: [
+        { path: 'CLAUDE.md', isSymlink: false, tokens: 500, lines: 20, issues: [] },
+        hookRow('.claude/settings.json', 'dead hook A'),
+        hookRow('.claude/settings.local.json', 'dead hook B'),
+        {
+          path: '.mcp.json',
+          isSymlink: false,
+          tokens: 30,
+          lines: 3,
+          issues: [{ severity: 'warning', check: 'mcp-schema', line: 1, message: 'bad schema' }],
+        },
+      ],
+      summary: { errors: 0, warnings: 3, info: 0, totalTokens: 500, estimatedWaste: 0 },
+    });
+    const plain = stripAnsi(formatText(result));
+    expect(plain).toContain('Found 1 MCP config\n  .mcp.json\n');
+    const ctxHeader = plain.indexOf('Context Files');
+    const mcpHeader = plain.indexOf('MCP Configs');
+    expect(ctxHeader).toBeGreaterThan(-1);
+    expect(mcpHeader).toBeGreaterThan(ctxHeader);
+    for (const msg of ['dead hook A', 'dead hook B']) {
+      const at = plain.indexOf(msg);
+      expect(at).toBeGreaterThan(ctxHeader);
+      expect(at).toBeLessThan(mcpHeader);
+    }
+  });
+
+  it('still groups the global ~/.claude/settings.json MCP config under MCP Configs', () => {
+    const result = makeResult({
+      files: [
+        { path: '~/.claude/settings.json', isSymlink: false, tokens: 0, lines: 3, issues: [] },
+      ],
+    });
+    expect(stripAnsi(formatText(result, true))).toContain('Found 1 MCP config');
+  });
 });
 
 describe('paren-prefixed real paths are not synthetic buckets', () => {
@@ -1130,6 +1201,41 @@ describe('secret redaction at the output boundary', () => {
       expect(out).not.toContain(URL_KEY);
       expect(out).not.toContain(HEADER_KEY);
       expect(out).not.toContain(USER_PW);
+    });
+
+    it('does not mask a CamelCase file name in a paths fix (key shape is not a credential context)', () => {
+      const OLD = 'src/AddUser2FactorAuthHandler.ts';
+      const NEW = 'src/AddUser2FactorAuthHandlers.ts';
+      const result = makeResult({
+        files: [
+          {
+            path: 'CLAUDE.md',
+            isSymlink: false,
+            tokens: 10,
+            lines: 5,
+            issues: [
+              {
+                severity: 'error',
+                check: 'paths',
+                ruleId: 'paths/not-found',
+                line: 3,
+                message: `${OLD} does not exist`,
+                fix: { file: '/p/CLAUDE.md', line: 3, oldText: OLD, newText: NEW },
+              },
+            ],
+          },
+        ],
+      });
+      const fix = JSON.parse(formatJson(result)).files[0].issues[0].fix;
+      expect(fix.oldText).toBe(OLD);
+      expect(fix.newText).toBe(NEW);
+      expect(redactFixText('paths', OLD)).toBe(OLD);
+      // Credential contexts still mask in a non-MCP fix: a URL password and a
+      // secret-named query param are credentials whatever the check.
+      expect(redactFixText('paths', `postgres://a:${USER_PW}@h/db`)).not.toContain(USER_PW);
+      expect(redactFixText('paths', `https://x.dev/?api_key=${URL_KEY}`)).not.toContain(URL_KEY);
+      // And an MCP fix still masks a bare key-shaped run.
+      expect(redactFixText('mcp-env', `${HEADER_KEY}\${SUFFIX}`)).not.toContain(HEADER_KEY);
     });
 
     it('leaves ordinary fix text alone', () => {

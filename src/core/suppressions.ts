@@ -8,7 +8,7 @@
  *     CI-on-tag-push via `.github/workflows/release.yml` is the intended end
  *     state but is not wired up here today.
  *
- * That path reference is accurate and useful, and `paths/file-not-found` is
+ * That path reference is accurate and useful, and `paths/not-found` is
  * right that the file is absent. Without an escape hatch the only way to
  * silence it is to reword the prose so the extractor stops seeing the path --
  * which degrades the document to satisfy the linter. A directive lets the
@@ -20,11 +20,13 @@
  *     <!-- ctxlint-ignore-next-line paths -->  suppress only `paths` on the next line
  *     <!-- ctxlint-ignore-line -->             suppress every check on THIS line
  *     <!-- ctxlint-ignore-line paths tokens -->  suppress two checks on THIS line
- *     <!-- ctxlint-ignore-next-line paths/file-not-found -->  one rule only
+ *     <!-- ctxlint-ignore-next-line paths/not-found -->  one rule only
  *
  * A target is either a check name (`paths`), which matches an issue whose
  * `check` or rule-ID prefix is that name, or a full rule ID
- * (`paths/file-not-found`), which matches only that rule.
+ * (`paths/not-found`), which matches only that rule. A slash-form target
+ * that names no inline-suppressible rule (SUPPRESSIBLE_RULE_IDS) draws a
+ * stderr warning.
  *
  * Directives inside fenced code blocks or inline code spans are ignored, so a
  * context file can DOCUMENT the syntax without suppressing anything. A comment
@@ -38,6 +40,58 @@
  */
 
 import { classifyLines, inlineCodeSpans, maskCodeSpans } from '../utils/markdown.js';
+
+/**
+ * Every rule ID an inline directive can suppress: the rules the single-file
+ * context checks emit (audit.ts runSingleFileChecks is the only place
+ * directives are applied). Cross-file rules -- tokens/aggregate,
+ * tier-tokens/aggregate, redundancy/duplicate-content, contradictions/*,
+ * ci-*, hook-coverage/* -- are reported outside that path, so naming one in a
+ * directive suppresses nothing and draws the same warning as a typo.
+ *
+ * Kept as a literal rather than read from context-lint-rules.json: importing
+ * the catalog would bundle the whole file into dist/index.js (entry.test.ts
+ * keeps catalog readers out of the shipped bundle). suppressions.test.ts
+ * checks this list against the catalog in both directions.
+ */
+export const SUPPRESSIBLE_RULE_IDS: ReadonlySet<string> = new Set([
+  'paths/not-found',
+  'paths/glob-no-match',
+  'paths/directory-not-found',
+  'commands/script-not-found',
+  'commands/make-target-not-found',
+  'commands/no-makefile',
+  'commands/npx-not-in-deps',
+  'commands/tool-not-found',
+  'commands/package-json-missing',
+  'commands/exit-status-masked',
+  'commands/unknown-subcommand',
+  'commands/gradle-project-not-found',
+  'commands/maven-module-not-found',
+  'staleness/stale',
+  'staleness/aging',
+  'tokens/excessive',
+  'tokens/large',
+  'tokens/info',
+  'tier-tokens/section-breakdown',
+  'tier-tokens/hard-enforcement-missing',
+  'redundancy/tech-mention',
+  'redundancy/discoverable-dir',
+  'frontmatter/missing',
+  'frontmatter/missing-field',
+  'frontmatter/invalid-value',
+  'frontmatter/unclosed',
+  'frontmatter/no-activation',
+  'content-secrets/private-key-header',
+  'content-secrets/aws-access-key',
+  'content-secrets/github-pat',
+  'content-secrets/anthropic-key',
+  'content-secrets/openai-key',
+  'content-secrets/npm-token',
+  'content-secrets/slack-token',
+  'content-secrets/google-api-key',
+  'content-secrets/stripe-secret',
+]);
 
 /**
  * Which checks / rule IDs a single line suppresses. `null` means "all checks".
@@ -103,6 +157,13 @@ export function collectSuppressions(
     while ((match = DIRECTIVE_RE.exec(probe)) !== null) {
       const kind = match[1];
       const checks = (match[2] ?? '').trim().split(/\s+/).filter(Boolean);
+      for (const target of checks) {
+        if (!target.includes('/') || SUPPRESSIBLE_RULE_IDS.has(target)) continue;
+        const where = source ? `${source}:${i + 1}` : `line ${i + 1}`;
+        console.error(
+          `Warning: ctxlint directive at ${where} names rule ID "${target}", which is unknown or a cross-file rule that cannot be suppressed inline -- it suppresses nothing (rule IDs look like paths/not-found; a bare check name like "paths" covers every rule of that check)`,
+        );
+      }
       // `next-line` targets i+2 (1-based next line); `line` targets i+1 itself.
       add(kind === 'next-line' ? i + 2 : i + 1, checks);
     }

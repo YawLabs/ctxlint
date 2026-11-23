@@ -946,6 +946,94 @@ describe('checkTierTokens — hard-enforcement-missing: what the span is and wha
     expect(await hardFor('# CLAUDE.md\n\nNEVER run `npm publish` locally.\n')).toBeUndefined();
   });
 
+  // A dotted identifier is code, not a file: no `Edit(console.log)` suggestion.
+  it.each(['console.log', 'JSON.parse', 'process.env', 'np.sum', '_.sum'])(
+    'classifies the dotted identifier `%s` as code',
+    async (span) => {
+      const hard = await hardFor(`# CLAUDE.md\n\nNever use \`${span}\` in production code.\n`);
+      expect(hard).toBeDefined();
+      expect(hard!.suggestion).not.toContain(`Edit(${span})`);
+      expect(hard!.suggestion).not.toContain('file cannot be changed');
+      expect(hard!.suggestion).toContain('rejects edits introducing it');
+    },
+  );
+
+  it.each(['.env', '.env.local', 'app.log', 'src/generated', 'tsconfig.json'])(
+    'still classifies `%s` as a file',
+    async (span) => {
+      const hard = await hardFor(`# CLAUDE.md\n\nDo NOT edit \`${span}\` by hand.\n`);
+      expect(hard).toBeDefined();
+      expect(hard!.suggestion).toContain(`Edit(${span})`);
+    },
+  );
+
+  // Lockfiles and manifests whose extension is not a common source type.
+  it.each(['go.sum', 'go.mod', 'bun.lockb', 'Gemfile.lock', 'App.csproj'])(
+    'classifies the lockfile/manifest `%s` as a file and credits Edit(%s)',
+    async (span) => {
+      const hard = await hardFor(`# CLAUDE.md\n\nDo NOT edit \`${span}\` by hand.\n`);
+      expect(hard).toBeDefined();
+      expect(hard!.suggestion).toContain(`Edit(${span})`);
+      writeSettings({ permissions: { deny: [`Edit(${span})`] } });
+      expect(await hardFor(`# CLAUDE.md\n\nDo NOT edit \`${span}\` by hand.\n`)).toBeUndefined();
+    },
+  );
+
+  it('credits an Edit(...) deny for a dotted span with an unlisted extension', async () => {
+    writeSettings({ permissions: { deny: ['Edit(schema.prisma2)'] } });
+    expect(await hardFor('# CLAUDE.md\n\nNever edit `schema.prisma2` by hand.\n')).toBeUndefined();
+  });
+
+  function writeHookScript(name: string, body: string, matcher: string, event = 'PreToolUse') {
+    const hooks = path.join(tmpDir, '.claude', 'hooks');
+    fs.mkdirSync(hooks, { recursive: true });
+    fs.writeFileSync(path.join(hooks, name), body);
+    writeSettings({
+      hooks: { [event]: [{ matcher, hooks: [{ command: `bash .claude/hooks/${name}` }] }] },
+    });
+  }
+
+  // `any` inside "company" is not a mention of `any`.
+  it('does not credit a code span found only inside a longer word', async () => {
+    writeHookScript('guard.sh', '#!/bin/sh\n# company policy\ngrep -q "as unknown" "$F"\n', '');
+    expect(await hardFor('# CLAUDE.md\n\nNever use `any` in TypeScript code.\n')).toBeDefined();
+  });
+
+  it('does not credit a Bash-only hook that names the code span', async () => {
+    writeHookScript('guard.sh', '#!/bin/sh\ngrep -q ": any" "$F" && exit 2\n', 'Bash');
+    expect(await hardFor('# CLAUDE.md\n\nNever use `any` in TypeScript code.\n')).toBeDefined();
+  });
+
+  it('credits an Edit|Write hook that names the code span as a word', async () => {
+    writeHookScript('guard.sh', '#!/bin/sh\ngrep -q ": any" "$F" && exit 2\n', 'Edit|Write');
+    expect(await hardFor('# CLAUDE.md\n\nNever use `any` in TypeScript code.\n')).toBeUndefined();
+  });
+
+  it('credits a Stop hook (no matcher) that names the code span', async () => {
+    writeHookScript('check.sh', '#!/bin/sh\ngrep -rq "console.log" src && exit 2\n', '', 'Stop');
+    expect(
+      await hardFor('# CLAUDE.md\n\nNever use `console.log` in production code.\n'),
+    ).toBeUndefined();
+  });
+
+  it('does not credit a Bash-only hook that names the file span', async () => {
+    writeHookScript('guard.sh', '#!/bin/sh\necho package-lock.json\n', 'Bash');
+    expect(
+      await hardFor('# CLAUDE.md\n\nDo NOT edit `package-lock.json` by hand.\n'),
+    ).toBeDefined();
+  });
+
+  it('credits an Edit hook that names the file span', async () => {
+    writeHookScript(
+      'guard.sh',
+      '#!/bin/sh\ncase "$F" in *package-lock.json) exit 2;; esac\n',
+      'Edit',
+    );
+    expect(
+      await hardFor('# CLAUDE.md\n\nDo NOT edit `package-lock.json` by hand.\n'),
+    ).toBeUndefined();
+  });
+
   it('matches a curly-apostrophe "Don’t"', async () => {
     const hard = await hardFor('# CLAUDE.md\n\nDon’t run `npm login` locally.\n');
     expect(hard).toBeDefined();

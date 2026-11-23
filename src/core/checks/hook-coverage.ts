@@ -298,6 +298,83 @@ function isWin32SlashFlag(token: string, platform: NodeJS.Platform): boolean {
   return platform === 'win32' && /^\/[A-Za-z?][A-Za-z0-9:?]*$/.test(token);
 }
 
+/** Prefix commands whose first non-flag word is itself a command. */
+const LAUNCHERS = new Set(['sudo', 'env', 'nohup', 'exec', 'time', 'nice', 'command']);
+/** Interpreters whose first non-flag argument is the script file they run. */
+const INTERPRETERS = new Set([
+  'bash',
+  'sh',
+  'zsh',
+  'fish',
+  'dash',
+  'ksh',
+  'node',
+  'bun',
+  'deno',
+  'tsx',
+  'ts-node',
+  'python',
+  'python3',
+  'py',
+  'ruby',
+  'perl',
+  'npx',
+  'pwsh',
+  'powershell',
+]);
+/** Flags after which the interpreter runs inline code, not a file. */
+const INLINE_CODE_FLAG = /^(?:-c|-e|-m|-p|--eval|--print|-command|-encodedcommand|-ec)$/i;
+/** Launcher flags that consume the following word (`sudo -u user`, `env -u NAME`). */
+const LAUNCHER_VALUE_FLAG = /^-[ugCDhpRrTU]$/;
+/** Interpreter flags that consume the following word. */
+const INTERPRETER_VALUE_FLAG =
+  /^(?:-r|--require|--import|--loader|--experimental-loader|--package|-executionpolicy|-ep|-workingdirectory|-wd|-configurationname|-settingsfile)$/i;
+
+/**
+ * Indices of the words a command line EXECUTES: each word in command position,
+ * the command that `sudo` / `env` / ... launch, and the script file an
+ * interpreter or launcher runs (`bash ./x`, `pwsh -File ./x.ps1`,
+ * `node --flag ./x.mjs`). Everything else is an argument -- data the command
+ * reads or writes, whatever its extension (`rm ./dist/bundle.js`).
+ */
+function executedWordIndices(words: { text: string; commandStart: boolean }[]): Set<number> {
+  const out = new Set<number>();
+  const mark = (i: number): void => {
+    if (i >= words.length || out.has(i)) return;
+    out.add(i);
+    const name = path
+      .basename(words[i].text.replace(/\\/g, '/'))
+      .toLowerCase()
+      .replace(/\.exe$/, '');
+    const launcher = LAUNCHERS.has(name);
+    if (!launcher && !INTERPRETERS.has(name)) return;
+    for (let j = i + 1; j < words.length && !words[j].commandStart; j++) {
+      const w = words[j].text;
+      if (/^-file$|^-f$/i.test(w) && (name === 'pwsh' || name === 'powershell')) {
+        if (j + 1 < words.length) out.add(j + 1);
+        return;
+      }
+      const takesValue = launcher
+        ? LAUNCHER_VALUE_FLAG.test(w)
+        : INTERPRETER_VALUE_FLAG.test(w) || (name === 'npx' && w === '-p');
+      if (!launcher && !takesValue && INLINE_CODE_FLAG.test(w)) return;
+      if (takesValue) {
+        j++;
+        continue;
+      }
+      if (w.startsWith('-')) continue;
+      if (launcher && /^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) continue;
+      if (launcher) mark(j);
+      else out.add(j);
+      return;
+    }
+  };
+  words.forEach((w, i) => {
+    if (w.commandStart) mark(i);
+  });
+  return out;
+}
+
 /**
  * Pull script-path candidates out of a hook command line or a `Bash(...)`
  * rule body. A command can be a bare path ("./.claude/hooks/gate.sh") or an
@@ -316,7 +393,9 @@ function extractCommandPaths(
   matcher: boolean,
 ): PathCandidate[] {
   const out: PathCandidate[] = [];
-  for (const word of hookShellWords(command)) {
+  const words = hookShellWords(command);
+  const executed = matcher ? executedWordIndices(words) : null;
+  for (const [index, word] of words.entries()) {
     if (word.redirectTarget) continue;
     // `--config=./eslint.config.js`, `FOO=./x.sh`: the value is the path.
     const assigned = /^(?:--?[A-Za-z0-9][\w-]*|[A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(word.text);
@@ -335,6 +414,12 @@ function extractCommandPaths(
     // safer than a false positive, per the module contract above).
     if (/[*?]/.test(pathToken)) continue;
     if (!looksLikePath(pathToken)) continue;
+    // A permission rule matches command TEXT, so an argument naming a missing
+    // path (`Bash(ls /api/v1)`, `Bash(rm -rf ./dist/)`) is a working rule.
+    // Only a script the command actually executes -- the word in command
+    // position, or the file an interpreter / launcher runs -- is worth
+    // reporting. An extension alone proves nothing (`rm ./dist/bundle.js`).
+    if (executed && (assigned || !executed.has(index))) continue;
     // Keep the original token in `raw` for the message; resolve the stripped form.
     out.push({
       raw: token,
@@ -512,8 +597,15 @@ function checkSource(
     // project and stays in the "(project)" bucket.
     const file = source.isUserGlobal ? {} : { file: source.displayPath };
     const label = origin.kind === 'hook' ? `${origin.event} hook` : 'permissions.allow entry';
+    // Only a Read/Edit-style path rule "matches nothing" when its path is
+    // gone. A Bash/PowerShell rule matches command text and still matches; what
+    // is wrong is that the command it approves runs a script that is missing.
     const consequence =
-      origin.kind === 'hook' ? 'the gate silently no-ops' : 'the rule silently matches nothing';
+      origin.kind === 'hook'
+        ? 'the gate silently no-ops'
+        : cand.kind === 'rule'
+          ? 'the rule silently matches nothing'
+          : 'the allowed command runs a script that is missing';
 
     // The target may be present under a different spelling. Say so instead of
     // asserting it is gone -- the fix is to correct the path, NOT to delete the
@@ -546,7 +638,9 @@ function checkSource(
       suggestion:
         origin.kind === 'hook'
           ? `Restore ${target}, fix the path, or remove the dead hook from ${source.displayPath}. A ${origin.event} hook pointing at a missing script does not run, so it blocks nothing.`
-          : `Restore ${target}, fix the path, or remove the stale entry from ${source.displayPath}. An allow rule naming a missing path grants nothing.`,
+          : cand.kind === 'rule'
+            ? `Restore ${target}, fix the path, or remove the stale entry from ${source.displayPath}. An allow rule naming a missing path grants nothing.`
+            : `Restore ${target}, fix the path, or remove the stale entry from ${source.displayPath}. This allow rule approves a command whose script is missing, so the command cannot succeed.`,
     });
   };
 

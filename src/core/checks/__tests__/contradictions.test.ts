@@ -368,6 +368,26 @@ describe('checkContradictions', () => {
       );
     });
 
+    it.each(['Never use semicolons.', 'Do not ever use semicolons.'])(
+      'maps a directly negated "%s" to the opposite label',
+      (text) => {
+        const files = [makeFile('CLAUDE.md', 'Use semicolons.'), makeFile('AGENTS.md', text)];
+        expect(checkContradictions(files)).toHaveLength(1);
+      },
+    );
+
+    // A double negative endorses semicolons: no "no semicolons" directive.
+    it.each(['Do not forget to use semicolons.', "Don't skip it, always use semicolons."])(
+      'does not read "%s" as "no semicolons"',
+      (text) => {
+        const files = [
+          makeFile('CLAUDE.md', text),
+          makeFile('AGENTS.md', 'Always use semicolons.'),
+        ];
+        expect(checkContradictions(files)).toEqual([]);
+      },
+    );
+
     it('a scoped naming exception in another file does not conflict with a general rule', () => {
       // The more specific rule overrides the general one; splitting them across
       // files is normal polyglot layering, the same as writing both in one.

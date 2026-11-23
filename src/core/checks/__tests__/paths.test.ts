@@ -993,6 +993,44 @@ describe('checkPaths', () => {
     ]);
   });
 
+  // The wildcard part of a glob follows the same case rule as its literal part:
+  // `src/*.TS` matches `src/app.ts` on Windows/macOS by default, never on Linux.
+  it('matches glob wildcards case-exactly too, whatever the host', async () => {
+    seed({ 'src/app.ts': 'x' });
+    const issues = await checkPaths(parsedWithRefs(['src/*.TS', 'src/*.ts', 'src/A*.ts']), tmpRoot);
+    expect(issues.map((i) => `${i.line} ${i.ruleId}`).sort()).toEqual([
+      '1 paths/glob-no-match',
+      '3 paths/glob-no-match',
+    ]);
+  });
+
+  // A plain ref that is only a case away from a real file opens on Windows and
+  // macOS; "does not exist" would read as wrong there. Say what is wrong.
+  it('words a case-only mismatch as such and offers the real spelling', async () => {
+    seed({ 'src/App.ts': 'x' });
+    const issues = await checkPaths(parsedWithRefs(['SRC/app.ts', 'src/Gone.ts']), tmpRoot);
+    const byLine = new Map(issues.map((i) => [i.line, i]));
+    expect(byLine.get(1)?.ruleId).toBe('paths/not-found');
+    expect(byLine.get(1)?.message).toBe(
+      'SRC/app.ts differs only in case from src/App.ts, so it fails on case-sensitive file systems',
+    );
+    expect(byLine.get(1)?.fix?.newText).toBe('src/App.ts');
+    expect(byLine.get(2)?.message).toBe('src/Gone.ts does not exist');
+  });
+
+  // In a subdirectory doc the ref is doc-relative; the suggestion must name
+  // the same spelling the autofix writes, not the project-root-relative one.
+  it('words a case-only mismatch in the ref`s own coordinate space', async () => {
+    seed({ 'src/app.ts': 'x' });
+    const issues = await checkPaths(parsedWithRefs(['../src/App.ts'], 'docs/CLAUDE.md'), tmpRoot);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].fix?.newText).toBe('../src/app.ts');
+    expect(issues[0].suggestion).toBe('Did you mean ../src/app.ts?');
+    expect(issues[0].message).toBe(
+      '../src/App.ts differs only in case from ../src/app.ts, so it fails on case-sensitive file systems',
+    );
+  });
+
   // Fix D anchoring via the ./ branch (independent of the known-first-segment
   // branch): a ./-prefixed glob whose first segment is unknown (`meta`) is kept
   // and, matching nothing, still emits glob-no-match.

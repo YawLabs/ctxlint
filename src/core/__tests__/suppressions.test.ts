@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { collectSuppressions, isSuppressed } from '../suppressions.js';
+import contextCatalog from '../../../context-lint-rules.json' with { type: 'json' };
+import { SUPPRESSIBLE_RULE_IDS, collectSuppressions, isSuppressed } from '../suppressions.js';
 
 describe('collectSuppressions', () => {
   it('returns an empty map for content with no directives', () => {
@@ -74,16 +75,14 @@ describe('isSuppressed', () => {
 });
 
 describe('rule-ID directives', () => {
-  const byRule = collectSuppressions('<!-- ctxlint-ignore-next-line paths/file-not-found -->\nx\n');
+  const byRule = collectSuppressions('<!-- ctxlint-ignore-next-line paths/not-found -->\nx\n');
 
   it('parses a rule ID containing a slash', () => {
-    expect(byRule.get(2)).toEqual(new Set(['paths/file-not-found']));
+    expect(byRule.get(2)).toEqual(new Set(['paths/not-found']));
   });
 
   it('a rule-ID directive suppresses only that rule', () => {
-    expect(isSuppressed(byRule, { line: 2, check: 'paths', ruleId: 'paths/file-not-found' })).toBe(
-      true,
-    );
+    expect(isSuppressed(byRule, { line: 2, check: 'paths', ruleId: 'paths/not-found' })).toBe(true);
     expect(
       isSuppressed(byRule, { line: 2, check: 'paths', ruleId: 'paths/directory-not-found' }),
     ).toBe(false);
@@ -91,7 +90,7 @@ describe('rule-ID directives', () => {
 
   it('a check-name directive matches the ruleId prefix too', () => {
     const s = collectSuppressions('<!-- ctxlint-ignore-line paths -->');
-    expect(isSuppressed(s, { line: 1, check: 'paths', ruleId: 'paths/file-not-found' })).toBe(true);
+    expect(isSuppressed(s, { line: 1, check: 'paths', ruleId: 'paths/not-found' })).toBe(true);
     // An issue whose `check` differs but whose ruleId prefix matches.
     expect(isSuppressed(s, { line: 1, check: 'other', ruleId: 'paths/x' })).toBe(true);
     expect(isSuppressed(s, { line: 1, check: 'tokens', ruleId: 'tokens/info' })).toBe(false);
@@ -139,8 +138,107 @@ describe('malformed directives', () => {
   it('does not warn for well-formed directives or unrelated comments', () => {
     const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      collectSuppressions('<!-- ctxlint-ignore-line paths/file-not-found -->\n<!-- note -->\n');
+      collectSuppressions('<!-- ctxlint-ignore-line paths/not-found -->\n<!-- note -->\n');
       expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('unknown rule-ID targets', () => {
+  it('warns on stderr when a slash-form target names no known rule ID', () => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      collectSuppressions(
+        'a\n<!-- ctxlint-ignore-next-line paths/file-not-found -->\nx\n',
+        'CLAUDE.md',
+      );
+      const messages = warn.mock.calls.map((args) => args.join(' ')).join('\n');
+      expect(messages).toContain('CLAUDE.md:2');
+      expect(messages).toContain('paths/file-not-found');
+      expect(messages).toContain('unknown or a cross-file rule');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not warn for known rule IDs or bare check names', () => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      collectSuppressions(
+        [
+          '<!-- ctxlint-ignore-line paths/not-found -->',
+          '<!-- ctxlint-ignore-line paths/directory-not-found paths/glob-no-match -->',
+          '<!-- ctxlint-ignore-line content-secrets/github-pat tokens/info -->',
+          '<!-- ctxlint-ignore-line paths tokens -->',
+        ].join('\n'),
+      );
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('every rule ID the single-file checks emit is in the known set', () => {
+    // A target naming a real rule must never draw the "unknown" warning.
+    for (const id of [
+      'paths/not-found',
+      'paths/glob-no-match',
+      'paths/directory-not-found',
+      'commands/script-not-found',
+      'staleness/stale',
+      'tokens/excessive',
+      'tier-tokens/section-breakdown',
+      'redundancy/tech-mention',
+      'frontmatter/missing-field',
+      'content-secrets/private-key-header',
+    ]) {
+      expect(SUPPRESSIBLE_RULE_IDS.has(id)).toBe(true);
+    }
+    expect(SUPPRESSIBLE_RULE_IDS.has('paths/file-not-found')).toBe(false);
+  });
+
+  // Rules emitted outside runSingleFileChecks (audit.ts), where directives
+  // are never consulted.
+  const CROSS_FILE_RULE_IDS = new Set([
+    'tokens/aggregate',
+    'tier-tokens/aggregate',
+    'redundancy/duplicate-content',
+    'contradictions/conflict',
+    'ci/no-release-docs',
+    'ci/undocumented-secret',
+    'hook-coverage/dead-hook',
+  ]);
+
+  it('matches the context catalog: every entry is catalogued, every single-file rule is listed', () => {
+    const catalogIds = contextCatalog.rules.map((r: { id: string }) => r.id);
+    for (const id of SUPPRESSIBLE_RULE_IDS) expect(catalogIds).toContain(id);
+    const expected = catalogIds.filter((id: string) => !CROSS_FILE_RULE_IDS.has(id)).sort();
+    expect([...SUPPRESSIBLE_RULE_IDS].sort()).toEqual(expected);
+  });
+
+  it('warns for a cross-file rule ID, which an inline directive cannot suppress', () => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      collectSuppressions(
+        '<!-- ctxlint-ignore-next-line ci-secrets/undocumented-secret tokens/aggregate -->\nx\n',
+        'CLAUDE.md',
+      );
+      const messages = warn.mock.calls.map((args) => args.join(' ')).join('\n');
+      expect(messages).toContain('"ci-secrets/undocumented-secret"');
+      expect(messages).toContain('"tokens/aggregate"');
+      expect(messages).toContain('cannot be suppressed inline');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('still records the unknown target (warning only, no behaviour change)', () => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const s = collectSuppressions('<!-- ctxlint-ignore-next-line paths/nope -->\nx\n');
+      expect(s.get(2)).toEqual(new Set(['paths/nope']));
     } finally {
       warn.mockRestore();
     }

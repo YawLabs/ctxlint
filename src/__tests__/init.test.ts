@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { VERSION } from '../version.js';
+import { fromMsysPath } from '../cli.js';
 
 // `init` lives inline in src/cli.ts and is driven end-to-end through the
 // built bundle, so this is a CLI integration test (hence src/__tests__, next
@@ -155,12 +156,199 @@ describe('ctxlint init', () => {
     expect(output).toContain(fs.realpathSync(hookPath));
   });
 
-  it('works from a subdirectory of the repo', () => {
+  // git runs hooks from the worktree root, so a hook for a subdirectory must
+  // carry that subdirectory's path (relative to the root) or it lints the
+  // wrong tree.
+  it('works from a subdirectory of the repo and lints that subdirectory', () => {
     const sub = path.join(tmpDir, 'packages', 'app');
     fs.mkdirSync(sub, { recursive: true });
-    execFileSync('node', [CLI, 'init'], { cwd: sub, encoding: 'utf-8' });
-    expect(fs.existsSync(path.join(tmpDir, '.git', 'hooks', 'pre-commit'))).toBe(true);
+    const output = execFileSync('node', [CLI, 'init'], { cwd: sub, encoding: 'utf-8' });
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    expect(fs.readFileSync(hookPath, 'utf-8')).toContain(
+      `npx --yes @yawlabs/ctxlint@${VERSION} --strict packages/app\n`,
+    );
     expect(fs.existsSync(path.join(sub, '.git'))).toBe(false);
+    expect(output).toContain('packages/app');
+    expect(output).toMatch(/repository root/);
+  });
+
+  it('init <subdir> writes the path relative to the repo root into the hook', () => {
+    fs.mkdirSync(path.join(tmpDir, 'packages', 'foo'), { recursive: true });
+    execFileSync('node', [CLI, 'init', 'packages/foo'], { cwd: tmpDir, encoding: 'utf-8' });
+    const content = fs.readFileSync(path.join(tmpDir, '.git', 'hooks', 'pre-commit'), 'utf-8');
+    expect(content).toContain(`npx --yes @yawlabs/ctxlint@${VERSION} --strict packages/foo\n`);
+  });
+
+  it('a second init for another package adds its own line; repeating one is a no-op', () => {
+    fs.mkdirSync(path.join(tmpDir, 'packages', 'foo'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, 'packages', 'bar'), { recursive: true });
+    execFileSync('node', [CLI, 'init', 'packages/foo'], { cwd: tmpDir, encoding: 'utf-8' });
+    const second = execFileSync('node', [CLI, 'init', 'packages/bar'], {
+      cwd: tmpDir,
+      encoding: 'utf-8',
+    });
+    expect(second).toContain('Added ctxlint to existing pre-commit hook.');
+    const again = execFileSync('node', [CLI, 'init', 'packages/foo'], {
+      cwd: tmpDir,
+      encoding: 'utf-8',
+    });
+    expect(again).toContain('already includes ctxlint');
+
+    const content = fs.readFileSync(path.join(tmpDir, '.git', 'hooks', 'pre-commit'), 'utf-8');
+    expect(content.match(/--strict packages\/foo$/gm)).toHaveLength(1);
+    expect(content.match(/--strict packages\/bar$/gm)).toHaveLength(1);
+    // The root (no path argument) is a different target from either package.
+    const root = execFileSync('node', [CLI, 'init'], { cwd: tmpDir, encoding: 'utf-8' });
+    expect(root).toContain('Added ctxlint to existing pre-commit hook.');
+    expect(fs.readFileSync(path.join(tmpDir, '.git', 'hooks', 'pre-commit'), 'utf-8')).toMatch(
+      new RegExp(`ctxlint@${VERSION.replace(/\./g, '\\.')} --strict$`, 'm'),
+    );
+  });
+
+  // Hooks installed before --yes existed keep npx's install prompt until the
+  // pin update also adds --yes.
+  it('re-running init adds --yes to an older pinned hook', () => {
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    fs.mkdirSync(path.dirname(hookPath), { recursive: true });
+    fs.writeFileSync(hookPath, '#!/bin/sh\nnpx @yawlabs/ctxlint@0.27.0 --strict\n', {
+      mode: 0o755,
+    });
+    const output = execFileSync('node', [CLI, 'init'], { cwd: tmpDir, encoding: 'utf-8' });
+    expect(output).toContain(`Updated ctxlint pre-commit hook pin from 0.27.0 to ${VERSION}.`);
+    expect(fs.readFileSync(hookPath, 'utf-8')).toBe(
+      `#!/bin/sh\nnpx --yes @yawlabs/ctxlint@${VERSION} --strict\n`,
+    );
+  });
+
+  it('re-running init adds --yes to a hook already at the current pin', () => {
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    fs.mkdirSync(path.dirname(hookPath), { recursive: true });
+    fs.writeFileSync(hookPath, `#!/bin/sh\nnpx @yawlabs/ctxlint@${VERSION} --strict\n`, {
+      mode: 0o755,
+    });
+    const output = execFileSync('node', [CLI, 'init'], { cwd: tmpDir, encoding: 'utf-8' });
+    expect(output).toContain('--yes');
+    expect(output).not.toContain('already includes');
+    expect(fs.readFileSync(hookPath, 'utf-8')).toBe(
+      `#!/bin/sh\nnpx --yes @yawlabs/ctxlint@${VERSION} --strict\n`,
+    );
+  });
+
+  // `-y` is npx's short form of --yes: a current hook using it needs no change,
+  // so init must leave the file byte-for-byte alone (CRLF included).
+  it('leaves a current hook that uses -y untouched', () => {
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    fs.mkdirSync(path.dirname(hookPath), { recursive: true });
+    const original = `#!/bin/sh\r\nnpx -y @yawlabs/ctxlint@${VERSION} --strict\r\n`;
+    fs.writeFileSync(hookPath, original, { mode: 0o755 });
+    const output = execFileSync('node', [CLI, 'init'], { cwd: tmpDir, encoding: 'utf-8' });
+    expect(output).toContain('already includes ctxlint');
+    expect(fs.readFileSync(hookPath, 'utf-8')).toBe(original);
+  });
+
+  it('bumps an old pin on a -y hook without rewriting -y', () => {
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    fs.mkdirSync(path.dirname(hookPath), { recursive: true });
+    fs.writeFileSync(hookPath, '#!/bin/sh\nnpx -y @yawlabs/ctxlint@0.27.0 --strict\n', {
+      mode: 0o755,
+    });
+    const output = execFileSync('node', [CLI, 'init'], { cwd: tmpDir, encoding: 'utf-8' });
+    expect(output).toContain(`Updated ctxlint pre-commit hook pin from 0.27.0 to ${VERSION}.`);
+    expect(output).not.toContain('Added --yes');
+    expect(fs.readFileSync(hookPath, 'utf-8')).toBe(
+      `#!/bin/sh\nnpx -y @yawlabs/ctxlint@${VERSION} --strict\n`,
+    );
+  });
+
+  // A user-level core.hooksPath is shared by every repo on the machine: a
+  // hook pinned to this project must not land there silently.
+  describe('a hooks directory outside the repository', () => {
+    let shared: string;
+    let globalConfig: string;
+    let env: NodeJS.ProcessEnv;
+
+    beforeEach(() => {
+      shared = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-shared-hooks-'));
+      globalConfig = path.join(shared, 'gitconfig');
+      fs.writeFileSync(
+        globalConfig,
+        `[core]\n\thooksPath = ${path.join(shared, 'hooks').replace(/\\/g, '/')}\n`,
+      );
+      env = { ...process.env, GIT_CONFIG_GLOBAL: globalConfig };
+    });
+
+    afterEach(() => {
+      fs.rmSync(shared, { recursive: true, force: true });
+    });
+
+    it('is refused, naming the dir and where core.hooksPath is set', () => {
+      const result = spawnSync('node', [CLI, 'init'], { cwd: tmpDir, encoding: 'utf-8', env });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(path.join(shared, 'hooks'));
+      expect(result.stderr).toContain('core.hooksPath');
+      expect(result.stderr).toContain('gitconfig');
+      expect(result.stderr).toContain('--shared-hooks');
+      expect(fs.existsSync(path.join(shared, 'hooks', 'pre-commit'))).toBe(false);
+    });
+
+    it('is allowed with --shared-hooks', () => {
+      fs.mkdirSync(path.join(shared, 'hooks'));
+      const result = spawnSync('node', [CLI, 'init', '--shared-hooks'], {
+        cwd: tmpDir,
+        encoding: 'utf-8',
+        env,
+      });
+      expect(result.status).toBe(0);
+      expect(fs.readFileSync(path.join(shared, 'hooks', 'pre-commit'), 'utf-8')).toContain(
+        `@yawlabs/ctxlint@${VERSION}`,
+      );
+    });
+  });
+
+  it('documents --shared-hooks in init --help', () => {
+    const output = execFileSync('node', [CLI, 'init', '--help'], { encoding: 'utf-8' });
+    expect(output).toContain('--shared-hooks');
+  });
+
+  // A core.hooksPath whose parent does not exist is a misconfiguration (or a
+  // misread path): fail instead of building a directory tree git never reads.
+  it('fails rather than create a hooks dir whose parent does not exist', () => {
+    git(['config', 'core.hooksPath', 'no/such/hooks']);
+    const result = spawnSync('node', [CLI, 'init'], { cwd: tmpDir, encoding: 'utf-8' });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('does not exist');
+    expect(fs.existsSync(path.join(tmpDir, 'no'))).toBe(false);
+  });
+
+  // Git for Windows hands back an MSYS-style core.hooksPath (/c/Users/...)
+  // unchanged; path.resolve turned it into C:\c\Users\... and init wrote a
+  // hook git never runs.
+  it.runIf(process.platform === 'win32')('resolves an MSYS-style core.hooksPath', () => {
+    const real = path.join(fs.realpathSync(tmpDir), '.githooks');
+    fs.mkdirSync(real);
+    const msys = real.replace(/^([A-Za-z]):/, (_, d: string) => `/${d.toLowerCase()}`);
+    fs.appendFileSync(
+      path.join(tmpDir, '.git', 'config'),
+      `[core]\n\thooksPath = ${msys.replace(/\\/g, '/')}\n`,
+    );
+    // Code without the MSYS conversion resolves /c/Users/... to C:\c\Users\...
+    // and builds that tree outside tmpDir; remove it (only the dirs it made,
+    // never a pre-existing non-empty ancestor) so a red run leaves no litter.
+    const bogus = path.resolve(msys);
+    try {
+      const output = execFileSync('node', [CLI, 'init'], { cwd: tmpDir, encoding: 'utf-8' });
+      expect(fs.existsSync(path.join(real, 'pre-commit'))).toBe(true);
+      expect(output).toContain(path.join(real, 'pre-commit'));
+    } finally {
+      fs.rmSync(path.join(bogus, 'pre-commit'), { force: true });
+      for (let dir = bogus; dir !== path.dirname(dir); dir = path.dirname(dir)) {
+        try {
+          fs.rmdirSync(dir); // fails (and stops) at the first non-empty dir
+        } catch {
+          break;
+        }
+      }
+    }
   });
 
   // An unexpected failure inside an action (here EISDIR reading the hook)
@@ -184,6 +372,14 @@ describe('ctxlint init', () => {
     expect(result.stderr).toMatch(/bad config/i);
     expect(result.stderr).not.toContain('not a git repository');
     expect(result.stderr).not.toContain('git init');
+  });
+
+  it('fromMsysPath converts /x/... to X:/... only on win32', () => {
+    expect(fromMsysPath('/c/Users/me/hooks', 'win32')).toBe('C:/Users/me/hooks');
+    expect(fromMsysPath('/d', 'win32')).toBe('D:/');
+    expect(fromMsysPath('C:/Users/me', 'win32')).toBe('C:/Users/me');
+    expect(fromMsysPath('/cd/hooks', 'win32')).toBe('/cd/hooks');
+    expect(fromMsysPath('/c/Users/me', 'linux')).toBe('/c/Users/me');
   });
 
   it('fails outside a git repo', () => {

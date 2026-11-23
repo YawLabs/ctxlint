@@ -286,10 +286,24 @@ function isNegated(line: string, matchIndex: number): boolean {
   return NEGATION_BEFORE_MATCH.test(line.slice(windowStart, matchIndex));
 }
 
+// A negation that DIRECTLY governs the match ("Don't use semicolons", "Never
+// use semicolons", "do not ever use semicolons"): only whitespace sits between
+// the negation and the matched verb. Only this form endorses the opposite
+// choice (negatedLabel). A negation further back in the window ("Do not
+// forget to use semicolons") still suppresses the plain label, but it is a
+// double negative, not a "no semicolons" directive.
+const DIRECT_NEGATION_BEFORE_MATCH =
+  /(?:\b(?:never(?:\s*,\s*ever)?|not(?:\s+ever)?|no\s+longer)|n['’]t(?:\s+ever)?)\s+$/i;
+
+function isDirectlyNegated(line: string, matchIndex: number): boolean {
+  const windowStart = Math.max(0, matchIndex - NEGATION_WINDOW);
+  return DIRECT_NEGATION_BEFORE_MATCH.test(line.slice(windowStart, matchIndex));
+}
+
 interface PatternMatches {
   /** First occurrence that is not negated, if any. */
   plain: RegExpExecArray | null;
-  /** First negated occurrence, if any. */
+  /** First occurrence whose negation directly governs it, if any. */
   negated: RegExpExecArray | null;
 }
 
@@ -309,7 +323,7 @@ function scanMatches(pattern: RegExp, line: string): PatternMatches {
       out.plain = m;
       return out;
     }
-    out.negated ??= m;
+    if (!out.negated && isDirectlyNegated(line, m.index)) out.negated = m;
   }
   return out;
 }

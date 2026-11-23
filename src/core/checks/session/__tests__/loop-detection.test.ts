@@ -339,4 +339,53 @@ describe('checkLoopDetection', () => {
     expect(issues[0].message).toContain('gh secret set');
     expect(issues[0].message).not.toContain('supersecretvalue');
   });
+
+  it.runIf(process.platform === 'win32')(
+    'matches history whose project differs only in drive-letter case (win32)',
+    async () => {
+      const entries = [1, 2, 3].map((t) => makeEntry('npm test', t, 'c:\\repo\\a'));
+      const issues = await checkLoopDetection(makeCtx(entries, 'C:\\repo\\a'));
+      expect(issues).toHaveLength(1);
+    },
+  );
+
+  it('masks leading VAR=value assignments in the echoed head', async () => {
+    for (const c of [
+      'GITHUB_TOKEN=ghp_secretvalue npm publish --access public',
+      '!GITHUB_TOKEN=ghp_secretvalue A=b npm publish',
+    ]) {
+      const entries = [makeEntry(c, 1), makeEntry(c, 2), makeEntry(c, 3)];
+      const issues = await checkLoopDetection(makeCtx(entries));
+      expect(issues, c).toHaveLength(1);
+      expect(issues[0].message, c).not.toContain('ghp_secretvalue');
+      expect(issues[0].message, c).toContain('GITHUB_TOKEN=...');
+      expect(issues[0].message, c).toContain('npm publish');
+    }
+  });
+
+  it('masks non-leading assignments, URL userinfo and credential-flag values', async () => {
+    const cases: Array<[string, string, string]> = [
+      ['sudo NPM_TOKEN=npm_secretvalue npm publish', 'npm_secretvalue', 'sudo NPM_TOKEN=... npm'],
+      ['!export GITHUB_TOKEN=ghp_secretvalue', 'ghp_secretvalue', '!export GITHUB_TOKEN=...'],
+      [
+        '!env GITHUB_TOKEN=ghp_secretvalue npm publish',
+        'ghp_secretvalue',
+        '!env GITHUB_TOKEN=... npm',
+      ],
+      ['curl -u user:hunter2 https://x', 'hunter2', 'curl -u ...'],
+      ['curl --token=hunter2 https://x', 'hunter2', 'curl --token=...'],
+      [
+        'git clone https://u:ghp_secretvalue@github.com/o/r',
+        'ghp_secretvalue',
+        'git clone https://...@github.com/o/r',
+      ],
+    ];
+    for (const [c, secret, shown] of cases) {
+      const entries = [makeEntry(c, 1), makeEntry(c, 2), makeEntry(c, 3)];
+      const issues = await checkLoopDetection(makeCtx(entries));
+      expect(issues, c).toHaveLength(1);
+      expect(issues[0].message, c).not.toContain(secret);
+      expect(issues[0].message, c).toContain(shown);
+    }
+  });
 });

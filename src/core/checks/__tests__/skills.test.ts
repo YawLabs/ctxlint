@@ -168,6 +168,29 @@ describe('skill/broken-ref', () => {
     expect(br[0].message).toContain('./helpers/missing.md');
   });
 
+  // "start" is a run-like verb, but a .md span is a document, never invoked.
+  it('resolves a document ref even after a run-like verb in the sentence', () => {
+    writeSkill(
+      'docref',
+      '---\nname: docref\ndescription: x\n---\nBefore you start, read `./missing-guide.md`.\nThen run `./missing-dir/` and call `./missing.json`.',
+    );
+    const br = run({ ...ALL, frontmatter: false }).filter((i) => i.ruleId === 'skill/broken-ref');
+    expect(br.map((i) => i.message)).toEqual([
+      expect.stringContaining('./missing-guide.md'),
+      expect.stringContaining('./missing-dir/'),
+      expect.stringContaining('./missing.json'),
+    ]);
+  });
+
+  it('still skips an executable span the prose says to run', () => {
+    writeSkill(
+      'runscript',
+      '---\nname: runscript\ndescription: x\n---\nRun `./scripts/build.sh` then start `./serve.py`.',
+    );
+    const br = run({ ...ALL, frontmatter: false }).filter((i) => i.ruleId === 'skill/broken-ref');
+    expect(br).toEqual([]);
+  });
+
   it('recognises ~~~ fences', () => {
     writeSkill('tilde', '---\nname: tilde\ndescription: x\n---\n~~~\n./run.sh 1.2.3\n~~~\n');
     const issues = run({ ...ALL, frontmatter: false });
@@ -322,6 +345,62 @@ describe('skill/trigger-collision', () => {
     const issues = run({ ...ALL, brokenRef: false, frontmatter: false });
     expect(issues.filter((i) => i.ruleId === 'skill/trigger-collision')).toEqual([]);
   });
+
+  it('scopes a negation to the quoted phrase right after it', () => {
+    writeSkill(
+      'a',
+      '---\nname: a\ndescription: Releases. Not "build only" -- also on "cut a release".\n---\nbody',
+    );
+    writeSkill('b', '---\nname: b\ndescription: Use on "cut a release".\n---\nbody');
+    const tc = run({ ...ALL, brokenRef: false, frontmatter: false }).filter(
+      (i) => i.ruleId === 'skill/trigger-collision',
+    );
+    expect(tc).toHaveLength(1);
+    expect(tc[0].message).toContain('cut a release');
+  });
+
+  it.each([
+    'Not for "build only", use on "cut a release".',
+    'Not for "build only" — use on "cut a release".',
+    'Never "build only". Use on "cut a release".',
+    'Never "build only", but "cut a release".',
+  ])('ends the negation at a separator or a re-opener: %s', (desc) => {
+    writeSkill('a', `---\nname: a\ndescription: ${desc}\n---\nbody`);
+    writeSkill('b', '---\nname: b\ndescription: Use on "cut a release".\n---\nbody');
+    const tc = run({ ...ALL, brokenRef: false, frontmatter: false }).filter(
+      (i) => i.ruleId === 'skill/trigger-collision',
+    );
+    expect(tc).toHaveLength(1);
+  });
+
+  it('carries a negation across every item of a negated list', () => {
+    writeSkill(
+      'rel',
+      '---\nname: rel\ndescription: Releases. Not for "code review", "debugging", or "write tests".\n---\nbody',
+    );
+    writeSkill('rev', '---\nname: rev\ndescription: Use on "code review".\n---\nbody');
+    writeSkill(
+      'dbg',
+      '---\nname: dbg\ndescription: Use on "debugging". Never for "cut a release" or "code review".\n---\nbody',
+    );
+    writeSkill('tst', '---\nname: tst\ndescription: Use on "write tests".\n---\nbody');
+    const tc = run({ ...ALL, brokenRef: false, frontmatter: false }).filter(
+      (i) => i.ruleId === 'skill/trigger-collision',
+    );
+    expect(tc).toEqual([]);
+  });
+
+  it.each(['"a b c" and "x y z"', '"a b c", "x y z"', '"a b c" nor "x y z"'])(
+    'still reads an un-negated list as triggers: %s',
+    (list) => {
+      writeSkill('a', `---\nname: a\ndescription: Use on ${list}.\n---\nbody`);
+      writeSkill('b', '---\nname: b\ndescription: Use on "x y z".\n---\nbody');
+      const tc = run({ ...ALL, brokenRef: false, frontmatter: false }).filter(
+        (i) => i.ruleId === 'skill/trigger-collision',
+      );
+      expect(tc).toHaveLength(1);
+    },
+  );
 
   it('reads CRLF descriptions', () => {
     writeSkill('a', '---\r\nname: a\r\ndescription: Use on "ship it".\r\n---\r\nbody');

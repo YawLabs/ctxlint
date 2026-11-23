@@ -97,6 +97,8 @@ function parseFrontmatter(content: string): FrontmatterResult {
   let endLine = 0;
   let arrayKey = ''; // a key whose (empty) value may be followed by `- item` lines
   let scalarKey = ''; // a key whose scalar value may continue on indented lines
+  let scalarIndent = 0; // column of scalarKey's own line
+  let foldAll = false; // scalarKey opened a block scalar or had an empty value
   let flowKey = ''; // a key whose flow sequence/map is still open
 
   for (let i = 1; i < lines.length; i++) {
@@ -128,9 +130,14 @@ function parseFrontmatter(content: string): FrontmatterResult {
     }
 
     const match = line.match(/^(\w+)\s*:\s*(.*)$/);
+    const indent = raw.length - raw.trimStart().length;
 
-    // Indented continuation of a scalar: fold it into the value.
-    if (scalarKey && /^\s/.test(raw) && !match) {
+    // Indented continuation of a scalar: fold it into the value. After a
+    // block-scalar header or an empty value, every line indented deeper than
+    // the key belongs to the scalar, even one shaped like `Note: ...`, until
+    // the indentation returns to the key's column. After a plain value only a
+    // non-key-shaped indented line continues it.
+    if (scalarKey && indent > scalarIndent && (foldAll || !match)) {
       const prev = fields[scalarKey];
       fields[scalarKey] = prev ? `${prev} ${line}` : line;
       arrayKey = '';
@@ -143,9 +150,15 @@ function parseFrontmatter(content: string): FrontmatterResult {
     if (match) {
       const key = match[1];
       let value = match[2].trim();
-      if (BLOCK_SCALAR_HEADER.test(value)) value = '';
+      const blockHeader = BLOCK_SCALAR_HEADER.test(value);
+      if (blockHeader) value = '';
       fields[key] = unquoteScalar(value);
-      if (!value) {
+      scalarIndent = indent;
+      foldAll = !value;
+      if (blockHeader) {
+        // A `|` / `>` body is literal text: `- x` lines are not array items.
+        scalarKey = key;
+      } else if (!value) {
         // The next lines may be YAML array items or an indented scalar.
         arrayKey = key;
         scalarKey = key;

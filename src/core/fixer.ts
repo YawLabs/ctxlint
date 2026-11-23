@@ -2,8 +2,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import chalk from 'chalk';
 import { parse as parseJsonc, type ParseError } from 'jsonc-parser';
-import { redactSecrets, redactSecretValue } from './checks/content-secrets.js';
-import { redactLiteralCredentials } from './reporter.js';
+import { redactSecretValue } from './checks/content-secrets.js';
+import { redactFixText } from './reporter.js';
 import { isOutsideRelative } from '../utils/fs.js';
 import type { LintResult, FixAction, CheckName } from './types.js';
 
@@ -50,14 +50,16 @@ const SECRET_CHECKS: ReadonlySet<CheckName> = new Set<CheckName>([
 // that sit beside the part the fix changes -- the same treatment the JSON /
 // SARIF output gives fix values, so --fix-dry-run cannot leak what --format
 // json hides.
-function displayFixText(text: string): string {
-  return redactLiteralCredentials(redactSecrets(text));
+// The key-shaped-run heuristic applies only to mcp-* checks (redactFixText), so
+// a CamelCase paths fix is not masked into an unreadable preview.
+function displayFixText(check: string, text: string): string {
+  return redactFixText(check, text);
 }
 
 function displayOldText(p: PendingFix): string {
   return SECRET_CHECKS.has(p.check)
     ? redactSecretValue(p.fix.oldText)
-    : displayFixText(p.fix.oldText);
+    : displayFixText(p.check, p.fix.oldText);
 }
 
 function isSymlinkOnDisk(filePath: string): boolean {
@@ -275,7 +277,7 @@ export function applyFixes(result: LintResult, options: FixOptions = {}): FixSum
           const prefix = dryRun ? chalk.cyan('  Would fix') : chalk.green('  Fixed');
           perFileLogs.push(
             prefix +
-              ` Line ${fix.line}: ${chalk.dim(displayOldText(p))} ${chalk.dim('->')} ${displayFixText(fix.newText)}`,
+              ` Line ${fix.line}: ${chalk.dim(displayOldText(p))} ${chalk.dim('->')} ${displayFixText(p.check, fix.newText)}`,
           );
         } else if (!found) {
           skip(`text not found on line ${fix.line}`);
