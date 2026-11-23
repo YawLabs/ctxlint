@@ -6,7 +6,7 @@
   # this in sync with package.json on each bump. `--yes` so npx never stops
   # to ask before installing the package: under pre-commit there is no one to
   # answer, and an unanswered prompt reads as a hung commit.
-  entry: npx --yes @yawlabs/ctxlint@0.28.3 --strict
+  entry: npx --yes @yawlabs/ctxlint@0.29.0 --strict
   # `system`, not `node`: pre-commit builds a `language: node` hook by running
   # `npm install .` on THIS repo, which carries no dist/ in git -- an install
   # that cannot run ctxlint and exists only so the entry above can fetch the

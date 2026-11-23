@@ -249,7 +249,7 @@ Every Claude Code path ctxlint reads outside the project follows `CLAUDE_CONFIG_
 ## Example Output
 
 ```
-ctxlint v0.28.3
+ctxlint v0.29.0
 
 Scanning /Users/you/my-app...
 
@@ -408,7 +408,7 @@ Add to your `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/yawlabs/ctxlint
-    rev: v0.28.3
+    rev: v0.29.0
     hooks:
       - id: ctxlint
 ```
