@@ -1,6 +1,0 @@
-{
-  "name": "stale-sha",
-  "scripts": {
-    "build": "tsc"
-  }
-}

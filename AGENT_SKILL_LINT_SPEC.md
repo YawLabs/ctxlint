@@ -1,7 +1,7 @@
 # AI Agent Skill Linting Specification
 
 **Version:** 1.0.0-draft
-**Date:** 2026-06-02
+**Date:** 2026-11-23
 **Maintained by:** [Yaw Labs](https://yaw.sh) / [ctxlint](https://github.com/YawLabs/ctxlint)
 **License:** CC BY 4.0
 

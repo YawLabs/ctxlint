@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/YawLabs/ctxlint/main/schemas/ctxlint-catalog.schema.json",
   "specVersion": "1.0.0-draft",
-  "specDate": "2026-04-07",
+  "specDate": "2026-11-23",
   "mcpSpecCompatibility": "2025-11-25",
   "repository": "https://github.com/YawLabs/ctxlint",
   "categories": [

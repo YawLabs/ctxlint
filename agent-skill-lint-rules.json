@@ -3,7 +3,7 @@
   "title": "AI Agent Skill Lint Rules",
   "description": "Machine-readable catalog of lint rules for Claude Code agent-skill definitions (~/.claude/skills/<name>/SKILL.md and ~/.claude/agents/*.md, under CLAUDE_CONFIG_DIR when set). The fourth ctxlint pillar. v1 is intentionally Claude-Code-only; other agents' skill/subagent formats may be added in later spec versions.",
   "specVersion": "1.0.0-draft",
-  "specDate": "2026-06-02",
+  "specDate": "2026-11-23",
   "repository": "https://github.com/YawLabs/ctxlint",
   "categories": [
     {

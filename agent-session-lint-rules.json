@@ -3,7 +3,7 @@
   "title": "AI Agent Session Lint Rules",
   "description": "Machine-readable catalog of lint rules for AI agent session data cross-project consistency",
   "specVersion": "1.0.0-draft",
-  "specDate": "2026-04-08",
+  "specDate": "2026-11-23",
   "repository": "https://github.com/YawLabs/ctxlint",
   "categories": [
     {
