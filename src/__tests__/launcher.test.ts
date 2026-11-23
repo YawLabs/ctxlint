@@ -506,7 +506,7 @@ describe('launcher with no usable oam', () => {
       );
       expect(run.code, JSON.stringify(run)).toBe(1);
       expect(run.stdout.trim(), 'nothing may be served').toBe('');
-      expect(run.stderr).toMatch(/CTXLINT_RUNTIME=oam but no usable oam \(0\.20\.2 or newer\)/);
+      expect(run.stderr).toMatch(/CTXLINT_RUNTIME=oam but no usable oam \(0\.21\.1 or newer\)/);
       // The remedy names the cause that was seen: a missing OAM_BIN, not an
       // install that nothing suggests is needed.
       expect(run.stderr).toMatch(/Point OAM_BIN at an existing oam binary, or unset it\./);
@@ -523,7 +523,7 @@ describe('launcher with no usable oam', () => {
       expect(run.code, JSON.stringify(run)).toBe(0);
       expect(run.stdout.trim(), 'the Node child must still run the CLI').toBe(PKG.version);
       expect(run.stderr).toMatch(
-        /this process is oam 0\.9\.0, older than 0\.20\.2, and no newer oam was found; running on .*node/,
+        /this process is oam 0\.9\.0, older than 0\.21\.1, and no newer oam was found; running on .*node/,
       );
       // Run by the child, not in the launcher process: argv[1] was never
       // pointed at dist/index.js.
@@ -582,7 +582,7 @@ describe('launcher with no usable oam', () => {
       // found" would be false here: one was found, and it passed its version
       // check.
       expect(run.stderr).toMatch(
-        /this process is oam 0\.9\.0, older than 0\.20\.2, and the newer oam would not start; running on .*node/,
+        /this process is oam 0\.9\.0, older than 0\.21\.1, and the newer oam would not start; running on .*node/,
       );
       expect(run.stderr).not.toMatch(/no newer oam was found/);
     },
@@ -628,7 +628,7 @@ describe('launcher remedyFor()', () => {
 
   it('sends an outdated oam to `oam self-update`, not to the website', () => {
     const text = win({ ...none, passedOver: [[0, 17, 0]] });
-    expect(text).toMatch(/Run `oam self-update` to get oam 0\.20\.2 or newer\./);
+    expect(text).toMatch(/Run `oam self-update` to get oam 0\.21\.1 or newer\./);
     expect(text).not.toMatch(/oamjs\.org/);
   });
 
@@ -734,7 +734,7 @@ describe('launcher handoff from an oam host', () => {
       const run = await runLauncher('0.8.2', isolated({ OAM_BIN: missingOam }));
       expect(run.code, JSON.stringify(run)).toBe(0);
       expect(run.stdout.trim()).toBe(PKG.version);
-      expect(run.stderr).toMatch(/this process is oam 0\.8\.2, older than 0\.20\.2/);
+      expect(run.stderr).toMatch(/this process is oam 0\.8\.2, older than 0\.21\.1/);
     },
     TIMEOUT_MS,
   );
