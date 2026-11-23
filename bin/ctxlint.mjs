@@ -117,7 +117,7 @@
  */
 
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, realpathSync, writeSync } from 'node:fs';
 import { constants, homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -126,10 +126,15 @@ import { fileURLToPath } from 'node:url';
 const OAM_MIN = [0, 20, 2];
 
 /**
- * Bound on each `oam --version` probe. A healthy oam answers in milliseconds;
- * the bound only exists so a wedged binary on PATH cannot hang the launch.
+ * Bound on each `oam --version` probe, so a wedged binary on PATH cannot hang
+ * the launch. A warm oam answers in milliseconds, but a cold start on a loaded
+ * Windows box has been measured past 10 s for `oam --version` alone (see
+ * scripts/verify-oam-floor.mjs, whose own bound is 60 s per step). A probe that
+ * runs out reads as "could not be run" and the launch falls back to Node, so a
+ * bound below that cold start silently passed over a healthy oam; 30 s clears
+ * it with margin, and only a binary that is actually wedged ever waits it out.
  */
-const VERSION_PROBE_TIMEOUT_MS = 5_000;
+const VERSION_PROBE_TIMEOUT_MS = 30_000;
 
 // Two forms, deliberately. `import()` on Windows REJECTS a bare `C:\...` path
 // with ERR_UNSUPPORTED_ESM_URL_SCHEME (it reads `c:` as a protocol), so the
@@ -171,6 +176,9 @@ function pathKey(p) {
  * spawn it throws SYNCHRONOUSLY rather than emitting 'error'), so walking the
  * full PATHEXT list would hand back a path this launcher cannot execute. A
  * skipped shim is still reported when no usable oam is found -- see findOamShim.
+ *
+ * scripts/lib/oam-discovery.mjs is a port of this for verify-oam-floor.mjs
+ * (this file cannot be imported); launcher.test.ts fails when they disagree.
  */
 function discoverOamPaths() {
   const installed = [join(homedir(), '.oam', 'bin', exe)];
@@ -197,17 +205,34 @@ function discoverOamPaths() {
 }
 
 /**
- * Version text -> [major, minor, patch], or null when it holds no version.
- * A pre-release suffix (0.9.0-rc.1) truncates to its base version.
+ * Version text -> [major, minor, patch], or null when it does not START with
+ * one (an optional leading `v` aside). A pre-release suffix (0.9.0-rc.1)
+ * truncates to its base version. Reads the host's own `process.versions.oam`
+ * ("0.18.0"), and the version inside a binary's `oam --version` output via
+ * parseOamVersionOutput, so the two cannot disagree about what a version
+ * string means, or which floor it has to clear.
  *
- * Shared by the two places a version is read -- a discovered binary's
- * `oam --version` output ("oam 0.18.0") and the host's own
- * `process.versions.oam` ("0.18.0") -- so they cannot disagree about what a
- * version string means, or which floor it has to clear.
+ * A copy of parseVersion in scripts/lib/semver.mjs: this file ships and must
+ * stay self-contained, so it cannot import from scripts/. launcher.test.ts
+ * holds the two to the same answers.
  */
 function parseVersion(text) {
-  const m = /(\d+)\.(\d+)\.(\d+)/.exec(text);
+  const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(text).trim());
   return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+/**
+ * `oam --version` output -> [major, minor, patch], or null when it is not
+ * oam's. oam prints `oam X.Y.Z`, and its own self-update smoke accepts a
+ * binary only when stdout starts with "oam ". The version used to be taken from
+ * anywhere in the output, so ANY executable named oam that printed a version
+ * >= the floor -- Node's `v22.1.0` included -- was chosen, spawned as
+ * `<it> run dist/index.js`, and failed after it had started, past the point
+ * where the launcher can fall back. Same copy rule as parseVersion.
+ */
+function parseOamVersionOutput(text) {
+  const m = /^oam (\d+\.\d+\.\d+)(?:[-+\s]|$)/.exec(String(text).trim());
+  return m ? parseVersion(m[1]) : null;
 }
 
 /** `oam --version` -> [major, minor, patch], or null when it cannot be read. */
@@ -219,7 +244,7 @@ function oamVersion(cmd) {
       timeout: VERSION_PROBE_TIMEOUT_MS,
       windowsHide: true,
     });
-    return parseVersion(out);
+    return parseOamVersionOutput(out);
   } catch {
     // Not executable, wrong arch, wedged, or deleted since the stat. Caller degrades.
     return null;
@@ -286,15 +311,14 @@ function runtimePlan({ mode, hostOam }) {
  * stderr turns out to be unusable give up quietly -- failing to print a
  * diagnostic is not worth crashing a stdio server over.
  */
-async function errSync(message) {
-  const { writeSync } = await import('node:fs');
+function errSync(message) {
   const buf = Buffer.from(message);
   let off = 0;
   for (let attempts = 0; off < buf.length && attempts < 1000; attempts++) {
     try {
       off += writeSync(2, buf, off, buf.length - off);
     } catch (err) {
-      if (err?.code !== 'EAGAIN') return;
+      if (/** @type {NodeJS.ErrnoException} */ (err)?.code !== 'EAGAIN') return;
       // Pipe is full and the reader has not drained yet -- retry.
     }
   }
@@ -478,12 +502,13 @@ async function runInProcess() {
   await import(SERVER_URL.href);
 }
 
-// ONE reporter for every failed in-process fallback. runInProcess() is a bare
+// ONE reporter for every failed in-process run -- the Node fallback and a
+// supported oam host's in-process plan alike. runInProcess() is a bare
 // import() that rejects when dist/index.js is missing, and at ESM top level an
 // unhandled rejection is an uncaught exception -- replacing this launcher's
 // diagnostic with a raw stack trace.
 const fallbackFailed = (e) => {
-  process.stderr.write(`ctxlint: fallback to Node failed (${e?.message ?? e})\n`);
+  process.stderr.write(`ctxlint: could not run the CLI (${e?.message ?? e})\n`);
   process.exitCode = 1;
 };
 
@@ -537,9 +562,12 @@ async function launchChild(cmd, args, onLaunchFailed) {
   child.on('spawn', () => {
     spawned = true;
     if (piped) {
-      process.stdin.pipe(child.stdin);
-      child.stdout.pipe(process.stdout);
-      child.stderr.pipe(process.stderr);
+      // All three exist: stdio is ['pipe', 'pipe', 'pipe'] whenever `piped`.
+      const { stdin, stdout, stderr } =
+        /** @type {import('node:child_process').ChildProcessWithoutNullStreams} */ (child);
+      process.stdin.pipe(stdin);
+      stdout.pipe(process.stdout);
+      stderr.pipe(process.stderr);
     }
     forwardSignals();
   });
@@ -626,7 +654,7 @@ async function handOffToNode(reason) {
   if (!node) {
     // An empty reason means CTXLINT_RUNTIME=node on a supported oam, where
     // updating oam is not the remedy.
-    await errSync(
+    errSync(
       reason
         ? `ctxlint: ${reason}, and no Node was found on PATH to run the CLI instead.\n` +
             `Run \`oam self-update\` to get oam ${OAM_MIN.join('.')} or newer, or launch this command with node.\n`
@@ -635,9 +663,9 @@ async function handOffToNode(reason) {
     );
     process.exit(1);
   }
-  if (reason) await errSync(`ctxlint: ${reason}; running on ${node} instead.\n`);
+  if (reason) errSync(`ctxlint: ${reason}; running on ${node} instead.\n`);
   await launchChild(node, [SERVER_ENTRY, ...process.argv.slice(2)], async (err) => {
-    await errSync(`ctxlint: failed to launch Node at ${node} (${err?.message ?? err})\n`);
+    errSync(`ctxlint: failed to launch Node at ${node} (${err?.message ?? err})\n`);
     process.exit(1);
   });
 }
@@ -662,7 +690,7 @@ const hostOam = process.versions.oam;
 const plan = runtimePlan({ mode, hostOam });
 
 if (plan === 'in-process') {
-  await runInProcess();
+  await runInProcess().catch(fallbackFailed);
 } else if (plan === 'handoff-node') {
   const belowFloor = !atLeast(parseVersion(hostOam), OAM_MIN);
   await handOffToNode(
@@ -673,7 +701,7 @@ if (plan === 'in-process') {
 
   if (chosen) {
     if (overrideNote) {
-      await errSync(
+      errSync(
         `ctxlint: ${overrideNote}; using ${chosen.path} (oam ${chosen.version.join('.')}).\n`,
       );
     }
@@ -685,12 +713,10 @@ if (plan === 'in-process') {
       ['run', SERVER_ENTRY, '--', ...process.argv.slice(2)],
       async (err) => {
         if (mode === 'oam') {
-          await errSync(
-            `ctxlint: failed to launch oam at ${chosen.path} (${err?.message ?? err})\n`,
-          );
+          errSync(`ctxlint: failed to launch oam at ${chosen.path} (${err?.message ?? err})\n`);
           process.exit(1);
         }
-        await errSync(
+        errSync(
           `ctxlint: failed to launch oam at ${chosen.path} (${err?.message ?? err}); using Node instead.\n`,
         );
         await fallBackToNode(hostOam, 'the newer oam would not start');
@@ -710,7 +736,7 @@ if (plan === 'in-process') {
     if (mode === 'oam') {
       // Explicitly demanded, so this is a real misconfiguration -- do not
       // silently do something else.
-      await errSync(
+      errSync(
         `ctxlint: CTXLINT_RUNTIME=oam but no usable oam (${OAM_MIN.join('.')} or newer) was found.\n` +
           notes.map((note) => `  ${note}\n`).join('') +
           remedyFor({ passedOver, overrideMissing, shim }),
@@ -719,7 +745,7 @@ if (plan === 'in-process') {
     }
     // auto: falling back is correct, but silence is how someone never learns
     // their OAM_BIN is wrong or their oam is too old to use.
-    if (notes.length > 0) await errSync(`ctxlint: ${notes.join('; ')}; using Node instead.\n`);
+    if (notes.length > 0) errSync(`ctxlint: ${notes.join('; ')}; using Node instead.\n`);
     await fallBackToNode(hostOam, 'no newer oam was found').catch(fallbackFailed);
   }
 }

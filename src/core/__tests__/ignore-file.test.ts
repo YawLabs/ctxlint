@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { loadIgnoreFile } from '../ignore-file.js';
+import { loadIgnoreFile, matchesGlob } from '../ignore-file.js';
 import { ALL_CHECKS, ALL_MCP_CHECKS, ALL_SESSION_CHECKS, ALL_SKILL_CHECKS } from '../audit.js';
 
 let root: string;
@@ -69,5 +69,35 @@ describe('README .ctxlintignore section', () => {
     }
     expect(rules.some((r) => r._fileGlob !== undefined)).toBe(true);
     expect(rules.some((r) => r._fileGlob === undefined)).toBe(true);
+  });
+});
+
+describe('matchesGlob', () => {
+  const caseInsensitiveFs = process.platform === 'win32' || process.platform === 'darwin';
+
+  it('matches dotfiles under ** (dot: true)', () => {
+    expect(matchesGlob('.claude/rules/a.md', '.claude/**')).toBe(true);
+    expect(matchesGlob('pkg/.cursorrules', '**/.cursorrules')).toBe(true);
+  });
+
+  it.runIf(caseInsensitiveFs)(
+    'matches case-insensitively where discovery is case-insensitive (win32/darwin)',
+    () => {
+      // glob discovery finds CLAUDE.md for a `claude.md` spelling on these
+      // platforms, so an exclude/ignore glob must agree or it silently misses.
+      expect(matchesGlob('CLAUDE.md', 'claude.md')).toBe(true);
+      expect(matchesGlob('Docs/AGENTS.md', 'docs/**')).toBe(true);
+    },
+  );
+
+  it.runIf(!caseInsensitiveFs)('stays case-sensitive on case-sensitive platforms', () => {
+    expect(matchesGlob('CLAUDE.md', 'claude.md')).toBe(false);
+  });
+
+  it('returns consistent results across repeated calls (compiled matcher cache)', () => {
+    for (let i = 0; i < 3; i++) {
+      expect(matchesGlob('src/a.md', 'src/*.md')).toBe(true);
+      expect(matchesGlob('lib/a.md', 'src/*.md')).toBe(false);
+    }
   });
 });

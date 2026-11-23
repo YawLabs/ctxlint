@@ -1,4 +1,5 @@
-import type { ParsedMcpConfig, LintIssue } from '../../types.js';
+import { getClaudeProjectScope } from '../../mcp-parser.js';
+import type { ParsedMcpConfig, LintIssue, McpServerEntry } from '../../types.js';
 
 export async function checkMcpRedundancy(configs: ParsedMcpConfig[]): Promise<LintIssue[]> {
   const issues: LintIssue[] = [];
@@ -24,25 +25,17 @@ export async function checkMcpRedundancy(configs: ParsedMcpConfig[]): Promise<Li
 
   for (const projectConfig of projectConfigs) {
     for (const projectServer of projectConfig.servers) {
+      const projectKey = comparisonKey(projectServer);
       for (const globalConfig of globalConfigs) {
-        const globalServer = globalConfig.servers.find((s) => s.name === projectServer.name);
-        if (!globalServer) continue;
-
-        // Compare meaningful fields
-        const projectKey = JSON.stringify({
-          command: projectServer.command,
-          args: projectServer.args,
-          url: projectServer.url,
-          env: projectServer.env,
-        });
-        const globalKey = JSON.stringify({
-          command: globalServer.command,
-          args: globalServer.args,
-          url: globalServer.url,
-          env: globalServer.env,
+        // A ~/.claude.json per-project block applies only to its own project:
+        // another project's block can't be redundant with this one's config.
+        const candidates = globalConfig.servers.filter((s) => {
+          if (s.name !== projectServer.name) return false;
+          const project = getClaudeProjectScope(s);
+          return !project || project.isCurrentProject;
         });
 
-        if (projectKey === globalKey) {
+        if (candidates.some((globalServer) => comparisonKey(globalServer) === projectKey)) {
           issues.push({
             severity: 'info',
             check: 'mcp-redundancy',
@@ -56,4 +49,17 @@ export async function checkMcpRedundancy(configs: ParsedMcpConfig[]): Promise<Li
   }
 
   return issues;
+}
+
+// Compare the meaningful fields. Env is compared as a set of pairs: key order
+// in the file means nothing to the client.
+function comparisonKey(server: McpServerEntry): string {
+  return JSON.stringify({
+    command: server.command,
+    args: server.args,
+    url: server.url,
+    env: server.env
+      ? Object.entries(server.env).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      : undefined,
+  });
 }

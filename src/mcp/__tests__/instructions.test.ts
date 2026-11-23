@@ -28,4 +28,11 @@ describe('MCP instructions', () => {
       expect(INSTRUCTIONS).toContain(tool);
     }
   });
+
+  it('describes what the tools actually do', () => {
+    // auditText caps an oversized result and reports it in `truncated`.
+    expect(INSTRUCTIONS).toMatch(/truncated/);
+    // ctxlint_fix applies every fix the selected checks emit, not only paths.
+    expect(INSTRUCTIONS).toMatch(/ctxlint_fix: WRITES context files, applying every auto-fix/);
+  });
 });

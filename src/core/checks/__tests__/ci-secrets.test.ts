@@ -235,4 +235,106 @@ describe('checkCiSecrets', () => {
     expect(issues.length).toBe(1);
     expect(issues[0].message).toContain('DEPLOY_KEY');
   });
+
+  function writeWorkflow(name: string, content: string): void {
+    mkdirSync(join(tempDir, '.github', 'workflows'), { recursive: true });
+    writeFileSync(join(tempDir, '.github', 'workflows', name), content);
+  }
+
+  it('treats secrets.github_token as the built-in GITHUB_TOKEN (lookup is case-insensitive)', async () => {
+    writeWorkflow('ci.yml', 'env:\n  GH_TOKEN: ${{ secrets.github_token }}');
+    const issues = await checkCiSecrets([makeFile('CLAUDE.md', 'Nothing here.')], tempDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it('reports one finding for two spellings of the same secret', async () => {
+    writeWorkflow('a.yml', 'env:\n  A: ${{ secrets.NPM_TOKEN }}');
+    writeWorkflow('b.yml', 'env:\n  B: ${{ secrets.npm_token }}');
+    const issues = await checkCiSecrets([makeFile('CLAUDE.md', 'Nothing here.')], tempDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('a.yml, b.yml');
+  });
+
+  it('flags ACTIONS_RUNTIME_TOKEN referenced through secrets. (it is a runner env var, not a secret)', async () => {
+    writeWorkflow('ci.yml', 'env:\n  T: ${{ secrets.ACTIONS_RUNTIME_TOKEN }}');
+    const issues = await checkCiSecrets([makeFile('CLAUDE.md', 'Nothing here.')], tempDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('ACTIONS_RUNTIME_TOKEN');
+  });
+
+  it('sees every secret in compound expressions, bracket syntax and if: conditions', async () => {
+    writeWorkflow(
+      'release.yml',
+      [
+        'jobs:',
+        '  publish:',
+        "    if: secrets.EEE != ''",
+        '    steps:',
+        '      - env:',
+        '          T1: ${{ secrets.AAA || secrets.BBB }}',
+        '          T2: ${{ inputs.token || secrets.CCC }}',
+        "          T3: ${{ secrets['DDD'] }}",
+      ].join('\n'),
+    );
+    const issues = await checkCiSecrets([makeFile('CLAUDE.md', 'Nothing here.')], tempDir);
+    const names = issues.map((i) => /"(\w+)"/.exec(i.message)![1]).sort();
+    expect(names).toEqual(['AAA', 'BBB', 'CCC', 'DDD', 'EEE']);
+  });
+
+  it('ignores secrets on commented-out YAML lines', async () => {
+    writeWorkflow(
+      'release.yml',
+      'env:\n  # OLD: ${{ secrets.OLD_TOKEN }}\n  NEW: ${{ secrets.NEW_TOKEN }} # was secrets.OTHER_TOKEN',
+    );
+    const issues = await checkCiSecrets([makeFile('CLAUDE.md', 'Nothing here.')], tempDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('NEW_TOKEN');
+  });
+
+  it('still sees a secret on a #-prefixed line inside a run: block (GitHub expands it there)', async () => {
+    writeWorkflow(
+      'release.yml',
+      'jobs:\n  a:\n    steps:\n      - run: |\n          # login\n          echo ${{ secrets.SHELL_TOKEN }} | docker login\n          # ${{ secrets.COMMENT_TOKEN }}\n',
+    );
+    const issues = await checkCiSecrets([makeFile('CLAUDE.md', 'Nothing here.')], tempDir);
+    const names = issues.map((i) => /"(\w+)"/.exec(i.message)![1]).sort();
+    expect(names).toEqual(['COMMENT_TOKEN', 'SHELL_TOKEN']);
+  });
+
+  it('does NOT count prose "API key" as documenting a generic two-word secret (API_KEY)', async () => {
+    writeWorkflow('deploy.yml', 'env:\n  K: ${{ secrets.API_KEY }}');
+    const issues = await checkCiSecrets(
+      [makeFile('CLAUDE.md', 'Never commit an API key to the repo.')],
+      tempDir,
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('API_KEY');
+  });
+
+  it('counts an exact env-style or backticked mention for a generic two-word secret', async () => {
+    writeWorkflow('deploy.yml', 'env:\n  K: ${{ secrets.API_KEY }}');
+    for (const doc of [
+      'Set API_KEY in repo secrets.',
+      'The deploy reads `api_key` from secrets.',
+    ]) {
+      const issues = await checkCiSecrets([makeFile('CLAUDE.md', doc)], tempDir);
+      expect(issues, doc).toHaveLength(0);
+    }
+  });
+
+  it('does not count a separator-less run-on (npmtoken) as documenting NPM_TOKEN', async () => {
+    writeWorkflow('release.yml', 'env:\n  T: ${{ secrets.NPM_TOKEN }}');
+    const issues = await checkCiSecrets([makeFile('CLAUDE.md', 'Uses npmtoken.')], tempDir);
+    expect(issues).toHaveLength(1);
+  });
+
+  it('reads CRLF workflows', async () => {
+    writeWorkflow(
+      'release.yml',
+      'env:\r\n  # X: ${{ secrets.OLD }}\r\n  T: ${{ secrets.NPM_TOKEN }}\r\n',
+    );
+    const issues = await checkCiSecrets([makeFile('CLAUDE.md', 'Nothing here.')], tempDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('NPM_TOKEN');
+  });
 });

@@ -76,8 +76,11 @@ export function maskCodeSpans(line: string, spans: CodeSpan[]): string {
  * the conservative direction (fewer findings, never a fabricated one), which
  * matches the false-negative-over-false-positive posture of the callers.
  *
- * Recognizes ``` fences only, not ~~~ -- consistent with parser.ts and
- * cli-subcommands.ts, the other two fence scanners in this codebase.
+ * Fences follow CommonMark matching (see classifyLines): ``` and ~~~ both
+ * open a fence, and a closer must use the same character, be at least as long
+ * as the opener, and carry no info string. classifyLines is the shared fence
+ * scanner: parser.ts, skills.ts and suppressions.ts read it directly, and
+ * cli-subcommands.ts and exit-status.ts read it through these masks.
  */
 export function nonProseLineMask(lines: string[]): boolean[] {
   return classifyLines(lines).map((c) => c.fence || c.comment);
@@ -93,39 +96,89 @@ export function nonProseLineMask(lines: string[]): boolean[] {
  * blind the whole check -- but a command written inside an HTML comment is
  * commentary ABOUT a command, not one to run, and linting it produced findings
  * on commented-out notes ("<!-- we used to run `npx old-tool` here -->").
- * findBinInvocations reached the same conclusion independently.
+ * findBinInvocations (cli-subcommands.ts) uses this mask for the same reason.
  */
 export function htmlCommentLineMask(lines: string[]): boolean[] {
   return classifyLines(lines).map((c) => c.comment);
 }
 
-interface LineClass {
+export interface LineClass {
+  /** Inside a fenced code block, delimiter lines included. */
   fence: boolean;
   comment: boolean;
+  /** The fence's opening or closing delimiter line (implies `fence`). */
+  fenceDelimiter: boolean;
+  /**
+   * The enclosing fence's info string, trimmed but otherwise as written
+   * (```` ```Bash title=x ```` gives `Bash title=x`), on every line of that
+   * fence including both delimiters. Empty for a bare fence and outside fences.
+   */
+  fenceInfo: string;
+}
+
+/** An open fence: its character and run length (CommonMark section 4.5). */
+interface OpenFence {
+  char: '`' | '~';
+  length: number;
+  info: string;
+}
+
+/**
+ * Parse a fence OPENER: 3+ backticks or tildes after optional indentation. A
+ * backtick opener's info string may not contain a backtick -- that is what
+ * keeps a one-line ```echo hi``` snippet (an inline code span) from opening a
+ * fence and flipping state for the rest of the file.
+ *
+ * Indentation is deliberately not capped at CommonMark's 3 spaces: fences
+ * nested in list items are indented further, and the masks would otherwise
+ * read their content as prose.
+ */
+function parseFenceOpener(trimmed: string): OpenFence | null {
+  const m = /^(`{3,}|~{3,})([^\n]*)$/.exec(trimmed); // [^\n], not ., so a CRLF line's \r still matches
+  if (!m) return null;
+  const char = m[1][0] as '`' | '~';
+  if (char === '`' && m[2].includes('`')) return null;
+  return { char, length: m[1].length, info: m[2].trim() };
+}
+
+/** A closer: the opener's character, at least as long, nothing but whitespace after. */
+function closesFence(trimmed: string, fence: OpenFence): boolean {
+  const m = /^(`+|~+)\s*$/.exec(trimmed);
+  return m !== null && m[1][0] === fence.char && m[1].length >= fence.length;
 }
 
 /**
  * Single state machine behind both masks above, so the two can never disagree
- * about where a fence or comment starts.
+ * about where a fence or comment starts. Exported so other modules can share
+ * one classification instead of re-implementing fence/comment scanning.
+ *
+ * Nesting is decided by whichever construct opened FIRST:
+ *   - a fence opened in prose wins: a `<!--` inside it is sample text;
+ *   - a comment opened in prose wins: fence markers inside it are commented
+ *     out (the lines are `comment`, not `fence`), and a `-->` on any of
+ *     those lines closes the comment.
  */
-function classifyLines(lines: string[]): LineClass[] {
-  const out: LineClass[] = lines.map(() => ({ fence: false, comment: false }));
-  let inFence = false;
+export function classifyLines(lines: string[]): LineClass[] {
+  const out: LineClass[] = lines.map(() => ({
+    fence: false,
+    comment: false,
+    fenceDelimiter: false,
+    fenceInfo: '',
+  }));
+  let fence: OpenFence | null = null;
   let inHtmlComment = false;
 
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i];
     const trimmed = raw.trimStart();
 
-    // Fence state wins over comment state: a `<!--` written inside a fenced
-    // block is sample text, not a comment opener.
-    if (trimmed.startsWith('```')) {
-      out[i].fence = true; // the delimiter line is not prose either
-      inFence = !inFence;
-      continue;
-    }
-    if (inFence) {
+    if (fence) {
       out[i].fence = true;
+      out[i].fenceInfo = fence.info;
+      if (closesFence(trimmed, fence)) {
+        out[i].fenceDelimiter = true;
+        fence = null;
+      }
       continue;
     }
 
@@ -135,9 +188,20 @@ function classifyLines(lines: string[]): LineClass[] {
     // every line to the end of the file and silently dropping real findings.
     const probe = maskCodeSpans(trimmed, inlineCodeSpans(trimmed));
 
+    // Checked BEFORE fence handling: inside a comment a fence marker is
+    // commented-out text, so it must neither open a fence nor hide a `-->`.
     if (inHtmlComment) {
       out[i].comment = true;
       if (probe.includes('-->')) inHtmlComment = false;
+      continue;
+    }
+
+    const opener = parseFenceOpener(trimmed);
+    if (opener) {
+      out[i].fence = true; // the delimiter line is not prose either
+      out[i].fenceDelimiter = true;
+      out[i].fenceInfo = opener.info;
+      fence = opener;
       continue;
     }
 
@@ -210,4 +274,16 @@ export function htmlCommentSpans(line: string): Array<{ start: number; end: numb
     spans.push({ start: m.index, end: m.index + m[0].length });
   }
   return spans;
+}
+
+/**
+ * The one closing-fence rule for YAML frontmatter, shared by every frontmatter
+ * reader so they cannot disagree about where the block ends.
+ *
+ * The fence must start at column 0 to match the host loaders (gray-matter /
+ * Cursor): an indented `   ---` does NOT close the frontmatter. Trailing
+ * whitespace is harmless and is ignored, as is a CRLF line's `\r`.
+ */
+export function isFrontmatterFence(line: string): boolean {
+  return line.trimEnd() === '---';
 }

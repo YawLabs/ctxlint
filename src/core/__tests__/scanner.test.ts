@@ -2,7 +2,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { scanForContextFiles, scanForMcpConfigs, scanGlobalMcpConfigs } from '../scanner.js';
+import {
+  RootKeyScanner,
+  scanForContextFiles,
+  scanForMcpConfigs,
+  scanGlobalMcpConfigs,
+} from '../scanner.js';
+import { parseMcpConfig } from '../mcp-parser.js';
 
 const FIXTURES = path.resolve(__dirname, '../../../fixtures');
 
@@ -57,12 +63,16 @@ describe('scanner', () => {
   });
 
   it('respects depth option', async () => {
-    const filesDepth0 = await scanForContextFiles(path.join(FIXTURES, 'multiple-files'), {
-      depth: 0,
-    });
-    const filesDefault = await scanForContextFiles(path.join(FIXTURES, 'multiple-files'));
-    // depth 0 means only root, should be same or fewer files
-    expect(filesDepth0.length).toBeLessThanOrEqual(filesDefault.length);
+    // One file per level, so each depth step must add exactly one file.
+    fs.writeFileSync(path.join(tmpDir, 'CLAUDE.md'), 'root');
+    fs.mkdirSync(path.join(tmpDir, 'a', 'b'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'a', 'CLAUDE.md'), 'one');
+    fs.writeFileSync(path.join(tmpDir, 'a', 'b', 'CLAUDE.md'), 'two');
+    const at = async (depth: number) =>
+      (await scanForContextFiles(tmpDir, { depth })).map((f) => f.relativePath);
+    expect(await at(0)).toEqual(['CLAUDE.md']);
+    expect(await at(1)).toEqual(['CLAUDE.md', 'a/CLAUDE.md']);
+    expect(await at(2)).toEqual(['CLAUDE.md', 'a/CLAUDE.md', 'a/b/CLAUDE.md']);
   });
 
   it('skips ignored directories (node_modules, .git, dist, build, vendor)', async () => {
@@ -268,13 +278,77 @@ describe('scanForMcpConfigs', () => {
 });
 
 describe('scanGlobalMcpConfigs', () => {
-  it('returns an array (env-dependent; may be empty or populated)', async () => {
+  const ENV_KEYS = ['HOME', 'USERPROFILE', 'APPDATA', 'XDG_CONFIG_HOME'] as const;
+  let saved: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    // Isolate every home-ish variable so the real workstation never leaks in.
+    saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
+    process.env.HOME = tmpDir;
+    process.env.USERPROFILE = tmpDir;
+    process.env.APPDATA = path.join(tmpDir, 'AppData', 'Roaming');
+    process.env.XDG_CONFIG_HOME = path.join(tmpDir, '.config');
+  });
+
+  afterEach(() => {
+    for (const k of ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  it('returns [] for an empty home', async () => {
+    expect(await scanGlobalMcpConfigs()).toEqual([]);
+  });
+
+  it('reports found configs as ~/-prefixed mcp-config entries in code-unit order', async () => {
+    fs.mkdirSync(path.join(tmpDir, '.cursor'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.cursor', 'mcp.json'), '{"mcpServers":{}}');
+    fs.mkdirSync(path.join(tmpDir, '.aws', 'amazonq'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.aws', 'amazonq', 'mcp.json'), '{"mcpServers":{}}');
     const files = await scanGlobalMcpConfigs();
-    expect(Array.isArray(files)).toBe(true);
-    // Whatever it finds must be marked as mcp-config type and ~/-prefixed
-    for (const f of files) {
-      expect(f.type).toBe('mcp-config');
-      expect(f.relativePath.startsWith('~/')).toBe(true);
+    expect(files.map((f) => f.relativePath)).toEqual([
+      '~/.aws/amazonq/mcp.json',
+      '~/.cursor/mcp.json',
+    ]);
+    for (const f of files) expect(f.type).toBe('mcp-config');
+  });
+
+  it("discovers Cline's MCP settings in the VS Code extension's globalStorage", async () => {
+    const userDir =
+      process.platform === 'win32'
+        ? path.join(tmpDir, 'AppData', 'Roaming', 'Code', 'User')
+        : process.platform === 'darwin'
+          ? path.join(tmpDir, 'Library', 'Application Support', 'Code', 'User')
+          : path.join(tmpDir, '.config', 'Code', 'User');
+    const settings = path.join(
+      userDir,
+      'globalStorage',
+      'saoudrizwan.claude-dev',
+      'settings',
+      'cline_mcp_settings.json',
+    );
+    fs.mkdirSync(path.dirname(settings), { recursive: true });
+    fs.writeFileSync(settings, '{"mcpServers":{}}');
+    const files = await scanGlobalMcpConfigs();
+    const found = files.find((f) => f.absolutePath === path.normalize(settings));
+    expect(found).toBeDefined();
+    expect(found!.relativePath.endsWith('/cline_mcp_settings.json')).toBe(true);
+  });
+
+  it("discovers the Cline CLI's MCP settings under ~/.cline/data/settings", async () => {
+    const saved = process.env.CLINE_MCP_SETTINGS_PATH;
+    delete process.env.CLINE_MCP_SETTINGS_PATH;
+    try {
+      const settings = path.join(tmpDir, '.cline', 'data', 'settings', 'cline_mcp_settings.json');
+      fs.mkdirSync(path.dirname(settings), { recursive: true });
+      fs.writeFileSync(settings, '{"mcpServers":{}}');
+      const files = await scanGlobalMcpConfigs();
+      expect(files.map((f) => f.relativePath)).toContain(
+        '~/.cline/data/settings/cline_mcp_settings.json',
+      );
+    } finally {
+      if (saved !== undefined) process.env.CLINE_MCP_SETTINGS_PATH = saved;
     }
   });
 });
@@ -409,12 +483,12 @@ describe('nested-dotted dir discovery (fix 1)', () => {
 
 describe('mcpFileHasMcpKey peek (fix 2)', () => {
   // scanGlobalMcpConfigs gates `~/.claude.json` and `~/.claude/settings.json`
-  // through a cheap text-only peek. For `.claude.json` -- Claude Code's own
-  // state file, where projects/history precede `mcpServers` and push the key
-  // well past 8KB on real workstations -- the peek STREAMS the file and must
-  // detect the key wherever it sits, bailing as soon as it matches (so a key
-  // near the top still avoids a full read). `settings.json` stays on the cheap
-  // 8KB prefix peek since it's always small.
+  // through a cheap text-only peek that STREAMS the file. For `.claude.json`
+  // -- Claude Code's own state file, where projects/history precede
+  // `mcpServers` and push the key well past any fixed prefix on real
+  // workstations -- it must detect the key wherever it sits, bailing as soon
+  // as it matches (so a key near the top still avoids a full read). Only a
+  // TOP-LEVEL key counts.
   //
   // We exercise the peek through scanGlobalMcpConfigs by pointing HOME at a
   // throwaway dir, then asserting whether `.claude.json` is included in the
@@ -494,14 +568,143 @@ describe('mcpFileHasMcpKey peek (fix 2)', () => {
     const body =
       '{"mcpServers":{"x":{"command":"node"}},"filler":"' + 'x'.repeat(10_000_000) + '"}';
     fs.writeFileSync(claudeJson, body);
-    const start = Date.now();
+    // Count the bytes actually read instead of timing the call: a wall-clock
+    // bound flakes under load, while the read volume is deterministic.
+    const realOpen = fs.promises.open.bind(fs.promises);
+    let bytesRead = 0;
+    const spy = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+      const handle = await realOpen(...(args as Parameters<typeof realOpen>));
+      const realRead = handle.read.bind(handle) as (
+        ...a: unknown[]
+      ) => Promise<{ bytesRead: number }>;
+      Object.assign(handle, {
+        read: async (...readArgs: unknown[]) => {
+          const r = await realRead(...readArgs);
+          bytesRead += r.bytesRead;
+          return r;
+        },
+      });
+      return handle;
+    });
+    try {
+      const files = await scanGlobalMcpConfigs();
+      expect(files.map((f) => f.relativePath)).toContain('~/.claude.json');
+      expect(bytesRead).toBeGreaterThan(0);
+      expect(bytesRead).toBeLessThanOrEqual(64 * 1024);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('keeps a .claude.json whose only servers are per-project (plain `claude mcp add`)', async () => {
+    // Local-scope servers live at projects.<path>.mcpServers; the gate used to
+    // demand a top-level key, so mcp-parser's per-project linting never ran.
+    const claudeJson = path.join(tmpDir, '.claude.json');
+    fs.writeFileSync(
+      claudeJson,
+      JSON.stringify(
+        {
+          numStartups: 3,
+          projects: {
+            '/other': { mcpServers: {} },
+            '/repo': { allowedTools: [], mcpServers: { x: { command: 'node' } } },
+          },
+        },
+        null,
+        2,
+      ),
+    );
     const files = await scanGlobalMcpConfigs();
-    const elapsed = Date.now() - start;
+    const found = files.find((f) => f.relativePath === '~/.claude.json');
+    expect(found).toBeDefined();
+    const config = await parseMcpConfig(found!, tmpDir, 'global');
+    expect(config.servers.map((s) => s.name)).toEqual(['x']);
+  });
+
+  it('skips a .claude.json whose per-project mcpServers blocks are all empty', async () => {
+    // Claude Code writes `"mcpServers": {}` for every project it has opened;
+    // that alone must not pull a clean workstation's state file in.
+    fs.writeFileSync(
+      path.join(tmpDir, '.claude.json'),
+      JSON.stringify({ projects: { '/a': { mcpServers: {} }, '/b': { mcpServers: {} } } }),
+    );
+    const files = await scanGlobalMcpConfigs();
+    expect(files.map((f) => f.relativePath)).not.toContain('~/.claude.json');
+  });
+
+  it('does not take projects.* mcpServers from ~/.claude/settings.json', async () => {
+    fs.mkdirSync(path.join(tmpDir, '.claude'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.claude', 'settings.json'),
+      JSON.stringify({ projects: { '/repo': { mcpServers: { x: {} } } } }),
+    );
+    const files = await scanGlobalMcpConfigs();
+    expect(files.map((f) => f.relativePath)).not.toContain('~/.claude/settings.json');
+  });
+
+  it('skips a .claude.json that mentions "mcpServers": only inside a string value', async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.claude.json'),
+      JSON.stringify({ note: '"mcpServers": {}', other: 1 }),
+    );
+    const files = await scanGlobalMcpConfigs();
+    expect(files.map((f) => f.relativePath)).not.toContain('~/.claude.json');
+  });
+
+  it('finds a top-level key that follows a nested one', async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.claude.json'),
+      JSON.stringify({ projects: { '/r': { mcpServers: {} } }, mcpServers: { x: {} } }),
+    );
+    const files = await scanGlobalMcpConfigs();
     expect(files.map((f) => f.relativePath)).toContain('~/.claude.json');
-    // Generous bound -- a true full-read of 10MB is ~50-200ms on most disks,
-    // an early-exit first-chunk read is <5ms. 250ms catches a regression to a
-    // full read without flaking.
-    expect(elapsed).toBeLessThan(250);
+  });
+
+  it('applies the top-level gate to ~/.claude/settings.json too', async () => {
+    fs.mkdirSync(path.join(tmpDir, '.claude'), { recursive: true });
+    const settings = path.join(tmpDir, '.claude', 'settings.json');
+    fs.writeFileSync(settings, JSON.stringify({ permissions: { servers: [] } }));
+    expect((await scanGlobalMcpConfigs()).map((f) => f.relativePath)).not.toContain(
+      '~/.claude/settings.json',
+    );
+    fs.writeFileSync(settings, JSON.stringify({ mcpServers: {} }));
+    expect((await scanGlobalMcpConfigs()).map((f) => f.relativePath)).toContain(
+      '~/.claude/settings.json',
+    );
+  });
+
+  describe('with CLAUDE_CONFIG_DIR set', () => {
+    let savedConfigDir: string | undefined;
+    let configDir: string;
+
+    beforeEach(() => {
+      savedConfigDir = process.env.CLAUDE_CONFIG_DIR;
+      configDir = path.join(tmpDir, 'claude-cfg');
+      fs.mkdirSync(configDir, { recursive: true });
+      process.env.CLAUDE_CONFIG_DIR = configDir;
+    });
+
+    afterEach(() => {
+      if (savedConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = savedConfigDir;
+    });
+
+    it('reads .claude.json from inside CLAUDE_CONFIG_DIR', async () => {
+      // Claude Code keeps its state file in the config dir when the override
+      // is set; a stale ~/.claude.json must not win over it.
+      fs.writeFileSync(path.join(configDir, '.claude.json'), '{"mcpServers":{"x":{}}}');
+      fs.writeFileSync(path.join(tmpDir, '.claude.json'), '{"mcpServers":{"stale":{}}}');
+      const files = await scanGlobalMcpConfigs();
+      const paths = files.map((f) => f.absolutePath);
+      expect(paths).toContain(path.normalize(path.join(configDir, '.claude.json')));
+      expect(paths).not.toContain(path.normalize(path.join(tmpDir, '.claude.json')));
+    });
+
+    it('falls back to ~/.claude.json when CLAUDE_CONFIG_DIR has none', async () => {
+      fs.writeFileSync(path.join(tmpDir, '.claude.json'), '{"mcpServers":{"x":{}}}');
+      const files = await scanGlobalMcpConfigs();
+      expect(files.map((f) => f.relativePath)).toContain('~/.claude.json');
+    });
   });
 
   it('handles files smaller than the 8KB prefix', async () => {
@@ -571,5 +774,175 @@ describe('scanForContextFiles exclude option', () => {
       exclude: ['fixtures/AGENTS.md', 'fixtures/nested/**'],
     });
     expect(files.map((f) => f.relativePath)).toEqual(['CLAUDE.md']);
+  });
+});
+
+describe('RootKeyScanner', () => {
+  const scan = (chunks: string[]) => {
+    const sc = new RootKeyScanner(new Set(['mcpServers']));
+    return chunks.some((c) => sc.feed(c));
+  };
+
+  it('matches a root key split across chunks at every position', () => {
+    const text = '{"a":1,"mcpServers":{}}';
+    for (let i = 1; i < text.length; i++) {
+      expect(scan([text.slice(0, i), text.slice(i)]), `split at ${i}`).toBe(true);
+    }
+  });
+
+  it('ignores nested keys, string contents (incl. escaped quotes) and array roots', () => {
+    expect(scan(['{"x":{"mcpServers":{}}}'])).toBe(false);
+    expect(scan([JSON.stringify({ x: '"mcpServers": 1' })])).toBe(false);
+    expect(scan(['["mcpServers"]'])).toBe(false);
+  });
+
+  it('ignores a value equal to the key name', () => {
+    expect(scan(['{"a":"mcpServers","b":1}'])).toBe(false);
+  });
+
+  describe('projectServers', () => {
+    const scanProjects = (chunks: string[]) => {
+      const sc = new RootKeyScanner(new Set(['mcpServers']), { projectServers: true });
+      return chunks.some((c) => sc.feed(c));
+    };
+    const longPath = '/' + 'very-long-project-path/'.repeat(4);
+
+    it('matches a non-empty projects.*.mcpServers, split at every position', () => {
+      const text = JSON.stringify({ projects: { [longPath]: { mcpServers: { x: {} } } } }, null, 1);
+      for (let i = 1; i < text.length; i++) {
+        expect(scanProjects([text.slice(0, i), text.slice(i)]), `split at ${i}`).toBe(true);
+      }
+    });
+
+    it('ignores empty blocks, other parents, deeper nesting and string contents', () => {
+      expect(scanProjects([JSON.stringify({ projects: { '/a': { mcpServers: {} } } })])).toBe(
+        false,
+      );
+      expect(scanProjects([JSON.stringify({ other: { '/a': { mcpServers: { x: {} } } } })])).toBe(
+        false,
+      );
+      expect(
+        scanProjects([JSON.stringify({ projects: { '/a': { n: { mcpServers: { x: {} } } } } })]),
+      ).toBe(false);
+      expect(scanProjects([JSON.stringify({ projects: { '/a': { mcpServers: [1] } } })])).toBe(
+        false,
+      );
+      expect(
+        scanProjects([JSON.stringify({ projects: { '/a': { note: '"mcpServers": {"x": 1}' } } })]),
+      ).toBe(false);
+      expect(scanProjects([JSON.stringify({ projects: [{ mcpServers: { x: {} } }] })])).toBe(false);
+    });
+
+    it('is off by default', () => {
+      expect(scan([JSON.stringify({ projects: { '/a': { mcpServers: { x: {} } } } })])).toBe(false);
+    });
+  });
+});
+
+describe('scanner hardening', () => {
+  it('skips files reached through a directory junction / symlink that escapes the root', async () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-outside-dir-'));
+    try {
+      fs.mkdirSync(path.join(outside, 'rules'), { recursive: true });
+      fs.writeFileSync(path.join(outside, 'rules', 'x.md'), '# outside');
+      fs.writeFileSync(path.join(outside, 'mcp.json'), '{"mcpServers":{}}');
+      try {
+        // 'junction' needs no privilege on Windows; POSIX ignores the type.
+        fs.symlinkSync(outside, path.join(tmpDir, '.claude'), 'junction');
+        fs.symlinkSync(outside, path.join(tmpDir, '.cursor'), 'junction');
+      } catch {
+        return; // links unsupported in this env
+      }
+      fs.writeFileSync(path.join(tmpDir, 'CLAUDE.md'), '# root');
+      const files = await scanForContextFiles(tmpDir);
+      expect(files.map((f) => f.relativePath)).toEqual(['CLAUDE.md']);
+      const mcp = await scanForMcpConfigs(tmpDir);
+      expect(mcp.map((f) => f.relativePath)).not.toContain('.cursor/mcp.json');
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps files under an in-root junction / symlinked dir', async () => {
+    // Positive control for the escape check above: a link whose target is
+    // INSIDE the root must still be walked.
+    fs.mkdirSync(path.join(tmpDir, 'realcursor', 'rules'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'realcursor', 'rules', 'a.md'), '# rule');
+    try {
+      // 'junction' needs no privilege on Windows (and an absolute target);
+      // POSIX ignores the type.
+      fs.symlinkSync(path.join(tmpDir, 'realcursor'), path.join(tmpDir, '.cursor'), 'junction');
+    } catch {
+      return; // links unsupported in this env
+    }
+    const files = await scanForContextFiles(tmpDir);
+    expect(files.map((f) => f.relativePath)).toContain('.cursor/rules/a.md');
+  });
+
+  it('keeps an in-root file whose name merely starts with ".."', async () => {
+    fs.writeFileSync(path.join(tmpDir, '..notes.md'), '# notes');
+    const files = await scanForContextFiles(tmpDir, { extraPatterns: ['..notes.md'] });
+    expect(files.map((f) => f.relativePath)).toContain('..notes.md');
+  });
+
+  it('keeps a symlink to an in-root target whose name starts with ".."', async () => {
+    fs.writeFileSync(path.join(tmpDir, '..target.md'), '# target');
+    try {
+      fs.symlinkSync(path.join(tmpDir, '..target.md'), path.join(tmpDir, 'CLAUDE.md'));
+    } catch {
+      return; // symlinks unsupported in this env
+    }
+    const files = await scanForContextFiles(tmpDir);
+    expect(files.map((f) => f.relativePath)).toContain('CLAUDE.md');
+  });
+
+  it('warns on stderr when it drops a file over the 5 MB cap', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'CLAUDE.md'), Buffer.alloc(5 * 1024 * 1024 + 1, 'x'));
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await scanForContextFiles(tmpDir);
+      const messages = warn.mock.calls.map((a) => a.join(' ')).join(' | ');
+      expect(messages).toContain('skipping CLAUDE.md');
+      expect(messages).toContain('5 MB');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('sorts by code unit, not locale (uppercase before lowercase)', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'CLAUDE.md'), '# c');
+    fs.writeFileSync(path.join(tmpDir, 'aaa.md'), '# a');
+    const files = await scanForContextFiles(tmpDir, { extraPatterns: ['aaa.md'] });
+    expect(files.map((f) => f.relativePath)).toEqual(['CLAUDE.md', 'aaa.md']);
+  });
+
+  it('skips every shared ignored directory, including coverage and __pycache__', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'CLAUDE.md'), 'root');
+    for (const dir of ['coverage', '__pycache__']) {
+      fs.mkdirSync(path.join(tmpDir, dir));
+      fs.writeFileSync(path.join(tmpDir, dir, 'CLAUDE.md'), 'junk');
+    }
+    const files = await scanForContextFiles(tmpDir);
+    expect(files.map((f) => f.relativePath)).toEqual(['CLAUDE.md']);
+  });
+
+  it.runIf(process.platform === 'win32' || process.platform === 'darwin')(
+    'exclude globs match case-insensitively where discovery does',
+    async () => {
+      fs.writeFileSync(path.join(tmpDir, 'CLAUDE.md'), '# root');
+      fs.writeFileSync(path.join(tmpDir, 'AGENTS.md'), '# agents');
+      const files = await scanForContextFiles(tmpDir, { exclude: ['claude.md'] });
+      expect(files.map((f) => f.relativePath)).toEqual(['AGENTS.md']);
+    },
+  );
+});
+
+describe('scanForMcpConfigs exclude option', () => {
+  it('drops MCP configs matching an exclude glob', async () => {
+    fs.writeFileSync(path.join(tmpDir, '.mcp.json'), '{}');
+    fs.mkdirSync(path.join(tmpDir, '.cursor'));
+    fs.writeFileSync(path.join(tmpDir, '.cursor', 'mcp.json'), '{}');
+    const files = await scanForMcpConfigs(tmpDir, { exclude: ['.cursor/**'] });
+    expect(files.map((f) => f.relativePath)).toEqual(['.mcp.json']);
   });
 });

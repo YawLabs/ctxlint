@@ -1,17 +1,18 @@
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
+import { claudeConfigDir, homeDir as resolveHome } from '../utils/claude-home.js';
 import { stripBom } from '../utils/fs.js';
 import type { SkillContext, SkillFile } from './types.js';
 
 /**
- * Resolve the user home dir env-first (HOME, then USERPROFILE) with an
- * os.homedir() fallback — the same resolution the session pillar uses
- * (session-scanner, memory-index-overflow), so test/CI overrides apply
- * consistently across the home-scoped pillars.
+ * How a config-dir path is shown. The default location reads as `~/.claude`;
+ * a `CLAUDE_CONFIG_DIR` override is shown as the real path, since `~/.claude`
+ * would point the user at a directory that was never scanned.
  */
-function defaultHome(): string {
-  return process.env.HOME || process.env.USERPROFILE || os.homedir();
+function displayRoot(claudeDir: string): string {
+  const home = resolveHome();
+  if (home && path.resolve(claudeDir) === path.resolve(home, '.claude')) return '~/.claude';
+  return claudeDir.replace(/\\/g, '/');
 }
 
 /**
@@ -21,14 +22,21 @@ function defaultHome(): string {
  *   - skills:  ~/.claude/skills/<name>/SKILL.md
  *   - agents:  ~/.claude/agents/*.md
  *
+ * `~/.claude` is Claude Code's config dir: `CLAUDE_CONFIG_DIR` when set (see
+ * `utils/claude-home.ts`). An explicit `homeDir` pins it to `<homeDir>/.claude`.
+ *
  * A skills/<name>/ directory with NO SKILL.md is reported as orphaned (the
  * directory exists but Claude Code has nothing to load).
  */
-export function scanSkillFiles(homeDir: string = defaultHome()): SkillContext {
+export function scanSkillFiles(homeDir?: string): SkillContext {
   const files: SkillFile[] = [];
   const orphanedSkillDirs: { name: string; displayPath: string }[] = [];
 
-  const claudeDir = path.join(homeDir, '.claude');
+  const claudeDir = claudeConfigDir(homeDir);
+  // No home and no override: joining onto '' would scan cwd-relative
+  // `skills/` and `agents/` directories as if they were the user's.
+  if (!claudeDir) return { files, orphanedSkillDirs };
+  const root = homeDir !== undefined ? '~/.claude' : displayRoot(claudeDir);
 
   // --- Skills: ~/.claude/skills/<name>/SKILL.md ---
   const skillsRoot = path.join(claudeDir, 'skills');
@@ -36,12 +44,12 @@ export function scanSkillFiles(homeDir: string = defaultHome()): SkillContext {
     const skillMd = path.join(skillsRoot, name, 'SKILL.md');
     const content = safeRead(skillMd);
     if (content === null) {
-      orphanedSkillDirs.push({ name, displayPath: `~/.claude/skills/${name}/` });
+      orphanedSkillDirs.push({ name, displayPath: `${root}/skills/${name}/` });
       continue;
     }
     files.push({
       filePath: skillMd,
-      displayPath: `~/.claude/skills/${name}/SKILL.md`,
+      displayPath: `${root}/skills/${name}/SKILL.md`,
       kind: 'skill',
       name,
       content,
@@ -57,7 +65,7 @@ export function scanSkillFiles(homeDir: string = defaultHome()): SkillContext {
     if (content === null) continue;
     files.push({
       filePath: agentMd,
-      displayPath: `~/.claude/agents/${fileName}`,
+      displayPath: `${root}/agents/${fileName}`,
       kind: 'agent',
       name: fileName.replace(/\.md$/, ''),
       content,

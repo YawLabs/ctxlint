@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { checkMcpConsistency } from '../consistency.js';
+import { parseMcpContent } from '../../../mcp-parser.js';
 import type { ParsedMcpConfig } from '../../../types.js';
 
 function makeConfig(overrides: Partial<ParsedMcpConfig> = {}): ParsedMcpConfig {
@@ -240,5 +241,102 @@ describe('checkMcpConsistency', () => {
     });
     const issues = await checkMcpConsistency([config]);
     expect(issues.filter((i) => i.message.includes('Duplicate server name'))).toHaveLength(0);
+  });
+
+  describe('parsed from source', () => {
+    const parse = (content: string, relativePath: string, scope: 'project' | 'user' = 'project') =>
+      parseMcpContent(content, { filePath: '/x/' + relativePath, relativePath, scope });
+
+    it('does not report duplicates across ~/.claude.json project blocks', async () => {
+      const config = parse(
+        JSON.stringify(
+          {
+            projects: {
+              '/a': { mcpServers: { github: { command: 'a' } } },
+              '/b': { mcpServers: { github: { command: 'b' } } },
+            },
+            mcpServers: { github: { command: 'top' } },
+          },
+          null,
+          2,
+        ),
+        '~/.claude.json',
+        'user',
+      );
+      const issues = await checkMcpConsistency([config]);
+      expect(issues).toEqual([]);
+    });
+
+    it('still reports a duplicate within one ~/.claude.json project block', async () => {
+      const content = [
+        '{ "projects": { "/a": { "mcpServers": {',
+        '  "gh": { "command": "a" },',
+        '  "gh": { "command": "b" }',
+        '} } } }',
+      ].join('\n');
+      const issues = await checkMcpConsistency([parse(content, '~/.claude.json', 'user')]);
+      expect(issues.map((i) => [i.ruleId, i.line])).toEqual([
+        ['mcp-consistency/duplicate-server-name', 3],
+      ]);
+      expect(issues[0].message).toContain('projects["/a"]');
+    });
+
+    it('does not compare per-project ~/.claude.json servers against other user configs', async () => {
+      // A local-scope server overrides the user-scope one by precedence.
+      const claude = parse(
+        JSON.stringify({ projects: { '/a': { mcpServers: { gh: { command: 'a' } } } } }),
+        '~/.claude.json',
+        'user',
+      );
+      const cursor = parse(
+        JSON.stringify({ mcpServers: { gh: { command: 'b' } } }),
+        '~/.cursor/mcp.json',
+        'user',
+      );
+      const issues = await checkMcpConsistency([claude, cursor]);
+      expect(
+        issues.filter((i) => i.ruleId === 'mcp-consistency/same-server-different-config'),
+      ).toEqual([]);
+    });
+
+    it('skips missing-from-client for a config that failed to parse', async () => {
+      const primary = parse(JSON.stringify({ mcpServers: { a: { command: 'x' } } }), '.mcp.json');
+      const broken = parse('{ "servers": { ', '.vscode/mcp.json');
+      expect(broken.parseErrors.length).toBeGreaterThan(0);
+      const issues = await checkMcpConsistency([primary, broken]);
+      expect(issues.filter((i) => i.ruleId === 'mcp-consistency/missing-from-client')).toEqual([]);
+    });
+
+    it("treats each client's own env syntax as the same reference", async () => {
+      const claude = parse(
+        JSON.stringify({ mcpServers: { s: { command: 'srv', args: ['--key=${K}', '${H:-x}'] } } }),
+        '.mcp.json',
+      );
+      const cursor = parse(
+        JSON.stringify({
+          mcpServers: { s: { command: 'srv', args: ['--key=${env:K}', '${env:H}'] } },
+        }),
+        '.cursor/mcp.json',
+      );
+      const issues = await checkMcpConsistency([claude, cursor]);
+      expect(
+        issues.filter((i) => i.ruleId === 'mcp-consistency/same-server-different-config'),
+      ).toEqual([]);
+    });
+
+    it('still flags a real difference next to equivalent env refs', async () => {
+      const claude = parse(
+        JSON.stringify({ mcpServers: { s: { command: 'srv', args: ['--key=${K}'] } } }),
+        '.mcp.json',
+      );
+      const cursor = parse(
+        JSON.stringify({ mcpServers: { s: { command: 'srv', args: ['--key=${env:OTHER}'] } } }),
+        '.cursor/mcp.json',
+      );
+      const issues = await checkMcpConsistency([claude, cursor]);
+      expect(
+        issues.filter((i) => i.ruleId === 'mcp-consistency/same-server-different-config'),
+      ).toHaveLength(1);
+    });
   });
 });

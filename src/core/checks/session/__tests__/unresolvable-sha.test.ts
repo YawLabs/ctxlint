@@ -3,7 +3,11 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { simpleGit } from 'simple-git';
-import { checkUnresolvableSha, extractShaCitations } from '../unresolvable-sha.js';
+import {
+  checkUnresolvableSha,
+  classifyResolveError,
+  extractShaCitations,
+} from '../unresolvable-sha.js';
 import { encodeProjectDir } from '../../../session-parser.js';
 import { resetGit } from '../../../../utils/git.js';
 import type { MemoryEntry, SessionContext } from '../../../types.js';
@@ -52,6 +56,25 @@ describe('extractShaCitations', () => {
   it('dedupes repeated citations', () => {
     expect(shas('commit deadbee\nsee commit deadbee again')).toEqual(['deadbee']);
   });
+
+  it('keeps only a short context around the SHA, not the whole line', () => {
+    const line = `${'lorem ipsum '.repeat(20)}removed in commit 1b18b85 ${'dolor sit '.repeat(20)}`;
+    const [cite] = extractShaCitations(line);
+    expect(cite.sha).toBe('1b18b85');
+    expect(cite.context).toContain('commit 1b18b85');
+    expect(cite.context.length).toBeLessThanOrEqual(80);
+  });
+});
+
+describe('classifyResolveError', () => {
+  it('tells an ambiguous short SHA from a missing one', () => {
+    expect(
+      classifyResolveError(
+        'error: short object ID 1b18b85 is ambiguous\nfatal: Not a valid object name 1b18b85',
+      ),
+    ).toBe('ambiguous');
+    expect(classifyResolveError('fatal: Not a valid object name 1b18b85')).toBe('missing');
+  });
 });
 
 describe('checkUnresolvableSha (real git)', () => {
@@ -72,11 +95,11 @@ describe('checkUnresolvableSha (real git)', () => {
     };
   }
 
-  function ctx(memories: MemoryEntry[]): SessionContext {
+  function ctx(memories: MemoryEntry[], siblings: SessionContext['siblings'] = []): SessionContext {
     return {
       history: [],
       memories,
-      siblings: [],
+      siblings,
       currentProject: repo,
       providers: ['claude-code'],
     };
@@ -139,6 +162,125 @@ describe('checkUnresolvableSha (real git)', () => {
     expect(issues).toEqual([]);
   }, 30000);
 
+  it('skips a SHA the surrounding text attributes to another repo', async () => {
+    const issues = await checkUnresolvableSha(
+      ctx(
+        [
+          memory('Fixed in yaw-mcp commit 1b18b85.', 'a'),
+          memory('Backported to org/other@deadbee last week.', 'b'),
+        ],
+        [{ name: 'yaw-mcp', path: '/repos/yaw-mcp' }],
+      ),
+    );
+    expect(issues).toEqual([]);
+  }, 30000);
+
+  it('also skips `<sibling>@sha` and `owner/repo sha <sha>`', async () => {
+    const issues = await checkUnresolvableSha(
+      ctx(
+        [
+          memory('The fix shipped as yaw-mcp@1b18b85.', 'a'),
+          memory('Cherry-picked from org/other sha deadbee.', 'b'),
+        ],
+        [{ name: 'yaw-mcp', path: '/repos/yaw-mcp' }],
+      ),
+    );
+    expect(issues).toEqual([]);
+  }, 30000);
+
+  it('skips a commit URL that points at a sibling or another repo', async () => {
+    const issues = await checkUnresolvableSha(
+      ctx(
+        [
+          memory('Fixed upstream in https://github.com/yawlabs/yaw-mcp/commit/1b18b85.', 'a'),
+          memory('Landed as gitlab.com/group/sub/other/-/commit/deadbee', 'b'),
+          memory('Fixed in https://github.com/org/other/pull/12/commits/a0b1c2d', 'c'),
+        ],
+        [{ name: 'yaw-mcp', path: '/repos/yaw-mcp' }],
+      ),
+    );
+    expect(issues).toEqual([]);
+  }, 30000);
+
+  it('still flags a commit URL that points at this repo', async () => {
+    const issues = await checkUnresolvableSha(
+      ctx([memory(`Fixed in https://github.com/org/${path.basename(repo)}/commit/1b18b85`)]),
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('1b18b85');
+  }, 30000);
+
+  it('still flags a citation that only mentions another repo or a file path nearby', async () => {
+    // A sibling name elsewhere in the cue window, a file path right before the
+    // SHA, and an a/b token with no @ or commit/sha after it all leave the
+    // citation pointing at THIS repo.
+    const issues = await checkUnresolvableSha(
+      ctx(
+        [
+          memory('Unlike yaw-mcp, CI here was removed in commit 1b18b85.', 'a'),
+          memory('Fixed src/cli.ts commit deadbee.', 'b'),
+          memory('Fixed in docs/notes a0b1c2d.', 'c'),
+        ],
+        [{ name: 'yaw-mcp', path: '/repos/yaw-mcp' }],
+      ),
+    );
+    expect(issues.map((i) => i.message.split(': ').pop()).sort()).toEqual([
+      '1b18b85',
+      'a0b1c2d',
+      'deadbee',
+    ]);
+  }, 30000);
+
+  it('says so when the lookup budget ran out', async () => {
+    // Three distinct dead citations against a budget of two: the third is
+    // never looked up, and the finding must say so rather than go quiet.
+    const lines = ['a000001', 'a000002', 'a000003'].map((h) => `removed in commit ${h}`).join('\n');
+    const issues = await checkUnresolvableSha(ctx([memory(lines)]), { maxResolve: 2 });
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('2 commit(s)');
+    expect(issues[0].detail).toContain('1 more citation(s) were not checked');
+    expect(issues[0].detail).toContain('budget of 2');
+  }, 30000);
+
+  it('reports nothing in a shallow clone, where old commits are absent by design', async () => {
+    const git = simpleGit(repo);
+    const oldSha = liveSha;
+    fs.writeFileSync(path.join(repo, 'b.txt'), 'second');
+    await git.add('b.txt');
+    await git.commit('second');
+    const shallow = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-shallow-'));
+    try {
+      await simpleGit().raw([
+        'clone',
+        '--depth',
+        '1',
+        `file://${repo.replace(/\\/g, '/')}`,
+        shallow,
+      ]);
+      const shallowReal = fs.realpathSync(shallow);
+      resetGit();
+      const issues = await checkUnresolvableSha({
+        history: [],
+        memories: [
+          {
+            filePath: path.join(shallowReal, 'm.md'),
+            projectDir: encodeProjectDir(shallowReal.replace(/\\/g, '/')),
+            name: 'm',
+            content: `Landed in commit ${oldSha}.`,
+            referencedPaths: [],
+          },
+        ],
+        siblings: [],
+        currentProject: shallowReal,
+        providers: ['claude-code'],
+      });
+      expect(issues).toEqual([]);
+    } finally {
+      resetGit();
+      fs.rmSync(shallow, { recursive: true, force: true });
+    }
+  }, 60000);
+
   it('reports nothing outside a git repository', async () => {
     const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-nogit-'));
     try {
@@ -161,5 +303,49 @@ describe('checkUnresolvableSha (real git)', () => {
     } finally {
       fs.rmSync(bare, { recursive: true, force: true });
     }
+  }, 30000);
+});
+
+describe('checkUnresolvableSha -- project path containing an underscore', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint_sha_')));
+    resetGit();
+  });
+
+  afterEach(() => {
+    resetGit();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('scopes to the folded dir Claude Code creates and still reports', async () => {
+    const git = simpleGit(tmpDir);
+    await git.raw(['init', '-b', 'main']);
+    await git.addConfig('user.email', 'test@example.com');
+    await git.addConfig('user.name', 'Test');
+    fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'hello');
+    await git.add('a.txt');
+    await git.commit('initial');
+
+    // The folded form (`_` -> `-`) is the dir name current Claude Code writes.
+    const folded = encodeProjectDir(tmpDir.replace(/\\/g, '/')).replace(/_/g, '-');
+    const issues = await checkUnresolvableSha({
+      history: [],
+      memories: [
+        {
+          filePath: path.join(tmpDir, 'notes.md'),
+          projectDir: folded,
+          name: 'notes',
+          content: 'CI was removed in commit `1b18b85`.',
+          referencedPaths: [],
+        },
+      ],
+      siblings: [],
+      currentProject: tmpDir,
+      providers: ['claude-code'],
+    });
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('1b18b85');
   }, 30000);
 });

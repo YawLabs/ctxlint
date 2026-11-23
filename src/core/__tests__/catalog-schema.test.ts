@@ -6,7 +6,10 @@ import {
   checkDuplicateRuleIds,
   checkUnusedCategories,
   checkRuleIdPrefixes,
+  checkRuleSeverityShape,
   loadCatalogSchema,
+  schemaKeywordsUsed,
+  SUPPORTED_SCHEMA_KEYWORDS,
 } from '../catalog-schema.js';
 
 /**
@@ -31,6 +34,13 @@ const RULE_ID_PREFIX_ALLOWLIST: ReadonlyMap<string, string> = new Map([
 describe('catalog schema validation', () => {
   it('the governing schema itself parses', () => {
     expect(() => loadCatalogSchema()).not.toThrow();
+  });
+
+  it('the governing schema uses only keywords the validator implements', () => {
+    const unsupported = [...schemaKeywordsUsed(loadCatalogSchema())].filter(
+      (k) => !SUPPORTED_SCHEMA_KEYWORDS.has(k),
+    );
+    expect(unsupported).toEqual([]);
   });
 
   for (const meta of CATALOGS) {
@@ -64,6 +74,11 @@ describe('catalog schema validation', () => {
           readCatalog(meta),
           new Set(RULE_ID_PREFIX_ALLOWLIST.keys()),
         );
+        expect(errors, errors.map((e) => `  ${e.path}: ${e.message}`).join('\n')).toEqual([]);
+      });
+
+      it('per-case severities and fixDescription are consistent with severity / fixable', () => {
+        const errors = checkRuleSeverityShape(readCatalog(meta));
         expect(errors, errors.map((e) => `  ${e.path}: ${e.message}`).join('\n')).toEqual([]);
       });
 

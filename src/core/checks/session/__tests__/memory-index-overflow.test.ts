@@ -18,6 +18,7 @@ vi.mock('node:os', async (importOriginal) => {
 let tmpHome: string;
 let originalHome: string | undefined;
 let originalUserProfile: string | undefined;
+let originalConfigDir: string | undefined;
 
 const projectPath = 'C:/projects/example';
 
@@ -27,6 +28,9 @@ beforeEach(() => {
   originalUserProfile = process.env.USERPROFILE;
   process.env.HOME = tmpHome;
   process.env.USERPROFILE = tmpHome;
+  // CLAUDE_CONFIG_DIR outranks HOME; an ambient one would read the real corpus.
+  originalConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  delete process.env.CLAUDE_CONFIG_DIR;
   osMocks.homedir.mockReturnValue('');
 });
 
@@ -37,6 +41,8 @@ afterEach(() => {
   else process.env.HOME = originalHome;
   if (originalUserProfile === undefined) delete process.env.USERPROFILE;
   else process.env.USERPROFILE = originalUserProfile;
+  if (originalConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+  else process.env.CLAUDE_CONFIG_DIR = originalConfigDir;
   fs.rmSync(tmpHome, { recursive: true, force: true });
 });
 
@@ -166,3 +172,25 @@ function seedMemoryFileRaw(content: string): void {
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'MEMORY.md'), content, { encoding: 'utf8' });
 }
+
+describe('checkMemoryIndexOverflow config dir and formatting', () => {
+  it('reads MEMORY.md from CLAUDE_CONFIG_DIR when it is set', async () => {
+    const configDir = path.join(tmpHome, 'custom-config');
+    const dir = path.join(configDir, 'projects', encodeProjectDir(projectPath), 'memory');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'MEMORY.md'), 'x\n'.repeat(250));
+    process.env.CLAUDE_CONFIG_DIR = configDir;
+
+    const issues = await checkMemoryIndexOverflow(makeCtx());
+    expect(issues).toHaveLength(1);
+    expect(issues[0].detail).toContain('custom-config');
+  });
+
+  it('formats counts with en-US grouping regardless of the host locale', async () => {
+    seedMemoryFile('x\n'.repeat(1234));
+    const issues = await checkMemoryIndexOverflow(makeCtx());
+    const lineIssue = issues.find((i) => i.ruleId?.endsWith('line-overflow'));
+    expect(lineIssue?.message).toContain('1,234 lines');
+    expect(lineIssue?.message).toContain('1,034 line(s)');
+  });
+});

@@ -2,9 +2,14 @@ import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import type { LintIssue, SessionContext } from '../../types.js';
+import { currentGitOrg, sameOrgSiblings } from '../../sibling-org.js';
 
 /**
  * Detect GitHub Actions workflows that exist in 2+ sibling repos but not in the current project.
+ *
+ * Only siblings under the project's own GitHub owner count (see
+ * `sameOrgSiblings`): a workflow two unrelated repos in the same parent
+ * directory happen to share says nothing about what this one is missing.
  */
 export async function checkMissingWorkflow(ctx: SessionContext): Promise<LintIssue[]> {
   const issues: LintIssue[] = [];
@@ -29,7 +34,8 @@ export async function checkMissingWorkflow(ctx: SessionContext): Promise<LintIss
   // Build map: workflow filename -> list of siblings that have it
   const workflowMap = new Map<string, string[]>();
 
-  for (const sib of ctx.siblings) {
+  const siblings = sameOrgSiblings(ctx.siblings, await currentGitOrg(ctx.currentProject));
+  for (const sib of siblings) {
     const sibWorkflowDir = join(sib.path, '.github', 'workflows');
     if (!existsSync(sibWorkflowDir)) continue;
 

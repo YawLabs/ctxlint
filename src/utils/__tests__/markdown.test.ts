@@ -4,6 +4,10 @@ import {
   maskCodeSpans,
   nonProseLineMask,
   stripInlineHtmlComments,
+  classifyLines,
+  htmlCommentLineMask,
+  htmlCommentSpans,
+  isFrontmatterFence,
 } from '../markdown.js';
 
 describe('inlineCodeSpans', () => {
@@ -185,5 +189,142 @@ describe('stripInlineHtmlComments', () => {
     const out = stripInlineHtmlComments(line);
     expect(out).toHaveLength(line.length);
     expect(out).toBe('#'.repeat(17) + ' c -->');
+  });
+});
+
+describe('classifyLines', () => {
+  const classify = (md: string) => classifyLines(md.split('\n'));
+
+  it('marks a fence written inside an HTML comment as comment, not fence', () => {
+    // Reverse nesting: the comment opened first, so the fence is commentary.
+    const out = classify('<!--\n```bash\nnpx old-tool\n```\n-->\nprose');
+    expect(out.map((c) => c.comment)).toEqual([true, true, true, true, true, false]);
+    expect(out.map((c) => c.fence)).toEqual([false, false, false, false, false, false]);
+  });
+
+  it('sees a --> inside a commented-out fence and closes the comment there', () => {
+    const out = classify('<!--\n```\nold -->\nprose after\n```');
+    expect(out.map((c) => c.comment)).toEqual([true, true, true, false, false]);
+    // The trailing ``` is now a fence opener outside any comment.
+    expect(out[4].fence).toBe(true);
+  });
+
+  it('still lets a fence opened outside a comment win over <!-- inside it', () => {
+    const out = classify('```\n<!--\n```\nprose');
+    expect(out.map((c) => c.fence)).toEqual([true, true, true, false]);
+    expect(out.map((c) => c.comment)).toEqual([false, false, false, false]);
+  });
+
+  it('does not treat a one-line ```code``` snippet as a fence opener', () => {
+    // A backtick fence's info string cannot contain backticks (CommonMark), so
+    // this is an inline code span and must not flip state for the rest of the file.
+    const out = classify('```echo hi```\nprose\nmore prose');
+    expect(out.map((c) => c.fence)).toEqual([false, false, false]);
+  });
+
+  it('keeps a 4-backtick outer fence open across an inner ``` pair', () => {
+    const out = classify('````md\n```bash\nx\n```\n````\nprose');
+    expect(out.map((c) => c.fence)).toEqual([true, true, true, true, true, false]);
+  });
+
+  it('closes only on the same fence character, at least as long, with no info string', () => {
+    const out = classify('~~~\n```\n~~\n~~~ info\n~~~~\nprose');
+    expect(out.map((c) => c.fence)).toEqual([true, true, true, true, true, false]);
+  });
+
+  it('supports ~~~ fences', () => {
+    const out = classify('~~~sh\nNEVER run x\n~~~\nprose');
+    expect(out.map((c) => c.fence)).toEqual([true, true, true, false]);
+  });
+});
+
+describe('htmlCommentLineMask', () => {
+  const mask = (md: string) => htmlCommentLineMask(md.split('\n'));
+
+  it('marks multi-line comment lines but leaves fenced code unmarked', () => {
+    expect(mask('<!--\nnote\n-->\n```\nnpm test\n```')).toEqual([
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+    ]);
+  });
+
+  it('leaves a self-contained comment line unmarked', () => {
+    expect(mask('Run `npm test`. <!-- reviewed -->')).toEqual([false]);
+  });
+
+  it('marks a command line inside a commented-out fence', () => {
+    expect(mask('<!--\n```bash\nnpx old-tool\n```\n-->')).toEqual([true, true, true, true, true]);
+  });
+});
+
+describe('htmlCommentSpans', () => {
+  it('returns each complete comment range, markers included', () => {
+    const line = 'a <!-- x --> b <!--y--> c';
+    const spans = htmlCommentSpans(line);
+    expect(spans.map((s) => line.slice(s.start, s.end))).toEqual(['<!-- x -->', '<!--y-->']);
+  });
+
+  it('returns nothing for an unclosed opener or plain prose', () => {
+    expect(htmlCommentSpans('a <!-- open')).toEqual([]);
+    expect(htmlCommentSpans('plain')).toEqual([]);
+  });
+
+  it('is independent of call order (no shared lastIndex)', () => {
+    const line = 'x <!-- a --> y';
+    expect(htmlCommentSpans(line)).toEqual(htmlCommentSpans(line));
+    expect(htmlCommentSpans('<!--b-->')).toEqual([{ start: 0, end: 8 }]);
+  });
+});
+
+describe('classifyLines CRLF', () => {
+  it('recognises fences on CRLF lines', () => {
+    const out = classifyLines('```bash\r\nnpm test\r\n```\r\nprose'.split('\n'));
+    expect(out.map((c) => c.fence)).toEqual([true, true, true, false]);
+  });
+});
+
+describe('classifyLines fence delimiters and info string', () => {
+  it('marks opener and closer as delimiters and carries the info string on every fence line', () => {
+    const out = classifyLines(['prose', '```Bash title=x ', 'npm test', '```', 'after']);
+    expect(out.map((c) => c.fenceDelimiter)).toEqual([false, true, false, true, false]);
+    expect(out.map((c) => c.fenceInfo)).toEqual([
+      '',
+      'Bash title=x',
+      'Bash title=x',
+      'Bash title=x',
+      '',
+    ]);
+  });
+
+  it('reports the info string after a longer or tilde opener', () => {
+    const out = classifyLines(['````md', '```bash', '````', '~~~ sh', 'x', '~~~']);
+    expect(out.map((c) => c.fenceInfo)).toEqual(['md', 'md', 'md', 'sh', 'sh', 'sh']);
+    // The inner ``` line is content of the md fence, not a delimiter.
+    expect(out.map((c) => c.fenceDelimiter)).toEqual([true, false, true, true, false, true]);
+  });
+
+  it('treats back-to-back fences as separate blocks', () => {
+    const out = classifyLines(['```ts', '```', '```bash', '```']);
+    expect(out.map((c) => c.fenceInfo)).toEqual(['ts', 'ts', 'bash', 'bash']);
+    expect(out.every((c) => c.fenceDelimiter)).toBe(true);
+  });
+});
+
+describe('isFrontmatterFence', () => {
+  it('accepts --- with trailing whitespace or a CRLF carriage return', () => {
+    expect(isFrontmatterFence('---')).toBe(true);
+    expect(isFrontmatterFence('---  ')).toBe(true);
+    expect(isFrontmatterFence('---\r')).toBe(true);
+  });
+
+  it('rejects an indented fence and other dash runs', () => {
+    expect(isFrontmatterFence('  ---')).toBe(false);
+    expect(isFrontmatterFence('--')).toBe(false);
+    expect(isFrontmatterFence('----')).toBe(false);
+    expect(isFrontmatterFence('--- x')).toBe(false);
   });
 });

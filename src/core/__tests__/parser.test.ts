@@ -42,14 +42,6 @@ describe('parser', () => {
     expect(result.sections.length).toBeGreaterThan(0);
     expect(result.sections[0].title).toBe('Project');
   });
-
-  it('skips URLs', () => {
-    const result = parseContextFile(makeDiscovered('healthy-project', 'CLAUDE.md'));
-    const paths = result.references.paths.map((p) => p.value);
-    for (const p of paths) {
-      expect(p).not.toMatch(/^https?:\/\//);
-    }
-  });
 });
 
 describe('parser BOM handling', () => {
@@ -109,6 +101,33 @@ describe('parser non-source path exclusions', () => {
     );
     expect(paths).not.toContain('.git/hooks/pre-push');
     expect(paths).toContain('.github/workflows/release.yml');
+  });
+
+  it('skips URLs in every common shape but keeps a real path beside them', () => {
+    // Exact list: no fragment of any URL (`example.com/docs/guide.md`,
+    // `host/pub/file.tar`, ...) may leak out. The path pattern's segment class
+    // has no `:`, so a scheme can never start a match, and the host part is
+    // never preceded by a delimiter the pattern accepts.
+    const paths = pathsFor(
+      [
+        'See https://example.com/api/v1/users and http://localhost:3000/api/health.',
+        'Docs: [guide](https://example.com/docs/guide.md) or <https://x.io/a/b.ts>.',
+        'Mirror: `ftp://host/pub/file.tar` -- contact mailto:dev@example.com/x',
+        'Entry point: src/real.ts',
+      ].join('\n'),
+    );
+    expect(paths).toEqual(['src/real.ts']);
+  });
+
+  it('keeps real paths whose first segment starts like n/a, w/o or i/o', () => {
+    const paths = pathsFor('See n/api/handler.ts, w/out/main.go and i/o-utils/read.ts.\n');
+    expect(paths).toEqual(['n/api/handler.ts', 'w/out/main.go', 'i/o-utils/read.ts']);
+  });
+
+  it('validates a single-star glob rooted at a capitalized top-level dir', () => {
+    // Fix D (anchored-glob rescue) must look the first segment up lowercased,
+    // like Fix B does, so `Src/*.ts` is treated as rooted at `src`.
+    expect(pathsFor('Sources: `Src/*.ts`\n')).toEqual(['Src/*.ts']);
   });
 
   it('skips macOS .app/ bundle paths (pkill -f argument)', () => {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { collectSuppressions, isSuppressed } from '../suppressions.js';
 
 describe('collectSuppressions', () => {
@@ -70,5 +70,79 @@ describe('isSuppressed', () => {
   it('does not leak to neighbouring lines', () => {
     expect(isSuppressed(all, { line: 1, check: 'paths' })).toBe(false);
     expect(isSuppressed(all, { line: 3, check: 'paths' })).toBe(false);
+  });
+});
+
+describe('rule-ID directives', () => {
+  const byRule = collectSuppressions('<!-- ctxlint-ignore-next-line paths/file-not-found -->\nx\n');
+
+  it('parses a rule ID containing a slash', () => {
+    expect(byRule.get(2)).toEqual(new Set(['paths/file-not-found']));
+  });
+
+  it('a rule-ID directive suppresses only that rule', () => {
+    expect(isSuppressed(byRule, { line: 2, check: 'paths', ruleId: 'paths/file-not-found' })).toBe(
+      true,
+    );
+    expect(
+      isSuppressed(byRule, { line: 2, check: 'paths', ruleId: 'paths/directory-not-found' }),
+    ).toBe(false);
+  });
+
+  it('a check-name directive matches the ruleId prefix too', () => {
+    const s = collectSuppressions('<!-- ctxlint-ignore-line paths -->');
+    expect(isSuppressed(s, { line: 1, check: 'paths', ruleId: 'paths/file-not-found' })).toBe(true);
+    // An issue whose `check` differs but whose ruleId prefix matches.
+    expect(isSuppressed(s, { line: 1, check: 'other', ruleId: 'paths/x' })).toBe(true);
+    expect(isSuppressed(s, { line: 1, check: 'tokens', ruleId: 'tokens/info' })).toBe(false);
+  });
+});
+
+describe('directives in code', () => {
+  it('ignores a directive inside a fenced example', () => {
+    // Documenting the syntax in a fence must not suppress the line after it.
+    const s = collectSuppressions(
+      'Example:\n```md\n<!-- ctxlint-ignore-next-line -->\n```\nsrc/missing.ts\n',
+    );
+    expect(s.size).toBe(0);
+  });
+
+  it('ignores a directive quoted inside an inline code span', () => {
+    const s = collectSuppressions('Write `<!-- ctxlint-ignore-line -->` to silence a line.\n');
+    expect(s.size).toBe(0);
+  });
+
+  it('still honours a directive after a closed fence', () => {
+    const s = collectSuppressions('```\ncode\n```\n<!-- ctxlint-ignore-next-line -->\nx\n');
+    expect(s.get(5)).toBeNull();
+  });
+});
+
+describe('malformed directives', () => {
+  it('warns on stderr for a directive-shaped comment that does not parse', () => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const s = collectSuppressions(
+        'a\n<!-- ctxlint-ignore-next-line paths, tokens -->\n<!-- ctxlint-disable -->\nx\n',
+        'CLAUDE.md',
+      );
+      expect(s.size).toBe(0);
+      const messages = warn.mock.calls.map((args) => args.join(' ')).join('\n');
+      expect(messages).toContain('CLAUDE.md:2');
+      expect(messages).toContain('CLAUDE.md:3');
+      expect(messages).toContain('ctxlint-disable');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not warn for well-formed directives or unrelated comments', () => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      collectSuppressions('<!-- ctxlint-ignore-line paths/file-not-found -->\n<!-- note -->\n');
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

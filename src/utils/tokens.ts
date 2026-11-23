@@ -1,8 +1,10 @@
 // Lazy tiktoken: don't pay the ~5MB WASM cost until countTokens is actually
 // called. Earlier versions imported at module top-level, which hoisted the
 // import into the CLI's init path and charged every `--version` / `--help`
-// invocation. The first countTokens() call pays the one-time load; until
-// then the charset-aware fallback is used (approximateTokens below).
+// invocation. The first countTokens() call pays the one-time load
+// synchronously (there is no window where a count is served before tiktoken is
+// ready). The charset-aware fallback (approximateTokens below) is used only
+// when tiktoken cannot be loaded or throws.
 //
 // Accuracy: counts come from cl100k_base (tiktoken's encoding for 'gpt-4'),
 // a proxy for Claude's unpublished tokenizer -- expect ~10-20% divergence on

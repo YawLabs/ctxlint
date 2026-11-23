@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { stripBom } from '../../utils/fs.js';
+import { PLACEHOLDER_NAME, readUtf8BuildFile } from './jvm-shared.js';
+import { endsWithContinuation, shellWords, stripCommandPrefix } from './shell-words.js';
 
 /**
  * Static analysis behind `commands/gradle-project-not-found`.
@@ -169,11 +170,8 @@ export function readGradleProjectSet(buildRoot: string): GradleProjectSet | null
 
 function readSettingsFile(file: string): ParsedSettings | null {
   try {
-    const buf = fs.readFileSync(file);
-    // A UTF-16 file read as UTF-8 lexes to no `include` at all -- an empty set
-    // that would report every project missing.
-    if (buf.includes(0)) return null;
-    return parseSettings(stripBom(buf.toString('utf-8')));
+    // Throws on a UTF-16 file, which read as UTF-8 lexes to no `include` at all.
+    return parseSettings(readUtf8BuildFile(file));
   } catch {
     return null;
   }
@@ -832,6 +830,9 @@ export function matchGradleName(
   if (list.includes(pattern)) return pattern;
   if (!pattern) return null;
 
+  // The trailing classes are Gradle's own and deliberately differ: camel parts
+  // extend over lowercase letters only (CAMEL_CASE_TRAILING_PATTERN), kebab
+  // parts over lowercase letters and digits (KEBAB_CASE_TRAILING_PATTERN).
   const camel = patternForName(
     pattern,
     CAMEL_BOUNDARY,
@@ -889,7 +890,7 @@ const GRADLE_HEAD = /^(?:\.[\\/])?gradlew(?:\.bat)?$|^gradle$/;
  * LoggingConfigurationBuildOptions, ParallelismBuildOptions, DaemonBuildOptions,
  * BuildLayoutParametersBuildOptions and DefaultCommandLineConverter, Gradle 8.14-9.7).
  */
-const VALUE_OPTIONS = new Set([
+const GRADLE_VALUE_OPTIONS = new Set([
   '-x',
   '--exclude-task',
   '-g',
@@ -920,7 +921,7 @@ const VALUE_OPTIONS = new Set([
  * build no settings file shows, an init script can include projects in
  * `beforeSettings`.
  */
-const RETARGET_OPTIONS = new Set([
+const GRADLE_RETARGET_OPTIONS = new Set([
   '-p',
   '--project-dir',
   '-c',
@@ -979,20 +980,29 @@ const BOOLEAN_LONG_OPTIONS = new Set([
   '--show-version',
 ]);
 
-/** A lone shell line-continuation marker: POSIX `\`, cmd `^`, PowerShell backtick. */
-export const CONTINUATION = /^[\\^`]$/;
-
 /** A task path token: `:a:b:task` or `a:b:task` with plain name characters only. */
 const TASK_PATH = /^:?[\w.-]+(?::[\w.-]+)+$|^:[\w.-]+$/;
 
 /**
- * Names documentation uses as stand-ins for a real project. They carry no
- * marker (`<module>` and `{module}` fail TASK_PATH already), so they look like
- * real project names: ktor writes `:module-name:jvmTest` fifteen times,
- * duckduckgo `:my-feature-impl:testDebugUnitTest`.
+ * The words of a Gradle invocation, head first, with any env-assignment /
+ * `sh` / `sudo` prefix removed; null when `cmd` is not a Gradle invocation.
  */
-const PLACEHOLDER_SEGMENT =
-  /^(?:module|project|subproject|submodule|component|feature)(?:[-_]?(?:name|path|id))?$|^(?:my|your|some|example|sample)[-_]|^(?:foo|bar|baz|xxx|name)$/i;
+function gradleWords(cmd: string): string[] | null {
+  const words = shellWords(cmd);
+  if (!words) return null;
+  const tokens = stripCommandPrefix(words);
+  return tokens.length > 0 && GRADLE_HEAD.test(tokens[0]) ? tokens : null;
+}
+
+/**
+ * Whether a Gradle invocation runs the wrapper (`./gradlew`, which only works
+ * where the wrapper file is) rather than a `gradle` on PATH (which runs
+ * anywhere). False for a command that is not a Gradle invocation.
+ */
+export function gradleUsesWrapper(cmd: string): boolean {
+  const tokens = gradleWords(cmd);
+  return tokens !== null && tokens[0] !== 'gradle';
+}
 
 /** One project reference found in a Gradle command. */
 export interface GradleProjectRef {
@@ -1010,26 +1020,26 @@ export interface GradleProjectRef {
  * empty array when it is one but names no project.
  */
 export function gradleProjectRefs(cmd: string): GradleProjectRef[] | null {
-  const tokens = shellWords(cmd);
-  if (!tokens || tokens.length === 0 || !GRADLE_HEAD.test(tokens[0])) return null;
+  const tokens = gradleWords(cmd);
+  if (!tokens) return null;
   // A trailing line continuation means the command goes on to a line we do
   // not see, which may retarget it.
-  if (tokens.length > 1 && CONTINUATION.test(tokens[tokens.length - 1])) return null;
+  if (endsWithContinuation(tokens)) return null;
 
   const refs: GradleProjectRef[] = [];
   for (let i = 1; i < tokens.length; i++) {
     const tok = tokens[i];
     if (tok.startsWith('-')) {
       const bare = tok.includes('=') ? tok.slice(0, tok.indexOf('=')) : tok;
-      if (RETARGET_OPTIONS.has(bare)) return null;
+      if (GRADLE_RETARGET_OPTIONS.has(bare)) return null;
       // Short options take an attached value too: `-psamples`, `-Iinit.gradle`,
       // `-xjavadoc`, `-Dk=v`. The value is inside the token; nothing to skip.
       if (!tok.startsWith('--') && tok.length > 2) {
-        if (RETARGET_OPTIONS.has(tok.slice(0, 2))) return null;
+        if (GRADLE_RETARGET_OPTIONS.has(tok.slice(0, 2))) return null;
         continue;
       }
       if (tok.includes('=')) continue;
-      if (VALUE_OPTIONS.has(tok)) {
+      if (GRADLE_VALUE_OPTIONS.has(tok)) {
         i++;
         continue;
       }
@@ -1046,59 +1056,11 @@ export function gradleProjectRefs(cmd: string): GradleProjectRef[] | null {
     const segments = (absolute ? tok.slice(1) : tok).split(':');
     const projectSegments = segments.slice(0, -1);
     if (projectSegments.length === 0) continue;
-    if (projectSegments.some((s) => PLACEHOLDER_SEGMENT.test(s))) continue;
+    // Marked placeholders (`<module>`, `{module}`) already fail TASK_PATH.
+    if (projectSegments.some((s) => PLACEHOLDER_NAME.test(s))) continue;
     refs.push({ token: tok, segments: projectSegments, absolute });
   }
   return refs;
-}
-
-/**
- * Split a command into words, honoring single and double quotes, dropping a
- * trailing `# comment`, and stopping at the first control operator (`&&`,
- * `||`, `|`, `;`) or redirection. Null on an unterminated quote.
- */
-export function shellWords(cmd: string): string[] | null {
-  const words: string[] = [];
-  let buf = '';
-  let inWord = false;
-  let quote: '"' | "'" | null = null;
-  for (let i = 0; i < cmd.length; i++) {
-    const ch = cmd[i];
-    if (quote) {
-      if (ch === quote) quote = null;
-      else buf += ch;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      inWord = true;
-      continue;
-    }
-    if (ch === ' ' || ch === '\t') {
-      if (inWord) words.push(buf);
-      buf = '';
-      inWord = false;
-      continue;
-    }
-    if (!inWord && ch === '#') break;
-    // `<module>` in a doc is a placeholder, not an input redirection: keep a
-    // `<...>` run that closes before the next space as part of the word.
-    if (ch === '<') {
-      const close = cmd.slice(i).search(/>|\s/);
-      if (close > 1 && cmd[i + close] === '>') {
-        buf += cmd.slice(i, i + close + 1);
-        i += close;
-        inWord = true;
-        continue;
-      }
-    }
-    if (ch === '&' || ch === '|' || ch === ';' || ch === '>' || ch === '<') break;
-    buf += ch;
-    inWord = true;
-  }
-  if (quote) return null;
-  if (inWord) words.push(buf);
-  return words;
 }
 
 /**

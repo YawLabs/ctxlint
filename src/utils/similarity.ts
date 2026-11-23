@@ -1,8 +1,11 @@
 /**
  * Jaccard similarity over non-trivial lines. Returns |A intersect B| / |A union B|
  * in [0, 1], where 1 means identical sets. Lines are trimmed and filtered by
- * `minTokenLen` (default 5) to drop trivial boilerplate that would otherwise
- * dominate the union (blank lines, single-character separators, short markup).
+ * `minLengthExclusive` (default 5) to drop trivial boilerplate that would
+ * otherwise dominate the union (blank lines, single-character separators, short
+ * markup). The bound is an EXCLUSIVE character length of the trimmed line: a
+ * line survives only when `line.length > minLengthExclusive`, so the default
+ * keeps lines of 6+ characters. It is a line length, not a token count.
  *
  * Earlier check-local variants used "matches / max(|A|, |B|)" which was both
  * asymmetric (one side an array, the other a set) and inflated/deflated the
@@ -19,11 +22,11 @@
 export function jaccardSimilarity(
   a: string,
   b: string,
-  opts: { minTokenLen?: number; bothEmptyIsIdentical?: boolean } = {},
+  opts: { minLengthExclusive?: number; bothEmptyIsIdentical?: boolean } = {},
 ): number {
-  const minTokenLen = opts.minTokenLen ?? 5;
-  const linesA = toLineSet(a, minTokenLen);
-  const linesB = toLineSet(b, minTokenLen);
+  const minLengthExclusive = opts.minLengthExclusive ?? 5;
+  const linesA = toLineSet(a, minLengthExclusive);
+  const linesB = toLineSet(b, minLengthExclusive);
   return jaccardSimilarityFromSets(linesA, linesB, {
     bothEmptyIsIdentical: opts.bothEmptyIsIdentical,
   });
@@ -57,11 +60,15 @@ export function jaccardSimilarityFromSets(
   return intersection / unionSize;
 }
 
-export function toLineSet(text: string, minTokenLen: number): Set<string> {
+/**
+ * Set of trimmed lines whose length is strictly greater than
+ * `minLengthExclusive` (see jaccardSimilarity).
+ */
+export function toLineSet(text: string, minLengthExclusive: number): Set<string> {
   return new Set(
     text
       .split('\n')
       .map((l) => l.trim())
-      .filter((l) => l.length > minTokenLen),
+      .filter((l) => l.length > minLengthExclusive),
   );
 }

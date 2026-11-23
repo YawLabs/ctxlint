@@ -1,5 +1,6 @@
 import { readFileContent } from '../utils/fs.js';
 import { countTokens } from '../utils/tokens.js';
+import { classifyLines, type LineClass } from '../utils/markdown.js';
 import type { ParsedContextFile, Section, PathReference, CommandReference } from './types.js';
 import type { DiscoveredFile } from './scanner.js';
 
@@ -35,9 +36,16 @@ import type { DiscoveredFile } from './scanner.js';
 const PATH_PATTERN =
   /(?:^|[\s`"'(])((\.{0,2}\/)?(?:(?:\*{1,2}|[\w@.-][\w@.*-]*)\/)+[\w.*-]*(?:\.\w+)?)(?=[\s`"'),;:]|$)/gm;
 
-// False positive patterns to skip
-const PATH_EXCLUDE =
-  /^(https?:\/\/|ftp:\/\/|mailto:|n\/a|w\/o|I\/O|i\/o|e\.g\.|N\/A|\.deb\/|\.rpm[.\/]|\.tar[.\/]|\.zip[.\/])/i;
+// Package-artifact prefixes to skip (`.deb/`, `.rpm/`, `.tar.gz/...`).
+//
+// URLs need no arm here: PATH_PATTERN's segment class has no `:`, so a scheme
+// (`https:`, `ftp:`, `mailto:`) can never start a match, and the host after
+// `//` is not preceded by a delimiter the pattern accepts. Slash-abbreviation
+// prose (`n/a`, `w/o`, `I/O`) needs none either: as whole tokens they are
+// dropped by the two-segment slash-prose guard (Fix B below), and an arm
+// anchored only at the start would also drop real paths such as
+// `n/api/handler.ts`. `e.g.` has no `/`, so PATH_PATTERN never yields it.
+const PATH_EXCLUDE = /^(\.deb\/|\.rpm[.\/]|\.tar[.\/]|\.zip[.\/])/i;
 
 // Recognized top-level / source directory names. Used by the lowercase
 // slash-prose guard (Fix B in extractPathReferences): a 2-segment `word/word`
@@ -103,10 +111,18 @@ const COMMON_COMMANDS =
 
 export function parseContextFile(file: DiscoveredFile): ParsedContextFile {
   const content = readFileContent(file.absolutePath);
-  const lines = content.split('\n');
-  const sections = parseSections(lines);
-  const paths = extractPathReferences(lines, sections);
-  const commands = extractCommandReferences(lines, sections);
+  // Split on CRLF too: content is not newline-normalized (fixer.ts rewrites
+  // files by line and must keep their own endings), and a trailing `\r` on
+  // every line would defeat the `$`-anchored line regexes below (`.` does not
+  // match `\r`), silently dropping `$ cmd` prompt lines in CRLF files.
+  const lines = content.split(/\r?\n/);
+  // One fence classification drives all three passes, so they agree on which
+  // lines are fenced (``` and ~~~, CommonMark closer rules, no one-line
+  // ```code``` openers) and on each fence's info string.
+  const classes = classifyLines(lines);
+  const sections = parseSections(lines, classes);
+  const paths = extractPathReferences(lines, classes, sections);
+  const commands = extractCommandReferences(lines, classes, sections);
 
   return {
     filePath: file.absolutePath,
@@ -124,13 +140,25 @@ export function parseContextFile(file: DiscoveredFile): ParsedContextFile {
   };
 }
 
-function parseSections(lines: string[]): Section[] {
+/** A fence's language tag as the extractors compare it: info string, lowercased. */
+function fenceLang(cls: LineClass): string {
+  return cls.fenceInfo.toLowerCase();
+}
+
+function parseSections(lines: string[], classes: LineClass[]): Section[] {
   const sections: Section[] = [];
   // Sections whose endLine is still open: an ancestor chain ordered by
   // strictly increasing heading level, innermost last.
   const openStack: Section[] = [];
 
   for (let i = 0; i < lines.length; i++) {
+    // Same fence/comment state the extractors use: a `# comment` line in a
+    // shell block is not a heading, and treating it as one would mislabel
+    // every later reference's section. HTML-comment lines are skipped too: a
+    // fence inside a comment (commented out, or after a stray unclosed `<!--`)
+    // is classified `comment`, not `fence`, and its `# ...` lines are no more
+    // a heading than the fence's own.
+    if (classes[i].fence || classes[i].comment) continue;
     const match = lines[i].match(/^(#{1,6})\s+(.+)/);
     if (match) {
       const level = match[1].length;
@@ -179,25 +207,19 @@ function getSectionForLine(line: number, sections: Section[]): string | undefine
   return undefined;
 }
 
-function extractPathReferences(lines: string[], sections: Section[]): PathReference[] {
+function extractPathReferences(
+  lines: string[],
+  classes: LineClass[],
+  sections: Section[],
+): PathReference[] {
   const paths: PathReference[] = [];
-  let inCodeBlock = false;
-  let codeBlockLang = '';
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-
-    // Track code blocks
-    if (line.trimStart().startsWith('```')) {
-      if (!inCodeBlock) {
-        inCodeBlock = true;
-        codeBlockLang = line.trimStart().slice(3).trim().toLowerCase();
-      } else {
-        inCodeBlock = false;
-        codeBlockLang = '';
-      }
-      continue;
-    }
+    const cls = classes[i];
+    if (cls.fenceDelimiter) continue;
+    const inCodeBlock = cls.fence;
+    const codeBlockLang = fenceLang(cls);
 
     // Skip code blocks that look like example code (not file references)
     if (inCodeBlock && isExampleCodeBlock(codeBlockLang)) {
@@ -251,8 +273,8 @@ function extractPathReferences(lines: string[], sections: Section[]): PathRefere
       // parents, `apps/` `packages/`) and any multi-segment / extension-bearing
       // token (`src/utils/helpers.ts`) are still validated, so a genuine FLAT
       // file-tree in a bare fence keeps being checked (the documented intent at
-      // isExampleCodeBlock below). Reuses the existing inCodeBlock/codeBlockLang
-      // tracking; path-extraction only -- isExampleCodeBlock is untouched.
+      // isExampleCodeBlock below). Reuses the inCodeBlock/codeBlockLang fence
+      // state; path-extraction only -- isExampleCodeBlock is untouched.
       if (
         inCodeBlock &&
         codeBlockLang === '' &&
@@ -326,7 +348,8 @@ function extractPathReferences(lines: string[], sections: Section[]): PathRefere
         const anchored =
           /^\.{0,2}\//.test(cleanValue) ||
           cleanValue.includes('**') ||
-          PATH_FIRST_SEGMENTS.has(cleanValue.split('/')[0]);
+          // Lowercased like Fix B's lookup, so `Src/*.ts` counts as rooted.
+          PATH_FIRST_SEGMENTS.has(cleanValue.split('/')[0].toLowerCase());
         if (!anchored) continue;
       }
 
@@ -389,24 +412,19 @@ function isExampleCodeBlock(lang: string): boolean {
   ].includes(lang);
 }
 
-function extractCommandReferences(lines: string[], sections: Section[]): CommandReference[] {
+function extractCommandReferences(
+  lines: string[],
+  classes: LineClass[],
+  sections: Section[],
+): CommandReference[] {
   const commands: CommandReference[] = [];
-  let inCodeBlock = false;
-  let codeBlockLang = '';
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-
-    if (line.trimStart().startsWith('```')) {
-      if (!inCodeBlock) {
-        inCodeBlock = true;
-        codeBlockLang = line.trimStart().slice(3).trim().toLowerCase();
-      } else {
-        inCodeBlock = false;
-        codeBlockLang = '';
-      }
-      continue;
-    }
+    const cls = classes[i];
+    if (cls.fenceDelimiter) continue;
+    const inCodeBlock = cls.fence;
+    const codeBlockLang = fenceLang(cls);
 
     // Spec 2.2: command references include content in bash/sh/shell/zsh
     // blocks AND blocks with no language tag (commonly shell snippets). The
@@ -420,22 +438,25 @@ function extractCommandReferences(lines: string[], sections: Section[]): Command
     // honoring the `>` prompt.
     const isBareFence = inCodeBlock && codeBlockLang === '';
 
-    // Check for $ or > prefixed commands (only outside code blocks, or inside shell blocks).
+    // A non-shell fence (ts, json, md, ...) holds example source, not
+    // instructions: a template literal like `npm run build` in a ts block is
+    // a string, not a command reference.
+    if (inCodeBlock && !isShellBlock) continue;
+
+    // Check for $ or > prefixed commands (outside code blocks or in shell blocks).
     // `>`-prefixed lines count as commands only inside TAGGED shell fences:
     // outside code blocks they are markdown blockquotes, in bare fences see
     // the isBareFence note above.
-    if (!inCodeBlock || isShellBlock) {
-      const prefixMatch = line.match(COMMAND_PREFIXES);
-      const quoteLike = line.trimStart().startsWith('>');
-      if (prefixMatch && (!quoteLike || (inCodeBlock && !isBareFence))) {
-        commands.push({
-          value: prefixMatch[1].trim(),
-          line: i + 1,
-          column: prefixMatch.index! + prefixMatch[0].length - prefixMatch[1].length + 1,
-          section: getSectionForLine(i + 1, sections),
-        });
-        continue;
-      }
+    const prefixMatch = line.match(COMMAND_PREFIXES);
+    const quoteLike = line.trimStart().startsWith('>');
+    if (prefixMatch && (!quoteLike || (inCodeBlock && !isBareFence))) {
+      commands.push({
+        value: prefixMatch[1].trim(),
+        line: i + 1,
+        column: prefixMatch.index! + prefixMatch[0].length - prefixMatch[1].length + 1,
+        section: getSectionForLine(i + 1, sections),
+      });
+      continue;
     }
 
     // In bash/shell code blocks, treat each non-empty line as a command

@@ -20,9 +20,10 @@
  * version rots. Refs already at the target version are not an error, which
  * keeps a resumed release (package.json bumped by an earlier run) idempotent.
  */
-import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isMainModule } from './lib/main-module.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -127,20 +128,9 @@ function main() {
   if (outOfSync.length === 0) console.log(`Pinned version refs already at ${version}.`);
 }
 
-// Only run main when invoked directly, not when imported by the test. Both
-// sides go through realpath: node resolves the ESM entry's import.meta.url
-// through symlinks but leaves argv[1] as typed, so a checkout reached through a
-// symlink or junction would otherwise skip main and exit 0 -- a release that
-// silently syncs nothing.
-function invokedDirectly() {
-  if (!process.argv[1]) return false;
-  try {
-    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    return false;
-  }
-}
-
-if (invokedDirectly()) {
+// Only run main when invoked directly, not when imported by the test. A
+// checkout reached through a symlink or junction must still run it, or a
+// release silently syncs nothing -- see scripts/lib/main-module.mjs.
+if (isMainModule(process.argv[1], import.meta.url)) {
   main();
 }

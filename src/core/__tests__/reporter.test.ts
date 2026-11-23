@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { formatText, formatJson, formatTokenReport, formatSarif } from '../reporter.js';
+import {
+  formatText,
+  formatJson,
+  formatTokenReport,
+  formatSarif,
+  redactLiteralCredentials,
+  redactResultForOutput,
+} from '../reporter.js';
 import { ALL_CHECKS, ALL_MCP_CHECKS, ALL_SESSION_CHECKS, ALL_SKILL_CHECKS } from '../audit.js';
 import { VERSION as PKG_VERSION } from '../../version.js';
 import {
@@ -328,10 +335,11 @@ describe('formatSarif', () => {
 
   // Audit buckets cross-file findings under labels like `(project)`, `(mcp)`,
   // and `~/.claude/ (session audit)`. Those are not real repo-relative paths,
-  // so routing them through SARIF's `physicalLocation.artifactLocation.uri`
-  // makes GitHub Code Scanning either drop the result or file it against a
-  // literal "(project)" path. We emit `logicalLocations` for these instead.
-  it('uses logicalLocations (not physicalLocation) for synthetic cross-file paths', () => {
+  // so the label must never become `physicalLocation.artifactLocation.uri`
+  // (GitHub would file it against a literal "(project)" path). It goes in
+  // `logicalLocations`; GitHub code scanning requires a physicalLocation on
+  // every result, so a real file of the run anchors it.
+  it('labels synthetic buckets as logicalLocations and anchors them on a real file', () => {
     const result = makeResult({
       files: [
         {
@@ -374,13 +382,19 @@ describe('formatSarif', () => {
     const parsed = JSON.parse(formatSarif(result));
     const [projectResult, sessionResult, fileResult] = parsed.runs[0].results;
 
-    // Synthetic project bucket — no physicalLocation, logicalLocations carries the label.
-    expect(projectResult.locations[0].physicalLocation).toBeUndefined();
+    // Synthetic project bucket: the label is a logical location, the root
+    // context file the physical one (line 1: the finding's line is not one
+    // of that file's lines).
     expect(projectResult.locations[0].logicalLocations[0].name).toBe('(project)');
+    expect(projectResult.locations[0].physicalLocation.artifactLocation.uri).toBe('CLAUDE.md');
+    expect(projectResult.locations[0].physicalLocation.region.startLine).toBe(1);
 
-    // Synthetic session bucket — same treatment. Leading `~` is the tell.
-    expect(sessionResult.locations[0].physicalLocation).toBeUndefined();
+    // Synthetic session bucket: same treatment. Leading `~` is the tell.
     expect(sessionResult.locations[0].logicalLocations[0].name).toBe('~/.claude/ (session audit)');
+    expect(sessionResult.locations[0].physicalLocation.artifactLocation.uri).toBe('CLAUDE.md');
+    for (const r of parsed.runs[0].results) {
+      expect(r.locations[0].physicalLocation.artifactLocation.uri).not.toMatch(/[()~ ]/);
+    }
 
     // Real file path — unchanged, still uses physicalLocation (regression guard).
     expect(fileResult.locations[0].physicalLocation.artifactLocation.uri).toBe('CLAUDE.md');
@@ -442,6 +456,116 @@ describe('formatSarif', () => {
     ].map((c: string) => `ctxlint/${c}`);
     const missing = expected.filter((id) => !ruleIds.includes(id));
     expect(missing).toEqual([]);
+  });
+
+  it('emits the specific ruleId and a descriptor for every ruleId it uses', () => {
+    const result = makeResult({
+      files: [
+        {
+          path: 'CLAUDE.md',
+          isSymlink: false,
+          tokens: 10,
+          lines: 1,
+          issues: [
+            {
+              severity: 'warning',
+              check: 'tokens',
+              ruleId: 'tokens/aggregate',
+              line: 0,
+              message: 'a',
+            },
+            { severity: 'error', check: 'paths', line: 2, message: 'no ruleId' },
+          ],
+        },
+      ],
+    });
+    const run = JSON.parse(formatSarif(result)).runs[0];
+    expect(run.results.map((r: { ruleId: string }) => r.ruleId)).toEqual([
+      'ctxlint/tokens/aggregate',
+      'ctxlint/paths',
+    ]);
+    const rules = run.tool.driver.rules as { id: string; shortDescription: { text: string } }[];
+    const ids = rules.map((r) => r.id);
+    for (const r of run.results) expect(ids).toContain(r.ruleId);
+    expect(new Set(ids).size).toBe(ids.length);
+    // A specific rule inherits its family's description.
+    const family = rules.find((r) => r.id === 'ctxlint/tokens')!;
+    const specific = rules.find((r) => r.id === 'ctxlint/tokens/aggregate')!;
+    expect(specific.shortDescription).toEqual(family.shortDescription);
+  });
+
+  it('percent-encodes the artifact uri and uses forward slashes', () => {
+    const result = makeResult({
+      files: [
+        {
+          path: 'docs\\my notes#1\\CLAUDE.md',
+          isSymlink: false,
+          tokens: 10,
+          lines: 1,
+          issues: [{ severity: 'error', check: 'paths', line: 1, message: 'x' }],
+        },
+      ],
+    });
+    const r = JSON.parse(formatSarif(result)).runs[0].results[0];
+    expect(r.locations[0].physicalLocation.artifactLocation.uri).toBe(
+      'docs/my%20notes%231/CLAUDE.md',
+    );
+  });
+
+  it('anchors (mcp) findings on the MCP config and (project) on the shallowest context file', () => {
+    const issue = { severity: 'warning' as const, line: 0, message: 'x' };
+    const result = makeResult({
+      files: [
+        { path: 'sub/CLAUDE.md', isSymlink: false, tokens: 1, lines: 1, issues: [] },
+        { path: 'AGENTS.md', isSymlink: false, tokens: 1, lines: 1, issues: [] },
+        { path: '.cursor/mcp.json', isSymlink: false, tokens: 1, lines: 1, issues: [] },
+        {
+          path: '(project)',
+          isSymlink: false,
+          tokens: 0,
+          lines: 0,
+          issues: [{ ...issue, check: 'contradictions' }],
+        },
+        {
+          path: '(mcp)',
+          isSymlink: false,
+          tokens: 0,
+          lines: 0,
+          issues: [{ ...issue, check: 'mcp-consistency' }],
+        },
+      ],
+    });
+    const [project, mcp] = JSON.parse(formatSarif(result)).runs[0].results;
+    expect(project.locations[0].physicalLocation.artifactLocation.uri).toBe('AGENTS.md');
+    expect(mcp.locations[0].physicalLocation.artifactLocation.uri).toBe('.cursor/mcp.json');
+  });
+
+  it('keeps logicalLocations only when the run has no real file to anchor on', () => {
+    const result = makeResult({
+      files: [
+        {
+          path: SESSION_AUDIT_LABEL,
+          isSymlink: false,
+          tokens: 0,
+          lines: 0,
+          issues: [{ severity: 'info', check: 'session-stale-memory', line: 0, message: 's' }],
+        },
+      ],
+    });
+    const r = JSON.parse(formatSarif(result)).runs[0].results[0];
+    expect(r.locations[0].physicalLocation).toBeUndefined();
+    expect(r.locations[0].logicalLocations[0].name).toBe(SESSION_AUDIT_LABEL);
+  });
+});
+
+describe('formatText version skew', () => {
+  it('renders the skew the audit detected, and nothing without it', () => {
+    const skewed = {
+      ...makeResult(),
+      versionSkew: { checkoutVersion: '9.9.9', runningVersion: '1.0.0' },
+    };
+    expect(formatText(skewed)).toContain('this checkout is v9.9.9 -- you are running v1.0.0');
+    expect(formatText(makeResult())).not.toContain('this checkout is');
   });
 });
 
@@ -738,23 +862,45 @@ describe('formatText — context token accounting excludes MCP configs', () => {
     return s.replace(/\x1b\[[0-9;]*m/g, '');
   }
 
-  // summary.totalTokens sums ALL FileResults, including MCP configs (audit.ts
-  // assigns countTokens(config.content) to each). MCP configs are never
-  // loaded into agent context, so both the "Found N context files (X tokens
-  // total)" header and the "Token usage: N tokens per agent session" line
-  // must count context files only.
-  it('context summary and per-session lines count context tokens only on a mixed run', () => {
+  // summary.totalTokens is context files only (audit.ts contextTokenTotal);
+  // an MCP config keeps its own per-file count but is never loaded into agent
+  // context. Text and --tokens print summary.totalTokens, the same number
+  // JSON carries, and list context files only.
+  it('text and the token table print summary.totalTokens and omit MCP configs', () => {
     const result = makeResult({
       files: [
         { path: 'CLAUDE.md', isSymlink: false, tokens: 500, lines: 20, issues: [] },
         { path: '.mcp.json', isSymlink: false, tokens: 300, lines: 10, issues: [] },
       ],
-      summary: { errors: 0, warnings: 0, info: 0, totalTokens: 800, estimatedWaste: 0 },
+      summary: { errors: 0, warnings: 0, info: 0, totalTokens: 500, estimatedWaste: 0 },
     });
     const plain = stripAnsi(formatText(result));
     expect(plain).toContain('Found 1 context file (500 tokens total)');
     expect(plain).toContain('Token usage: 500 tokens per agent session');
     expect(plain).not.toContain('800');
+    const table = stripAnsi(formatTokenReport(result));
+    expect(table).toMatch(/Total\s+500\b/);
+    expect(table).not.toContain('.mcp.json');
+  });
+
+  it('does not list a hook-coverage settings file as a context file', () => {
+    const result = makeResult({
+      files: [
+        { path: 'CLAUDE.md', isSymlink: false, tokens: 500, lines: 20, issues: [] },
+        {
+          path: '.claude/settings.json',
+          isSymlink: false,
+          tokens: 0,
+          lines: 12,
+          issues: [{ severity: 'warning', check: 'hook-coverage', line: 4, message: 'dead hook' }],
+        },
+      ],
+      summary: { errors: 0, warnings: 1, info: 0, totalTokens: 500, estimatedWaste: 0 },
+    });
+    const plain = stripAnsi(formatText(result));
+    expect(plain).toContain('Found 1 context file (500 tokens total)');
+    expect(plain).toContain('dead hook');
+    expect(stripAnsi(formatTokenReport(result))).not.toContain('settings.json');
   });
 });
 
@@ -819,5 +965,185 @@ describe('paren-prefixed real paths are not synthetic buckets', () => {
     });
     const output = formatTokenReport(result);
     expect(output).not.toContain('(mcp)');
+  });
+});
+
+describe('secret redaction at the output boundary', () => {
+  const GHP = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789';
+  // No known prefix: only the mcp-security high-entropy heuristic flags it.
+  const ENTROPY = 'Zq9wX2vB7nM4kL1pR8tY5uI3oE6aS0dF';
+
+  function leakyResult(): LintResult {
+    return makeResult({
+      files: [
+        {
+          path: '.mcp.json',
+          isSymlink: false,
+          tokens: 0,
+          lines: 1,
+          issues: [
+            {
+              severity: 'error',
+              check: 'mcp-security',
+              ruleId: 'mcp-security/hardcoded-api-key',
+              line: 1,
+              message: 'Server "gh" has a hardcoded API key in a git-tracked file',
+              fix: { file: '/p/.mcp.json', line: 1, oldText: GHP, newText: '${GH_API_KEY}' },
+            },
+            {
+              severity: 'error',
+              check: 'mcp-security',
+              ruleId: 'mcp-security/hardcoded-api-key',
+              line: 1,
+              message: 'Server "db" has a hardcoded API key in a git-tracked file',
+              fix: { file: '/p/.mcp.json', line: 1, oldText: ENTROPY, newText: '${DB_API_KEY}' },
+            },
+            {
+              severity: 'info',
+              check: 'tier-tokens',
+              line: 2,
+              // Raw text as a check emits it, before the audit choke point.
+              message: `Inviolable framing ("NEVER run \`curl -H Bearer ${GHP}\`")`,
+              suggestion: `For \`curl -H Bearer ${GHP}\`, add a hook`,
+              detail: `cmd: ${GHP}`,
+            },
+          ],
+        },
+        {
+          path: 'CLAUDE.md',
+          isSymlink: false,
+          tokens: 0,
+          lines: 1,
+          issues: [
+            {
+              severity: 'error',
+              check: 'paths',
+              line: 3,
+              message: 'src/old.ts does not exist',
+              fix: { file: '/p/CLAUDE.md', line: 3, oldText: 'src/old.ts', newText: 'src/new.ts' },
+            },
+          ],
+        },
+      ],
+    });
+  }
+
+  it('formatJson omits secret fix values (pattern and entropy) and secret text', () => {
+    const out = formatJson(leakyResult());
+    expect(out).not.toContain(GHP);
+    expect(out).not.toContain(ENTROPY);
+    // A non-secret fix is still reported verbatim.
+    expect(out).toContain('"oldText": "src/old.ts"');
+  });
+
+  it('formatSarif omits secret text', () => {
+    const out = formatSarif(leakyResult());
+    expect(out).not.toContain(GHP);
+  });
+
+  it('formatText omits secret text', () => {
+    const out = formatText(leakyResult());
+    expect(out).not.toContain(GHP);
+  });
+
+  it('does not mutate the in-process result (the fixer needs the real oldText)', () => {
+    const result = leakyResult();
+    formatJson(result);
+    formatSarif(result);
+    formatText(result);
+    expect(result.files[0].issues[0].fix!.oldText).toBe(GHP);
+    expect(result.files[0].issues[1].fix!.oldText).toBe(ENTROPY);
+  });
+
+  // A fix spanning a whole value (as mcp-env/wrong-syntax fixes once did)
+  // carries a literal secret sitting beside a ${VAR} ref in oldText and
+  // newText. Neither literal matches a known-token pattern.
+  describe('literal credentials inside a non-secret fix', () => {
+    const URL_KEY = 'Qw9Er8Ty7Ui6Op5As4Df3Gh';
+    const HEADER_KEY = 'Pq1Wo2Ei3Ru4Ty5Yu6Io7Pa8Sd9Fg0Hj';
+    const USER_PW = 'hunter2pw';
+
+    function envFixResult(): LintResult {
+      const fix = (oldText: string, newText: string) => ({
+        file: '/p/.cursor/mcp.json',
+        line: 4,
+        oldText,
+        newText,
+      });
+      return makeResult({
+        files: [
+          {
+            path: '.cursor/mcp.json',
+            isSymlink: false,
+            tokens: 0,
+            lines: 10,
+            issues: [
+              {
+                severity: 'warning',
+                check: 'mcp-env',
+                ruleId: 'mcp-env/wrong-syntax',
+                line: 4,
+                message: 'Server "api": wrong env var syntax for cursor',
+                fix: fix(
+                  `https://api.example.com/mcp?api_key=${URL_KEY}&ws=\${WORKSPACE}`,
+                  `https://api.example.com/mcp?api_key=${URL_KEY}&ws=\${env:WORKSPACE}`,
+                ),
+              },
+              {
+                severity: 'warning',
+                check: 'mcp-env',
+                ruleId: 'mcp-env/wrong-syntax',
+                line: 6,
+                message: 'Server "api": wrong env var syntax for cursor',
+                fix: fix(`${HEADER_KEY}\${SUFFIX}`, `${HEADER_KEY}\${env:SUFFIX}`),
+              },
+              {
+                severity: 'warning',
+                check: 'mcp-env',
+                ruleId: 'mcp-env/wrong-syntax',
+                line: 8,
+                message: 'Server "db": wrong env var syntax for cursor',
+                fix: fix(
+                  `postgres://admin:${USER_PW}@\${DB_HOST}/app`,
+                  `postgres://admin:${USER_PW}@\${env:DB_HOST}/app`,
+                ),
+              },
+            ],
+          },
+        ],
+      });
+    }
+
+    it('formatJson masks literal secrets in the fix text but keeps the env refs', () => {
+      const out = formatJson(envFixResult());
+      expect(out).not.toContain(URL_KEY);
+      expect(out).not.toContain(HEADER_KEY);
+      expect(out).not.toContain(USER_PW);
+      // The part the fix actually changes stays readable.
+      expect(out).toContain('&ws=${env:WORKSPACE}');
+      expect(out).toContain('${env:SUFFIX}');
+      expect(out).toContain('@${env:DB_HOST}/app');
+    });
+
+    it('redactResultForOutput (the MCP audit tools) masks them too', () => {
+      const out = JSON.stringify(redactResultForOutput(envFixResult()));
+      expect(out).not.toContain(URL_KEY);
+      expect(out).not.toContain(HEADER_KEY);
+      expect(out).not.toContain(USER_PW);
+    });
+
+    it('leaves ordinary fix text alone', () => {
+      expect(redactLiteralCredentials('https://api.example.com/mcp?ws=${WORKSPACE}')).toBe(
+        'https://api.example.com/mcp?ws=${WORKSPACE}',
+      );
+      expect(redactLiteralCredentials('@modelcontextprotocol/server-filesystem')).toBe(
+        '@modelcontextprotocol/server-filesystem',
+      );
+      expect(redactLiteralCredentials('src/old.ts')).toBe('src/old.ts');
+      // A query secret that is entirely an env ref is not a literal.
+      expect(redactLiteralCredentials('https://x.dev/?token=${TOKEN}')).toBe(
+        'https://x.dev/?token=${TOKEN}',
+      );
+    });
   });
 });

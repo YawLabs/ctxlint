@@ -134,6 +134,46 @@ describe('isAlwaysLoaded', () => {
       true,
     );
   });
+
+  // Cursor .mdc rules are path-scoped by default, but `alwaysApply: true`
+  // attaches them to every request.
+  it('treats a Cursor .mdc rule with alwaysApply: true as always-loaded', () => {
+    const content = '---\ndescription: house style\nalwaysApply: true\n---\n\nbody';
+    expect(isAlwaysLoaded(makeFile({ relativePath: '.cursor/rules/r.mdc', content }))).toBe(true);
+  });
+
+  it('treats a Cursor .mdc rule with alwaysApply: false as on-demand', () => {
+    const content = '---\nalwaysApply: false\nglobs: "**/*.ts"\n---\n\nbody';
+    expect(isAlwaysLoaded(makeFile({ relativePath: '.cursor/rules/r.mdc', content }))).toBe(false);
+  });
+
+  it('does not treat an arbitrary rules/ directory as an agent rules dir', () => {
+    expect(isAlwaysLoaded(makeFile({ relativePath: 'docs/rules/naming.md' }))).toBe(false);
+    expect(isAlwaysLoaded(makeFile({ relativePath: 'src/lint/rules/no-any.md' }))).toBe(false);
+  });
+
+  // An indented `---` is YAML content, not the closing fence (the rule
+  // frontmatter.ts applies), so the `paths:` below it is still frontmatter.
+  it('does not close frontmatter on an indented ---', () => {
+    const content = '---\ndescription: |\n  ---\npaths: "src/**"\n---\n\nbody';
+    expect(isAlwaysLoaded(makeFile({ relativePath: '.claude/rules/r.md', content }))).toBe(false);
+  });
+
+  it('reads a scalar field past an indented --- (alwaysApply / trigger)', () => {
+    const mdc = '---\ndescription: |\n  ---\nalwaysApply: true\n---\n\nbody';
+    expect(isAlwaysLoaded(makeFile({ relativePath: '.cursor/rules/r.mdc', content: mdc }))).toBe(
+      true,
+    );
+    const ws = '---\ndescription: |\n  ---\ntrigger: manual\n---\n\nbody';
+    expect(isAlwaysLoaded(makeFile({ relativePath: '.windsurf/rules/r.md', content: ws }))).toBe(
+      false,
+    );
+  });
+
+  it('closes frontmatter on a --- with trailing whitespace', () => {
+    const content = '---\ndescription: x\n---  \npaths: "src/**"\n\nbody';
+    expect(isAlwaysLoaded(makeFile({ relativePath: '.claude/rules/r.md', content }))).toBe(true);
+  });
 });
 
 describe('checkTierTokens — section breakdown', () => {
@@ -170,6 +210,39 @@ describe('checkTierTokens — section breakdown', () => {
     const breakdown = issues.find((i) => i.ruleId === 'tier-tokens/section-breakdown');
     expect(breakdown).toBeDefined();
     expect(breakdown!.suggestion).toContain('Top');
+  });
+
+  it('keeps H1 as the top level when a file organised by H1 has one stray H2', async () => {
+    const { content, sections } = buildContent([
+      { title: 'Setup', level: 1, body: 'word '.repeat(300) },
+      { title: 'Stray', level: 2, body: 'short' },
+      { title: 'Testing', level: 1, body: 'word '.repeat(200) },
+      { title: 'Release', level: 1, body: 'word '.repeat(100) },
+    ]);
+    const issues = await checkTierTokens(
+      makeFile({ content, sections, totalTokens: 2000 }),
+      tmpDir,
+    );
+    const breakdown = issues.find((i) => i.ruleId === 'tier-tokens/section-breakdown');
+    expect(breakdown).toBeDefined();
+    expect(breakdown!.detail).toContain('Setup');
+    expect(breakdown!.detail).toContain('Testing');
+    expect(breakdown!.detail).not.toContain('Stray');
+  });
+
+  it('uses H2 under a single H1 title', async () => {
+    const { content, sections } = buildContent([
+      { title: 'Project', level: 1, body: 'intro' },
+      { title: 'Heavy', level: 2, body: 'word '.repeat(400) },
+      { title: 'Light', level: 2, body: 'short' },
+    ]);
+    const issues = await checkTierTokens(
+      makeFile({ content, sections, totalTokens: 2000 }),
+      tmpDir,
+    );
+    const breakdown = issues.find((i) => i.ruleId === 'tier-tokens/section-breakdown');
+    expect(breakdown!.suggestion).toContain('Heavy');
+    expect(breakdown!.detail).not.toContain('Project');
   });
 
   it('emits no breakdown when an always-loaded file has no sections', async () => {
@@ -328,8 +401,9 @@ describe('checkTierTokens — hard-enforcement-missing', () => {
       makeFile({ content, sections: [], totalTokens: 50 }),
       tmpDir,
     );
-    // `\bnpm` requires a word boundary before `npm`; `pnpm` has none, so the
-    // rule should still fire — the hook protects pnpm, not npm.
+    // The pattern's `(?<![A-Za-z0-9])` lookbehind rejects a letter before
+    // `npm`, so `pnpm` does not match and the rule still fires — the hook
+    // protects pnpm, not npm.
     const hard = issues.find((i) => i.ruleId === 'tier-tokens/hard-enforcement-missing');
     expect(hard).toBeDefined();
   });
@@ -673,22 +747,308 @@ describe('checkTierTokens — hard-enforcement-missing', () => {
   });
 });
 
+describe('checkTierTokens — hard-enforcement-missing: what the span is and what enforces it', () => {
+  const hardFor = async (content: string) =>
+    (await checkTierTokens(makeFile({ content, sections: [], totalTokens: 50 }), tmpDir)).find(
+      (i) => i.ruleId === 'tier-tokens/hard-enforcement-missing',
+    );
+
+  function writeSettings(settings: object): void {
+    const dotClaude = path.join(tmpDir, '.claude');
+    fs.mkdirSync(dotClaude, { recursive: true });
+    fs.writeFileSync(path.join(dotClaude, 'settings.json'), JSON.stringify(settings));
+  }
+
+  it('does not call an identifier a command', async () => {
+    const hard = await hardFor('# CLAUDE.md\n\nNever use `any` in TypeScript code.\n');
+    expect(hard).toBeDefined();
+    expect(hard!.suggestion).not.toContain('physically blocked');
+    expect(hard!.suggestion).not.toContain('command');
+    expect(hard!.suggestion).toContain('Edit');
+  });
+
+  it('suggests a file-scoped deny for a file name', async () => {
+    const hard = await hardFor('# CLAUDE.md\n\nDo NOT edit `package-lock.json` by hand.\n');
+    expect(hard).toBeDefined();
+    expect(hard!.suggestion).not.toContain('command');
+    expect(hard!.suggestion).toContain('Edit(package-lock.json)');
+  });
+
+  it('credits a permissions.deny Edit(...) entry for a file rule', async () => {
+    writeSettings({ permissions: { deny: ['Edit(package-lock.json)'] } });
+    expect(
+      await hardFor('# CLAUDE.md\n\nDo NOT edit `package-lock.json` by hand.\n'),
+    ).toBeUndefined();
+  });
+
+  it('keeps the prohibited flag in the suggestion', async () => {
+    const hard = await hardFor('# CLAUDE.md\n\nNEVER run `git push --force` on main.\n');
+    expect(hard).toBeDefined();
+    expect(hard!.suggestion).toContain('`git push --force`');
+  });
+
+  it('credits a deny on the flagged form', async () => {
+    writeSettings({ permissions: { deny: ['Bash(git push --force:*)'] } });
+    expect(await hardFor('# CLAUDE.md\n\nNEVER run `git push --force` on main.\n')).toBeUndefined();
+  });
+
+  // A deny on plain `git push` blocks `git push --force` too: broader enforces narrower.
+  it('credits a broader deny for a flagged rule', async () => {
+    writeSettings({ permissions: { deny: ['Bash(git push:*)'] } });
+    expect(await hardFor('# CLAUDE.md\n\nNEVER run `git push --force` on main.\n')).toBeUndefined();
+  });
+
+  // ...but a deny on `git push --force` leaves plain `git push` runnable.
+  it('does not credit a narrower deny for a broader rule', async () => {
+    writeSettings({ permissions: { deny: ['Bash(git push --force:*)'] } });
+    expect(await hardFor('# CLAUDE.md\n\nNEVER run `git push` from CI.\n')).toBeDefined();
+  });
+
+  it('does not credit a deny on a different flag', async () => {
+    writeSettings({ permissions: { deny: ['Bash(git push --tags:*)'] } });
+    expect(await hardFor('# CLAUDE.md\n\nNEVER run `git push --force` on main.\n')).toBeDefined();
+  });
+
+  // A tool-name matcher says which tool the hook sees, not which command it blocks.
+  it('does not credit a Bash matcher as enforcing the bash command', async () => {
+    writeSettings({
+      hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'audit-log.sh' }] }] },
+    });
+    expect(await hardFor('# CLAUDE.md\n\nNEVER use `bash -c` for scripts.\n')).toBeDefined();
+  });
+
+  it('credits a case-exact tool-name matcher for a tool-name rule', async () => {
+    writeSettings({
+      hooks: { PreToolUse: [{ matcher: 'WebFetch|WebSearch', hooks: [{ command: 'deny.sh' }] }] },
+    });
+    expect(await hardFor('# CLAUDE.md\n\nNEVER use `WebFetch` here.\n')).toBeUndefined();
+  });
+
+  it('does not credit a tool-name matcher that differs in case', async () => {
+    writeSettings({
+      hooks: { PreToolUse: [{ matcher: 'webfetch', hooks: [{ command: 'deny.sh' }] }] },
+    });
+    expect(await hardFor('# CLAUDE.md\n\nNEVER use `WebFetch` here.\n')).toBeDefined();
+  });
+
+  it('credits a generic hook script whose contents block the command', async () => {
+    const hooks = path.join(tmpDir, '.claude', 'hooks');
+    fs.mkdirSync(hooks, { recursive: true });
+    fs.writeFileSync(
+      path.join(hooks, 'bash-guard.sh'),
+      '#!/bin/sh\ncase "$CMD" in\n  *"npm login"*) exit 2 ;;\nesac\n',
+    );
+    writeSettings({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [{ command: '"$CLAUDE_PROJECT_DIR"/.claude/hooks/bash-guard.sh' }],
+          },
+        ],
+      },
+    });
+    expect(await hardFor('# CLAUDE.md\n\nNEVER run `npm login` locally.\n')).toBeUndefined();
+  });
+
+  it('does not credit a generic hook script that never mentions the command', async () => {
+    const hooks = path.join(tmpDir, '.claude', 'hooks');
+    fs.mkdirSync(hooks, { recursive: true });
+    fs.writeFileSync(path.join(hooks, 'bash-guard.sh'), '#!/bin/sh\nexit 0\n');
+    writeSettings({
+      hooks: {
+        PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'bash .claude/hooks/bash-guard.sh' }] }],
+      },
+    });
+    expect(await hardFor('# CLAUDE.md\n\nNEVER run `npm login` locally.\n')).toBeDefined();
+  });
+
+  // `bash` here is the interpreter that runs the hook, not a command it blocks.
+  it('does not credit the interpreter that launches a hook script', async () => {
+    writeSettings({
+      hooks: {
+        PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'bash .claude/hooks/missing.sh' }] }],
+      },
+    });
+    expect(await hardFor('# CLAUDE.md\n\nNEVER use `bash -c` for scripts.\n')).toBeDefined();
+  });
+
+  // A formatter hook that cleans up with `rm -f` neither sees Bash calls nor
+  // blocks `rm -rf`: using a command is not enforcing a ban on it.
+  it('does not credit a non-Bash hook script that merely uses the command', async () => {
+    const hooks = path.join(tmpDir, '.claude', 'hooks');
+    fs.mkdirSync(hooks, { recursive: true });
+    fs.writeFileSync(
+      path.join(hooks, 'fmt.sh'),
+      '#!/bin/sh\nTMP=$(mktemp)\nnpx prettier --write "$FILE"\nrm -f "$TMP"\n',
+    );
+    writeSettings({
+      hooks: {
+        PreToolUse: [{ matcher: 'Edit|Write', hooks: [{ command: 'bash .claude/hooks/fmt.sh' }] }],
+      },
+    });
+    expect(await hardFor('# CLAUDE.md\n\nNEVER run `rm -rf /`.\n')).toBeDefined();
+  });
+
+  it('does not credit a Bash hook script that uses the bare head without the banned flags', async () => {
+    const hooks = path.join(tmpDir, '.claude', 'hooks');
+    fs.mkdirSync(hooks, { recursive: true });
+    fs.writeFileSync(path.join(hooks, 'log.sh'), '#!/bin/sh\nrm -f "$LOG.tmp"\nexit 0\n');
+    writeSettings({
+      hooks: {
+        PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'bash .claude/hooks/log.sh' }] }],
+      },
+    });
+    expect(await hardFor('# CLAUDE.md\n\nNEVER run `rm -rf /`.\n')).toBeDefined();
+  });
+
+  it('credits a Bash hook script that names the command with its banned flags', async () => {
+    const hooks = path.join(tmpDir, '.claude', 'hooks');
+    fs.mkdirSync(hooks, { recursive: true });
+    fs.writeFileSync(
+      path.join(hooks, 'guard.sh'),
+      '#!/bin/sh\ncase "$CMD" in\n  *"rm -rf"*) exit 2 ;;\nesac\n',
+    );
+    writeSettings({
+      hooks: {
+        PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'bash .claude/hooks/guard.sh' }] }],
+      },
+    });
+    expect(await hardFor('# CLAUDE.md\n\nNEVER run `rm -rf /`.\n')).toBeUndefined();
+  });
+
+  // A one-word span outside COMMAND_HEADS is still a command when the rule says "run".
+  it('credits a Bash deny for a single-word command not in the known heads', async () => {
+    writeSettings({ permissions: { deny: ['Bash(pytest:*)'] } });
+    expect(await hardFor('# CLAUDE.md\n\nNEVER run `pytest`.\n')).toBeUndefined();
+  });
+
+  it('credits an exact Bash deny for the identical single-word command', async () => {
+    writeSettings({ permissions: { deny: ['Bash(vitest)'] } });
+    expect(await hardFor('# CLAUDE.md\n\nNEVER run `vitest`.\n')).toBeUndefined();
+  });
+
+  it('suggests blocking the command for "run `<word>`"', async () => {
+    const hard = await hardFor('# CLAUDE.md\n\nNEVER run `pytest`.\n');
+    expect(hard).toBeDefined();
+    expect(hard!.suggestion).toContain('physically blocked');
+    expect(hard!.suggestion).not.toContain('Edit|Write');
+  });
+
+  // An exact entry (no `:*` / ` *`) blocks that exact command only.
+  it('does not credit an exact deny for the same command with extra flags', async () => {
+    writeSettings({ permissions: { deny: ['Bash(git push)'] } });
+    expect(await hardFor('# CLAUDE.md\n\nNEVER run `git push --force` on main.\n')).toBeDefined();
+  });
+
+  it('credits an exact deny for the identical command', async () => {
+    writeSettings({ permissions: { deny: ['Bash(npm publish)'] } });
+    expect(await hardFor('# CLAUDE.md\n\nNEVER run `npm publish` locally.\n')).toBeUndefined();
+  });
+
+  it('matches a curly-apostrophe "Don’t"', async () => {
+    const hard = await hardFor('# CLAUDE.md\n\nDon’t run `npm login` locally.\n');
+    expect(hard).toBeDefined();
+  });
+
+  it('does not treat "e.g." as a sentence boundary', async () => {
+    const hard = await hardFor(
+      '# CLAUDE.md\n\nNEVER run a destructive command, e.g. `rm -rf /`.\n',
+    );
+    expect(hard).toBeDefined();
+    expect(hard!.suggestion).toContain('rm -rf /');
+  });
+
+  it('still treats a real sentence end as a boundary', async () => {
+    expect(await hardFor('# CLAUDE.md\n\nNEVER guess. Run `npm test` first.\n')).toBeUndefined();
+  });
+
+  it('quotes the directive, not the whole line, in the message', async () => {
+    const hard = await hardFor(
+      '# CLAUDE.md\n\nPREAMBLE_MARKER context that runs on for a while, but NEVER run `npm login` ' +
+        'locally, TRAILING_MARKER because the long tail of this sentence is irrelevant.\n',
+    );
+    expect(hard).toBeDefined();
+    expect(hard!.message).toContain('NEVER run `npm login`');
+    expect(hard!.message).not.toContain('PREAMBLE_MARKER');
+    expect(hard!.message).not.toContain('TRAILING_MARKER');
+  });
+
+  it('caps a very long command in the message', async () => {
+    const long = 'curl ' + 'x'.repeat(200);
+    const hard = await hardFor(`# CLAUDE.md\n\nNEVER run \`${long}\`.\n`);
+    expect(hard).toBeDefined();
+    expect(hard!.message.length).toBeLessThan(160);
+  });
+});
+
 describe('checkAggregateTierTokens', () => {
   it('returns null for a single always-loaded file', () => {
     const issue = checkAggregateTierTokens([makeFile({ totalTokens: 10000 })]);
     expect(issue).toBeNull();
   });
 
-  it('emits a warning when combined always-loaded tokens exceed threshold', () => {
+  it("emits a warning when one tool's always-loaded files together exceed threshold", () => {
     const issue = checkAggregateTierTokens([
       makeFile({ relativePath: 'CLAUDE.md', totalTokens: 3000 }),
-      makeFile({ relativePath: 'AGENTS.md', totalTokens: 2500 }),
+      makeFile({ relativePath: '.claude/rules/style.md', totalTokens: 2500 }),
     ]);
     expect(issue).not.toBeNull();
     expect(issue!.severity).toBe('warning');
     expect(issue!.ruleId).toBe('tier-tokens/aggregate');
+    expect(issue!.message).toContain('Claude Code');
+    expect(issue!.message).toContain('5,500');
     expect(issue!.detail).toContain('CLAUDE.md');
-    expect(issue!.detail).toContain('AGENTS.md');
+    expect(issue!.detail).toContain('.claude/rules/style.md');
+  });
+
+  // No session loads CLAUDE.md, AGENTS.md, GEMINI.md and .cursorrules
+  // together: each tool reads its own file, so the totals are per tool.
+  it('does not sum files that different tools load', () => {
+    const issue = checkAggregateTierTokens([
+      makeFile({ relativePath: 'CLAUDE.md', totalTokens: 3000 }),
+      makeFile({ relativePath: 'AGENTS.md', totalTokens: 2500 }),
+      makeFile({ relativePath: 'GEMINI.md', totalTokens: 2500 }),
+      makeFile({ relativePath: '.cursorrules', totalTokens: 2500 }),
+    ]);
+    expect(issue).toBeNull();
+  });
+
+  // Subdirectory CLAUDE.md files load on demand (when Claude works in that
+  // subtree), so a monorepo's packages/*/CLAUDE.md is not every-session cost.
+  it('counts only root-level always-loaded files', () => {
+    const issue = checkAggregateTierTokens([
+      makeFile({ relativePath: 'CLAUDE.md', totalTokens: 1500 }),
+      makeFile({ relativePath: 'packages/a/CLAUDE.md', totalTokens: 2000 }),
+      makeFile({ relativePath: 'packages/b/CLAUDE.md', totalTokens: 2000 }),
+    ]);
+    expect(issue).toBeNull();
+  });
+
+  it('skips a symlink whose target is another counted file', () => {
+    const issue = checkAggregateTierTokens([
+      makeFile({ relativePath: 'CLAUDE.md', totalTokens: 3000 }),
+      makeFile({
+        relativePath: 'CLAUDE.local.md',
+        totalTokens: 3000,
+        isSymlink: true,
+        symlinkTarget: 'CLAUDE.md',
+      }),
+    ]);
+    expect(issue).toBeNull();
+  });
+
+  it('reports the heaviest tool when several exceed the threshold', () => {
+    const issue = checkAggregateTierTokens([
+      makeFile({ relativePath: 'CLAUDE.md', totalTokens: 3000 }),
+      makeFile({ relativePath: 'CLAUDE.local.md', totalTokens: 2000 }),
+      makeFile({ relativePath: '.windsurfrules', totalTokens: 4000 }),
+      makeFile({ relativePath: '.windsurf/rules/r.md', totalTokens: 3000 }),
+    ]);
+    expect(issue).not.toBeNull();
+    expect(issue!.message).toContain('Windsurf');
+    expect(issue!.message).toContain('7,000');
+    expect(issue!.detail).not.toContain('CLAUDE.md');
   });
 
   it('excludes path-scoped rules from the aggregate', () => {
@@ -700,5 +1060,54 @@ describe('checkAggregateTierTokens', () => {
     const claude = makeFile({ relativePath: 'CLAUDE.md', totalTokens: 1000 });
     const issue = checkAggregateTierTokens([pathsRule, claude]);
     expect(issue).toBeNull();
+  });
+});
+
+describe('CRLF line endings', () => {
+  // Windows checkouts with core.autocrlf=true hand the check CRLF content.
+  // Each case is the byte-for-byte CRLF twin of an LF case above. Rows 0, 2
+  // and 3 and the paths-scoped hard-enforcement case failed before the CRLF
+  // fix (`.` does not match the trailing `\r`, so the field value never
+  // matched); rows 1, 4 and 5 and the CLAUDE.md case passed already and stay
+  // as parity checks.
+  const crlf = (s: string) => s.replace(/\n/g, '\r\n');
+
+  it.each([
+    ['.claude/rules/r.md', '---\npaths: "src/**/*.ts"\n---\n\nbody'],
+    ['.claude/rules/r.md', '---\npaths:\n  - "src/**/*.ts"\n  - "tests/**"\n---\n'],
+    ['.cursor/rules/r.md', '---\nglobs: "src/**/*.ts"\n---\n\nbody'],
+    ['.windsurf/rules/r.md', '---\ntrigger: manual\n---\n\nbody'],
+    ['.windsurf/rules/r.md', '---\ntrigger: always_on\n---\n\nbody'],
+    ['.claude/rules/r.md', '---\ndescription: general rule\n---\n\nbody'],
+  ])('classifies CRLF %s identically to its LF twin (%#)', (relativePath, lf) => {
+    const lfResult = isAlwaysLoaded(makeFile({ relativePath, content: lf }));
+    const crlfResult = isAlwaysLoaded(makeFile({ relativePath, content: crlf(lf) }));
+    expect(crlfResult).toBe(lfResult);
+  });
+
+  it('does not flag hard-enforcement-missing on a CRLF paths-scoped rule', async () => {
+    const lf = '---\npaths: "src/**"\n---\n\nNEVER run `npm login` locally.\n';
+    const lfIssues = await checkTierTokens(
+      makeFile({ relativePath: '.claude/rules/r.md', content: lf, totalTokens: 50 }),
+      tmpDir,
+    );
+    const crlfIssues = await checkTierTokens(
+      makeFile({ relativePath: '.claude/rules/r.md', content: crlf(lf), totalTokens: 50 }),
+      tmpDir,
+    );
+    expect(lfIssues).toEqual([]);
+    expect(crlfIssues).toEqual(lfIssues);
+  });
+
+  it('reports identical hard-enforcement-missing issues for CRLF and LF CLAUDE.md', async () => {
+    const lf =
+      '# CLAUDE.md\n\nNEVER run `npm login` locally.\n\n```bash\nNEVER run `npm publish`\n```\n';
+    const lfIssues = await checkTierTokens(makeFile({ content: lf, totalTokens: 50 }), tmpDir);
+    const crlfIssues = await checkTierTokens(
+      makeFile({ content: crlf(lf), totalTokens: 50 }),
+      tmpDir,
+    );
+    expect(lfIssues).toHaveLength(1);
+    expect(crlfIssues).toEqual(lfIssues);
   });
 });

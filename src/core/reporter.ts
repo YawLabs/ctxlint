@@ -1,5 +1,3 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import chalk from 'chalk';
 import {
   SESSION_AUDIT_PATH_MARKER,
@@ -8,6 +6,7 @@ import {
   type LintResult,
   type LintIssue,
 } from './types.js';
+import { redactSecrets, redactSecretValue } from './checks/content-secrets.js';
 
 type FileGroup = 'context' | 'mcp' | 'session' | 'skill';
 
@@ -80,48 +79,33 @@ function isSyntheticBucket(p: string): boolean {
 }
 
 /**
- * When the project being scanned IS a ctxlint checkout, report its declared
- * version if it differs from the binary doing the scanning.
- *
- * The failure this prevents: a globally-installed CLI several patches behind
- * the working tree silently reports findings that the checkout has already
- * fixed. Because the output is what an agent acts on at session start, the
- * stale result gets treated as current and someone re-investigates a closed
- * bug. Returns the checkout's version when they disagree, else `null`.
- *
- * Deliberately no network call and no registry lookup -- this only fires on a
- * self-scan, where the comparison is free and unambiguous.
+ * A project settings file that carries hook-coverage findings (audit.ts files
+ * them under the settings file's own path). It is not a context file: it is
+ * left out of the "Found N context files" summary and the token table.
  */
-function detectVersionSkew(projectRoot: string, runningVersion: string): string | null {
-  try {
-    const pkgPath = join(projectRoot, 'package.json');
-    if (!existsSync(pkgPath)) return null;
-    // Strip a UTF-8 BOM before parsing. `JSON.parse` throws on a leading BOM,
-    // and BOM-prefixed JSON is routine on Windows (PowerShell's `Out-File
-    // -Encoding utf8` emits one), so without this the check silently
-    // self-disables on the platform where it is most likely to be needed.
-    const raw = readFileSync(pkgPath, 'utf8').replace(/^\uFEFF/, '');
-    const pkg = JSON.parse(raw) as { name?: string; version?: string };
-    const name = pkg.name ?? '';
-    if (name !== 'ctxlint' && name !== '@yawlabs/ctxlint') return null;
-    if (!pkg.version || pkg.version === runningVersion) return null;
-    return pkg.version;
-  } catch {
-    // A malformed or unreadable package.json is not worth failing a lint over.
-    return null;
-  }
+function isSettingsFile(p: string): boolean {
+  return /(^|\/)\.claude\/settings(\.local)?\.json$/.test(p.replace(/\\/g, '/'));
 }
 
-export function formatText(result: LintResult, verbose: boolean = false): string {
+/** Real context files: the context group minus synthetic buckets and settings files. */
+function contextFiles(files: FileResult[]): FileResult[] {
+  return files.filter(
+    (f) => classifyFile(f) === 'context' && !isSyntheticBucket(f.path) && !isSettingsFile(f.path),
+  );
+}
+
+export function formatText(raw: LintResult, verbose: boolean = false): string {
+  const result = redactResultForOutput(raw);
   const lines: string[] = [];
 
   lines.push('');
   lines.push(chalk.bold(`ctxlint v${result.version}`));
-  const skew = detectVersionSkew(result.projectRoot, result.version);
-  if (skew !== null) {
+  // Detected by runAudit (detectVersionSkew); the formatter only renders it.
+  const skew = raw.versionSkew;
+  if (skew) {
     lines.push(
       chalk.yellow(
-        `  note: this checkout is v${skew} -- you are running v${result.version}. ` +
+        `  note: this checkout is v${skew.checkoutVersion} -- you are running v${skew.runningVersion}. ` +
           'Rebuild or reinstall before trusting a result against it.',
       ),
     );
@@ -147,11 +131,11 @@ export function formatText(result: LintResult, verbose: boolean = false): string
   // section below.
   let renderedAnySummary = false;
 
-  const contextReal = groups.context.filter((f) => !isSyntheticBucket(f.path));
-  // Context tokens only. summary.totalTokens also counts MCP config files,
-  // which are never loaded into agent context -- using it here (and in the
-  // "per agent session" line below) over-reported on --mcp runs.
-  const contextTokens = contextReal.reduce((sum, f) => sum + f.tokens, 0);
+  const contextReal = contextFiles(result.files);
+  // summary.totalTokens is the one definition every format prints: context
+  // files only (MCP configs are not loaded into agent context), a symlinked
+  // alias of another counted file once. See audit.ts contextTokenTotal.
+  const contextTokens = result.summary.totalTokens;
   if (contextReal.length > 0) {
     lines.push(
       `Found ${contextReal.length} context file${contextReal.length !== 1 ? 's' : ''} (${contextTokens.toLocaleString()} tokens total)`,
@@ -308,8 +292,98 @@ function formatIgnoreRule(r: {
   return parts.join(' ');
 }
 
+/**
+ * Checks whose fixes replace a secret value. Their `fix.oldText` is the secret
+ * itself even when no known-format pattern matches it (mcp-security's
+ * high-entropy heuristic), so it is redacted unconditionally.
+ */
+const SECRET_FIX_CHECKS: ReadonlySet<string> = new Set(['mcp-security', 'content-secrets']);
+
+// An env-var reference in any client syntax: ${{ secrets.VAR }}, ${env:VAR},
+// ${VAR}. These spans are never a literal secret and are left readable.
+const ENV_REF_SPAN = /\$\{\{[^}]*\}\}|\$\{[^}]*\}/g;
+
+// `scheme://user:password@` -- group 2 is the password.
+const URL_USERINFO_PASSWORD = /([a-z][a-z0-9+.-]*:\/\/[^\s/?#:@]*:)([^\s/?#@]*)@/gi;
+
+// A secret-named URL query param; group 2 is its value. Same names as
+// mcp-security's URL_SECRET_PARAMS.
+const URL_SECRET_PARAM =
+  /([?&](?:key|token|api_key|apikey|secret|password|access_token)=)([^&#\s"']*)/gi;
+
+// A long run of key-alphabet characters mixing upper case, lower case and
+// digits: the shape of a random API key. '/' is left out of the class so a
+// filesystem path or URL path never forms one run.
+const KEY_SHAPED_RUN = /[A-Za-z0-9+=_-]{21,}/g;
+
+function hasLiteral(value: string): boolean {
+  return value.replace(ENV_REF_SPAN, '').length > 0;
+}
+
+function isKeyShaped(run: string): boolean {
+  return /[A-Z]/.test(run) && /[a-z]/.test(run) && /[0-9]/.test(run);
+}
+
+/**
+ * Mask a credential that sits as a literal inside a non-secret fix's text:
+ * a URL userinfo password, the value of a secret-named URL query param, and
+ * any key-shaped run outside an env-var ref. A fix whose text spans a whole
+ * value (`...?api_key=<literal>&ws=${WS}`) carries such literals -- mcp-env's
+ * syntax fixes did before they narrowed to the ref alone -- and none of them
+ * need match a known-token pattern for redactSecrets to catch them. Env-var refs are never touched, so the part a syntax fix
+ * changes stays readable.
+ */
+export function redactLiteralCredentials(text: string): string {
+  let out = text.replace(URL_USERINFO_PASSWORD, (m, head: string, pw: string) =>
+    hasLiteral(pw) ? `${head}${redactSecretValue(pw)}@` : m,
+  );
+  out = out.replace(URL_SECRET_PARAM, (m, head: string, value: string) =>
+    hasLiteral(value) ? `${head}${redactSecretValue(value)}` : m,
+  );
+  // Key-shaped runs: scan only the literal segments between env refs.
+  let result = '';
+  let last = 0;
+  const maskSegment = (segment: string) =>
+    segment.replace(KEY_SHAPED_RUN, (run) => (isKeyShaped(run) ? redactSecretValue(run) : run));
+  for (const ref of out.matchAll(ENV_REF_SPAN)) {
+    result += maskSegment(out.slice(last, ref.index)) + ref[0];
+    last = ref.index + ref[0].length;
+  }
+  return result + maskSegment(out.slice(last));
+}
+
+function redactIssueForOutput(issue: LintIssue): LintIssue {
+  const out: LintIssue = { ...issue, message: redactSecrets(issue.message) };
+  if (issue.suggestion !== undefined) out.suggestion = redactSecrets(issue.suggestion);
+  if (issue.detail !== undefined) out.detail = redactSecrets(issue.detail);
+  if (issue.fix) {
+    out.fix = {
+      ...issue.fix,
+      oldText: SECRET_FIX_CHECKS.has(issue.check)
+        ? redactSecretValue(issue.fix.oldText)
+        : redactLiteralCredentials(redactSecrets(issue.fix.oldText)),
+      newText: redactLiteralCredentials(redactSecrets(issue.fix.newText)),
+    };
+  }
+  return out;
+}
+
+/**
+ * A copy of `result` safe to print or hand to another process: secrets are
+ * redacted from every issue's text and fix values. The audit already redacts
+ * the text fields (repeating it here is idempotent and covers results built
+ * elsewhere); fix values are only redacted here because the fixer needs the
+ * real oldText, so `result` itself is never modified.
+ */
+export function redactResultForOutput<T extends LintResult>(result: T): T {
+  return {
+    ...result,
+    files: result.files.map((f) => ({ ...f, issues: f.issues.map(redactIssueForOutput) })),
+  };
+}
+
 export function formatJson(result: LintResult): string {
-  return JSON.stringify(result, null, 2);
+  return JSON.stringify(redactResultForOutput(result), null, 2);
 }
 
 export function formatTokenReport(result: LintResult): string {
@@ -322,11 +396,11 @@ export function formatTokenReport(result: LintResult): string {
   );
   lines.push('');
 
-  // Drop synthetic cross-file buckets ((project), (mcp), ~/.claude/ (session
-  // audit)) -- they carry 0 tokens / 0 lines, so rendering them as table rows
-  // is noise and their (often long) labels would needlessly widen maxPathLen.
-  // Mirrors the real-file filtering formatText applies to its top summary.
-  const realFiles = result.files.filter((f) => !isSyntheticBucket(f.path));
+  // Context files only, the same set formatText summarizes: synthetic buckets
+  // ((project), (mcp), ~/.claude/ (session audit)) carry 0 tokens and would
+  // only widen maxPathLen, and MCP configs are not loaded as context, so they
+  // are not part of the Total (summary.totalTokens) either.
+  const realFiles = contextFiles(result.files);
 
   const maxPathLen = Math.max(...realFiles.map((f) => f.path.length), 4);
 
@@ -338,7 +412,10 @@ export function formatTokenReport(result: LintResult): string {
   for (const file of realFiles) {
     const tokenStr = file.tokens.toLocaleString().padStart(8);
     const lineStr = file.lines.toString().padStart(6);
-    lines.push(`  ${file.path.padEnd(maxPathLen)}  ${tokenStr}  ${lineStr}`);
+    // A symlinked alias of another counted file is not added to the Total.
+    const alias =
+      file.isSymlink && file.symlinkTarget ? chalk.dim(`  -> ${file.symlinkTarget} (symlink)`) : '';
+    lines.push(`  ${file.path.padEnd(maxPathLen)}  ${tokenStr}  ${lineStr}${alias}`);
   }
 
   lines.push(`  ${'-'.repeat(maxPathLen)}  ${'-'.repeat(8)}  ${'-'.repeat(6)}`);
@@ -366,9 +443,9 @@ export function formatTokenReport(result: LintResult): string {
  * `~/.claude/ (session audit)` (see audit.ts). Those labels aren't real
  * relative paths and must not flow through to SARIF's
  * `physicalLocation.artifactLocation.uri`, which GitHub Code Scanning
- * interprets as a repo-relative file path. For those buckets we emit a
- * `logicalLocations` entry instead (still valid SARIF 2.1.0) so consumers
- * can display the bucket name without pretending it's a file.
+ * interprets as a repo-relative file path. For those buckets the label goes
+ * in `logicalLocations`, and the physicalLocation is a real anchor file
+ * (see anchorFor) rather than the label.
  */
 function isSyntheticPath(p: string): boolean {
   // Share the central predicate (exact '(project)' / '(mcp)' labels +
@@ -383,10 +460,64 @@ function isSyntheticPath(p: string): boolean {
 }
 
 /**
+ * A repo-relative path as a SARIF `artifactLocation.uri`: forward slashes, each
+ * segment percent-encoded (RFC 3986), so a space or `#` in a file name can't
+ * produce an invalid or mis-split URI reference.
+ */
+export function toSarifUri(p: string): string {
+  return p.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/');
+}
+
+/** A path that can be a physicalLocation: real, project-relative, inside the root. */
+function isPhysicalPath(p: string): boolean {
+  const norm = p.replace(/\\/g, '/');
+  return (
+    !isSyntheticPath(p) &&
+    !norm.startsWith('/') &&
+    !/^[A-Za-z]:/.test(norm) &&
+    norm !== '..' &&
+    !norm.startsWith('../')
+  );
+}
+
+/**
+ * The real file a synthetic bucket's findings are pinned to. GitHub code
+ * scanning requires a physicalLocation on every result (a result with only
+ * logicalLocations is not displayed), so a cross-file finding is anchored on
+ * the most relevant file of the same family: the shallowest context file for
+ * `(project)` (the root CLAUDE.md / AGENTS.md when there is one), the first
+ * project MCP config for `(mcp)`. Session and skill findings have no file in
+ * the repo; they fall back to the shallowest real file of any family. Null
+ * when the run has no real file at all (e.g. --session-only); those results
+ * keep logicalLocations only.
+ */
+function anchorFor(bucket: FileResult, files: FileResult[]): string | null {
+  const real = files.filter((f) => isPhysicalPath(f.path));
+  const depth = (p: string) => p.replace(/\\/g, '/').split('/').length;
+  const shallowest = (list: FileResult[]) =>
+    list.reduce<FileResult | null>(
+      (best, f) => (!best || depth(f.path) < depth(best.path) ? f : best),
+      null,
+    )?.path ?? null;
+  const group = classifyFile(bucket);
+  const sameFamily = real.filter(
+    (f) => classifyFile(f) === group && !(group === 'context' && isSettingsFile(f.path)),
+  );
+  const pick = group === 'mcp' ? (sameFamily[0]?.path ?? null) : shallowest(sameFamily);
+  return pick ?? shallowest(real);
+}
+
+/** The SARIF ruleId of an issue: the specific rule when it has one, else its check family. */
+function sarifRuleId(issue: LintIssue): string {
+  return `ctxlint/${issue.ruleId ?? issue.check}`;
+}
+
+/**
  * Formats results as SARIF v2.1.0 for GitHub Code Scanning and other SARIF consumers.
  * https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html
  */
-export function formatSarif(result: LintResult): string {
+export function formatSarif(raw: LintResult): string {
+  const result = redactResultForOutput(raw);
   const severityToLevel: Record<string, string> = {
     error: 'error',
     warning: 'warning',
@@ -394,32 +525,37 @@ export function formatSarif(result: LintResult): string {
   };
 
   const results: SarifResult[] = [];
+  const usedRuleIds = new Map<string, LintIssue>();
 
   for (const file of result.files) {
+    const synthetic = !isPhysicalPath(file.path);
+    const anchor = synthetic ? anchorFor(file, result.files) : null;
     for (const issue of file.issues) {
-      const location: SarifLocation = isSyntheticPath(file.path)
-        ? {
-            logicalLocations: [
-              {
-                name: file.path,
-                kind: 'resource',
-              },
-            ],
-          }
-        : {
-            physicalLocation: {
-              artifactLocation: {
-                uri: file.path,
-                uriBaseId: '%SRCROOT%',
-              },
-              region: {
-                startLine: Math.max(issue.line, 1),
-              },
-            },
+      let location: SarifLocation;
+      if (!synthetic) {
+        location = {
+          physicalLocation: {
+            artifactLocation: { uri: toSarifUri(file.path), uriBaseId: '%SRCROOT%' },
+            region: { startLine: Math.max(issue.line, 1) },
+          },
+        };
+      } else {
+        // The bucket label stays as a logical location; the anchor file (if
+        // any) supplies the physicalLocation GitHub needs. A bucket finding's
+        // line is not a line of the anchor file, so the region is line 1.
+        location = { logicalLocations: [{ name: file.path, kind: 'resource' }] };
+        if (anchor !== null) {
+          location.physicalLocation = {
+            artifactLocation: { uri: toSarifUri(anchor), uriBaseId: '%SRCROOT%' },
+            region: { startLine: 1 },
           };
+        }
+      }
 
+      const ruleId = sarifRuleId(issue);
+      if (!usedRuleIds.has(ruleId)) usedRuleIds.set(ruleId, issue);
       const sarifResult: SarifResult = {
-        ruleId: `ctxlint/${issue.check}`,
+        ruleId,
         level: severityToLevel[issue.severity] || 'note',
         message: {
           text: issue.message + (issue.suggestion ? ` (${issue.suggestion})` : ''),
@@ -435,6 +571,24 @@ export function formatSarif(result: LintResult): string {
     }
   }
 
+  // One descriptor per check family, plus one per specific ruleId the results
+  // use, so every result's ruleId resolves to a reportingDescriptor. A
+  // specific rule inherits its family's description and help link.
+  const families = buildRuleDescriptors();
+  const byId = new Map(families.map((r) => [r.id, r]));
+  const rules = [...families];
+  for (const [id, issue] of usedRuleIds) {
+    if (byId.has(id)) continue;
+    const family = byId.get(`ctxlint/${issue.check}`);
+    const rule: SarifRule = {
+      id,
+      shortDescription: family?.shortDescription ?? { text: issue.check },
+      helpUri: family?.helpUri ?? 'https://github.com/yawlabs/ctxlint#what-it-checks',
+    };
+    byId.set(id, rule);
+    rules.push(rule);
+  }
+
   const sarif: SarifLog = {
     version: '2.1.0',
     $schema:
@@ -446,7 +600,7 @@ export function formatSarif(result: LintResult): string {
             name: 'ctxlint',
             version: result.version,
             informationUri: 'https://github.com/yawlabs/ctxlint',
-            rules: buildRuleDescriptors(),
+            rules,
           },
         },
         results,

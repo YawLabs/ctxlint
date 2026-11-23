@@ -23,9 +23,11 @@ describe('checkContradictions', () => {
     ];
 
     const issues = checkContradictions(files);
-    expect(issues.length).toBeGreaterThan(0);
+    expect(issues).toHaveLength(1);
     expect(issues[0].check).toBe('contradictions');
-    expect(issues[0].message).toContain('testing framework');
+    expect(issues[0].message).toBe(
+      'testing framework conflict: "Vitest" in CLAUDE.md vs "Jest" in AGENTS.md',
+    );
   });
 
   it('detects package manager conflicts', () => {
@@ -35,8 +37,10 @@ describe('checkContradictions', () => {
     ];
 
     const issues = checkContradictions(files);
-    expect(issues.length).toBeGreaterThan(0);
-    expect(issues[0].message).toContain('package manager');
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toBe(
+      'package manager conflict: "pnpm" in CLAUDE.md vs "yarn" in .cursorrules',
+    );
   });
 
   it('detects indentation conflicts', () => {
@@ -46,8 +50,8 @@ describe('checkContradictions', () => {
     ];
 
     const issues = checkContradictions(files);
-    expect(issues.length).toBeGreaterThan(0);
-    expect(issues[0].message).toContain('indentation');
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('"tabs" in CLAUDE.md vs "2 spaces" in AGENTS.md');
   });
 
   it('returns no issues when files agree', () => {
@@ -83,8 +87,10 @@ describe('checkContradictions', () => {
       makeFile('AGENTS.md', 'No semicolons please.'),
     ];
     const issues = checkContradictions(files);
-    expect(issues.length).toBeGreaterThan(0);
-    expect(issues[0].message).toContain('semicolons');
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain(
+      '"semicolons" in CLAUDE.md vs "no semicolons" in AGENTS.md',
+    );
   });
 
   it('detects quote-style conflicts', () => {
@@ -93,8 +99,11 @@ describe('checkContradictions', () => {
       makeFile('AGENTS.md', 'Use double quotes throughout.'),
     ];
     const issues = checkContradictions(files);
-    expect(issues.length).toBeGreaterThan(0);
+    expect(issues).toHaveLength(1);
     expect(issues[0].message).toContain('quote style');
+    expect(issues[0].message).toContain(
+      '"single quotes" in CLAUDE.md vs "double quotes" in AGENTS.md',
+    );
   });
 
   it('detects naming-convention conflicts', () => {
@@ -103,8 +112,9 @@ describe('checkContradictions', () => {
       makeFile('AGENTS.md', 'Use snake_case for variable names.'),
     ];
     const issues = checkContradictions(files);
-    expect(issues.length).toBeGreaterThan(0);
+    expect(issues).toHaveLength(1);
     expect(issues[0].message).toContain('naming convention');
+    expect(issues[0].message).toContain('"camelCase" in CLAUDE.md vs "snake_case" in AGENTS.md');
   });
 
   it('detects CSS-approach conflicts', () => {
@@ -113,8 +123,9 @@ describe('checkContradictions', () => {
       makeFile('AGENTS.md', 'Use CSS Modules for styling.'),
     ];
     const issues = checkContradictions(files);
-    expect(issues.length).toBeGreaterThan(0);
+    expect(issues).toHaveLength(1);
     expect(issues[0].message).toContain('CSS approach');
+    expect(issues[0].message).toContain('"Tailwind" in CLAUDE.md vs "CSS Modules" in AGENTS.md');
   });
 
   it('detects state-management conflicts', () => {
@@ -123,8 +134,8 @@ describe('checkContradictions', () => {
       makeFile('AGENTS.md', 'Use Zustand for state.'),
     ];
     const issues = checkContradictions(files);
-    expect(issues.length).toBeGreaterThan(0);
-    expect(issues[0].message).toContain('state management');
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('"Redux" in CLAUDE.md vs "Zustand" in AGENTS.md');
   });
 
   it('does not falsely match "test ... deploy with <fw>" prose as a framework directive', () => {
@@ -148,7 +159,8 @@ describe('checkContradictions', () => {
     ];
     const issues = checkContradictions(files);
     const fwIssues = issues.filter((i) => i.message.includes('testing framework'));
-    expect(fwIssues.length).toBeGreaterThan(0);
+    expect(fwIssues).toHaveLength(1);
+    expect(fwIssues[0].message).toContain('"Jest" in CLAUDE.md vs "Vitest" in AGENTS.md');
   });
 
   it('does not count a negated mention as an endorsement (false-conflict shape)', () => {
@@ -190,9 +202,8 @@ describe('checkContradictions', () => {
     ];
     const issues = checkContradictions(files);
     const pkgMgrIssues = issues.filter((i) => i.message.includes('package manager'));
-    expect(pkgMgrIssues.length).toBeGreaterThan(0);
-    expect(pkgMgrIssues[0].message).toContain('pnpm');
-    expect(pkgMgrIssues[0].message).toContain('yarn');
+    expect(pkgMgrIssues).toHaveLength(1);
+    expect(pkgMgrIssues[0].message).toContain('"pnpm" in CLAUDE.md vs "yarn" in AGENTS.md');
   });
 
   it('registers an endorsement that follows a negated clause on the same line', () => {
@@ -204,8 +215,8 @@ describe('checkContradictions', () => {
     ];
     const issues = checkContradictions(files);
     const pkgMgrIssues = issues.filter((i) => i.message.includes('package manager'));
-    expect(pkgMgrIssues.length).toBeGreaterThan(0);
-    expect(pkgMgrIssues[0].message).toContain('pnpm');
+    expect(pkgMgrIssues).toHaveLength(1);
+    expect(pkgMgrIssues[0].message).toContain('"pnpm" in CLAUDE.md vs "bun" in AGENTS.md');
   });
 
   it('registers an endorsement when an earlier same-pattern occurrence is negated', () => {
@@ -219,9 +230,8 @@ describe('checkContradictions', () => {
     ];
     const issues = checkContradictions(files);
     const pkgMgrIssues = issues.filter((i) => i.message.includes('package manager'));
-    expect(pkgMgrIssues.length).toBeGreaterThan(0);
-    expect(pkgMgrIssues[0].message).toContain('pnpm');
-    expect(pkgMgrIssues[0].message).toContain('yarn');
+    expect(pkgMgrIssues).toHaveLength(1);
+    expect(pkgMgrIssues[0].message).toContain('"pnpm" in CLAUDE.md vs "yarn" in AGENTS.md');
   });
 
   it('does not register when every same-line occurrence is negated', () => {
@@ -255,7 +265,7 @@ describe('checkContradictions', () => {
       makeFile('AGENTS.md', 'Use double quotes everywhere.'),
     ];
     const issues = checkContradictions(files);
-    expect(issues.filter((i) => i.message.includes('quote style')).length).toBeGreaterThan(0);
+    expect(issues.filter((i) => i.message.includes('quote style'))).toHaveLength(1);
   });
 
   it('emits a single cluster issue for 3+ file conflict', () => {
@@ -269,5 +279,202 @@ describe('checkContradictions', () => {
     // Previously emitted C(3,2)=3 pairwise issues; now a single cluster issue.
     expect(pkgMgrIssues).toHaveLength(1);
     expect(pkgMgrIssues[0].message).toContain('3 files');
+  });
+
+  describe('complementary choices are not conflicts', () => {
+    it('unit-test and e2e frameworks are separate categories', () => {
+      const files = [
+        makeFile('CLAUDE.md', 'Use Vitest for unit tests.'),
+        makeFile('AGENTS.md', 'Use Playwright for e2e tests.'),
+      ];
+      expect(checkContradictions(files)).toHaveLength(0);
+    });
+
+    it('still flags two e2e frameworks', () => {
+      const files = [
+        makeFile('CLAUDE.md', 'Use Playwright for e2e tests.'),
+        makeFile('AGENTS.md', 'Use Cypress for e2e tests.'),
+      ];
+      const issues = checkContradictions(files);
+      expect(issues).toHaveLength(1);
+      expect(issues[0].message).toBe(
+        'e2e testing framework conflict: "Playwright" in CLAUDE.md vs "Cypress" in AGENTS.md',
+      );
+    });
+
+    it('naming conventions for different objects do not conflict', () => {
+      const files = [
+        makeFile('CLAUDE.md', 'Use camelCase for variables.'),
+        makeFile('AGENTS.md', 'Use PascalCase for React components.'),
+      ];
+      expect(checkContradictions(files)).toHaveLength(0);
+    });
+
+    it('kebab-case file names vs camelCase variables do not conflict', () => {
+      const files = [
+        makeFile('CLAUDE.md', 'Use kebab-case for file names.'),
+        makeFile('AGENTS.md', 'Use camelCase for variables.'),
+      ];
+      expect(checkContradictions(files)).toHaveLength(0);
+    });
+
+    it('naming conventions for the same object (singular/plural, "names") still conflict', () => {
+      const files = [
+        makeFile('CLAUDE.md', 'Use camelCase for variables.'),
+        makeFile('AGENTS.md', 'Use snake_case for variable names.'),
+      ];
+      const issues = checkContradictions(files);
+      expect(issues).toHaveLength(1);
+      expect(issues[0].message).toBe(
+        'naming convention (variable) conflict: "camelCase" in CLAUDE.md vs "snake_case" in AGENTS.md',
+      );
+    });
+
+    it('sibling package files are not compared', () => {
+      const files = [
+        makeFile('packages/a/CLAUDE.md', 'Use Jest for testing.'),
+        makeFile('packages/b/CLAUDE.md', 'Use Vitest for testing.'),
+      ];
+      expect(checkContradictions(files)).toHaveLength(0);
+    });
+
+    it('a root file still conflicts with a nested one', () => {
+      const files = [
+        makeFile('CLAUDE.md', 'Use Jest for testing.'),
+        makeFile('packages/b/CLAUDE.md', 'Use Vitest for testing.'),
+      ];
+      expect(checkContradictions(files)).toHaveLength(1);
+    });
+
+    it('tool config dirs (.cursor/rules) count as project-root scope', () => {
+      const files = [
+        makeFile('packages/a/CLAUDE.md', 'Use Jest for testing.'),
+        makeFile('.cursor/rules/testing.mdc', 'Use Vitest for testing.'),
+      ];
+      expect(checkContradictions(files)).toHaveLength(1);
+    });
+  });
+
+  describe('missed conflicts', () => {
+    it('maps a negated "use semicolons" to the opposite label', () => {
+      const files = [
+        makeFile('CLAUDE.md', 'Use semicolons.'),
+        makeFile('AGENTS.md', "Don't use semicolons."),
+      ];
+      const issues = checkContradictions(files);
+      expect(issues).toHaveLength(1);
+      expect(issues[0].message).toBe(
+        'semicolons conflict: "semicolons" in CLAUDE.md vs "no semicolons" in AGENTS.md',
+      );
+    });
+
+    it('a scoped naming exception in another file does not conflict with a general rule', () => {
+      // The more specific rule overrides the general one; splitting them across
+      // files is normal polyglot layering, the same as writing both in one.
+      const files = [
+        makeFile('CLAUDE.md', 'Use camelCase.'),
+        makeFile('AGENTS.md', 'Use snake_case for Python functions.'),
+      ];
+      expect(checkContradictions(files)).toHaveLength(0);
+    });
+
+    it('a general naming directive that agrees with the scoped one is not a conflict', () => {
+      const files = [
+        makeFile('CLAUDE.md', 'Use camelCase for variables.'),
+        makeFile('AGENTS.md', 'Use camelCase.'),
+      ];
+      expect(checkContradictions(files)).toHaveLength(0);
+    });
+
+    it('a general-vs-general conflict is still reported alongside a scoped rule', () => {
+      const files = [
+        makeFile('CLAUDE.md', 'Use camelCase.'),
+        makeFile('AGENTS.md', 'Use snake_case.'),
+        makeFile('.cursorrules', 'Use camelCase for variables.'),
+      ];
+      expect(checkContradictions(files).map((i) => i.message)).toEqual([
+        'naming convention conflict: "camelCase" in CLAUDE.md vs "snake_case" in AGENTS.md',
+      ]);
+    });
+
+    it('detects "Indentation: 4 spaces" vs tabs', () => {
+      const files = [
+        makeFile('CLAUDE.md', 'Use tabs for indentation.'),
+        makeFile('AGENTS.md', 'Indentation: 4 spaces.'),
+      ];
+      const issues = checkContradictions(files);
+      expect(issues).toHaveLength(1);
+      expect(issues[0].message).toContain('"tabs" in CLAUDE.md vs "4 spaces" in AGENTS.md');
+    });
+
+    it('detects "Use 2 spaces for indentation" vs tabs', () => {
+      const files = [
+        makeFile('CLAUDE.md', 'Use tabs for indentation.'),
+        makeFile('AGENTS.md', 'Use 2 spaces for indentation.'),
+      ];
+      const issues = checkContradictions(files);
+      expect(issues).toHaveLength(1);
+      expect(issues[0].message).toContain('"tabs" in CLAUDE.md vs "2 spaces" in AGENTS.md');
+    });
+  });
+
+  describe('false endorsements', () => {
+    it('"no longer use" is a negation', () => {
+      const files = [
+        makeFile('CLAUDE.md', 'We no longer use yarn.'),
+        makeFile('AGENTS.md', 'Use pnpm for installs.'),
+      ];
+      expect(checkContradictions(files)).toHaveLength(0);
+    });
+
+    it('"Never, ever use" is a negation', () => {
+      const files = [
+        makeFile('CLAUDE.md', 'Never, ever use yarn.'),
+        makeFile('AGENTS.md', 'Use pnpm for installs.'),
+      ];
+      expect(checkContradictions(files)).toHaveLength(0);
+    });
+
+    it('`use npm-check-updates` does not register npm', () => {
+      const files = [
+        makeFile('CLAUDE.md', 'Use npm-check-updates to bump deps.'),
+        makeFile('AGENTS.md', 'Use pnpm for installs.'),
+      ];
+      expect(checkContradictions(files)).toHaveLength(0);
+    });
+
+    it('ignores directives inside fenced code', () => {
+      const files = [
+        makeFile(
+          'CLAUDE.md',
+          'Example rule:\n\n```markdown\nAlways use yarn as the package manager.\n```\n',
+        ),
+        makeFile('AGENTS.md', 'Use pnpm for installs.'),
+      ];
+      expect(checkContradictions(files)).toHaveLength(0);
+    });
+
+    it('prose that merely mentions "2 spaces" or "4 spaces" is not an indentation directive', () => {
+      const files = [
+        makeFile('CLAUDE.md', 'Use tabs for indentation.'),
+        makeFile(
+          'AGENTS.md',
+          'Leave 2 spaces after a sentence. The table pads columns with 4 spaces.',
+        ),
+      ];
+      expect(checkContradictions(files)).toHaveLength(0);
+    });
+
+    it('pair conflicts only pair labels each file holds and the other lacks', () => {
+      // Both files hold "2 spaces"; it must not pair with anything. Only the
+      // labels unique to each side ("tabs" vs "4 spaces") disagree.
+      const files = [
+        makeFile('CLAUDE.md', 'Use tabs for indentation. Use 2-space indentation in YAML.'),
+        makeFile('AGENTS.md', 'Use 2-space indentation. Use 4-space indentation in Python.'),
+      ];
+      const issues = checkContradictions(files);
+      expect(issues).toHaveLength(1);
+      expect(issues[0].message).toContain('"tabs" in CLAUDE.md vs "4 spaces" in AGENTS.md');
+    });
   });
 });

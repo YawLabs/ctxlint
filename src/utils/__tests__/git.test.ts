@@ -3,7 +3,15 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { simpleGit } from 'simple-git';
-import { getCommitsSinceBatch, resetGit } from '../git.js';
+import {
+  getCommitActivity,
+  getCommitsSinceBatch,
+  getFileLastCommit,
+  isGitRepo,
+  isShallowRepo,
+  memoProbe,
+  resetGit,
+} from '../git.js';
 
 let tmpDir: string;
 let realTmpDir: string;
@@ -194,4 +202,164 @@ describe('getCommitsSinceBatch path normalization', { timeout: 30000 }, () => {
       expect(counts.get('SRC/Foo.ts')).toBe(1);
     },
   );
+});
+
+describe('getCommitActivity', { timeout: 60000 }, () => {
+  it('counts refs when projectRoot is a SUBDIRECTORY of the repo', async () => {
+    // git log prints repo-root-relative paths unless --relative is passed;
+    // the refs are projectRoot-relative, so without it nothing ever matched.
+    const before = new Date(Date.now() - 60 * 1000);
+    await commit('add', [{ rel: 'pkg/src/foo.ts', body: 'a' }]);
+    await commit('touch', [{ rel: 'pkg/src/foo.ts', body: 'b' }]);
+    resetGit();
+    const pkg = path.join(realTmpDir, 'pkg');
+    const counts = await getCommitsSinceBatch(pkg, ['src/foo.ts'], before);
+    expect(counts.get('src/foo.ts')).toBe(2);
+  });
+
+  it('does not count changes outside a subdirectory projectRoot', async () => {
+    const before = new Date(Date.now() - 60 * 1000);
+    await commit('add', [
+      { rel: 'pkg/README.md', body: 'a' },
+      { rel: 'src/foo.ts', body: 'a' },
+    ]);
+    resetGit();
+    // `src/foo.ts` exists only at the REPO root, not under pkg/.
+    const counts = await getCommitsSinceBatch(path.join(realTmpDir, 'pkg'), ['src/foo.ts'], before);
+    expect(counts.get('src/foo.ts')).toBe(0);
+  });
+
+  it('with { commit }, counts only commits strictly after it', async () => {
+    await commit('doc + src together', [
+      { rel: 'CLAUDE.md', body: 'doc' },
+      { rel: 'src/foo.ts', body: 'a' },
+    ]);
+    const docHash = (await simpleGit(realTmpDir).revparse(['HEAD'])).trim();
+    let activity = await getCommitActivity(realTmpDir, ['src/foo.ts'], { commit: docHash });
+    expect(activity.perPath.get('src/foo.ts')).toBe(0);
+    expect(activity.distinctCommits).toBe(0);
+
+    await commit('touch', [{ rel: 'src/foo.ts', body: 'b' }]);
+    activity = await getCommitActivity(realTmpDir, ['src/foo.ts'], { commit: docHash });
+    expect(activity.perPath.get('src/foo.ts')).toBe(1);
+  });
+
+  it('reports distinct commits: one commit touching three refs counts once', async () => {
+    await commit('base', [{ rel: 'CLAUDE.md', body: 'doc' }]);
+    const base = (await simpleGit(realTmpDir).revparse(['HEAD'])).trim();
+    await commit('touch three', [
+      { rel: 'a.ts', body: '1' },
+      { rel: 'b.ts', body: '1' },
+      { rel: 'c.ts', body: '1' },
+    ]);
+    const activity = await getCommitActivity(realTmpDir, ['a.ts', 'b.ts', 'c.ts'], {
+      commit: base,
+    });
+    expect([...activity.perPath.values()]).toEqual([1, 1, 1]);
+    expect(activity.distinctCommits).toBe(1);
+  });
+
+  it('counts an absolute in-root path whose name merely starts with ".."', async () => {
+    // `..notes.md` is inside the root; a bare startsWith('..') test treated
+    // its path.relative form as an escape and dropped it.
+    const before = new Date(Date.now() - 60 * 1000);
+    await commit('add', [{ rel: '..notes.md', body: 'a' }]);
+    const counts = await getCommitsSinceBatch(
+      realTmpDir,
+      [path.join(realTmpDir, '..notes.md')],
+      before,
+    );
+    expect(counts.get(path.join(realTmpDir, '..notes.md'))).toBe(1);
+  });
+});
+
+describe('repo probes', { timeout: 60000 }, () => {
+  it('isGitRepo is true inside a repo and false outside, memoised per root', async () => {
+    expect(await isGitRepo(realTmpDir)).toBe(true);
+    const plain = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-nogit-'));
+    try {
+      expect(await isGitRepo(plain)).toBe(false);
+      // Same promise for the same root until resetGit().
+      expect(isGitRepo(realTmpDir)).toBe(isGitRepo(realTmpDir));
+    } finally {
+      fs.rmSync(plain, { recursive: true, force: true });
+    }
+  });
+
+  it('caches a "not a git repository" answer but not a failed probe', async () => {
+    const plain = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-nogit-'));
+    const later = path.join(plain, 'later');
+    try {
+      // git's own "not a git repository" is a stable answer: memoised.
+      const first = isGitRepo(plain);
+      expect(await first).toBe(false);
+      expect(isGitRepo(plain)).toBe(first);
+      // A probe that fails for any other reason (here: the directory does not
+      // exist yet, so simple-git refuses before git runs) reads as false but
+      // is not cached -- the next call probes again.
+      expect(await isGitRepo(later)).toBe(false);
+      expect(await isShallowRepo(later)).toBe(false);
+      fs.mkdirSync(later);
+      await simpleGit(later).raw(['init', '-b', 'main']);
+      expect(await isGitRepo(later)).toBe(true);
+    } finally {
+      fs.rmSync(plain, { recursive: true, force: true });
+    }
+  });
+
+  it('memoProbe drops a transient probe failure so the next caller retries', async () => {
+    const memo = new Map<string, Promise<boolean>>();
+    let calls = 0;
+    const flaky = async (): Promise<boolean> => {
+      calls++;
+      if (calls === 1) throw Object.assign(new Error('spawn git EAGAIN'), { code: 'EAGAIN' });
+      return true;
+    };
+    expect(await memoProbe(memo, '/root', flaky)).toBe(false);
+    expect(memo.has('/root')).toBe(false);
+    expect(await memoProbe(memo, '/root', flaky)).toBe(true);
+    expect(calls).toBe(2);
+    // The success is memoised.
+    expect(await memoProbe(memo, '/root', flaky)).toBe(true);
+    expect(calls).toBe(2);
+  });
+
+  it('memoProbe keeps a definite "not a git repository" answer', async () => {
+    const memo = new Map<string, Promise<boolean>>();
+    let calls = 0;
+    const notRepo = async (): Promise<boolean> => {
+      calls++;
+      throw new Error('fatal: not a git repository (or any of the parent directories): .git');
+    };
+    const first = memoProbe(memo, '/plain', notRepo);
+    expect(await first).toBe(false);
+    expect(memoProbe(memo, '/plain', notRepo)).toBe(first);
+    expect(calls).toBe(1);
+  });
+
+  it('isShallowRepo distinguishes a full repo from a depth-1 clone', async () => {
+    await commit('one', [{ rel: 'a.txt', body: '1' }]);
+    await commit('two', [{ rel: 'a.txt', body: '2' }]);
+    expect(await isShallowRepo(realTmpDir)).toBe(false);
+    const cloneParent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-shallow-')));
+    const clone = path.join(cloneParent, 'c');
+    try {
+      const url =
+        'file://' + (process.platform === 'win32' ? '/' : '') + realTmpDir.replace(/\\/g, '/');
+      await simpleGit(cloneParent).raw(['clone', '--depth', '1', url, 'c']);
+      expect(await isShallowRepo(clone)).toBe(true);
+    } finally {
+      fs.rmSync(cloneParent, { recursive: true, force: true });
+    }
+  });
+
+  it('getFileLastCommit returns the full hash and author date of the last touching commit', async () => {
+    await commit('one', [{ rel: 'CLAUDE.md', body: '1' }]);
+    const head = (await simpleGit(realTmpDir).revparse(['HEAD'])).trim();
+    await commit('two', [{ rel: 'other.txt', body: '2' }]);
+    const last = await getFileLastCommit(realTmpDir, 'CLAUDE.md');
+    expect(last?.hash).toBe(head);
+    expect(Number.isNaN(last!.date.getTime())).toBe(false);
+    expect(await getFileLastCommit(realTmpDir, 'never.md')).toBeNull();
+  });
 });

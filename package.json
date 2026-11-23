@@ -22,7 +22,8 @@
     "test": "prettier --check . && vitest",
     "test:run": "prettier --check . && vitest run",
     "test:coverage": "vitest run --coverage --coverage.reporter=text-summary --coverage.reporter=html --coverage.exclude='**/__tests__/**' --coverage.exclude='**/fixtures/**' --coverage.exclude='dist/**' --coverage.exclude='build.mjs' --coverage.exclude='coverage-report.mjs'",
-    "lint": "eslint src/",
+    "lint": "eslint src/ bin/ scripts/ build.mjs",
+    "typecheck:scripts": "tsc -p tsconfig.scripts.json",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "mcp": "node dist/index.js --mcp-server",
@@ -108,14 +109,16 @@
     "glob": "^14.0.5",
     "jsonc-parser": "^3.3.1",
     "ora": "^9.4.0",
+    "picomatch": "^4.0.4",
     "prettier": "^3.8.4",
     "simple-git": "^4.0.2",
     "tiktoken": "^1.0.22",
-    "tsup": "^8.5.1",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.61.1",
     "vite": "^8.1.6",
     "vitest": "^4.1.12",
+    "vscode-languageserver": "^10.0.0",
+    "vscode-languageserver-textdocument": "^1.0.12",
     "zod": "^4.6.6"
   },
   "pnpm": {
@@ -136,10 +139,5 @@
       "body-parser": "^2.4.0",
       "minimatch": "^11.0.1"
     }
-  },
-  "dependencies": {
-    "picomatch": "^4.0.4",
-    "vscode-languageserver": "^10.0.0",
-    "vscode-languageserver-textdocument": "^1.0.12"
   }
 }

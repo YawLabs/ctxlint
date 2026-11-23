@@ -5,9 +5,10 @@ import { defineConfig, configDefaults } from 'vitest/config';
 // fork-per-CPU parallelism this oversubscribes a contended Windows box -- worst
 // when `release.sh` runs the full suite locally after lint+build -- and those
 // tests blow past even the 30s timeout, the flake that aborted the release.
-// Cap fork concurrency on Windows only; Linux CI keeps full parallelism and
-// stays the authoritative gate. `forks` (not threads) is required: the git /
-// path tests change cwd, which throws in worker threads. Also raise the
+// Cap fork concurrency on Windows only; other platforms keep full parallelism.
+// There is no CI: release.sh's local run of this suite is the only gate.
+// `forks` (not threads) is required: the git / path tests change cwd, which
+// throws in worker threads. Also raise the
 // per-test timeout to 60s on Windows: even capped, the git rename-provenance
 // tests (real `git log`/rename detection per test) graze the 30s ceiling under
 // release.sh's sequential install+lint+build+test load on a slow Windows box.
@@ -37,6 +38,9 @@ export default defineConfig({
     globals: true,
     testTimeout: 30000,
     ...windowsForkCap,
+    // Strips CLAUDE_CONFIG_DIR / CODEX_HOME from every worker's env so a test
+    // that redirects only HOME cannot read the real config dir. See the file.
+    setupFiles: ['./vitest.setup.ts'],
     // Exclude agent-spawned worktrees -- they shadow our source tree under
     // `.claude/worktrees/` and vitest will otherwise discover and run their
     // copies of the test suite, blowing up duration and producing duplicate

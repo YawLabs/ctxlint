@@ -140,13 +140,20 @@ export type CheckName =
   | SessionCheckName
   | SkillCheckName;
 
-// Clients whose MCP config is a repo-discoverable file. Cline is intentionally
-// absent: its MCP server list lives in VS Code globalStorage
-// (cline_mcp_settings.json), not a file the scanner surfaces, so detectClient
-// can never classify one. Cline's `.clinerules` context files are handled by
-// the context pillar, not here.
+// Clients whose MCP config files the scanner surfaces. Cline's server list is
+// global only: `cline_mcp_settings.json` in the VS Code extension's
+// globalStorage (saoudrizwan.claude-dev) or the Cline CLI's
+// ~/.cline/data/settings/, both found by `--mcp-global`. Cline's
+// `.clinerules` context files are handled by the context pillar, not here.
 export type McpClient =
-  'claude-code' | 'claude-desktop' | 'vscode' | 'cursor' | 'windsurf' | 'amazonq' | 'continue';
+  | 'claude-code'
+  | 'claude-desktop'
+  | 'vscode'
+  | 'cursor'
+  | 'windsurf'
+  | 'amazonq'
+  | 'continue'
+  | 'cline';
 
 export type McpTransport = 'stdio' | 'http' | 'sse' | 'unknown';
 
@@ -242,9 +249,16 @@ export interface FixAction {
    * stops a stale value that is a substring of a KEPT value on the same line
    * (e.g. `src/old.ts` inside `src/old.ts.bak`) from being rewritten too.
    * Producers whose `oldText` is unambiguous on its line may omit it; the
-   * fixer then falls back to whole-line replaceAll.
+   * fixer then rewrites the first unclaimed occurrence on the line (or every
+   * occurrence, with `replaceAll`) and skips the fix, with a logged reason,
+   * when the line no longer contains `oldText`.
    */
   column?: number;
+  /**
+   * Column-less fixes only: rewrite every occurrence of `oldText` on the
+   * line instead of the first. Ignored when `column` is set.
+   */
+  replaceAll?: boolean;
 }
 
 export interface LintIssue {
@@ -268,6 +282,20 @@ export interface LintIssue {
    * them back out of `message`. Currently emitted by the stale-memory check.
    */
   affectedPaths?: string[];
+  /**
+   * Optional structured, project-relative path of the file this finding is
+   * in, for a check whose findings are not about the file they are reported
+   * under (hook-coverage names the settings file it read). The audit files
+   * the finding under this path instead of parsing it out of `message`.
+   */
+  file?: string;
+}
+
+export interface VersionSkew {
+  /** The `version` the scanned ctxlint checkout declares in package.json. */
+  checkoutVersion: string;
+  /** The version of the ctxlint doing the scanning. */
+  runningVersion: string;
 }
 
 export interface FileResult {
@@ -304,6 +332,11 @@ export interface LintResult {
     totalTokens: number;
     estimatedWaste: number;
   };
+  /**
+   * Set when the scanned project is a ctxlint checkout whose declared version
+   * differs from the running ctxlint (see detectVersionSkew in audit.ts).
+   */
+  versionSkew?: VersionSkew;
   _meta?: {
     ignoreReport?: IgnoreReport;
   };

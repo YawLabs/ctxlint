@@ -3,6 +3,27 @@ import { isLoopbackHost } from './loopback.js';
 
 const ENV_VAR_REF = /\$\{[^}]+\}/;
 
+const ALLOWED_PROTOCOLS: ReadonlySet<string> = new Set(['http:', 'https:', 'ws:', 'wss:']);
+
+/**
+ * The URL as safe to echo in a finding: query string and fragment (where
+ * `?token=` / `#access_token=` ride) and any `user:pass@` userinfo replaced
+ * with `...`. Works on the raw string because the URL is by definition one
+ * `new URL` rejected. Userinfo is taken per `/`-segment, which also catches a
+ * malformed scheme (`http//u:p@host`, `https:/u:p@host`).
+ */
+function redactUrlForDisplay(url: string): string {
+  const cut = url.search(/[?#]/);
+  const head = cut === -1 ? url : `${url.slice(0, cut + 1)}...`;
+  return head
+    .split('/')
+    .map((seg) => {
+      const at = seg.lastIndexOf('@');
+      return at > 0 ? `...${seg.slice(at)}` : seg;
+    })
+    .join('/');
+}
+
 export async function checkMcpUrls(
   config: ParsedMcpConfig,
   _projectRoot: string,
@@ -17,17 +38,23 @@ export async function checkMcpUrls(
     // Skip URL validation if it contains env var references
     if (ENV_VAR_REF.test(server.url)) continue;
 
-    // malformed-url
-    let parsed: URL;
+    // malformed-url. `new URL` accepts any scheme, so a scheme-less
+    // "localhost:3000/mcp" parses with protocol "localhost:" -- no client
+    // can connect to that. Only the web schemes an MCP transport speaks
+    // count as well-formed.
+    let parsed: URL | null;
     try {
       parsed = new URL(server.url);
     } catch {
+      parsed = null;
+    }
+    if (!parsed || !ALLOWED_PROTOCOLS.has(parsed.protocol)) {
       issues.push({
         severity: 'error',
         check: 'mcp-urls',
         ruleId: 'mcp-urls/malformed-url',
         line: server.line,
-        message: `Server "${server.name}": invalid URL "${server.url}"`,
+        message: `Server "${server.name}": invalid URL "${redactUrlForDisplay(server.url)}"`,
       });
       continue;
     }

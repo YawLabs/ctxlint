@@ -85,22 +85,24 @@ const CONFIG_FILENAMES = ['.ctxlintrc', '.ctxlintrc.json'];
 
 /**
  * Produce a more actionable error from JSON.parse. Tries in order:
- *  1. If the error message has "position N" (older Node), convert to line/col.
- *  2. If Node 21+ format ("line L column C" already baked in), pass through.
- *  3. Otherwise attempt a binary-search narrow-down to find the first char
- *     that breaks parsing, and report that position as line/col.
+ *  1. If the message already carries a line/column (current V8 appends
+ *     "at position N (line L column C)"), pass it through unchanged --
+ *     appending our own would print the location twice.
+ *  2. If the message has only "position N" (older Node), convert to line/col.
+ *  3. Otherwise locate the error-context snippet Node quotes in the message
+ *     and report that position as an approximate line/col.
  */
 function formatJsonError(content: string, err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
 
-  // Case 1: explicit "position N" in the message.
+  // Case 1: message already contains line/col.
+  if (/line \d+,? column \d+/.test(msg)) return msg;
+
+  // Case 2: explicit "position N" in the message.
   const posMatch = msg.match(/position (\d+)/);
   if (posMatch) {
     return `${msg} (${posToLineCol(content, Number(posMatch[1]))})`;
   }
-
-  // Case 2: message already contains line/col.
-  if (/line \d+/.test(msg)) return msg;
 
   // Case 3: extract the error-context snippet from Node's message and find it
   // in the source to derive an approximate line/col.
@@ -202,14 +204,98 @@ function parseConfigContent(content: string, source: string): CtxlintConfig {
     );
   }
   warnUnknownKeys(parsed, source);
+  validateConfigShape(parsed as Record<string, unknown>, source);
   warnIgnoreRulePathPatternMisuse(parsed, source);
   return parsed as CtxlintConfig;
 }
 
+const STRING_ARRAY_KEYS = ['checks', 'ignore', 'contextFiles', 'exclude'] as const;
+const BOOLEAN_KEYS = [
+  'strict',
+  'mcp',
+  'mcpOnly',
+  'mcpGlobal',
+  'session',
+  'sessionOnly',
+  'skills',
+  'skillsOnly',
+  'hooksGlobal',
+] as const;
+const TOKEN_THRESHOLD_KEYS = [
+  'info',
+  'warning',
+  'error',
+  'aggregate',
+  'tierBreakdown',
+  'tierAggregate',
+] as const;
+const IGNORE_RULE_STRING_FIELDS = ['match', 'pathPattern', 'reason'] as const;
+
+/**
+ * Per-key shape validation. Every value is otherwise cast straight to
+ * CtxlintConfig, so a wrong JSON type surfaced far from the config file:
+ * `"exclude": "fixtures/**"` crashed with "exclude.some is not a function",
+ * `"contextFiles": "DOCS.md"` was spread into single-character globs, and
+ * `"ignoreRules": [null]` dereferenced null. Throw here instead, naming the
+ * source and the key.
+ *
+ * Shape only: token threshold SEMANTICS (non-negative, info < warning < error)
+ * live in resolveTokenThresholds, which also guards programmatic callers.
+ * Check names are not validated against the known set here -- that is
+ * left to the consumers that already report unknown check names.
+ */
+function validateConfigShape(config: Record<string, unknown>, source: string): void {
+  const fail = (what: string): never => {
+    throw new Error(`Invalid config in ${source}: ${what}`);
+  };
+  const has = (key: string) => Object.prototype.hasOwnProperty.call(config, key);
+
+  for (const key of STRING_ARRAY_KEYS) {
+    if (!has(key)) continue;
+    const v = config[key];
+    if (!Array.isArray(v) || v.some((item) => typeof item !== 'string')) {
+      fail(`"${key}" must be an array of strings`);
+    }
+  }
+  for (const key of BOOLEAN_KEYS) {
+    if (has(key) && typeof config[key] !== 'boolean') fail(`"${key}" must be a boolean`);
+  }
+  if (has('tokenThresholds')) {
+    const t = config.tokenThresholds;
+    if (t === null || typeof t !== 'object' || Array.isArray(t)) {
+      fail('"tokenThresholds" must be an object');
+    }
+    const known = new Set<string>(TOKEN_THRESHOLD_KEYS);
+    for (const [k, v] of Object.entries(t as Record<string, unknown>)) {
+      if (!known.has(k)) {
+        console.error(`Warning: unknown tokenThresholds key "${k}" in ${source}`);
+        continue;
+      }
+      if (typeof v !== 'number') fail(`"tokenThresholds.${k}" must be a number`);
+    }
+  }
+  if (has('ignoreRules')) {
+    const rules = config.ignoreRules;
+    if (!Array.isArray(rules)) fail('"ignoreRules" must be an array');
+    (rules as unknown[]).forEach((r, i) => {
+      if (r === null || typeof r !== 'object' || Array.isArray(r)) {
+        fail(`"ignoreRules[${i}]" must be an object`);
+      }
+      const rec = r as Record<string, unknown>;
+      if (typeof rec.check !== 'string') fail(`"ignoreRules[${i}].check" must be a string`);
+      for (const field of IGNORE_RULE_STRING_FIELDS) {
+        if (rec[field] !== undefined && typeof rec[field] !== 'string') {
+          fail(`"ignoreRules[${i}].${field}" must be a string`);
+        }
+      }
+    });
+  }
+}
+
 /**
  * Warn when an `ignoreRules` entry sets `pathPattern` for any check other
- * than `session-stale-memory`. The apply logic in `ignore-rules.ts:97`
- * short-circuits on the check mismatch -- the rule silently never fires, so
+ * than `session-stale-memory`. The apply logic in `applyIgnoreRules`
+ * (ignore-rules.ts, the `pathPattern` branch) short-circuits on the check mismatch -- the rule silently never fires, so
  * the user thinks they've suppressed something they haven't. Surface it at
  * config-load time so the drift is visible immediately.
  */
@@ -235,8 +321,15 @@ export function loadConfig(projectRoot: string): CtxlintConfig | null {
     let content: string;
     try {
       content = stripBom(fs.readFileSync(filePath, 'utf-8'));
-    } catch {
-      continue; // file doesn't exist, try next
+    } catch (err) {
+      // Only "not there" means "try the next name". Anything else (EACCES, an
+      // EISDIR directory named .ctxlintrc, EIO) is a config the user meant to
+      // apply that we cannot read -- silently linting with defaults would hide
+      // it.
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') continue;
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(`could not read config ${filePath}: ${detail}`, { cause: err });
     }
     return parseConfigContent(content, filePath);
   }

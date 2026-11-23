@@ -1,6 +1,35 @@
-import { describe, it, expect } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
+import { encodeProjectDir } from '../../../session-parser.js';
+import { clearTranscriptCache } from '../../../transcript.js';
 import { checkMissingSecret } from '../missing-secret.js';
 import type { SessionContext, HistoryEntry, SiblingRepo } from '../../../types.js';
+
+// The check also reads the current project's transcripts. Point every home
+// variable at an empty temp dir so no case can read a real ~/.claude corpus.
+const ENV_KEYS = ['HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR'] as const;
+let savedEnv: Record<string, string | undefined>;
+let home: string;
+
+beforeEach(() => {
+  savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
+  home = mkdtempSync(join(tmpdir(), 'ctxlint-secret-'));
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  delete process.env.CLAUDE_CONFIG_DIR;
+  clearTranscriptCache();
+});
+
+afterEach(() => {
+  for (const k of ENV_KEYS) {
+    if (savedEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedEnv[k];
+  }
+  clearTranscriptCache();
+  rmSync(home, { recursive: true, force: true });
+});
 
 function makeEntry(display: string, project: string, timestamp = 1): HistoryEntry {
   return { display, timestamp, project, sessionId: 'test', provider: 'claude-code' };
@@ -49,7 +78,9 @@ describe('checkMissingSecret', () => {
     expect(issues).toHaveLength(1);
     expect(issues[0].check).toBe('session-missing-secret');
     expect(issues[0].message).toContain('NPM_TOKEN');
-    expect(issues[0].severity).toBe('error');
+    // Warning, not error: the evidence is only what was typed, and a secret
+    // set in the web UI or at org level is invisible to it.
+    expect(issues[0].severity).toBe('warning');
   });
 
   it('does not flag when current project already has the secret', async () => {
@@ -291,5 +322,105 @@ describe('checkMissingSecret', () => {
     const issues = await checkMissingSecret(ctx);
     expect(issues).toHaveLength(1);
     expect(issues[0].message).toContain('NPM_TOKEN');
+  });
+
+  it('binds a --repo command to that repo only, not to the directory it was typed in', async () => {
+    // One command typed in sibling foo, aimed at bar. It is evidence about bar
+    // alone; counting foo too turned one command into "set on 2 siblings".
+    const ctx = makeCtx(
+      [makeEntry('gh secret set NPM_TOKEN --repo org/bar -b x', '/repos/foo')],
+      [makeSibling('foo'), makeSibling('bar')],
+    );
+    expect(await checkMissingSecret(ctx)).toHaveLength(0);
+  });
+
+  it('does not count a --repo command typed in the current project as the current project having it', async () => {
+    const ctx = makeCtx(
+      [
+        makeEntry('gh secret set NPM_TOKEN -b x', '/repos/foo'),
+        makeEntry('gh secret set NPM_TOKEN -b y', '/repos/bar'),
+        makeEntry('gh secret set NPM_TOKEN --repo org/other -b z', '/repos/current'),
+      ],
+      [makeSibling('foo'), makeSibling('bar')],
+    );
+    const issues = await checkMissingSecret(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('(foo, bar)');
+  });
+
+  it('skips an unquoted $(...) body when hunting for the NAME', async () => {
+    const ctx = makeCtx(
+      [
+        makeEntry('gh secret set -b $(echo ghp_x | tr a-z A-Z) NPM_TOKEN', '/repos/foo'),
+        makeEntry('gh secret set -b `cat token.txt | head -1` NPM_TOKEN', '/repos/bar'),
+      ],
+      [makeSibling('foo'), makeSibling('bar')],
+    );
+    const issues = await checkMissingSecret(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('"NPM_TOKEN"');
+    expect(issues[0].message).not.toContain('ghp_x');
+  });
+
+  it('does not take a --repo from a later command chained on the same line', async () => {
+    const ctx = makeCtx(
+      [
+        makeEntry(
+          'gh secret set NPM_TOKEN -b x && gh pr create --repo org/elsewhere',
+          '/repos/foo',
+        ),
+        makeEntry('gh secret set NPM_TOKEN -b y', '/repos/bar'),
+      ],
+      [makeSibling('foo'), makeSibling('bar')],
+    );
+    const issues = await checkMissingSecret(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('(foo, bar)');
+  });
+
+  it("counts a secret the agent set in this project's transcript", async () => {
+    // history.jsonl holds only what the user typed; an agent-run
+    // `gh secret set` lives in the transcript and is just as real.
+    const current = '/repos/current';
+    const dir = join(home, '.claude', 'projects', encodeProjectDir(current));
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 's.jsonl'),
+      `${JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-01-01T00:00:00.000Z',
+        sessionId: 's1',
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              name: 'Bash',
+              id: 't1',
+              input: { command: 'gh secret set NPM_TOKEN -b x' },
+            },
+          ],
+        },
+      })}\n`,
+    );
+    const ctx = makeCtx(
+      [
+        makeEntry('gh secret set NPM_TOKEN -b x', '/repos/foo'),
+        makeEntry('gh secret set NPM_TOKEN -b y', '/repos/bar'),
+      ],
+      [makeSibling('foo'), makeSibling('bar')],
+      current,
+    );
+    expect(await checkMissingSecret(ctx)).toHaveLength(0);
+  });
+
+  it('does not bind an org-level secret to the directory it was typed in', async () => {
+    const ctx = makeCtx(
+      [
+        makeEntry('gh secret set NPM_TOKEN --org acme -b x', '/repos/foo'),
+        makeEntry('gh secret set NPM_TOKEN --org acme -b y', '/repos/bar'),
+      ],
+      [makeSibling('foo'), makeSibling('bar')],
+    );
+    expect(await checkMissingSecret(ctx)).toHaveLength(0);
   });
 });

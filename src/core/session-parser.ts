@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { MemoryEntry } from './types.js';
 import { stripBom } from '../utils/fs.js';
+import { isFrontmatterFence } from '../utils/markdown.js';
 
 declare const __WEB_FIRST_SEGMENTS__: string[] | undefined;
 
@@ -60,49 +61,78 @@ const DRIVE_ABS_PATH = /(?:^|[\s`"'(])([A-Za-z]:[\\/][^\s'"`),;:!?]+)/g;
  * `~/x/a.b` all encode to `~-x-a-b`. Claude Code's own project-dir encoding
  * has the identical collision, and matching its on-disk layout is the point —
  * so every consumer inherits it: `projectDirMatchesPath`-based scoping
- * (stale-memory, duplicate-memory) and direct
+ * (stale-memory, duplicate-memory, unresolvable-sha) and direct
  * `~/.claude/projects/<encoded>/memory` lookups (memory-index-overflow) can
  * attribute a colliding sibling project's data to this one. Do not "fix" the
  * encoding here; it would break parity with Claude Code's directories.
+ *
+ * This is the OLDEST of the forms Claude Code has written. Anything that
+ * matches or looks up a real directory goes through `projectDirCandidates`,
+ * which adds the newer, more aggressively folded forms.
  */
 export function encodeProjectDir(fsPath: string): string {
   return fsPath.replace(/[:\\/\.]/g, '-');
 }
 
 /**
- * Every project-directory name Claude Code may have used for this path, most
- * canonical first.
+ * Every project-directory name Claude Code may have used for this path, the
+ * exact `encodeProjectDir` form first, without duplicates.
  *
  * `encodeProjectDir` leaves `_` intact; Claude Code's CURRENT encoding folds it
- * to `-`. Both forms are present on a machine with any history -- on the
- * authoring machine `C--Users-x-yaw-mcp_servers-npmjs-mcp` and
- * `C--Users-x-yaw-mcp-servers-npmjs-mcp` both exist, while
- * `C--Users-x-yaw-oam_js_runtime-oam` does NOT and only the folded form does.
- * So the scheme changed at some version rather than one form being wrong.
+ * to `-`. Both forms exist on a machine with history (an older machine had
+ * `C--Users-x-yaw-mcp_servers-npmjs-mcp` beside
+ * `C--Users-x-yaw-mcp-servers-npmjs-mcp`), so the scheme changed at some
+ * version rather than one form being wrong.
  *
- * Any lookup that resolves a real directory must therefore try both, or it
- * silently finds nothing for every project path containing an underscore.
- * `encodeProjectDir` itself is deliberately unchanged: it is parity-matched to
- * Claude Code's layout and `projectDirMatchesPath` consumers compare against
- * its exact output, so folding there would strand projects on the older form.
+ * Evidence, from directory NAMES under ~/.claude/projects on a Windows machine
+ * (2026-11-22, no file contents read): every dir is in the folded form --
+ * `C--Users-x-yaw-mcp-servers-ctxlint` for `C:\Users\x\yaw\mcp_servers\ctxlint`,
+ * `C--Users-x-yaw-oam-js-runtime-oam` for `...\oam_js_runtime\oam`,
+ * `C--Users-x-yaw-yaw-terminal-yaw-sh` for `...\yaw_terminal\yaw.sh` --
+ * no `_` survives in any name, and the drive letter is always upper case
+ * (`C--`). No observed path contained a space, `@` or `+`.
+ *
+ * Candidates, each also with the drive letter upper-cased (a path handed in
+ * as `c:\...`, e.g. from an editor URI, must still find `C--...`):
+ *   1. the exact `encodeProjectDir` form (older scheme);
+ *   2. `_` folded to `-` (observed current scheme);
+ *   3. every non-alphanumeric character folded to `-`. SUSPECTED, not
+ *      observed: Claude Code's current sanitizer is believed to replace all
+ *      of `[^a-zA-Z0-9]`, which would also fold spaces, `@` and `+`. For every
+ *      observed name forms 2 and 3 coincide.
+ *
+ * Any lookup that resolves a real directory, and any comparison against one
+ * (`projectDirMatchesPath`), must try all of them, or it silently finds
+ * nothing for a project path containing an underscore.
  */
 export function projectDirCandidates(fsPath: string): string[] {
   const encoded = encodeProjectDir(fsPath);
-  const folded = encoded.replace(/_/g, '-');
-  return folded === encoded ? [encoded] : [encoded, folded];
+  const forms = [encoded, encoded.replace(/_/g, '-'), encoded.replace(/[^a-zA-Z0-9-]/g, '-')];
+  const out: string[] = [];
+  for (const form of forms) {
+    for (const f of [form, form.replace(/^[a-z](?=--)/, (d) => d.toUpperCase())]) {
+      if (!out.includes(f)) out.push(f);
+    }
+  }
+  return out;
 }
 
 /**
  * Check whether an encoded Claude project directory name matches a filesystem path.
  * Avoids the ambiguity of trying to decode `-` back to `/`, `-`, or `.`.
  *
+ * Compares against every form in `projectDirCandidates`: comparing only the
+ * exact `encodeProjectDir` output never matched the folded dir Claude Code now
+ * writes for a path containing `_`, so the checks scoped by this function
+ * (stale-memory, duplicate-memory, unresolvable-sha) silently never fired there.
+ *
  * Because the encoding is lossy (see `encodeProjectDir`), `true` means
  * "encodes identically", not "is the same path" — sibling projects whose
- * paths differ only in `-` vs `/` vs `.` all match the same encoded dir.
+ * paths differ only in `-` vs `/` vs `.` (or `_`, under the folded forms) all
+ * match the same encoded dir.
  */
 export function projectDirMatchesPath(encodedDir: string, fsPath: string): boolean {
-  const normalized = fsPath.replace(/\\/g, '/');
-  return encodedDir === encodeProjectDir(normalized);
+  return projectDirCandidates(fsPath).includes(encodedDir);
 }
 
 export type PathClass = 'fs-path' | 'slash-command' | 'url-path' | 'approximation' | 'template';
@@ -225,12 +255,15 @@ export function parseFrontmatter(content: string): {
   type?: string;
   body: string;
 } {
-  const lines = content.split('\n');
+  // Split on CRLF too, so no line carries a trailing `\r` into a parsed value.
+  // The closing fence uses the shared rule (isFrontmatterFence): column 0,
+  // trailing whitespace allowed.
+  const lines = content.split(/\r?\n/);
   if (lines[0]?.trim() !== '---') {
     return { body: content };
   }
 
-  const endIdx = lines.indexOf('---', 1);
+  const endIdx = lines.findIndex((line, i) => i > 0 && isFrontmatterFence(line));
   if (endIdx === -1) {
     return { body: content };
   }

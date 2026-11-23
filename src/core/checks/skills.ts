@@ -1,86 +1,218 @@
 import * as path from 'node:path';
 import { fileExists, isDirectory } from '../../utils/fs.js';
+import { classifyLines, inlineCodeSpans, maskCodeSpans } from '../../utils/markdown.js';
 import type { LintIssue, SkillContext, SkillFile } from '../types.js';
 
 /**
  * Agent-skill linting (fourth pillar, v1). Lints Claude Code skill + agent
  * definition files under ~/.claude (see AGENT_SKILL_LINT_SPEC.md). Rules:
  *
- *  - skill/missing-frontmatter   — required frontmatter fields absent
- *  - skill/broken-ref            — a path/command reference in the body that
- *                                  doesn't resolve (reuses the path/command
- *                                  detection shape from the context pillar)
+ *  - skill/missing-frontmatter   — required (agent) or recommended (skill)
+ *                                  frontmatter absent
+ *  - skill/broken-ref            — a ./ or ../ path reference in the body that
+ *                                  doesn't resolve against the file's directory
  *  - skill/trigger-collision     — two skills declare the same trigger phrase
  *  - skill/orphaned              — a skills/<name>/ dir with no SKILL.md
- *  - skill/dead-tool-restriction — an agent's tool restriction references a
- *                                  tool name that isn't a known Claude Code tool
+ *  - skill/dead-tool-restriction — a tool restriction (an agent's tools /
+ *                                  disallowedTools, a skill's allowed-tools /
+ *                                  disallowed-tools) names a tool that isn't a
+ *                                  known Claude Code tool
  *
  * v1 is intentionally tight: Claude-Code-only, conservative heuristics.
  */
 
-// Required frontmatter fields per kind. Claude Code skills + agents both key
-// off `name` + `description`; the description is also what drives invocation,
-// so a missing description is a real "this never fires" bug.
+// Frontmatter per kind, per the Claude Code docs (checked 2026-11-22):
+//  - Skills (code.claude.com/docs/en/skills): "All fields are optional. Only
+//    `description` is recommended". `name` defaults to the directory name and
+//    a missing `description` falls back to the first non-empty line of the
+//    body, so nothing is required; a missing description is reported as info.
+//  - Agents (code.claude.com/docs/en/sub-agents): "Only `name` and
+//    `description` are required."
 const REQUIRED_FIELDS: Record<SkillFile['kind'], string[]> = {
-  skill: ['name', 'description'],
+  skill: [],
   agent: ['name', 'description'],
+};
+const RECOMMENDED_FIELDS: Record<SkillFile['kind'], string[]> = {
+  skill: ['description'],
+  agent: [],
 };
 
 interface Frontmatter {
   found: boolean;
   unclosed: boolean;
-  /** Scalar fields (key -> raw value). Array values are joined with ", ". */
+  /**
+   * Top-level fields (key -> value). Scalars are unquoted/unescaped, block
+   * scalars and multi-line plain scalars are folded into one string, and list
+   * values (`- item` lines or inline `[a, b]`) are joined with ", ".
+   */
   fields: Record<string, string>;
   /** 1-indexed line the closing `---` sits on (or content length if unclosed). */
   endLine: number;
 }
 
 /**
- * Minimal YAML-frontmatter parser (same shape as core/checks/frontmatter.ts,
- * inlined to avoid widening that module's API). Handles `key: value`, empty
- * keys leading a `- item` array, and inline `[a, b]` arrays.
+ * Minimal YAML-frontmatter reader for skill/agent files. Kept local to this
+ * module (the context pillar's frontmatter check has its own reader with a
+ * different contract). Handles top-level `key: value` pairs whose value is a
+ * plain, single-quoted or double-quoted scalar (possibly continued on indented
+ * lines), a `|` / `>` block scalar, an inline `[a, b]` array, or a `- item`
+ * list. Nested mappings are not interpreted -- no rule here reads one.
  */
 function parseFrontmatter(content: string): Frontmatter {
-  const lines = content.split('\n');
+  const lines = content.split(/\r?\n/);
   if (lines[0]?.trim() !== '---') {
     return { found: false, unclosed: false, fields: {}, endLine: 0 };
   }
-  const fields: Record<string, string> = {};
-  let arrayKey = '';
   let endLine = 0;
   for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (line === '---') {
+    if (lines[i].trim() === '---') {
       endLine = i + 1;
       break;
     }
-    if (line.startsWith('- ') && arrayKey) {
-      const item = line
-        .slice(2)
-        .trim()
-        .replace(/^["']|["']$/g, '');
-      fields[arrayKey] = fields[arrayKey] ? `${fields[arrayKey]}, ${item}` : item;
-      continue;
-    }
-    arrayKey = '';
-    const m = line.match(/^([\w-]+)\s*:\s*(.*)$/);
-    if (m) {
-      let val = m[2].trim();
-      // Inline array `[a, b]` -> "a, b".
-      const inline = val.match(/^\[(.*)\]$/);
-      if (inline) {
-        val = inline[1]
-          .split(',')
-          .map((s) => s.trim().replace(/^["']|["']$/g, ''))
-          .filter(Boolean)
-          .join(', ');
-      }
-      fields[m[1]] = val;
-      if (!m[2].trim()) arrayKey = m[1];
-    }
   }
+  const body = lines.slice(1, endLine === 0 ? lines.length : endLine - 1);
+  const fields = parseFields(body);
   if (endLine === 0) return { found: true, unclosed: true, fields, endLine: lines.length };
   return { found: true, unclosed: false, fields, endLine };
+}
+
+const TOP_LEVEL_KEY = /^([\w-]+)\s*:(?:\s+(.*))?$/;
+
+function parseFields(lines: string[]): Record<string, string> {
+  const fields: Record<string, string> = {};
+  let i = 0;
+  while (i < lines.length) {
+    const m = TOP_LEVEL_KEY.exec(lines[i]);
+    if (!m) {
+      i++;
+      continue;
+    }
+    // Everything up to the next column-0 line belongs to this key: indented
+    // continuation/block lines, blank lines, and `- item` entries (YAML lets a
+    // list under a key start at the key's own column).
+    const cont: string[] = [];
+    let j = i + 1;
+    while (j < lines.length && (lines[j].trim() === '' || /^(?:\s|- |-$)/.test(lines[j]))) {
+      cont.push(lines[j]);
+      j++;
+    }
+    fields[m[1]] = scalarValue((m[2] ?? '').trim(), cont);
+    i = j;
+  }
+  return fields;
+}
+
+function stripComment(plain: string): string {
+  return plain.replace(/(?:^|\s+)#.*$/, '').trim();
+}
+
+/** Value of a key given the text after `key:` and its continuation lines. */
+function scalarValue(rest: string, cont: string[]): string {
+  const contText = cont.map((l) => l.trim()).filter(Boolean);
+
+  if (rest === '' || rest.startsWith('#')) {
+    if (contText.length > 0 && contText.every((l) => l.startsWith('-'))) {
+      return contText
+        .map((l) => quotedOrPlain(l.slice(1).trim()))
+        .filter(Boolean)
+        .join(', ');
+    }
+    return contText.map(stripComment).filter(Boolean).join(' ');
+  }
+
+  if (/^[|>][+-]?\d*\s*(?:#.*)?$/.test(rest)) {
+    // Block scalar: literal (|) keeps line breaks, folded (>) joins lines.
+    return rest.startsWith('|') ? contText.join('\n') : contText.join(' ');
+  }
+
+  const joined = [rest, ...contText].join(' ');
+  if (rest.startsWith('[')) {
+    const close = joined.indexOf(']');
+    const inner = close === -1 ? joined.slice(1) : joined.slice(1, close);
+    return splitOutsideParens(inner, (ch) => ch === ',')
+      .map((s) => quotedOrPlain(s.trim()))
+      .filter(Boolean)
+      .join(', ');
+  }
+  return quotedOrPlain(joined);
+}
+
+/**
+ * Unquote a scalar that is entirely single- or double-quoted (a trailing
+ * comment after the closing quote is allowed). Anything else is a plain
+ * scalar: only a ` # comment` is removed. Text after a closing quote other
+ * than a comment means the value is not a quoted scalar at all (e.g.
+ * `description: "ship it" triggers a deploy`), so it is kept verbatim.
+ */
+function quotedOrPlain(text: string): string {
+  const q = text[0];
+  if (q === '"' || q === "'") {
+    const parsed = q === '"' ? readDoubleQuoted(text) : readSingleQuoted(text);
+    if (parsed && /^\s*(?:#.*)?$/.test(text.slice(parsed.end))) return parsed.value;
+  }
+  return stripComment(text);
+}
+
+const DOUBLE_QUOTE_ESCAPES: Record<string, string> = {
+  n: '\n',
+  t: '\t',
+  r: '\r',
+  '0': '\0',
+  '"': '"',
+  '\\': '\\',
+  '/': '/',
+  ' ': ' ',
+};
+
+function readDoubleQuoted(text: string): { value: string; end: number } | null {
+  let value = '';
+  for (let i = 1; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '"') return { value, end: i + 1 };
+    if (ch === '\\' && i + 1 < text.length) {
+      const next = text[++i];
+      value += DOUBLE_QUOTE_ESCAPES[next] ?? next;
+      continue;
+    }
+    value += ch;
+  }
+  return null;
+}
+
+function readSingleQuoted(text: string): { value: string; end: number } | null {
+  let value = '';
+  for (let i = 1; i < text.length; i++) {
+    if (text[i] !== "'") {
+      value += text[i];
+      continue;
+    }
+    if (text[i + 1] === "'") {
+      value += "'";
+      i++;
+      continue;
+    }
+    return { value, end: i + 1 };
+  }
+  return null;
+}
+
+/** Split on separator characters that are not inside parentheses. */
+function splitOutsideParens(text: string, isSeparator: (ch: string) => boolean): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of text) {
+    if (ch === '(') depth++;
+    else if (ch === ')') depth = Math.max(0, depth - 1);
+    if (depth === 0 && isSeparator(ch)) {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  parts.push(current);
+  return parts.map((p) => p.trim()).filter(Boolean);
 }
 
 // --- Rule 1: missing frontmatter ---------------------------------------------
@@ -99,6 +231,19 @@ function checkMissingFrontmatter(file: SkillFile, fm: Frontmatter): LintIssue[] 
     ];
   }
   if (!fm.found) {
+    if (file.kind === 'skill') {
+      return [
+        {
+          severity: 'info',
+          check: 'skill-frontmatter',
+          ruleId: 'skill/missing-frontmatter',
+          line: 1,
+          message: `${file.displayPath}: no YAML frontmatter`,
+          suggestion:
+            'Claude Code uses the first non-empty line of the body as the description — add a `description` field saying when to use the skill.',
+        },
+      ];
+    }
     return [
       {
         severity: 'error',
@@ -121,68 +266,124 @@ function checkMissingFrontmatter(file: SkillFile, fm: Frontmatter): LintIssue[] 
         message: `${file.displayPath}: missing required frontmatter field "${field}"`,
         suggestion:
           field === 'description'
-            ? 'A skill/agent with no description is never selected — add one describing when to use it.'
+            ? 'Claude Code requires a description for an agent and uses it to decide when to delegate — add one describing when to use it.'
             : `Add a "${field}" field to the frontmatter.`,
+      });
+    }
+  }
+  for (const field of RECOMMENDED_FIELDS[file.kind]) {
+    if (!fm.fields[field]) {
+      issues.push({
+        severity: 'info',
+        check: 'skill-frontmatter',
+        ruleId: 'skill/missing-frontmatter',
+        line: 1,
+        message: `${file.displayPath}: missing recommended frontmatter field "${field}"`,
+        suggestion:
+          'Without a description Claude Code falls back to the first non-empty body line, which rarely says when to use the skill — add one.',
       });
     }
   }
   return issues;
 }
 
-// --- Rule 2: broken path/command refs in the body ----------------------------
+// --- Rule 2: broken path refs in the body ------------------------------------
 
-// Conservative path detector: a token with a path separator that points at a
-// real-looking file/dir reference. Mirrors the context pillar's intent without
-// re-running the full markdown parser (skills are small, self-contained files).
-const BODY_PATH = /(?:^|[\s`"'(])((?:\.{1,2}\/)[\w@./-]+|(?:[\w@-]+\/)+[\w.-]+)(?=[\s`"'),;:]|$)/gm;
-const PATH_SKIP = /^(https?:\/\/|mailto:|n\/a|e\.g\.|i\.e\.)/i;
+// Explicitly-relative refs (./ ../) in prose. A bare `foo/bar` is too
+// ambiguous to resolve against the skill dir without false positives, so it
+// is not matched at all. Inline code spans are masked out of the prose scan
+// and judged separately (see inlineCodeRef).
+const BODY_PATH = /(?:^|[\s"'(])(\.{1,2}\/[\w@./-]+)(?=[\s"'),;:]|$)/gm;
+
+// An inline code span counts as a path reference only when it is a single
+// path token with a file extension or a trailing slash (`./notes.md`,
+// `../shared/`). Anything else is a command: `./gradlew build`, `cd ../x`.
+const INLINE_PATH = /^\.{1,2}\/[\w@./-]*(?:\.[A-Za-z0-9]+|\/)$/;
+// ...and not one the prose says to run ("Run `./scripts/build.sh`").
+const INVOCATION_BEFORE =
+  /\b(?:run|runs|running|execute|executes|invoke|invokes|call|calls|launch|start)\b[^.;:!?]*$/i;
+
+function inlineCodeRef(line: string, start: number, content: string): string | null {
+  const value = content.trim();
+  if (!INLINE_PATH.test(value)) return null;
+  if (INVOCATION_BEFORE.test(line.slice(Math.max(0, start - 40), start))) return null;
+  return value;
+}
 
 function checkBrokenRefs(file: SkillFile, fmEndLine: number): LintIssue[] {
   const issues: LintIssue[] = [];
   const skillDir = path.dirname(file.filePath);
-  const lines = file.content.split('\n');
-  let inCode = false;
-  let codeLang = '';
+  const lines = file.content.split(/\r?\n/);
+  const body = lines.slice(fmEndLine);
+  // Shared fence/comment classifier (``` and ~~~, CommonMark length matching).
+  const classes = classifyLines(body);
+  // The open fence's delimiter, so its closer can be recognised locally:
+  // classifyLines only marks lines as fence, and a closer followed directly by
+  // the next fence's opener is two adjacent fence lines.
+  let open: { char: string; length: number } | null = null;
+  let fenceLang = '';
 
-  for (let i = 0; i < lines.length; i++) {
-    if (i + 1 <= fmEndLine) continue; // skip frontmatter region
-    const raw = lines[i];
-    if (raw.trimStart().startsWith('```')) {
-      inCode = !inCode;
-      codeLang = inCode ? raw.trimStart().slice(3).trim().toLowerCase() : '';
-      continue;
+  const report = (lineNo: number, value: string): void => {
+    while (/[.,;:]$/.test(value)) value = value.slice(0, -1);
+    const resolved = path.resolve(skillDir, value);
+    if (fileExists(resolved) || isDirectory(resolved)) return;
+    issues.push({
+      severity: 'warning',
+      check: 'skill-broken-ref',
+      ruleId: 'skill/broken-ref',
+      line: lineNo,
+      message: `${file.displayPath}: references "${value}" which does not exist relative to the skill directory`,
+      suggestion: 'Fix the path, or use a path that exists relative to the skill/agent file.',
+    });
+  };
+
+  for (let k = 0; k < body.length; k++) {
+    const raw = body[k];
+    const lineNo = fmEndLine + k + 1;
+    const cls = classes[k];
+    if (cls.comment) continue; // commentary, never shown to the model as an instruction
+    if (cls.fence) {
+      const trimmed = raw.trimStart();
+      if (!open) {
+        // Opening delimiter: remember its shape and the info string's language.
+        const delim = /^(?:`{3,}|~{3,})/.exec(trimmed)?.[0] ?? '```';
+        open = { char: delim[0], length: delim.length };
+        fenceLang = trimmed.slice(delim.length).trim().split(/\s+/)[0].toLowerCase();
+        continue;
+      }
+      // Closing delimiter (same rule as markdown.ts closesFence): the opener's
+      // character, at least as long, nothing but whitespace after.
+      const closer = /^(`+|~+)\s*$/.exec(trimmed);
+      if (closer && closer[1][0] === open.char && closer[1].length >= open.length) {
+        open = null;
+        fenceLang = '';
+        continue;
+      }
+      // Skip code blocks that hold example source in a programming language
+      // (same exclusion the context parser uses) -- a `./foo` inside a TS
+      // snippet is an import example. Unlabeled fences are skipped too: a bare
+      // fence is the most common way authors paste shell snippets, so a
+      // `./run.sh 1.2.3` inside one is an invocation example, not a
+      // skill-relative path. Matches the rule's "prefer a false negative over
+      // a false positive" posture. The context parser (parser.ts
+      // isExampleCodeBlock) deliberately diverges -- it DOES extract from bare
+      // fences, where file trees and config layouts dominate.
+      if (fenceLang === '' || isExampleLang(fenceLang)) continue;
+    } else {
+      open = null;
+      fenceLang = '';
     }
-    // Only flag refs that look like in-repo paths. Skip code blocks that hold
-    // example source in a programming language (same exclusion the context
-    // parser uses) -- a `./foo` inside a TS snippet is an import example.
-    // Unlabeled ``` fences are skipped too: a bare fence is the most common
-    // way authors paste shell snippets, so a `./run.sh 1.2.3` inside one is
-    // an invocation example, not a skill-relative path. Matches the rule's
-    // "prefer a false negative over a false positive" posture. The context
-    // parser (parser.ts isExampleCodeBlock) deliberately diverges -- it DOES
-    // extract from bare fences, where file trees and config layouts dominate.
-    if (inCode && (codeLang === '' || isExampleLang(codeLang))) continue;
 
+    const spans = inlineCodeSpans(raw);
+    for (const span of spans) {
+      const value = inlineCodeRef(raw, span.start, span.content);
+      if (value) report(lineNo, value);
+    }
+
+    const prose = maskCodeSpans(raw, spans);
     BODY_PATH.lastIndex = 0;
     let m: RegExpExecArray | null;
-    while ((m = BODY_PATH.exec(raw)) !== null) {
-      let value = m[1];
-      if (PATH_SKIP.test(value)) continue;
-      // Only verify explicitly-relative refs (./ ../). A bare `foo/bar` in prose
-      // is too ambiguous to resolve against the skill dir without false positives.
-      if (!value.startsWith('./') && !value.startsWith('../')) continue;
-      while (/[.,;:]$/.test(value)) value = value.slice(0, -1);
-      const resolved = path.resolve(skillDir, value);
-      if (fileExists(resolved) || isDirectory(resolved)) continue;
-      issues.push({
-        severity: 'warning',
-        check: 'skill-broken-ref',
-        ruleId: 'skill/broken-ref',
-        line: i + 1,
-        message: `${file.displayPath}: references "${value}" which does not exist relative to the skill directory`,
-        suggestion: 'Fix the path, or use a path that exists relative to the skill/agent file.',
-      });
-    }
+    while ((m = BODY_PATH.exec(prose)) !== null) report(lineNo, m[1]);
   }
   return issues;
 }
@@ -223,11 +424,20 @@ function isExampleLang(lang: string): boolean {
 
 // --- Rule 3: trigger-phrase collisions ---------------------------------------
 
+// A quoted phrase introduced by a negation in the same sentence ('Not for
+// "general questions"', 'Do not use for "x"') says when the skill must NOT
+// fire, so it is not a trigger.
+const NEGATED_BEFORE_QUOTE =
+  /(?:\b(?:not|never|avoid|except|unless|instead\s+of|rather\s+than)\b|n['’]t\b)[^.;!?]*$/i;
+const NEGATION_WINDOW = 40;
+
 /**
  * Extract candidate trigger phrases from a skill/agent's frontmatter. Claude
  * Code skills express triggers in the `description` (quoted phrases) and an
  * optional `trigger`/`triggers` field. We pull quoted phrases plus any explicit
- * trigger field values and normalize for comparison.
+ * trigger field values and normalize for comparison. The description is the
+ * already-unquoted/unescaped scalar, so the YAML quoting around the whole value
+ * never pairs with a quote inside it.
  */
 function extractTriggers(fm: Frontmatter): string[] {
   const phrases = new Set<string>();
@@ -239,6 +449,9 @@ function extractTriggers(fm: Frontmatter): string[] {
   // phantom triggers like "s branch can" and could shift the scan past a real
   // double-quoted trigger that followed a contraction.
   for (const q of desc.matchAll(/"([^"]{3,})"|(?:^|\W)'([^']{3,})'(?!\w)/g)) {
+    const quoteAt = q.index + q[0].indexOf(q[1] === undefined ? "'" : '"');
+    const before = desc.slice(Math.max(0, quoteAt - NEGATION_WINDOW), quoteAt);
+    if (NEGATED_BEFORE_QUOTE.test(before)) continue;
     phrases.add(normalizeTrigger(q[1] ?? q[2]));
   }
   for (const key of ['trigger', 'triggers']) {
@@ -295,70 +508,134 @@ function checkOrphaned(ctx: SkillContext): LintIssue[] {
 
 // --- Rule 5: dead tool-restriction refs --------------------------------------
 
-// Built-in Claude Code tool names an agent's `tools:` restriction may list.
-// MCP tools are namespaced `mcp__<server>__<tool>` and are NOT validated here
-// (their existence depends on the loaded MCP servers, which we can't see) --
-// only obviously-misspelled BUILT-IN tool names are flagged.
+// Built-in Claude Code tool names a tool restriction may list. MCP tools are
+// namespaced `mcp__<server>__<tool>` and are NOT validated here (their
+// existence depends on the loaded MCP servers, which we can't see) -- only
+// obviously-misspelled BUILT-IN tool names are flagged.
 //
-// Validated against the Claude Code built-in tool list on 2026-06-09. CC's
-// built-ins drift across versions: refresh this set when revalidating, and
-// prefer adding over removing (a tool dropped from CC may still be listed in
-// older agent files, where flagging it would be noise). Names not in this set
-// that still LOOK like built-ins (PascalCase) are reported as info, not
+// Validated against the tools table at code.claude.com/docs/en/tools-reference
+// on 2026-11-22. To refresh: re-read that table and ADD any new names. Prefer
+// adding over removing -- a tool dropped from Claude Code may still be listed
+// in older agent files, where flagging it would be noise -- so the legacy
+// names below stay (TaskOutput is documented as removed in v2.1.277; Task was
+// the Agent tool's old name; BashOutput / KillShell / LS / MultiEdit /
+// NotebookRead / SlashCommand predate the current table). Names not in this
+// set that still LOOK like built-ins (PascalCase) are reported as info, not
 // warning -- see checkDeadToolRestrictions.
 const KNOWN_TOOLS = new Set([
+  // Current tools-reference table.
   'Agent',
+  'Artifact',
   'AskUserQuestion',
   'Bash',
-  'BashOutput',
+  'CronCreate',
+  'CronDelete',
+  'CronList',
   'Edit',
+  'EndConversation',
+  'EnterPlanMode',
+  'EnterWorktree',
   'ExitPlanMode',
+  'ExitWorktree',
   'Glob',
   'Grep',
-  'KillShell',
+  'ListAgents',
   'ListMcpResourcesTool',
-  'MultiEdit',
+  'ListPlugins',
+  'ListSkills',
+  'LSP',
+  'Monitor',
   'NotebookEdit',
+  'PowerShell',
+  'propose_skills',
+  'PushNotification',
   'Read',
   'ReadMcpResourceTool',
+  'RemoteTrigger',
+  'ReportFindings',
+  'ScheduleWakeup',
+  'SearchPlugins',
+  'SearchSkills',
+  'SendFeedback',
+  'SendMessage',
+  'SendUserFile',
+  'ShareOnboardingGuide',
   'Skill',
+  'SubagentHandback',
+  'SuggestPluginInstall',
+  'SuggestSkills',
+  'TaskCreate',
+  'TaskGet',
+  'TaskList',
+  'TaskOutput',
+  'TaskStop',
+  'TaskUpdate',
+  'TodoWrite',
+  'ToolSearch',
+  'WaitForMcpServers',
+  'WebFetch',
+  'WebSearch',
+  'Workflow',
+  'Write',
+  // Legacy / SDK names still found in older agent files.
+  'BashOutput',
+  'KillShell',
+  'LS',
+  'MultiEdit',
+  'NotebookRead',
   'SlashCommand',
   'StructuredOutput',
   'Task',
-  'TodoWrite',
-  'ToolSearch',
-  'WebFetch',
-  'WebSearch',
-  'Write',
 ]);
 
+const KNOWN_TOOLS_BY_LOWER = new Map([...KNOWN_TOOLS].map((t) => [t.toLowerCase(), t]));
+
+const TOOLS_REFERENCE_URL = 'https://code.claude.com/docs/en/tools-reference';
+
+// Which frontmatter keys restrict tools, per kind, and how each splits.
+// Agents: `tools` / `disallowedTools`, "a comma-separated string such as
+// `Read, Grep, Bash` or a YAML list". Skills: `allowed-tools` /
+// `disallowed-tools`, "a space- or comma-separated string, or a YAML list".
+// Commas or spaces inside parentheses belong to a permission specifier
+// (`Bash(git add, git commit)`, `Bash(git add *)`) and never split.
+const TOOL_KEYS: Record<
+  SkillFile['kind'],
+  { keys: string[]; isSeparator: (ch: string) => boolean }
+> = {
+  agent: { keys: ['tools', 'disallowedTools'], isSeparator: (ch) => ch === ',' },
+  skill: { keys: ['allowed-tools', 'disallowed-tools'], isSeparator: (ch) => /[,\s]/.test(ch) },
+};
+
 function checkDeadToolRestrictions(file: SkillFile, fm: Frontmatter): LintIssue[] {
-  if (file.kind !== 'agent') return [];
-  const raw = fm.fields['tools'] ?? fm.fields['allowed-tools'] ?? fm.fields['allowedTools'];
-  if (!raw) return [];
+  const { keys, isSeparator } = TOOL_KEYS[file.kind];
   const issues: LintIssue[] = [];
-  for (const entry of raw
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)) {
-    // Skip MCP-namespaced tools (mcp__server__tool) and wildcards -- can't verify.
-    if (entry.startsWith('mcp__') || entry.includes('*')) continue;
-    // A restriction may name a tool with an arg form, e.g. "Bash(git:*)".
-    const base = entry.replace(/\(.*\)$/, '').trim();
-    if (KNOWN_TOOLS.has(base)) continue;
-    // An unknown PascalCase name may be a built-in newer than KNOWN_TOOLS
-    // (the list drifts stale across CC versions), so it's info; anything
-    // else (lowercase, separators) doesn't match CC's naming and is far more
-    // likely a typo, so it keeps the warning.
-    const looksLikeBuiltin = /^[A-Z][A-Za-z]+$/.test(base);
-    issues.push({
-      severity: looksLikeBuiltin ? 'info' : 'warning',
-      check: 'skill-dead-tool-restriction',
-      ruleId: 'skill/dead-tool-restriction',
-      line: 1,
-      message: `${file.displayPath}: tool restriction lists "${entry}" which is not a known Claude Code tool`,
-      suggestion: `Known built-in tools: ${[...KNOWN_TOOLS].join(', ')}. MCP tools use the mcp__server__tool form.`,
-    });
+  for (const key of keys) {
+    const raw = fm.fields[key];
+    if (!raw) continue;
+    for (const item of splitOutsideParens(raw, isSeparator)) {
+      const entry = quotedOrPlain(item);
+      // Skip MCP-namespaced tools (mcp__server__tool) and wildcards -- can't verify.
+      if (!entry || entry.startsWith('mcp__') || entry.includes('*')) continue;
+      // A restriction may name a tool with an arg form, e.g. "Bash(git:*)".
+      const base = entry.replace(/\(.*\)$/s, '').trim();
+      if (KNOWN_TOOLS.has(base)) continue;
+      // An unknown PascalCase name may be a built-in newer than KNOWN_TOOLS
+      // (the list drifts stale across CC versions), so it's info; anything
+      // else (lowercase, separators) doesn't match CC's naming and is far more
+      // likely a typo, so it keeps the warning.
+      const looksLikeBuiltin = /^[A-Z][A-Za-z]+$/.test(base);
+      const caseMatch = KNOWN_TOOLS_BY_LOWER.get(base.toLowerCase());
+      issues.push({
+        severity: looksLikeBuiltin ? 'info' : 'warning',
+        check: 'skill-dead-tool-restriction',
+        ruleId: 'skill/dead-tool-restriction',
+        line: 1,
+        message: `${file.displayPath}: tool restriction lists "${entry}" which is not a known Claude Code tool`,
+        suggestion: caseMatch
+          ? `Did you mean "${caseMatch}"? Tool names are case-sensitive.`
+          : `Use a built-in tool name (${TOOLS_REFERENCE_URL}), or the mcp__server__tool form for an MCP tool.`,
+      });
+    }
   }
   return issues;
 }

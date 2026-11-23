@@ -104,6 +104,19 @@ export function readSymlinkTarget(filePath: string): string | undefined {
   }
 }
 
+/**
+ * True when a `path.relative(from, to)` result points OUTSIDE `from`: exactly
+ * `..`, a `..` segment followed by a separator, or (Windows, `to` on another
+ * drive) an absolute path. A bare `rel.startsWith('..')` test also rejected
+ * in-root names like `..foo.md`. Both separators are accepted on win32 so a
+ * caller may pass the raw or the forward-slash form.
+ */
+export function isOutsideRelative(rel: string): boolean {
+  if (path.isAbsolute(rel)) return true;
+  if (rel === '..' || rel.startsWith('../')) return true;
+  return process.platform === 'win32' && rel.startsWith('..\\');
+}
+
 export function readFileContent(filePath: string): string {
   try {
     return stripBom(fs.readFileSync(filePath, 'utf-8'));
@@ -119,7 +132,13 @@ export function readFileContent(filePath: string): string {
   }
 }
 
-const IGNORED_DIRS = new Set([
+/**
+ * Directory names never walked: dependency trees, VCS metadata, and build /
+ * cache output. The single list shared by every project walk --
+ * getAllProjectFiles below and context-file discovery in core/scanner.ts -- so
+ * the walkers cannot drift on what counts as part of the project.
+ */
+export const IGNORED_DIRS: ReadonlySet<string> = new Set([
   'node_modules',
   '.git',
   'dist',

@@ -1,13 +1,15 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   checkHookCoverage,
   isMsysFlag,
+  resolveRulePath,
   stripMatcherWildcard,
   translateMsysDrivePath,
 } from '../hook-coverage.js';
+import { hookShellWords } from '../shell-words.js';
 
 let tmpDir: string;
 // Isolated home dir so the check never reads the real user-global
@@ -90,14 +92,26 @@ describe('hook-coverage/dead-hook', () => {
     expect(issues).toEqual([]);
   });
 
-  it('flags a permissions entry that references a missing script', async () => {
+  it('flags a permissions.allow entry that references a missing script', async () => {
     writeSettings({
-      permissions: { deny: ['Bash(./scripts/dead-gate.sh)'] },
+      permissions: { allow: ['Bash(./scripts/dead-gate.sh)'] },
     });
     const issues = await checkHookCoverage(tmpDir, homeDir);
     expect(issues).toHaveLength(1);
     expect(issues[0].message).toContain('dead-gate.sh');
-    expect(issues[0].message).toContain('permissions.deny');
+    expect(issues[0].message).toContain('permissions.allow');
+  });
+
+  it('never reports deny/ask entries: a guard against a missing path is working', async () => {
+    // The canonical secrets guard, in a repo that has no .env or secrets/ yet.
+    writeSettings({
+      permissions: {
+        deny: ['Read(./.env)', 'Read(./secrets/**)', 'Bash(./scripts/dead-gate.sh)'],
+        ask: ['Bash(bash ./scripts/also-gone.sh)'],
+      },
+    });
+    const issues = await checkHookCoverage(tmpDir, homeDir);
+    expect(issues).toEqual([]);
   });
 
   it('skips a path with an unresolvable env var (cannot verify -> no false positive)', async () => {
@@ -197,6 +211,63 @@ describe('hook-coverage/dead-hook', () => {
     expect(issues).toHaveLength(1);
     expect(issues[0].message).toContain('dead.sh');
     expect(issues[0].message).toContain('~/.claude/settings.json');
+    // Outside the project: no file to route it to, so it stays in (project).
+    expect(issues[0].file).toBeUndefined();
+  });
+
+  describe('with no home injected (production resolution)', () => {
+    const KEYS = ['HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR'] as const;
+    let saved: Record<string, string | undefined>;
+    beforeEach(() => {
+      saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+      process.env.HOME = homeDir;
+      process.env.USERPROFILE = homeDir;
+    });
+    afterEach(() => {
+      for (const k of KEYS) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    });
+
+    it('reads the user-global settings from CLAUDE_CONFIG_DIR, and expands $CLAUDE_CONFIG_DIR to it', async () => {
+      const configDir = path.join(homeDir, 'custom-claude');
+      fs.mkdirSync(path.join(configDir, 'hooks'), { recursive: true });
+      fs.writeFileSync(path.join(configDir, 'hooks', 'live.sh'), '#!/bin/sh\n');
+      fs.writeFileSync(
+        path.join(configDir, 'settings.json'),
+        JSON.stringify({
+          hooks: {
+            PreToolUse: [
+              {
+                matcher: 'Bash',
+                hooks: [
+                  { command: 'bash "$CLAUDE_CONFIG_DIR/hooks/live.sh"' },
+                  { command: 'bash "$CLAUDE_CONFIG_DIR/hooks/dead.sh"' },
+                ],
+              },
+            ],
+          },
+        }),
+      );
+      process.env.CLAUDE_CONFIG_DIR = configDir;
+      const issues = await checkHookCoverage(tmpDir, undefined, { userGlobal: true });
+      expect(issues).toHaveLength(1);
+      expect(issues[0].message).toContain('dead.sh');
+      expect(issues[0].message).toContain(
+        path.join(configDir, 'settings.json').replace(/\\/g, '/'),
+      );
+    });
+
+    it('resolves ~ from the home Claude Code uses', async () => {
+      delete process.env.CLAUDE_CONFIG_DIR;
+      fs.mkdirSync(path.join(homeDir, 'bin'), { recursive: true });
+      fs.writeFileSync(path.join(homeDir, 'bin', 'gate.sh'), '#!/bin/sh\n');
+      writeSettings({
+        hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'bash ~/bin/gate.sh' }] }] },
+      });
+      expect(await checkHookCoverage(tmpDir)).toEqual([]);
+    });
   });
 
   // --- Windows / MSYS false-positive regressions ---
@@ -321,11 +392,8 @@ describe('hook-coverage helpers', () => {
 
 describe('hook-coverage/dead-hook path-form vs missing target', () => {
   it.skipIf(process.platform !== 'win32')(
-    'resolves a DOUBLED-slash MSYS drive path without flagging it (win32)',
+    'resolves a DOUBLED-slash MSYS drive path in a Bash rule without flagging it (win32)',
     async () => {
-      // Regression for the false positive this rule produced on a real repo:
-      // `Read(//c/Users/.../dir/**)` named an existing directory and was
-      // reported as "does not exist on disk".
       const abs = writeHookScript('scripts/smoke.sh');
       const msys = `//${abs[0].toLowerCase()}${abs.slice(2).replace(/\\/g, '/')}`;
       writeSettings({ permissions: { allow: [`Bash(bash ${msys}*)`] } });
@@ -333,6 +401,22 @@ describe('hook-coverage/dead-hook path-form vs missing target', () => {
       expect(issues).toEqual([]);
     },
   );
+
+  it('resolves a `Read(//<absolute>/dir/**)` rule naming an existing directory', async () => {
+    // Regression for the false positive this rule produced on a real repo:
+    // `Read(//c/Users/.../dir/**)` named an existing directory and was
+    // reported as "does not exist on disk". `//` is the documented absolute
+    // prefix; on Windows the path after it is the POSIX-normalized drive form.
+    const absDir = path.join(tmpDir, 'shared', 'dir');
+    fs.mkdirSync(absDir, { recursive: true });
+    const rule =
+      process.platform === 'win32'
+        ? `//${absDir[0].toLowerCase()}${absDir.slice(2).replace(/\\/g, '/')}/**`
+        : `/${absDir}/**`;
+    writeSettings({ permissions: { allow: [`Read(${rule})`] } });
+    const issues = await checkHookCoverage(tmpDir, homeDir);
+    expect(issues).toEqual([]);
+  });
 
   it('says the path FORM is wrong when the target exists under another spelling', async () => {
     // A leading-slash typo on a repo-relative path: the script is present, so
@@ -362,5 +446,210 @@ describe('hook-coverage/dead-hook path-form vs missing target', () => {
     expect(issues).toHaveLength(1);
     expect(issues[0].message).toContain('does not exist on disk');
     expect(issues[0].message).not.toContain('path form');
+  });
+});
+
+describe('hook-coverage/dead-hook false positives on correct settings', () => {
+  it('joins a quoted $CLAUDE_PROJECT_DIR with the unquoted rest of the word', async () => {
+    // The form Claude Code's hook docs recommend. Splitting it at the quote
+    // produced `$CLAUDE_PROJECT_DIR` plus a bogus absolute `/.claude/...`.
+    writeHookScript('.claude/hooks/check-style.sh');
+    writeSettings({
+      hooks: {
+        PostToolUse: [
+          {
+            matcher: 'Edit',
+            hooks: [{ command: '"$CLAUDE_PROJECT_DIR"/.claude/hooks/check-style.sh' }],
+          },
+        ],
+      },
+    });
+    expect(await checkHookCoverage(tmpDir, homeDir)).toEqual([]);
+  });
+
+  it('still flags the joined word when its script is missing', async () => {
+    writeSettings({
+      hooks: {
+        PostToolUse: [
+          { matcher: 'Edit', hooks: [{ command: '"$CLAUDE_PROJECT_DIR"/.claude/hooks/gone.sh' }] },
+        ],
+      },
+    });
+    const issues = await checkHookCoverage(tmpDir, homeDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('$CLAUDE_PROJECT_DIR/.claude/hooks/gone.sh');
+    expect(issues[0].message).toContain('does not exist on disk');
+  });
+
+  it('reads `Read(/docs/**)` as project-root-relative, not filesystem-absolute', async () => {
+    fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+    writeSettings({ permissions: { allow: ['Read(/docs/**)', 'Edit(./docs/**)'] } });
+    expect(await checkHookCoverage(tmpDir, homeDir)).toEqual([]);
+  });
+
+  it('flags a project-relative Read rule whose directory is missing', async () => {
+    writeSettings({ permissions: { allow: ['Read(/no-such-dir/**)'] } });
+    const issues = await checkHookCoverage(tmpDir, homeDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('/no-such-dir/**');
+    expect(issues[0].message).toContain('matches nothing');
+  });
+
+  it('anchors a single-slash rule in the user-global file at ~/.claude', async () => {
+    fs.mkdirSync(path.join(homeDir, '.claude', 'notes'), { recursive: true });
+    fs.writeFileSync(
+      path.join(homeDir, '.claude', 'settings.json'),
+      JSON.stringify({ permissions: { allow: ['Read(/notes/**)', 'Read(~/.claude/notes/**)'] } }),
+    );
+    expect(await checkHookCoverage(tmpDir, homeDir, { userGlobal: true })).toEqual([]);
+  });
+
+  it('skips a URL argument', async () => {
+    writeSettings({
+      permissions: { allow: ['Bash(curl -fsSL https://get.example.org/install.sh)'] },
+    });
+    expect(await checkHookCoverage(tmpDir, homeDir)).toEqual([]);
+  });
+
+  it('treats a single-slash /X word as a flag on win32 (cmd /c dir)', async () => {
+    writeSettings({ permissions: { allow: ['Bash(cmd /c dir)', 'Bash(taskkill /F /IM x.exe)'] } });
+    expect(await checkHookCoverage(tmpDir, homeDir, {}, 'win32')).toEqual([]);
+  });
+
+  it('tests the value of --flag=value and VAR=value words', async () => {
+    writeHookScript('eslint.config.js');
+    writeSettings({
+      hooks: {
+        PostToolUse: [
+          { matcher: 'Edit', hooks: [{ command: 'npx eslint --config=./eslint.config.js .' }] },
+        ],
+      },
+    });
+    expect(await checkHookCoverage(tmpDir, homeDir)).toEqual([]);
+
+    writeSettings({
+      hooks: {
+        PostToolUse: [
+          { matcher: 'Edit', hooks: [{ command: 'HOOK=./.claude/hooks/nope.sh run-hook' }] },
+        ],
+      },
+    });
+    const issues = await checkHookCoverage(tmpDir, homeDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('"./.claude/hooks/nope.sh"');
+  });
+
+  it('does not stat redirection targets', async () => {
+    writeHookScript('.claude/hooks/gate.sh');
+    writeSettings({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [{ command: 'bash ./.claude/hooks/gate.sh > ./logs/gate.log 2>&1' }],
+          },
+        ],
+      },
+    });
+    expect(await checkHookCoverage(tmpDir, homeDir)).toEqual([]);
+  });
+});
+
+describe('hook-coverage/dead-hook messages', () => {
+  it('names the settings file, so settings.local.json findings are distinguishable', async () => {
+    writeSettings(
+      { permissions: { allow: ['Bash(./scripts/local-gone.sh)'] } },
+      'settings.local.json',
+    );
+    const issues = await checkHookCoverage(tmpDir, homeDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('(in .claude/settings.local.json)');
+    // The structured twin the audit routes by (it no longer parses messages).
+    expect(issues[0].file).toBe('.claude/settings.local.json');
+  });
+
+  it('words the suggestion for the source: no "PreToolUse hook" on a permissions entry', async () => {
+    writeSettings({ permissions: { allow: ['Bash(./scripts/gone.sh)'] } });
+    const [perm] = await checkHookCoverage(tmpDir, homeDir);
+    expect(perm.suggestion).not.toContain('PreToolUse');
+    expect(perm.suggestion).toContain('allow rule');
+
+    writeSettings({
+      hooks: { Stop: [{ hooks: [{ command: 'bash ./.claude/hooks/stop-gone.sh' }] }] },
+    });
+    const [hook] = await checkHookCoverage(tmpDir, homeDir);
+    expect(hook.message).toContain('Stop hook');
+    expect(hook.suggestion).toContain('A Stop hook pointing at a missing script');
+  });
+});
+
+describe('hook-coverage unparseable settings', () => {
+  it('warns once and skips a malformed settings file instead of checking a partial tree', async () => {
+    const dir = path.join(tmpDir, '.claude');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'settings.json'),
+      '{ "hooks": { "PreToolUse": [{ "matcher": "Bash", "hooks": [{ "command": "bash ./.claude/hooks/gone.sh" }] }] }, oops }',
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await checkHookCoverage(tmpDir, homeDir)).toEqual([]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain('.claude/settings.json');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('hook-coverage helpers (pure, any OS)', () => {
+  it('hookShellWords joins adjacent quoted and unquoted pieces', () => {
+    expect(hookShellWords(`"$A"/b/c.sh --x 'y z'`).map((w) => w.text)).toEqual([
+      '$A/b/c.sh',
+      '--x',
+      'y z',
+    ]);
+  });
+
+  it('hookShellWords marks redirection targets and drops fd numbers', () => {
+    const words = hookShellWords('run ./a.sh > out.log 2>&1 && next');
+    expect(words.map((w) => [w.text, w.redirectTarget])).toEqual([
+      ['run', false],
+      ['./a.sh', false],
+      ['out.log', true],
+      ['1', true],
+      ['next', false],
+    ]);
+  });
+
+  it('hookShellWords keeps unquoted Windows backslashes', () => {
+    expect(hookShellWords('pwsh C:\\hooks\\gate.ps1').map((w) => w.text)).toEqual([
+      'pwsh',
+      'C:\\hooks\\gate.ps1',
+    ]);
+  });
+
+  it('resolveRulePath follows the documented prefix syntax', () => {
+    const root = path.resolve('/proj');
+    const home = path.resolve('/home/u');
+    expect(resolveRulePath('/docs/**', root, home, false, 'linux')).toBe(path.join(root, 'docs'));
+    expect(resolveRulePath('/docs/**', root, home, true, 'linux')).toBe(
+      path.join(home, '.claude', 'docs'),
+    );
+    // A moved config dir (CLAUDE_CONFIG_DIR) anchors the user-global file.
+    const cfg = path.resolve('/cfg/claude');
+    expect(resolveRulePath('/docs/**', root, home, true, 'linux', cfg)).toBe(
+      path.join(cfg, 'docs'),
+    );
+    expect(resolveRulePath('~/notes/*', root, home, false, 'linux')).toBe(path.join(home, 'notes'));
+    expect(resolveRulePath('./src/**', root, home, false, 'linux')).toBe(path.join(root, 'src'));
+    // `//` is filesystem-absolute; on win32 the drive form is translated.
+    expect(resolveRulePath('//c/Users/x/dir/**', root, home, false, 'win32')).toBe(
+      'c:/Users/x/dir',
+    );
+    // Nothing single to stat: inner globs, negations, bare names.
+    expect(resolveRulePath('src/**/*.ts', root, home, false, 'linux')).toBeNull();
+    expect(resolveRulePath('!./public/**', root, home, false, 'linux')).toBeNull();
+    expect(resolveRulePath('*.env', root, home, false, 'linux')).toBeNull();
   });
 });

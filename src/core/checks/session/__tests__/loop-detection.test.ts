@@ -48,9 +48,9 @@ describe('checkLoopDetection', () => {
 
   it('detects cyclic A,B,A,B pattern', async () => {
     const entries = [
-      makeEntry('edit file.ts', 1),
+      makeEntry('npm run lint', 1),
       makeEntry('npm test', 2),
-      makeEntry('edit file.ts', 3),
+      makeEntry('npm run lint', 3),
       makeEntry('npm test', 4),
     ];
 
@@ -104,10 +104,10 @@ describe('checkLoopDetection', () => {
 
   it('detects A,B,C,A,B,C cyclic pattern', async () => {
     const entries = [
-      makeEntry('edit file.ts', 1),
+      makeEntry('npm run lint', 1),
       makeEntry('npm test', 2),
       makeEntry('git diff', 3),
-      makeEntry('edit file.ts', 4),
+      makeEntry('npm run lint', 4),
       makeEntry('npm test', 5),
       makeEntry('git diff', 6),
     ];
@@ -123,14 +123,14 @@ describe('checkLoopDetection', () => {
     // must be reported once (not also re-counted inside an A,B cycle that
     // reaches back into it), and the post-run cycle must still fire.
     const entries = [
-      makeEntry('cmd A', 1),
-      makeEntry('cmd A', 2),
-      makeEntry('cmd A', 3),
-      makeEntry('cmd B', 4),
-      makeEntry('cmd A', 5),
-      makeEntry('cmd B', 6),
-      makeEntry('cmd A', 7),
-      makeEntry('cmd B', 8),
+      makeEntry('npm run a', 1),
+      makeEntry('npm run a', 2),
+      makeEntry('npm run a', 3),
+      makeEntry('npm run b', 4),
+      makeEntry('npm run a', 5),
+      makeEntry('npm run b', 6),
+      makeEntry('npm run a', 7),
+      makeEntry('npm run b', 8),
     ];
 
     const issues = await checkLoopDetection(makeCtx(entries));
@@ -148,8 +148,8 @@ describe('checkLoopDetection', () => {
     // consecutive A-run — the [A,B] cycle that overlapped span 0-2 is gated out.
     expect(cyclic.length).toBeGreaterThanOrEqual(1);
     for (const issue of cyclic) {
-      expect(issue.message).toContain('cmd A');
-      expect(issue.message).toContain('cmd B');
+      expect(issue.message).toContain('npm run a');
+      expect(issue.message).toContain('npm run b');
     }
   });
 
@@ -206,10 +206,10 @@ describe('checkLoopDetection', () => {
     // unrelated one-shots interleaved in time would otherwise read A,B,A,B --
     // a phantom cycle no session actually ran.
     const entries = [
-      makeEntry('cmd A', 1_000, '/project/foo', 's1'),
-      makeEntry('cmd B', 2_000, '/project/foo', 's2'),
-      makeEntry('cmd A', 3_000, '/project/foo', 's3'),
-      makeEntry('cmd B', 4_000, '/project/foo', 's4'),
+      makeEntry('npm run a', 1_000, '/project/foo', 's1'),
+      makeEntry('npm run b', 2_000, '/project/foo', 's2'),
+      makeEntry('npm run a', 3_000, '/project/foo', 's3'),
+      makeEntry('npm run b', 4_000, '/project/foo', 's4'),
     ];
 
     const issues = await checkLoopDetection(makeCtx(entries));
@@ -220,10 +220,10 @@ describe('checkLoopDetection', () => {
     // Session s1 runs A,A and session s2 runs B,B, interleaved in time.
     // Pooled they'd read A,B,A,B -- a phantom cycle neither session executed.
     const entries = [
-      makeEntry('cmd A', 1, '/project/foo', 's1'),
-      makeEntry('cmd B', 2, '/project/foo', 's2'),
-      makeEntry('cmd A', 3, '/project/foo', 's1'),
-      makeEntry('cmd B', 4, '/project/foo', 's2'),
+      makeEntry('npm run a', 1, '/project/foo', 's1'),
+      makeEntry('npm run b', 2, '/project/foo', 's2'),
+      makeEntry('npm run a', 3, '/project/foo', 's1'),
+      makeEntry('npm run b', 4, '/project/foo', 's2'),
     ];
 
     const issues = await checkLoopDetection(makeCtx(entries));
@@ -247,7 +247,7 @@ describe('checkLoopDetection', () => {
 
   it('does not flag timestamp-less sessionId-less entries', async () => {
     // The scanner defaults a missing timestamp to 0 and a missing sessionId
-    // to '' (the codex {command, cwd} shape has neither). With all-zero
+    // to '' when a record carries neither. With all-zero
     // timestamps the '' pseudo-session can never split at SESSION_GAP_MS, so
     // a routine daily one-shot would read as a 3+ repeat; such entries are
     // dropped from the loop scan instead.
@@ -288,12 +288,55 @@ describe('checkLoopDetection', () => {
   });
 
   it('truncates long command names in messages', async () => {
-    const longCmd = 'a'.repeat(100);
+    const longCmd = `echo ${'a'.repeat(100)}`;
     const entries = [makeEntry(longCmd, 1), makeEntry(longCmd, 2), makeEntry(longCmd, 3)];
 
     const issues = await checkLoopDetection(makeCtx(entries));
     expect(issues.length).toBe(1);
     expect(issues[0].message).toContain('...');
     expect(issues[0].message.length).toBeLessThan(200);
+  });
+
+  it('ignores conversational prompts repeated three times', async () => {
+    // history.jsonl holds what the user TYPED, which is mostly prose. Saying
+    // "continue" three times is a conversation, not a looping command.
+    const entries = [makeEntry('continue', 1), makeEntry('continue', 2), makeEntry('continue', 3)];
+    expect(await checkLoopDetection(makeCtx(entries))).toHaveLength(0);
+  });
+
+  it('does not read alternating prompts as a cycle', async () => {
+    const entries = [
+      makeEntry('yes', 1),
+      makeEntry('continue', 2),
+      makeEntry('yes', 3),
+      makeEntry('continue', 4),
+    ];
+    expect(await checkLoopDetection(makeCtx(entries))).toHaveLength(0);
+  });
+
+  it('does not read a prose prompt that starts with a program-like word as a command', async () => {
+    const entries = [
+      makeEntry('make it faster please', 1),
+      makeEntry('make it faster please', 2),
+      makeEntry('make it faster please', 3),
+    ];
+    expect(await checkLoopDetection(makeCtx(entries))).toHaveLength(0);
+  });
+
+  it('still flags bash-mode (!) commands and slash commands', async () => {
+    for (const c of ['!npm test', '/fix-tests']) {
+      const entries = [makeEntry(c, 1), makeEntry(c, 2), makeEntry(c, 3)];
+      const issues = await checkLoopDetection(makeCtx(entries));
+      expect(issues, c).toHaveLength(1);
+    }
+  });
+
+  it('echoes only the head of the command, not its arguments', async () => {
+    const c = 'gh secret set NPM_TOKEN -b supersecretvalue';
+    const entries = [makeEntry(c, 1), makeEntry(c, 2), makeEntry(c, 3)];
+    const issues = await checkLoopDetection(makeCtx(entries));
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('gh secret set');
+    expect(issues[0].message).not.toContain('supersecretvalue');
   });
 });

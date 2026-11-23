@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/YawLabs/ctxlint/main/schemas/ctxlint-catalog.schema.json",
   "title": "AI Agent Skill Lint Rules",
-  "description": "Machine-readable catalog of lint rules for Claude Code agent-skill definitions (~/.claude/skills/<name>/SKILL.md and ~/.claude/agents/*.md). The fourth ctxlint pillar. v1 is intentionally Claude-Code-only; other agents' skill/subagent formats may be added in later spec versions.",
+  "description": "Machine-readable catalog of lint rules for Claude Code agent-skill definitions (~/.claude/skills/<name>/SKILL.md and ~/.claude/agents/*.md, under CLAUDE_CONFIG_DIR when set). The fourth ctxlint pillar. v1 is intentionally Claude-Code-only; other agents' skill/subagent formats may be added in later spec versions.",
   "specVersion": "1.0.0-draft",
   "specDate": "2026-06-02",
   "repository": "https://github.com/YawLabs/ctxlint",
@@ -17,9 +17,36 @@
     {
       "id": "skill/missing-frontmatter",
       "category": "skill",
-      "severity": "warning",
-      "description": "A SKILL.md or agent .md file is missing required YAML frontmatter, or a required field within it. Skills and agents key off `name` + `description`; the description drives selection, so a missing one means the skill/agent is never invoked.",
-      "trigger": "The file has no `---`-delimited frontmatter, has unclosed frontmatter, or is missing a required field (name, description). Absent or unclosed frontmatter is reported as error; a missing single field as warning.",
+      "severity": "error",
+      "severityVariants": [
+        {
+          "severity": "error",
+          "when": "a skill or agent opens frontmatter with --- but never closes it",
+          "message": "{file}: frontmatter opens with `---` but is never closed"
+        },
+        {
+          "severity": "error",
+          "when": "an agent file has no frontmatter",
+          "message": "{file}: missing YAML frontmatter"
+        },
+        {
+          "severity": "warning",
+          "when": "an agent frontmatter lacks a required field (name, description)",
+          "message": "{file}: missing required frontmatter field \"{field}\""
+        },
+        {
+          "severity": "info",
+          "when": "a SKILL.md has no frontmatter (Claude Code then uses the first non-empty body line as the description)",
+          "message": "{file}: no YAML frontmatter"
+        },
+        {
+          "severity": "info",
+          "when": "a SKILL.md frontmatter has no description",
+          "message": "{file}: missing recommended frontmatter field \"description\""
+        }
+      ],
+      "description": "A SKILL.md or agent .md file is missing YAML frontmatter, or a field within it. Agents require `name` + `description` (the description decides when Claude Code delegates to the agent). A skill requires no field; without a description Claude Code falls back to the first non-empty body line, which rarely says when to use the skill.",
+      "trigger": "The file has unclosed frontmatter (error), an agent has no frontmatter (error) or lacks name/description (warning), or a skill has no frontmatter or no description (info).",
       "message": "{file}: missing required frontmatter field \"{field}\"",
       "fixable": false,
       "stability": "experimental"
@@ -29,7 +56,7 @@
       "category": "skill",
       "severity": "warning",
       "description": "A relative path reference (./ or ../) in a SKILL.md / agent body does not resolve to a file or directory relative to the skill/agent file. Reuses the path-reference detection shape from the context-file pillar; only explicitly-relative refs are verified to avoid false positives on prose.",
-      "trigger": "A ./ or ../ path token in the body (outside example code blocks) does not exist on disk relative to the skill directory.",
+      "trigger": "A ./ or ../ path token in the body does not exist on disk relative to the skill directory. Tokens in unlabeled fences and in code, shell or data fences (js, ts, py, bash, console, json, yaml, ...; ``` or ~~~ of any length), in HTML-comment lines and in inline-code command spans are not resolved.",
       "message": "{file}: references \"{path}\" which does not exist relative to the skill directory",
       "fixable": false,
       "stability": "experimental"
@@ -40,7 +67,7 @@
       "severity": "warning",
       "description": "Two or more skills/agents declare the same trigger phrase (a quoted phrase in the description, or a trigger/triggers field). When triggers collide, only one wins -- invocation becomes non-deterministic.",
       "trigger": "A normalized trigger phrase (lowercased, whitespace-collapsed) is declared by more than one distinct skill/agent file.",
-      "message": "Trigger phrase \"{trigger}\" is declared by {count} skills/agents -- only one will win",
+      "message": "Trigger phrase \"{trigger}\" is declared by {count} skills/agents — only one will win",
       "fixable": false,
       "stability": "experimental"
     },
@@ -50,7 +77,7 @@
       "severity": "warning",
       "description": "A ~/.claude/skills/<name>/ directory exists but contains no SKILL.md. Claude Code has nothing to load for that skill -- the directory is dead weight.",
       "trigger": "A subdirectory of ~/.claude/skills/ does not contain a SKILL.md file.",
-      "message": "{dir}: skill directory has no SKILL.md -- Claude Code has nothing to load",
+      "message": "{dir}: skill directory has no SKILL.md — Claude Code has nothing to load",
       "fixable": false,
       "stability": "experimental"
     },
@@ -58,8 +85,18 @@
       "id": "skill/dead-tool-restriction",
       "category": "skill",
       "severity": "warning",
-      "description": "An agent definition's tool restriction (tools / allowed-tools frontmatter) lists a tool name that is not a known Claude Code built-in tool. A dead restriction silently fails to grant/deny the intended tool. MCP-namespaced tools (mcp__server__tool) and wildcards are not validated (their existence depends on loaded MCP servers). Severity is split by name shape: an unknown PascalCase name is reported as info (it may be a built-in newer than the linter's known-tool list, which drifts across Claude Code versions); anything else (lowercase, separators) doesn't match Claude Code's naming and is reported as warning (far more likely a typo).",
-      "trigger": "A non-MCP, non-wildcard entry in an agent's tools/allowed-tools list does not match a known built-in Claude Code tool name (Bash, Read, Edit, Glob, Grep, Write, Task, WebFetch, WebSearch, etc.). Unknown PascalCase names downgrade to info; other shapes keep the warning.",
+      "severityVariants": [
+        {
+          "severity": "warning",
+          "when": "the unknown name is not PascalCase (lowercase, separators): far more likely a typo"
+        },
+        {
+          "severity": "info",
+          "when": "the unknown name is PascalCase: it may be a built-in newer than the linter's known-tool list"
+        }
+      ],
+      "description": "A tool restriction (agent tools / disallowedTools, skill allowed-tools / disallowed-tools) lists a tool name that is not a known Claude Code built-in tool. A dead restriction silently fails to grant/deny the intended tool. MCP-namespaced tools (mcp__server__tool) and wildcards are not validated (their existence depends on loaded MCP servers). The suggestion names the case-correct tool when only the case differs, else points to code.claude.com/docs/en/tools-reference.",
+      "trigger": "A non-MCP, non-wildcard entry (a permission specifier like Bash(git add *) is reduced to its tool name) in an agent's tools/disallowedTools (comma-separated) or a skill's allowed-tools/disallowed-tools (space- or comma-separated) does not match a known built-in Claude Code tool name (Bash, Read, Edit, Glob, Grep, Write, Agent, WebFetch, WebSearch, etc.; list refreshed 2026-11-22).",
       "message": "{file}: tool restriction lists \"{tool}\" which is not a known Claude Code tool",
       "fixable": false,
       "stability": "experimental"
@@ -67,9 +104,13 @@
   ],
   "dataSources": [
     {
-      "agent": "claude-code",
-      "skills": "~/.claude/skills/<name>/SKILL.md",
-      "agents": "~/.claude/agents/*.md"
+      "id": "claude-code",
+      "name": "Claude Code",
+      "provider": "Anthropic",
+      "skillsLocation": "~/.claude/skills/<name>/SKILL.md",
+      "agentsLocation": "~/.claude/agents/*.md",
+      "documented": true,
+      "notes": "Read from CLAUDE_CONFIG_DIR instead of ~/.claude when it is set; findings then show that directory."
     }
   ]
 }

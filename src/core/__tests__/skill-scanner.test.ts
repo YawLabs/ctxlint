@@ -121,3 +121,49 @@ describe('scanSkillFiles symlinked entries', () => {
     expect(ctx.files.map((f) => f.name).sort()).toEqual(['helper', 'plain']);
   });
 });
+
+describe('scanSkillFiles config-dir resolution', () => {
+  const KEYS = ['HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR'] as const;
+  let saved: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+  });
+
+  afterEach(() => {
+    for (const k of KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  it('scans CLAUDE_CONFIG_DIR, not ~/.claude, when the override is set', () => {
+    process.env.HOME = homeDir;
+    process.env.USERPROFILE = homeDir;
+    const configDir = path.join(outsideDir, 'custom-claude');
+    process.env.CLAUDE_CONFIG_DIR = configDir;
+    fs.mkdirSync(path.join(configDir, 'skills', 'over'), { recursive: true });
+    fs.writeFileSync(path.join(configDir, 'skills', 'over', 'SKILL.md'), '---\nname: over\n---\nb');
+    // A decoy under ~/.claude that must NOT be picked up.
+    fs.mkdirSync(path.join(homeDir, '.claude', 'skills', 'decoy'), { recursive: true });
+    fs.writeFileSync(path.join(homeDir, '.claude', 'skills', 'decoy', 'SKILL.md'), 'x');
+
+    const ctx = scanSkillFiles();
+
+    expect(ctx.files.map((f) => f.name)).toEqual(['over']);
+    // The display path names the directory actually scanned.
+    expect(ctx.files[0].displayPath).toBe(`${configDir.replace(/\\/g, '/')}/skills/over/SKILL.md`);
+  });
+
+  it('reads <home>/.claude and labels it ~/.claude without the override', () => {
+    process.env.HOME = homeDir;
+    process.env.USERPROFILE = homeDir;
+    delete process.env.CLAUDE_CONFIG_DIR;
+    fs.mkdirSync(path.join(homeDir, '.claude', 'agents'), { recursive: true });
+    fs.writeFileSync(path.join(homeDir, '.claude', 'agents', 'a.md'), '---\nname: a\n---\nb');
+
+    const ctx = scanSkillFiles();
+
+    expect(ctx.files.map((f) => f.displayPath)).toEqual(['~/.claude/agents/a.md']);
+  });
+});

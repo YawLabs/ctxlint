@@ -15,7 +15,7 @@ This specification defines a standard set of lint rules for validating AI agent 
 
 The specification includes:
 
-- A complete reference of context file formats across 16 AI coding clients (21+ file patterns)
+- A complete reference of context file formats across 16 AI coding clients (30 file patterns)
 - 43 lint rules organized into 12 categories with defined severities
 - A machine-readable rule and format catalog ([`context-lint-rules.json`](./context-lint-rules.json))
 - Auto-fix definitions for rules that support automated correction
@@ -103,11 +103,11 @@ Every major AI coding client reads one or more context file formats. Some client
 
 #### GitHub Copilot
 
-| File pattern                         | Scope        | Notes                                                       |
-| ------------------------------------ | ------------ | ----------------------------------------------------------- |
-| `.github/copilot-instructions.md`    | Project-wide | Main instructions file.                                     |
-| `.github/instructions/*.md`          | Scoped       | Per-topic instruction files. Support `applyTo` frontmatter. |
-| `.github/git-commit-instructions.md` | Commit scope | Instructions specific to commit message generation.         |
+| File pattern                         | Scope        | Notes                                                                                                                                              |
+| ------------------------------------ | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.github/copilot-instructions.md`    | Project-wide | Main instructions file.                                                                                                                            |
+| `.github/instructions/*.md`          | Scoped       | Per-topic instruction files. Copilot loads only `*.instructions.md`, which support `applyTo` frontmatter (the frontmatter rules check only those). |
+| `.github/git-commit-instructions.md` | Commit scope | Instructions specific to commit message generation.                                                                                                |
 
 **Frontmatter fields:** `applyTo` (glob pattern targeting specific files).
 
@@ -118,7 +118,7 @@ Every major AI coding client reads one or more context file formats. Some client
 | `.windsurfrules`       | Project root | Legacy format. Plain text.       |
 | `.windsurf/rules/*.md` | Rule-based   | Markdown rules with frontmatter. |
 
-**Frontmatter fields:** `trigger` (required, one of: `always_on`, `glob`, `manual`, `model`, `model_decision`).
+**Frontmatter fields:** `trigger` (required, one of: `always_on`, `glob`, `manual`, `model_decision`).
 
 #### Gemini CLI
 
@@ -128,9 +128,10 @@ Every major AI coding client reads one or more context file formats. Some client
 
 #### Cline
 
-| File pattern  | Scope        | Notes                    |
-| ------------- | ------------ | ------------------------ |
-| `.clinerules` | Project root | Plain text context file. |
+| File pattern       | Scope        | Notes                                             |
+| ------------------ | ------------ | ------------------------------------------------- |
+| `.clinerules`      | Project root | Plain text context file.                          |
+| `.clinerules/*.md` | Rule-based   | Markdown rules when `.clinerules` is a directory. |
 
 #### Aider
 
@@ -195,7 +196,7 @@ Context files operate at different scopes depending on the client:
 
 **Project-wide** — loaded for every conversation. Examples: `CLAUDE.md`, `.cursorrules`, `GEMINI.md`. The agent always sees these.
 
-**Rule-based** — loaded individually based on rules or file patterns. Examples: `.cursor/rules/*.mdc` (loaded when `globs` match the active file), `.github/instructions/*.md` (loaded when `applyTo` matches).
+**Rule-based** — loaded individually based on rules or file patterns. Examples: `.cursor/rules/*.mdc` (loaded when `globs` match the active file), `.github/instructions/*.instructions.md` (loaded when `applyTo` matches).
 
 **Override** — layers over the base context. Examples: `CLAUDE.local.md` overrides `CLAUDE.md`, `AGENTS.override.md` overrides `AGENTS.md`.
 
@@ -247,9 +248,9 @@ trigger: always_on
 ---
 ```
 
-| Field     | Required | Type | Description                                                                                |
-| --------- | -------- | ---- | ------------------------------------------------------------------------------------------ |
-| `trigger` | Yes      | enum | When the rule activates. One of: `always_on`, `glob`, `manual`, `model`, `model_decision`. |
+| Field     | Required | Type | Description                                                                       |
+| --------- | -------- | ---- | --------------------------------------------------------------------------------- |
+| `trigger` | Yes      | enum | When the rule activates. One of: `always_on`, `glob`, `manual`, `model_decision`. |
 
 ---
 
@@ -335,30 +336,43 @@ Validates that file paths referenced in context files exist in the project.
 1. Check git history for recent renames of the file (e.g., last 10 commits). If found: `Did you mean {newPath}? (renamed {N} days ago)`
 2. Use fuzzy matching (Levenshtein distance) against existing project files. Threshold: `max(pathLength * 0.4, 5)`. If a match is found: `Did you mean {closestMatch}?`
 
-**Auto-fixable:** `paths/not-found` — when a suggestion is available (via git rename or fuzzy match), replace the broken path with the suggested correction.
+**Scope:**
+
+- Existence is case-exact on every host, so a wrong-case reference is reported on Windows and macOS as it is on Linux.
+- References that resolve outside the project root (`/api/*`, `/etc/nginx/`, `../other-repo/`) are skipped, and so are `@/...` TypeScript/bundler aliases. In-root names that start with `..` (`..cache/`) are checked.
+- An unanchored glob does not search `node_modules`, `.git`, `dist`, `build`, `vendor`, `.next`, `.nuxt`, `coverage` or `__pycache__`, unless its literal prefix names one of them.
+- A rename suggestion follows a rename chain (`a -> b -> c` suggests `c`), is dropped when its target no longer exists, and is written relative to the project root even when that is below the repository root.
+
+**Auto-fixable:** `paths/not-found` — the fix is attached only for a git rename, a full-path typo match within a capped edit distance, or a unique, non-generic basename match within the same cap. Other suggestions are shown without a fix.
 
 ### 3.2 commands — build/script validation
 
 Validates that commands referenced in context files are actually available in the project.
 
-| Rule ID                             | Severity | Trigger                                                                                                                                  | Message                                                                                        |
-| ----------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `commands/script-not-found`         | error    | `npm run`, `pnpm`, `yarn`, or `bun` script name is not in `package.json#scripts`                                                         | `"{cmd}" — script "{name}" not found in package.json`                                          |
-| `commands/make-target-not-found`    | error    | `make` target is not in Makefile                                                                                                         | `"{cmd}" — target "{name}" not found in Makefile`                                              |
-| `commands/no-makefile`              | error    | `make` command used but no Makefile exists                                                                                               | `"{cmd}" — no Makefile found in project`                                                       |
-| `commands/npx-not-in-deps`          | warning  | `npx` package is not in dependencies or `node_modules/.bin`                                                                              | `"{cmd}" — "{pkg}" not found in dependencies`                                                  |
-| `commands/tool-not-found`           | warning  | Common tool (`vitest`, `jest`, `eslint`, etc.) is not in dependencies or `node_modules/.bin`                                             | `"{cmd}" — "{tool}" not found in dependencies or node_modules/.bin`                            |
-| `commands/package-json-missing`     | info     | `package.json` is missing or unparseable AND the file references at least one command that would otherwise have been validated           | `package.json missing or unparseable — command checks skipped`                                 |
-| `commands/exit-status-masked`       | warning  | A verifier heads a pipeline whose last stage is a filter, and the pipeline is followed by a success claim that reads the filter's status | `"{cmd}" — exit status comes from "{filter}", not "{verifier}"; the success claim cannot fail` |
-| `commands/unknown-subcommand`       | error    | A documented invocation of a `package.json#bin` binary uses a subcommand the CLI does not dispatch                                       | `"{cmd}" — "{sub}" is not a subcommand of {bin} (known: {known})`                              |
-| `commands/gradle-project-not-found` | error    | A Gradle task path's project part matches no project declared by a statically readable settings file                                     | `"{cmd}" — project "{path}" not found in {settingsFile}`                                       |
-| `commands/maven-module-not-found`   | error    | A Maven `-pl` / `-rf` selector matches no module of a statically readable reactor                                                        | `"{cmd}" — {option} "{selector}" matches no module in the Maven reactor`                       |
+| Rule ID                             | Severity | Trigger                                                                                                                                                                                                                                            | Message                                                                                                                                                                                |
+| ----------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `commands/script-not-found`         | error    | `npm run`, `pnpm`, `yarn`, `bun` or npm-lifecycle-shorthand script name is in no `package.json#scripts` from the context file's directory up to the root; or an npm pseudo-shorthand (`npm build`, `npm lint`, ...) npm does not run without `run` | `"{cmd}" — script "{name}" not found in package.json`; for a pseudo-shorthand: ``"{cmd}" — npm has no "{name}" shorthand; scripts other than test/start/stop/restart need `npm run` `` |
+| `commands/make-target-not-found`    | error    | `make` target is not in the nearest `GNUmakefile` / `makefile` / `Makefile`                                                                                                                                                                        | `"{cmd}" — target "{name}" not found in {makefile}`                                                                                                                                    |
+| `commands/no-makefile`              | error    | `make` command used but no Makefile exists at or above the context file                                                                                                                                                                            | `"{cmd}" — no Makefile found in project`                                                                                                                                               |
+| `commands/npx-not-in-deps`          | warning  | `npx` package is not in dependencies or `node_modules/.bin`                                                                                                                                                                                        | `"{cmd}" — "{pkg}" not found in dependencies`                                                                                                                                          |
+| `commands/tool-not-found`           | warning  | Common Node tool (`vitest`, `jest`, `eslint`, etc.) is not in dependencies or `node_modules/.bin`                                                                                                                                                  | `"{cmd}" — "{tool}" not found in dependencies or node_modules/.bin`                                                                                                                    |
+| `commands/package-json-missing`     | info     | `package.json` is missing or unparseable AND the file references at least one command that would otherwise have been validated                                                                                                                     | `package.json missing or unparseable — command checks skipped`                                                                                                                         |
+| `commands/exit-status-masked`       | warning  | A verifier heads a pipeline whose last stage is a filter, and the pipeline is followed by a success claim that reads the filter's status                                                                                                           | `"{cmd}" — exit status comes from "{filter}", not "{verifier}"; the success claim cannot fail` (for a `$?` echo: ``...; `$?` reports the filter, not the verifier``)                   |
+| `commands/unknown-subcommand`       | error    | A documented invocation of a `package.json#bin` binary uses a subcommand the CLI does not dispatch                                                                                                                                                 | `"{cmd}" — "{sub}" is not a subcommand of {bin} (known: {known})`                                                                                                                      |
+| `commands/gradle-project-not-found` | error    | A Gradle task path's project part matches no project declared by a statically readable settings file                                                                                                                                               | `"{cmd}" — project "{path}" not found in {settingsFile}`                                                                                                                               |
+| `commands/maven-module-not-found`   | error    | A Maven `-pl` / `-rf` selector matches no module of a statically readable reactor                                                                                                                                                                  | `"{cmd}" — {option} "{selector}" matches no module in the Maven reactor`                                                                                                               |
 
 **Notes:**
 
-- For `script-not-found`, include available scripts in the suggestion when possible.
-- For `npx-not-in-deps`, suggest adding to `devDependencies`.
-- Shorthand commands (`npm test`, `pnpm build`) should be validated against scripts as well.
+- For `script-not-found`, include available scripts (from the nearest `package.json`) in the suggestion when possible.
+- Scripts, dependencies and `node_modules/.bin` are looked up in every directory from the context file up to the project root, not only at the root. A `package.json` with no `scripts` key has no scripts.
+- Shorthand commands are validated against scripts as well: `pnpm build`, `yarn build`, `bun build`, and npm's lifecycle shorthands `npm test`/`t`/`tst`/`start`/`stop`/`restart` (`npm start` also resolves when `server.js` exists, `npm restart` when start resolves). npm runs no other `npm <script>`, so `npm build|dev|lint|format|check|typecheck|type-check|clean|serve|preview|e2e` is reported even when the script exists.
+- pnpm/yarn/bun without `run` are not reported when the name is a dependency bin, an own bin, a `node_modules/.bin` entry or a file path. Placeholder names (`<script>`, `{name}`, `$X`, `script-name`) are skipped.
+- For `npx-not-in-deps`, an `@version` is stripped (the message names the unversioned package), the project's own package name and bins count as resolved, and known bin-to-package aliases count (`tsc`/`tsserver` -> `typescript`, `biome` -> `@biomejs/biome`, `playwright` -> `@playwright/test`, `netlify` -> `netlify-cli`, `changeset` -> `@changesets/cli`). Suggest adding to `devDependencies`.
+- `tool-not-found` covers Node tools only.
+- Make targets: the nearest `GNUmakefile`, `makefile` or `Makefile` at or above the context file, matched by exact name. A target matches anywhere in a rule's target list, which is read from the rule's own line only. The rule is silent when the Makefile has `include`/`-include`/`sinclude`, a `%` pattern rule or a `$(...)` target, and for `make -C/-f/--directory/--file/--makefile`.
+- The resolvability rules skip a command after a `cd` earlier in the same fence or `$`-prompt run.
+- **Prohibitions are not resolved.** A command cited only to forbid it (a `permissions.deny` entry, or a prose prohibition) is not checked. A list under a heading or `...:` line is skipped when that line prohibits running the listed commands (`Never run these without approval:`); it is still checked when the negation turns into a requirement (`Never push without running:`, `Don't forget to run:`; likewise `skip`, `omit`, `neglect`, `until`, `unless`, `fail to`). The same requirement exceptions apply to a prohibition on the command's own line: ``Don't forget to run `npx x` `` and ``Never push without running `npx x` `` are checked, while ``Never run `npx x` directly.`` is not. The same gate applies to `commands/unknown-subcommand`.
 - When `package.json` can't be loaded, all script/shorthand/npx/tool validation silently skips. Surface that once per file via `package-json-missing` so the skip isn't invisible.
 
 #### `commands/exit-status-masked`
@@ -367,10 +381,10 @@ A shell pipeline's exit status is the **last** command's. So `npx tsc --noEmit |
 
 All four conditions must hold, which is what keeps the rule quiet:
 
-1. The pipeline's **first** command is a verifier: `tsc`, `eslint`, `biome`, `vitest`, `jest`, `pytest`, `mypy`, `ruff`, `oxlint`, `cargo test|clippy|check`, `go test|vet|build`, or an `npm|pnpm|yarn|bun [run] <script>` whose script body starts with one. Wrappers (`npx`, `pnpm exec`, `sudo`, leading `VAR=value` assignments) are stripped first.
-2. The pipeline's **last** stage is a filter or pager: `head`, `tail`, `grep`, `egrep`, `fgrep`, `sed`, `awk`, `less`, `more`, `cat`, `tee`, `wc`.
-3. The pipeline is followed by either `&&` plus a success-announcing `echo`/`printf` (matching `ok`, `clean`, `pass`, `green`, `success`, `done`, ...), or by an `echo`/`printf` of `$?` after `&&` or `;`. A read of `${PIPESTATUS[0]}` is the documented fix and is exempt.
-4. No `set -o pipefail` (in any spelling: `-o`, `-eo`, `-euo`) earlier in the same fenced code block, or earlier in the same command line.
+1. The pipeline's **first** command is a verifier: `tsc`, `vue-tsc`, `svelte-check`, `eslint`, `biome`, `oxlint`, `stylelint`, `vitest`, `jest`, `mocha`, `ava`, `pytest`, `mypy`, `pyright`, `ruff`, `flake8`, `cargo test|clippy|check|build`, `go test|vet|build`, `deno test|check|lint`, `bun test`, `playwright test`, `python -m pytest|mypy|unittest`, `prettier --check`; a `pnpm|yarn|bun <bin>` whose `<bin>` is not a script; or a script run whose body starts with one (npm only through `npm run` or its lifecycle shorthands `test`/`t`/`tst`/`start`/`stop`/`restart`). Wrappers (`npx`, `pnpm exec`, `sudo`, leading `VAR=value` assignments) are stripped first.
+2. The pipeline's **last** stage is a filter or pager: `head`, `tail`, `grep`, `egrep`, `fgrep`, `rg`, `sed`, `awk`, `less`, `more`, `cat`, `tee`, `wc`, `sort`, `uniq`, `cut`, `tr`.
+3. The pipeline is followed by either `&&` plus a success-announcing `echo`/`printf` (matching `ok`, `clean`, `pass`, `green`, `success`, `done`, ...), or by an `echo`/`printf` of `$?` after `&&` or `;`, or on the next line of the same fence. An echo whose negation or failure word applies to the success word (`not clean`) is not a success claim; a count before it (`0 errors`, `no issues`, `zero failures`, `errors: 0`) is not a negation, so those echoes are reported. A read of `${PIPESTATUS[0]}` is the documented fix and is exempt.
+4. No `set -o pipefail` (in any spelling: `-o`, `-eo`, `-euo`) earlier in the same fenced code block, or earlier in the same command line. Fences come from the shared markdown mask (backtick and `~~~` fences, CommonMark closer rules).
 
 `grep` is in the filter set even though `... | grep -q x && echo found` is a deliberate gate: piping a _verifier_ into grep and then announcing success inverts the meaning, since grep exits 0 when it **finds** something — `tsc | grep error && echo clean` prints "clean" precisely when there are errors.
 
@@ -385,13 +399,13 @@ Sibling rule: [`session/unverified-gate-claimed-clean`](./AGENT_SESSION_LINT_SPE
 **Detection algorithm:**
 
 1. Build the owned-binary set from `package.json#bin` — the keys (object form), or the unscoped package name (string form).
-2. Scan the context file for invocations of those names. Implementations should do this **independently of the general command extractor** described in §2.2: that extractor gates on a fixed tool list, so `./bin/tailscale-mcp doctor` is never extracted and a rule built on it ships inert. Recognize the bin name at the head of a command in a shell-tagged or untagged fence, after a `$`/`>` prompt, or inside inline backticks; strip path prefixes, a `.exe`/`.cmd`/`.js` extension, and delegating runners (`npx`, `bunx`, `pnpm exec`). HTML comments are skipped — they carry commentary _about_ commands.
-3. Take the first following argument that is not flag-shaped. It must be a bareword (`[a-z][a-z0-9:_-]*`); a path or filename means the binary takes a positional argument, not a subcommand.
+2. Scan the context file for invocations of those names. Implementations should do this **independently of the general command extractor** described in §2.2: that extractor gates on a fixed tool list, so `./bin/tailscale-mcp doctor` is never extracted and a rule built on it ships inert. Recognize the bin name at the head of a command in a shell-tagged fence, after a `$` prompt (`>` is not a prompt, and a `console` fence needs `$ `), or inside inline backticks; also `node <bin entry> <sub>` and `npx <package-name>[@ver] <sub>`. Strip path prefixes, a `.exe`/`.cmd`/`.js` extension, and delegating runners (`npx`, `bunx`, `pnpm exec`). HTML comments are skipped — they carry commentary _about_ commands. An **unprompted untagged fence** often holds output, not commands: there, an unknown word is reported only when it is a near-miss of a known subcommand or is followed only by flags.
+3. Take the first following argument that is not flag-shaped. It must be a bareword (`[a-z][a-z0-9:_-]*`); a path or filename means the binary takes a positional argument, not a subcommand. After a conventional boolean flag (`-v`, `-q`, `-y`, `--verbose`, `--quiet`, `--silent`, `--json`, `--yes`, `--force`, `--dry-run`, `--no-*`) the next bareword is the subcommand, so `mytool --verbose doctor` is checked. After any other flag written without `=` the bareword may be that flag's value: it is accepted when it is a known subcommand and never reported.
 4. Resolve the CLI's known subcommand set by statically scanning the bin's entry file, tiered:
-   - **Commander** — `.command('<name>')` string literals.
+   - **Commander** — `.command('<name>')` string literals, their `.alias()`/`.aliases()`, and the implicit `help` command. Bail on `.addCommand`, on a program handed to a function, and on an exported program.
    - **Hand-rolled `process.argv[2]` dispatch** — accepted only when the set is **closed**: every comparison against the argv token (or a variable directly assigned from it) is against a string literal, a `switch` `case` literal, or a literal-array `.includes()`. Comparisons against `undefined`/`null` don't open the set.
-   - **Bail silently** the moment the dispatch is open: the token compared against a variable, used as a lookup key, passed through `Object.keys`, tested with `in` / `hasOwnProperty`, or `.includes()`d on a non-literal receiver.
-5. **Emit nothing** when the set could not be resolved, when the entry file is missing, or when the entry looks bundled or minified (size or line-length threshold). A wrong "that subcommand does not exist" is worse than silence, because the reader's correct doc looks broken. A thin `bin/foo.js` shim may be followed one hop to the real entry.
+   - **Bail silently** the moment the dispatch is open: the token compared against a variable, used as a lookup key, passed through `Object.keys`, tested with `in` / `hasOwnProperty` / `.has` / `.get`, `.includes()`d on a non-literal receiver, a method called on the token, or handed off unguarded.
+5. **Emit nothing** when the set could not be resolved, when the entry file is missing or outside the project root, or when the entry looks bundled or minified (size or line-length threshold). A wrong "that subcommand does not exist" is worse than silence, because the reader's correct doc looks broken. A thin `bin/foo.js` shim may be followed one hop to the real entry.
 
 **Never execute the binary** with `--help` to discover subcommands. The motivating bug is a CLI that _hangs_ on unrecognized input; shelling out to it is how a linter inherits that hang.
 
@@ -403,7 +417,7 @@ Only the project part is checked. Task names are contributed by plugins at confi
 
 **Detection algorithm:**
 
-1. Qualifying commands start with `./gradlew`, `gradlew`, `gradlew.bat` or `gradle`. Split into words honoring quotes, drop a trailing `# comment`, stop at the first `&&`, `||`, `|`, `;` or redirection (a `<placeholder>` is not a redirection). Skip a command whose last word is a line continuation (`\`, `^`, a backtick).
+1. Qualifying commands start with `./gradlew`, `gradlew`, `gradlew.bat` or `gradle`, also behind `VAR=value`, `env`, `sudo` or `sh`/`bash <script>`. Split into words honoring quotes, drop a trailing `# comment`, stop at the first `&&`, `||`, `|`, `;` or redirection (a `<placeholder>` is not a redirection). Skip a command whose last word is a line continuation (`\`, `^`, a backtick).
 2. Skip the whole command when it retargets the build: `-p`/`--project-dir`, `-c`/`--settings-file`, `-b`/`--build-file`, `--include-build`, `-I`/`--init-script`, in the separate, `=` and attached (`-psamples`) forms; or when an earlier line of the same fenced block, or of the same run of `$`-prompt lines, runs `cd`/`pushd`.
 3. Walk the words. Skip the value of a value-taking build option (`-x`, `-D`, `-P`, `-g`, `--console`, `--warning-mode`, `--max-workers`, ...); a short option with an attached value (`-xjavadoc`) is one word. Any other long option, except Gradle's built-in boolean options (`--offline`, `--parallel`, `--continue`, ...), is a task option (`--tests Foo`, `--dependency g:a`): skip the following word unless it is itself an option, since its value may contain a colon.
 4. A remaining word of the form `:a:b:task` or `a:b:task` (name characters only, so `:<module>:test` is skipped) is a task path; its project path is every segment but the last. Skip it when a project segment is an unmarked placeholder (`module-name`, `module`, `my-*`, `your-*`, ...). Relative paths are checked only when the context file sits in the build root, where they resolve against the root project.
@@ -421,7 +435,7 @@ Only the project part is checked. Task names are contributed by plugins at confi
 
 **Detection algorithm:**
 
-1. Qualifying commands start with `./mvnw`, `mvnw`, `mvnw.cmd`, `mvn` or `mvn.cmd`. Tokenize as for Gradle; skip a command with a line-continuation word.
+1. Qualifying commands start with `./mvnw`, `mvnw`, `mvnw.cmd`, `mvn` or `mvn.cmd`, with the same prefixes as Gradle. Tokenize as for Gradle; skip a command whose last word is a line continuation (a `^` or `\` mid-line does not count). `subproject`-style placeholder names are skipped like the other placeholders.
 2. Skip the whole command on `-f`/`--file` (re-roots the reactor, including the attached `-fpom.xml` form), `-N`/`--non-recursive` (shrinks it to one POM), `-af`/`--at-file`, when `.mvn/maven.config` sets `-f` (in any form), `--file`, `-pl` or `-N`, or after a `cd` earlier in the same fence or prompt run.
 3. Collect selectors from `-pl`/`--projects` (comma list; strip a leading `!`, `-` or `+`) and `-rf`/`--resume-from` (one selector). Skip the value of every other value-taking option (`-D`, `-P`, `-s`, `-T`, `-b`, ...). Skip `?`-prefixed selectors (optional in Maven 4) and placeholders, tested against the whole selector and against its artifactId part (`<module>`, `{module}`, `%MODULE%`, `[module]`, `path/to/module`, `:module`, `com.example:my-module`, `...`).
 4. Candidate base directories are the project root plus every ancestor of the context file, up to the root, that holds a `pom.xml`. The doc does not say where the command runs, so a selector is reported only when, from **no** base, it matches a project of **any** base's reactor. A path selector that leaves the project root from every base names a module the lint cannot see, and is skipped.
@@ -441,9 +455,10 @@ Detects context files that haven't been updated while their referenced code has 
 
 **Algorithm:**
 
-1. Get the context file's last modification date from git history
-2. For each path referenced in the file, count commits to that path since the file's last update
-3. If there are commits to referenced paths and the file is old enough, flag it
+1. Get the context file's last commit from git history.
+2. For each path referenced in the file (`./` and `../` resolve against the context file's directory), count the commits to that path strictly after that commit (`<hash>..HEAD`, not an inclusive date range). This works when the project root is a subdirectory of the repository.
+3. If there are commits to referenced paths and the file is old enough, flag it. The message names the most active path; the detail counts distinct commits (`1 total commit to referenced paths since last update.` / `N total commits ...`).
+4. Shallow clones are skipped: their history cannot show the commits.
 
 **Thresholds:**
 
@@ -457,12 +472,12 @@ Detects context files that haven't been updated while their referenced code has 
 
 Monitors context file size to help teams manage context window consumption.
 
-| Rule ID            | Severity | Trigger                                                                  | Message                                                  |
-| ------------------ | -------- | ------------------------------------------------------------------------ | -------------------------------------------------------- |
-| `tokens/excessive` | error    | Single file uses 8000+ tokens                                            | `{N} tokens — consumes significant context window space` |
-| `tokens/large`     | warning  | Single file uses 3000-7999 tokens                                        | `{N} tokens — large context file`                        |
-| `tokens/info`      | info     | Single file uses 1000-2999 tokens                                        | `Uses ~{N} tokens per session`                           |
-| `tokens/aggregate` | warning  | All context files combined use 5000+ tokens AND there are multiple files | `{count} context files consume {N} tokens combined`      |
+| Rule ID            | Severity | Trigger                                                                                                                      | Message                                                  |
+| ------------------ | -------- | ---------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `tokens/excessive` | error    | Single file uses 8000+ tokens                                                                                                | `{N} tokens — consumes significant context window space` |
+| `tokens/large`     | warning  | Single file uses 3000-7999 tokens                                                                                            | `{N} tokens — large context file`                        |
+| `tokens/info`      | info     | Single file uses 1000-2999 tokens                                                                                            | `Uses ~{N} tokens per session`                           |
+| `tokens/aggregate` | warning  | All context files combined use 5000+ tokens AND there are multiple files (a symlink to another counted file is counted once) | `{count} context files consume {N} tokens combined`      |
 
 **Default thresholds (configurable):**
 
@@ -478,20 +493,30 @@ Monitors context file size to help teams manage context window consumption.
 **Suggestions:**
 
 - For `excessive`: `Consider splitting into focused sections or removing redundant content.`
-- For `large`: `Consider trimming — research shows diminishing returns past ~300 lines.`
+- For `large`: `Consider trimming — every token here is loaded into each session.`
 - For `aggregate`: `Consider consolidating or trimming to reduce per-session context cost.`
 
 ### 3.5 tier-tokens — tier-aware token accounting
 
 Reports token cost attributable to the **always-loaded** tier: files Claude Code (and similar agents) load into every session regardless of request. Complements `tokens` by surfacing which sections / files are costing budget every turn — and which inviolable rules need hook-based enforcement to actually bind.
 
-"Always-loaded" basenames: `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `AGENTS.override.md`, `AGENT.md`, `GEMINI.md`, `.cursorrules`, `.windsurfrules`, `.clinerules`, `.aiderules`, `.continuerules`, `.rules`, `.goosehints`, `replit.md`, `.github/copilot-instructions.md`, `.junie/guidelines.md`, `.goose/instructions.md`. Rules files in `/rules/` directories are classified by frontmatter: if `paths:` is set they're path-scoped on-demand; otherwise they're always-loaded.
+"Always-loaded" files, each tied to the tool that loads it: `CLAUDE.md`, `CLAUDE.local.md` and `.claude/CLAUDE.md` (Claude Code), `AGENTS.md` and `AGENTS.override.md` (Codex), `AGENT.md` (Amp), `GEMINI.md` (Gemini CLI), `.cursorrules` (Cursor), `.windsurfrules` (Windsurf), `.clinerules` (Cline), `.aiderules` (Aider), `.continuerules` (Continue), `.rules` (Zed), `.goosehints` and `.goose/instructions.md` (Goose), `replit.md` (Replit), `.github/copilot-instructions.md` (GitHub Copilot), `.junie/guidelines.md` (Junie).
 
-| Rule ID                                | Severity | Trigger                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Message                                                                |
-| -------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `tier-tokens/section-breakdown`        | info     | Always-loaded file reaches or exceeds `tierBreakdown` tokens (inclusive — a file at exactly the threshold fires) AND has H1/H2 sections                                                                                                                                                                                                                                                                                                                  | `{N} tokens loaded every session — heaviest top-level section(s): ...` |
-| `tier-tokens/aggregate`                | warning  | Two or more always-loaded files total `tierAggregate` tokens or more (inclusive boundary)                                                                                                                                                                                                                                                                                                                                                                | `{count} always-loaded files total {N} tokens — loaded every session`  |
-| `tier-tokens/hard-enforcement-missing` | info     | Line in an always-loaded file uses inviolable framing (NEVER/ALWAYS/DO NOT/MUST NOT) with a backticked command, and no matching PreToolUse or Stop hook, `permissions.deny` entry, or `permissions.ask` entry exists in the project's `.claude/settings.json` / `.claude/settings.local.json` (ask gates the command behind a human prompt, so it counts as enforcement; the user-global `~/.claude/settings.json` is consulted only on explicit opt-in) | `Inviolable framing ("{line}") without a hook to back it up`           |
+Rules files count only in the agent rules directories: `.claude/rules/` (Claude Code), `.cursor/rules/` (Cursor), `.windsurf/rules/` (Windsurf), `.clinerules/` (Cline), `.continue/rules/` (Continue), `.aide/rules/` (Aide), `.amazonq/rules/` (Amazon Q), `.aiassistant/rules/` (JetBrains AI Assistant). Any other `rules/` directory does not. A rule there is on-demand when its frontmatter sets `paths:` or `globs:`, or (Windsurf) a `trigger` other than `always_on`; otherwise it is always-loaded. A Cursor rule (`.mdc`, or `.md` / `RULE.md` in `.cursor/rules/`) with `alwaysApply: true` is always-loaded and one with `alwaysApply: false` is on-demand; an `.mdc` rule without `alwaysApply: true` is on-demand. `.github/instructions/*` is always on-demand. An indented `---` does not close frontmatter.
+
+| Rule ID                                | Severity | Trigger                                                                                                                                                                                                                                                                                                                                 | Message                                                                                                    |
+| -------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `tier-tokens/section-breakdown`        | info     | Always-loaded file reaches or exceeds `tierBreakdown` tokens (inclusive — a file at exactly the threshold fires) AND has headings; the top level is the shallowest heading level with at least 2 sections, else the shallowest level                                                                                                    | `{N} tokens loaded every session — heaviest top-level section(s):` (the sections are listed in the detail) |
+| `tier-tokens/aggregate`                | warning  | Two or more ROOT-LEVEL always-loaded files of the SAME tool total `tierAggregate` tokens or more (inclusive boundary). Nested files (`packages/*/CLAUDE.md`) do not count, a symlink to another counted file of the same tool is skipped, `AGENTS.override.md` replaces `AGENTS.md`, and only the heaviest tool is reported             | `{count} always-loaded {tool} files total {N} tokens — loaded every session`                               |
+| `tier-tokens/hard-enforcement-missing` | info     | A prose line in an always-loaded file uses inviolable framing (NEVER/ALWAYS/DO NOT/DON'T/MUST NOT) with a backticked command, file, tool or code span, and nothing in the project's `.claude/settings.json` / `.claude/settings.local.json` enforces it (see below; the user-global settings file is consulted only on explicit opt-in) | `Inviolable framing ("{directive}") without a hook to back it up`                                          |
+
+**`hard-enforcement-missing` in detail:**
+
+- `{directive}` quotes only the directive — the framing word through the backticked span, with the span capped at 60 characters — not the whole line.
+- Framing words: `NEVER`, `ALWAYS`, `DO NOT`, `DON'T` (straight or curly apostrophe), `MUST NOT`, case-insensitive, in the same sentence as the span (`e.g.`, `i.e.`, `etc.`, `vs.`, `cf.` do not end a sentence). Fenced code and HTML comments are not scanned.
+- The span is classified as a command (a one-word span after `run`, `execute` or `invoke` is one), a file, a tool name or code, and the suggestion follows the kind: a `permissions.deny` entry or PreToolUse hook for a command (flags kept, e.g. `git push --force`); for a file, a `permissions.deny` entry such as `Edit(X)` (or a PreToolUse hook on `Edit|Write`) so the file cannot be changed, or a Stop hook for ALWAYS; for a tool, a `permissions.deny` entry `T` (or a PreToolUse hook with matcher `"T"`); for code, a PreToolUse hook on `Edit|Write` that rejects edits introducing it, or a Stop/PostToolUse hook for ALWAYS. ALWAYS with a tool span is not reported (a hook cannot make the agent use a tool).
+- What counts as enforcement: a Bash `permissions.deny` or `permissions.ask` entry whose words are a prefix of the command's and whose flags are a subset of the command's (a broader deny enforces a narrower rule, never the reverse); an exact entry with no trailing `*` enforces only the identical command, words and flags alike. `ask` counts because it gates the command behind a human prompt. Edit/Write deny entries cover file rules. Tool-name deny entries and PreToolUse matchers are case-sensitive and cover tool rules only. A hook counts through its command (interpreter prefix stripped) or the contents of its script, when that script is inside the project or the Claude config dir. For a NEVER command rule a hook counts only when it sees Bash (an empty, `*` or Bash-selecting matcher), and script contents count only for a multi-word command, or for a single command on the same line as every banned flag.
+- The user-global settings file is `<CLAUDE_CONFIG_DIR>/settings.json` when `CLAUDE_CONFIG_DIR` is set, else `~/.claude/settings.json`.
 
 **Note on overlap with `tokens`:** `tokens/info` and `tier-tokens/section-breakdown` both fire on a large CLAUDE.md. They're complementary — `tokens` is tier-agnostic ("this file is large"), `tier-tokens` adds the always-loaded attribution and demotion guidance. Use `--ignore tokens` or `--ignore tier-tokens` to pick one.
 
@@ -501,19 +526,20 @@ Reports token cost attributable to the **always-loaded** tier: files Claude Code
 
 Detects content that the agent can already infer from project metadata, reducing unnecessary context window consumption.
 
-| Rule ID                        | Severity | Trigger                                                                                      | Message                                                                               |
-| ------------------------------ | -------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| `redundancy/tech-mention`      | info     | Context file explicitly mentions a technology that is already in `package.json` dependencies | `"{tech}" is in package.json {depType} — agent can infer this`                        |
-| `redundancy/discoverable-dir`  | info     | Context file describes the location of a directory that exists and is trivially discoverable | `Directory "{dir}" exists and is discoverable — agent can find this by listing files` |
-| `redundancy/duplicate-content` | warning  | Two context files have 60%+ content overlap (by line)                                        | `{file1} and {file2} have {N}% content overlap`                                       |
+| Rule ID                        | Severity | Trigger                                                                                                                        | Message                                                                                                                                                                |
+| ------------------------------ | -------- | ------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `redundancy/tech-mention`      | info     | Context file describes the stack with a technology that is already in `package.json` dependencies (at most one issue per line) | `"{tech}" is in package.json {depType} — agent can infer this`; for several on one line: `"A" (depType) and "B" (depType) are in package.json — agent can infer these` |
+| `redundancy/discoverable-dir`  | info     | Context file describes the location of a directory that exists inside the project root and is trivially discoverable           | `Directory "{dir}" exists and is discoverable — agent can find this by listing files`                                                                                  |
+| `redundancy/duplicate-content` | warning  | Two context files have 60%+ content overlap (by line); skipped when one is a symlink to the other                              | `{file1} and {file2} have {N}% content overlap`                                                                                                                        |
 
 **Technology detection patterns:**
 
-When a package is in `dependencies` or `devDependencies`, flag context that explicitly states the project uses it. Match phrases like:
+When a package is in `dependencies`, `devDependencies`, `peerDependencies` or `optionalDependencies`, flag context that describes the project as using it. Match phrases like:
 
-- `"use {tech}"`, `"using {tech}"`, `"built with {tech}"`
-- `"we use {tech}"`, `"This is a {tech} project"`
-- `"{tech} project"`, `"{tech} application"`
+- `"we use {tech}"`, `"uses {tech}"`, `"using {tech}"`, `"built with {tech}"`, `"powered by {tech}"`, `"written in {tech}"`, `"This is a {tech} project"`
+- `"{tech} project"`, `"{tech} app"`, `"{tech} application"`, `"{tech} codebase"`
+
+A bare imperative `"use {tech}"` and any directive line (`Use`/`Prefer`/`Avoid`/`Never`/`Always`/`Don't`/`Stick to`/`Default to`...) do not count: they say how to use a tool, not what the stack is.
 
 **Known package-to-technology mappings (partial list):**
 
@@ -558,22 +584,29 @@ Implementations should maintain and extend this mapping as the ecosystem evolves
 
 Detects conflicting directives across multiple context files. This is a cross-file check.
 
-| Rule ID                   | Severity | Trigger                                                                              | Message                                                                 |
-| ------------------------- | -------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
-| `contradictions/conflict` | warning  | Two context files specify different, mutually exclusive options in the same category | `{category} conflict: "{optionA}" in {fileA} vs "{optionB}" in {fileB}` |
+| Rule ID                   | Severity | Trigger                                                                              | Message                                                                                                                                                         |
+| ------------------------- | -------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `contradictions/conflict` | warning  | Two context files specify different, mutually exclusive options in the same category | `{category} conflict: "{optionA}" in {fileA} vs "{optionB}" in {fileB}`; three or more files: `{category} conflict across {N} files: "{option}" in {file}, ...` |
 
 **Contradiction categories and their mutually exclusive options:**
 
 #### Testing framework
 
-| Option     | Example directives                                     |
-| ---------- | ------------------------------------------------------ |
-| Jest       | "use Jest", "Jest for testing", "test with Jest"       |
-| Vitest     | "use Vitest", "Vitest for testing", "test with Vitest" |
-| Mocha      | "use Mocha", "Mocha for testing"                       |
-| pytest     | "use pytest", "pytest for testing"                     |
-| Playwright | "use Playwright", "Playwright for e2e"                 |
-| Cypress    | "use Cypress", "Cypress for e2e"                       |
+Unit-test runners only: "Vitest for unit tests" plus "Playwright for e2e" is a normal stack, not a conflict.
+
+| Option | Example directives                                     |
+| ------ | ------------------------------------------------------ |
+| Jest   | "use Jest", "Jest for testing", "test with Jest"       |
+| Vitest | "use Vitest", "Vitest for testing", "test with Vitest" |
+| Mocha  | "use Mocha", "Mocha for testing"                       |
+| pytest | "use pytest", "pytest for testing"                     |
+
+#### E2E testing framework
+
+| Option     | Example directives                     |
+| ---------- | -------------------------------------- |
+| Playwright | "use Playwright", "Playwright for e2e" |
+| Cypress    | "use Cypress", "Cypress for e2e"       |
 
 #### Package manager
 
@@ -586,18 +619,20 @@ Detects conflicting directives across multiple context files. This is a cross-fi
 
 #### Indentation style
 
-| Option   | Example directives                                |
-| -------- | ------------------------------------------------- |
-| tabs     | "use tabs", "tab indentation", "indent with tabs" |
-| 2 spaces | "2-space indent", "indent with 2 spaces"          |
-| 4 spaces | "4-space indent", "indent with 4 spaces"          |
+| Option   | Example directives                                       |
+| -------- | -------------------------------------------------------- |
+| tabs     | "use tabs", "tab indentation", "indent with tabs"        |
+| 2 spaces | "2-space indent", "indent with 2 spaces", "use 2 spaces" |
+| 4 spaces | "4-space indent", "indent with 4 spaces", "use 4 spaces" |
+
+A bare "2 spaces" needs a verb (use/prefer/enforce) or indentation context: "Leave 2 spaces after a sentence" is not a directive.
 
 #### Semicolons
 
-| Option        | Example directives                                     |
-| ------------- | ------------------------------------------------------ |
-| semicolons    | "use semicolons", "always semicolons"                  |
-| no semicolons | "no semicolons", "avoid semicolons", "omit semicolons" |
+| Option        | Example directives                                                                 |
+| ------------- | ---------------------------------------------------------------------------------- |
+| semicolons    | "use semicolons", "always semicolons"                                              |
+| no semicolons | "no semicolons", "avoid semicolons", "omit semicolons", a negated "use semicolons" |
 
 #### Quote style
 
@@ -637,32 +672,39 @@ Detects conflicting directives across multiple context files. This is a cross-fi
 **Notes:**
 
 - Only flag contradictions _across_ files. A single file contradicting itself is unusual and likely intentional (e.g., "use camelCase for variables, PascalCase for components").
+- Only compare files where one's directory contains the other's: a nested `packages/a/CLAUDE.md` and the root `CLAUDE.md` both apply in `packages/a`, but two sibling packages never apply together. A dot-directory such as `.cursor/rules` governs its parent.
+- Naming directives are scoped by object: "Use snake_case for Python functions" belongs to the `python function` bucket and reports as `naming convention (python function) conflict: ...`. Differently scoped directives, and a general directive ("Use camelCase.") with an object-scoped one, never conflict.
+- Directives inside fenced code and HTML comments are ignored.
+- A pair issue pairs only the labels unique to each side; a label both files hold is common ground.
 - Include the exact line numbers and text from both files in the detail.
 
 ### 3.8 frontmatter — client metadata validation
 
 Validates YAML frontmatter required by specific clients. Only applies to file formats that use frontmatter.
 
-| Rule ID                     | Severity                                                                        | Trigger                                                                                                                              | Message                                                       |
-| --------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
-| `frontmatter/missing`       | warning (Cursor `.mdc`); info (Copilot, Windsurf)                               | File format requires or recommends frontmatter but none is present                                                                   | `{format} file is missing frontmatter`                        |
-| `frontmatter/unclosed`      | error                                                                           | Frontmatter opens with `---` but is never closed (every parsed field is suspect; the host loads the file with no frontmatter at all) | ``Frontmatter opens with `---` but is never closed``          |
-| `frontmatter/missing-field` | warning                                                                         | A required or recommended field is absent                                                                                            | `Missing "{field}" field in {format} frontmatter`             |
-| `frontmatter/invalid-value` | error (invalid `alwaysApply` / Windsurf `trigger`); warning (malformed `globs`) | A field has an invalid value                                                                                                         | `Invalid {field} value: "{value}"`                            |
-| `frontmatter/no-activation` | info                                                                            | File has frontmatter but no activation mechanism (no globs/alwaysApply/trigger)                                                      | `No activation field — rule may not be applied automatically` |
+| Rule ID                     | Severity                                                                        | Trigger                                                                                                                              | Message                                                                                                                            |
+| --------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `frontmatter/missing`       | warning (Cursor `.mdc`); info (Copilot, Windsurf)                               | File format requires or recommends frontmatter but none is present                                                                   | `Cursor .mdc file is missing frontmatter`; `Copilot instructions file has no frontmatter`; `Windsurf rule file has no frontmatter` |
+| `frontmatter/unclosed`      | error                                                                           | Frontmatter opens with `---` but is never closed (every parsed field is suspect; the host loads the file with no frontmatter at all) | ``Frontmatter opens with `---` but is never closed``                                                                               |
+| `frontmatter/missing-field` | warning                                                                         | A required or recommended field is absent                                                                                            | `Missing "{field}" field in {format} frontmatter`                                                                                  |
+| `frontmatter/invalid-value` | error (invalid `alwaysApply` / Windsurf `trigger`); warning (malformed `globs`) | A field has an invalid value                                                                                                         | `Invalid {field} value: "{value}"`; for `globs`: `Possibly malformed globs value: "{value}"`                                       |
+| `frontmatter/no-activation` | info                                                                            | Cursor `.mdc` file has frontmatter but no activation mechanism (no globs/alwaysApply)                                                | `No "alwaysApply" or "globs" field — rule may not be applied automatically`                                                        |
 
 **Validation per format:**
 
-| File type                   | Validated fields                                                     | Valid values                                             |
-| --------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------- |
-| Cursor `.mdc`               | `description` (required), `alwaysApply` (boolean), `globs` (pattern) | `alwaysApply`: `true` or `false`                         |
-| Copilot `instructions/*.md` | `applyTo` (recommended)                                              | Any glob pattern                                         |
-| Windsurf `rules/*.md`       | `trigger` (required)                                                 | `always_on`, `glob`, `manual`, `model`, `model_decision` |
+| File type                                | Validated fields                                                     | Valid values                                    |
+| ---------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------------- |
+| Cursor `.mdc`                            | `description` (required), `alwaysApply` (boolean), `globs` (pattern) | `alwaysApply`: `true` or `false`                |
+| Copilot `instructions/*.instructions.md` | `applyTo` (recommended)                                              | Any glob pattern                                |
+| Windsurf `rules/*.md`                    | `trigger` (required)                                                 | `always_on`, `glob`, `manual`, `model_decision` |
 
 **Notes:**
 
 - `frontmatter/missing` severity is per-format: warning for Cursor `.mdc` (frontmatter is required there), info for Copilot instructions and Windsurf rules (frontmatter is optional/recommended).
-- The `globs` branch of `frontmatter/invalid-value` only flags unmistakably malformed YAML (unbalanced brackets or quotes), at warning severity — Cursor accepts bare directory names (`globs: src`) and bare extensions, so a value isn't flagged merely for lacking `*` or `/`.
+- The `globs` branch of `frontmatter/invalid-value` only flags unmistakably malformed YAML (unbalanced brackets or quotes), at warning severity — Cursor accepts bare directory names (`globs: src`) and bare extensions, so a value isn't flagged merely for lacking `*` or `/`. The catalog records the split in the rule's `severityVariants`.
+- Copilot frontmatter is validated only for `.github/instructions/*.instructions.md`, the only files Copilot loads from that directory.
+- `model` is not a Windsurf trigger; `trigger: model` is `frontmatter/invalid-value`.
+- The frontmatter reader understands trailing `# comments`, quoted scalars, multi-line flow sequences and indented or block-scalar continuations, so none of them produce `invalid-value` or `missing-field`.
 
 ---
 
@@ -670,9 +712,9 @@ Validates YAML frontmatter required by specific clients. Only applies to file fo
 
 Checks that release/deploy CI workflows are documented in context files. When agents encounter a project with CI release workflows but no documentation about how releases work, they guess — often incorrectly.
 
-| Rule ID              | Severity | Trigger                                                                                                           | Message                                                                       |
-| -------------------- | -------- | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `ci/no-release-docs` | info     | `.github/workflows/` contains release/deploy/publish workflow(s) but no context file mentions the release process | `Release workflow(s) found but no context file documents the release process` |
+| Rule ID              | Severity | Trigger                                                                                                           | Message                                                                                     |
+| -------------------- | -------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `ci/no-release-docs` | info     | `.github/workflows/` contains release/deploy/publish workflow(s) but no context file mentions the release process | `Release workflow(s) found ({workflows}) but no context file documents the release process` |
 
 > **Rule-ID note:** `ci/no-release-docs` is the published catalog ID — a legacy shared `ci/` prefix that predates the prefix-equals-category convention (see CONTRIBUTING.md "Rule ID format"). The reference implementation emits this finding with ruleId `ci-coverage/no-release-docs` in JSON output.
 
@@ -680,9 +722,12 @@ Checks that release/deploy CI workflows are documented in context files. When ag
 
 1. Check if `.github/workflows/` exists. If not, skip.
 2. Scan workflow filenames for release-related patterns: `release`, `deploy`, `publish`, `cd`.
-3. For workflows not matched by filename, read the YAML `name:` field and check for the same patterns.
+3. For workflows not matched by filename, read the workflow's top-level YAML `name:` (not a step's or job's `name:`) and check for the same patterns.
 4. If no release-related workflows exist, skip (only CI/test workflows — no documentation gap).
-5. Search all context file content for release documentation phrases (e.g., "release process", "push a v\* tag", "npm publish", "deploy to").
+5. Search all context file content for release documentation phrases. They must say HOW the release happens, so a passing "see the release notes" does not count:
+   - a heading `Releasing` / `Deploying` / `Publishing` / `Deployment` (not followed by `notes`, `targets`, `environments`, `history`, `log` or `status`), or `<release|deploy|deployment|publish> process|workflow|steps|procedure|guide|flow`;
+   - a release/deploy/publish word stem followed by `process`, `workflow`, `steps`, `via`, `by`, `using`, `with`, `happens`, `runs`, `automatically` (and `to` for deploy/publish), or by `is`/`are` plus a verb (`cut`, `made`, `handled`, `triggered`, `automated`, `published`, ...);
+   - an un-negated `push <token> tag` (the token is not `to`) or `tag push`, `git tag v`, `npm publish`, `npm version <bump>`, `--follow-tags`, `release.sh` (or `.ps1`/`.mjs`/`.cjs`/`.js`/`.ts`/`.py`), `release.yml`, `deploy.yml`, `CI/CD pipeline`, `continuous deploy`. A negated form (`not`, `never`, `no`, `don't`, `doesn't`) of the push phrasings does not count.
 6. If no context file mentions release processes, emit one info-level issue.
 
 ---
@@ -691,34 +736,37 @@ Checks that release/deploy CI workflows are documented in context files. When ag
 
 Checks that secrets referenced in CI workflow files are mentioned in context files. Undocumented secrets are a common source of agent looping — agents try to create new tokens, pull from `.npmrc`, or guess at auth setup.
 
-| Rule ID                  | Severity | Trigger                                                                                   | Message                                                                          |
-| ------------------------ | -------- | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| `ci/undocumented-secret` | info     | `${{ secrets.NAME }}` found in workflow YAML but `NAME` not mentioned in any context file | `CI secret "{name}" is used in {workflow} but not mentioned in any context file` |
+| Rule ID                  | Severity | Trigger                                                                                   | Message                                                                           |
+| ------------------------ | -------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `ci/undocumented-secret` | info     | `${{ secrets.NAME }}` found in workflow YAML but `NAME` not mentioned in any context file | `CI secret "{name}" is used in {workflows} but not mentioned in any context file` |
 
 > **Rule-ID note:** `ci/undocumented-secret` is the published catalog ID — the same legacy shared `ci/` prefix as `ci/no-release-docs`. The reference implementation emits this finding with ruleId `ci-secrets/undocumented-secret` in JSON output.
 
 **Detection algorithm:**
 
 1. Check if `.github/workflows/` exists. If not, skip.
-2. Read all `.yml`/`.yaml` files and extract `${{ secrets.NAME }}` references via regex.
-3. Exclude GitHub-provided secrets: `GITHUB_TOKEN`, `ACTIONS_RUNTIME_TOKEN`, `ACTIONS_RUNTIME_URL`, `ACTIONS_CACHE_URL`, `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, `ACTIONS_ID_TOKEN_REQUEST_URL`, `ACTIONS_RESULTS_URL`.
-4. For each remaining secret, search all context files for the secret name (case-insensitive, flexible underscore/space matching).
-5. Emit one info-level issue per undocumented secret.
+2. Read all `.yml`/`.yaml` files and extract every `secrets.NAME` / `secrets['NAME']` reference inside a `${{ }}` expression or an `if:` condition. YAML comments are ignored.
+3. Exclude `GITHUB_TOKEN`, the only GitHub-provided secret reachable through the `secrets` context. (`ACTIONS_*` names are runner environment variables; a `secrets.ACTIONS_*` reference is a user-created secret and is reported.)
+4. Names are case-insensitive: one finding per secret, showing its first spelling. For each, search all context files for the name (case-insensitive, with `_`, space or `-` between its words). A name made only of generic words (`API_KEY`, `ACCESS_TOKEN`, `AUTH_TOKEN`, `CLIENT_SECRET`, ...) needs the exact uppercase name, a backticked mention, or `secrets.NAME`.
+5. Emit one info-level issue per undocumented secret, listing the workflows that use it.
 
 ### 3.11 hook-coverage — hook enforcement coverage
 
-The inverse of `tier-tokens/hard-enforcement-missing`. Where `tier-tokens` flags an inviolable rule that has _no_ hook to enforce it, `hook-coverage` flags a hook (or permissions entry) that points at a script which no longer exists — a dead gate that silently no-ops. Claude Code cannot run a script that isn't on disk, so a `PreToolUse` hook whose `command` references a deleted/renamed file stops blocking anything, while the user still believes the protection is in place.
+The inverse of `tier-tokens/hard-enforcement-missing`. Where `tier-tokens` flags an inviolable rule that has _no_ hook to enforce it, `hook-coverage` flags a hook (or `permissions.allow` entry) that points at a script or path which no longer exists — a dead gate that silently no-ops. Claude Code cannot run a script that isn't on disk, so a `PreToolUse` hook whose `command` references a deleted/renamed file stops blocking anything, while the user still believes the protection is in place.
 
-| Rule ID                   | Severity | Trigger                                                                                                                                                           | Message                                                                                |
-| ------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `hook-coverage/dead-hook` | warning  | A `hooks.<Event>[].hooks[].command` or `permissions.{allow,deny,ask}[]` entry in `.claude/settings.json` contains a path-shaped token that does not exist on disk | `{origin} references "{path}" which does not exist on disk — the gate silently no-ops` |
+| Rule ID                   | Severity | Trigger                                                                                                                                                                   | Message                                                                                                                                                                                                                                                                     |
+| ------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `hook-coverage/dead-hook` | warning  | A `hooks.<Event>[].hooks[].command` or `permissions.allow[]` entry in `.claude/settings.json` / `.claude/settings.local.json` contains a path that does not exist on disk | `{origin} references "{path}" which does not exist on disk (in {settingsFile}) — {consequence}`; when another spelling exists: `{origin} references "{path}" which does not resolve (in {settingsFile}), but "{variant}" exists — the path form is wrong, so {consequence}` |
 
 **Detection algorithm:**
 
-1. Load settings from project `.claude/settings.json` and project `.claude/settings.local.json` (parsed as JSONC; missing files are skipped). The user-global `~/.claude/settings.json` is loaded only on explicit opt-in (`--hooks-global` in the reference implementation) so a default run never reads files outside the project directory.
-2. For each hook command and each `permissions` list entry, tokenize on whitespace (respecting quotes) and keep tokens that look like script paths (a path separator + a script extension such as `.sh`/`.js`/`.py`/`.ps1`, or an explicit `./` `~/` `/` `$VAR/` `C:\` prefix). Inline tool matchers like `Bash(npm login)` yield no path tokens.
-3. Resolve each path token: expand a leading `~` and the env vars Claude Code documents for settings paths — `$CLAUDE_PROJECT_DIR`, `$CLAUDE_CONFIG_DIR`, `$HOME`, `$USERPROFILE`. A token that still contains an unresolvable `$VAR` is skipped (it cannot be verified, and a false "dead hook" is worse than a missed one).
-4. Emit one warning per resolved path that does not exist on disk, with the source file's line number for project files (the user-global file is noted inline).
+1. Load settings from project `.claude/settings.json` and project `.claude/settings.local.json` (parsed as JSONC; missing files are skipped, and an unparseable file is skipped with a stderr warning `ctxlint: hook-coverage skipped <file>: could not parse (...)`). The user-global `settings.json` — under `CLAUDE_CONFIG_DIR` when it is set, else `~/.claude/` — is loaded only on explicit opt-in (`--hooks-global` in the reference implementation) so a default run never reads files outside the project directory.
+2. Check each hook command and each `permissions.allow` entry. `deny` and `ask` entries are not checked: a deny rule naming a missing path guards against the path appearing (`Read(./.env)`) and is working as written.
+   - Hook commands and `Bash(...)` / `PowerShell(...)` entries are shell: tokenize on whitespace (respecting quotes) and keep tokens that look like script paths (a path separator + a script extension such as `.sh`/`.js`/`.py`/`.ps1`, or an explicit `./` `~/` `/` `$VAR/` `C:\` prefix).
+   - `Read`/`Edit`/`Write`/`MultiEdit`/`NotebookEdit`/`Glob`/`Grep` rules use Claude Code's path-rule prefixes, not shell paths: `//` absolute, `~/` home, `/` relative to the settings file's source, bare or `./` relative to the working directory. Rules with inner globs, `!` negations and bare names are skipped.
+3. Resolve each path: expand a leading `~` and the env vars Claude Code documents for settings paths — `$CLAUDE_PROJECT_DIR`, `$CLAUDE_CONFIG_DIR`, `$HOME`, `$USERPROFILE`. The home directory resolves the way Claude Code resolves it (`USERPROFILE` first on Windows). A path that still contains an unresolvable `$VAR` is skipped (it cannot be verified, and a false "dead hook" is worse than a missed one).
+4. Before reporting, try alternate readings of the path: MSYS drive paths with one or two leading slashes, a stray leading slash on a repo-relative path, backslash/forward-slash flips, and for path rules `/` vs `//`. If one exists, emit the **path-form** finding (rewrite the entry, do NOT delete it); otherwise emit the **missing-target** finding (restore the target or remove the entry). The two remedies are opposites, so the wording differs.
+5. Emit one warning per path, with the source file's line number. `{origin}` is `<Event> hook` or `permissions.allow entry`; `{consequence}` is `the gate silently no-ops` for a hook and `the rule silently matches nothing` for an allow entry; `{settingsFile}` names the settings file. Project findings are reported under that settings file's own path; user-global ones under `(project)`.
 
 **Stability:** experimental — the path-extraction heuristic is conservative by design (it prefers a missed dead hook over a false positive) and may broaden as more hook-command shapes are observed.
 
@@ -726,30 +774,30 @@ The inverse of `tier-tokens/hard-enforcement-missing`. Where `tier-tokens` flags
 
 Detects secrets pasted directly into context files. Context files usually end up committed to git, so an inline `AKIA...` or `sk-ant-...` in a heading or code block is a leak. This is the context-file counterpart of the MCP-config secret rules (`mcp-security/*` in the [MCP Config Linting Spec](./MCP_CONFIG_LINT_SPEC.md)) — same threat, different paste surface.
 
-| Rule ID                              | Severity | Trigger                                                                          | Message                                                         |
-| ------------------------------------ | -------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| `content-secrets/private-key-header` | error    | Line contains `-----BEGIN [RSA \| EC \| DSA \| OPENSSH \| PGP ]PRIVATE KEY-----` | `Private key header detected in {file}`                         |
-| `content-secrets/aws-access-key`     | error    | `AKIA` or `ASIA` (STS) prefix + 16 uppercase alphanumeric chars                  | `AWS access key detected in {file} ({prefix}...)`               |
-| `content-secrets/github-pat`         | error    | `ghp_`, `github_pat_`, or `ghs_`/`gho_`/`ghu_`/`ghr_` token shapes               | `GitHub personal access token detected in {file} ({prefix}...)` |
-| `content-secrets/anthropic-key`      | error    | `sk-ant-` + 20+ key chars                                                        | `Anthropic API key detected in {file} ({prefix}...)`            |
-| `content-secrets/openai-key`         | error    | `sk-` or `sk-proj-` + 20+ key chars                                              | `OpenAI API key detected in {file} ({prefix}...)`               |
-| `content-secrets/npm-token`          | error    | `npm_` + 36+ alphanumeric chars                                                  | `npm token detected in {file} ({prefix}...)`                    |
-| `content-secrets/slack-token`        | error    | `xox[bpoasr]-` + 10+ token chars                                                 | `Slack token detected in {file} ({prefix}...)`                  |
-| `content-secrets/google-api-key`     | error    | `AIza` + exactly 35 key chars                                                    | `Google API key detected in {file} ({prefix}...)`               |
-| `content-secrets/stripe-secret`      | error    | `sk_live_` + 24+ alphanumeric chars                                              | `Stripe live secret key detected in {file} ({prefix}...)`       |
+| Rule ID                              | Severity | Trigger                                                                                                                                                                                | Message                                                                                                                       |
+| ------------------------------------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `content-secrets/private-key-header` | error    | Line contains `-----BEGIN <QUALIFIERS >PRIVATE KEY-----` (any run of uppercase qualifiers: `RSA`, `EC`, `DSA`, `OPENSSH`, `ENCRYPTED`, ...) or `-----BEGIN PGP PRIVATE KEY BLOCK-----` | `Private key header detected in {file}`                                                                                       |
+| `content-secrets/aws-access-key`     | error    | `AKIA` or `ASIA` (STS) prefix + 16 uppercase alphanumeric chars                                                                                                                        | `AWS access key detected in {file} ({prefix}...)`                                                                             |
+| `content-secrets/github-pat`         | error    | `ghp_`, `github_pat_`, or `ghs_`/`gho_`/`ghu_`/`ghr_` token shapes                                                                                                                     | `GitHub personal access token detected in {file} ({prefix}...)` (`GitHub token detected ...` for `ghs_`/`gho_`/`ghu_`/`ghr_`) |
+| `content-secrets/anthropic-key`      | error    | `sk-ant-` + 20+ key chars including an uppercase letter or a digit                                                                                                                     | `Anthropic API key detected in {file} ({prefix}...)`                                                                          |
+| `content-secrets/openai-key`         | error    | `sk-` or `sk-proj-` + 20+ key chars including an uppercase letter or a digit (an all-lowercase kebab name such as `sk-learn-compatible-estimator-api` is not a key)                    | `OpenAI API key detected in {file} ({prefix}...)`                                                                             |
+| `content-secrets/npm-token`          | error    | `npm_` + 36+ alphanumeric chars                                                                                                                                                        | `npm token detected in {file} ({prefix}...)`                                                                                  |
+| `content-secrets/slack-token`        | error    | `xox[bpoasr]-` + 10+ token chars                                                                                                                                                       | `Slack token detected in {file} ({prefix}...)`                                                                                |
+| `content-secrets/google-api-key`     | error    | `AIza` + exactly 35 key chars                                                                                                                                                          | `Google API key detected in {file} ({prefix}...)`                                                                             |
+| `content-secrets/stripe-secret`      | error    | `sk_live_` + 24+ alphanumeric chars                                                                                                                                                    | `Stripe live secret key detected in {file} ({prefix}...)`                                                                     |
 
 **Design principles:**
 
 - **Precision over recall.** Patterns are well-defined vendor prefixes only; random high-entropy detection is deliberately omitted — it bites build IDs, commit SHAs, and version strings. A missed exotic format is fine; a noisy false positive that trains users to ignore the check is not.
-- **Never leak the secret in output.** Emitted messages contain at most a 6-character redacted prefix plus an ellipsis — never the full matched value (the value landing in linter stderr/SARIF would itself be a leak vector).
+- **Never leak the secret in output.** Emitted messages contain at most a 6-character redacted prefix plus an ellipsis — never the full matched value (the value landing in linter stderr/SARIF would itself be a leak vector). The reference implementation also redacts every issue's text (message, suggestion, detail) with the same patterns before output. Below a pattern's detection length, an `sk-`, `sk-ant-`, `npm_` or `ASIA` run is redacted only when it looks random (for `sk-` forms: a segment of 8+ characters that switches between upper, lower and digits at least 3 times; `npm_`: a digit; `ASIA`: digits interleaved with letters), so `sk-learn-v2-compat`, `ASIA2025SUMMIT` and `$npm_lifecycle_event` stay readable. Full-length tokens are redacted even when followed by `/` or a file extension.
 - **Anthropic before OpenAI.** `sk-ant-` must be checked before the generic `sk-` pattern so the same substring isn't flagged twice (implementations may use per-line dedup keyed by match offset).
 
 **Suppression rules (all reduce false positives):**
 
 1. **Placeholder lines** — any line containing a placeholder token (`example`, `placeholder`, `your-key`, `<replace`, `redacted`, `xxxx`, `****`) is skipped entirely (line-scoped on purpose; see the implementation notes in `content-secrets.ts` for the recall trade-off).
 2. **Placeholder wrappers** — a match wrapped in `${...}` or a hugging `<...>` placeholder is skipped.
-3. **Commented examples** — a comment line (`#`, `//`, `--`, `<!--`) containing `fake` or `example` is skipped.
-4. **Illustrative code fences** — content inside fences explicitly tagged `text`, `txt`, `example`, `pseudocode`, or `none` is skipped. Untagged fences are still scanned: a bare ```fence is the most common way real`.env` contents get pasted into a context file.
+3. **Commented examples** — a comment line (`//`, `--`, `<!--`, and `#` inside a code fence only) containing `fake` or `example` is skipped. Outside a fence `#` opens a markdown heading, so `## Fake tokens: ghp_...` is still scanned.
+4. **Illustrative code fences** — content inside fences explicitly tagged `text`, `txt`, `example`, `pseudocode`, or `none` is skipped. Untagged fences are still scanned: a bare fence is the most common way real `.env` contents get pasted into a context file. Fences come from the shared markdown mask, so a one-line ` ```...``` ` span does not open a fence.
 
 **Suggestion:** `Move the secret to a .env or secret manager and reference it by name. If this token is real, rotate it immediately.`
 
@@ -787,7 +835,7 @@ Other implementations of this specification may emit either form; when interoper
 
 ### Discovery
 
-Scan the project root (and optionally subdirectories up to a configurable depth) for the file patterns listed in [Section 1.2](#12-supported-formats-by-client). Skip `node_modules`, `.git`, `dist`, `build`, and `vendor` directories.
+Scan the project root (and optionally subdirectories up to a configurable depth) for the file patterns listed in [Section 1.2](#12-supported-formats-by-client). Skip `node_modules`, `.git`, `dist`, `build`, `vendor`, `.next`, `.nuxt`, `coverage` and `__pycache__` directories, files reached through a symlinked or junctioned directory outside the project root, and files over 5 MB.
 
 Support custom additional patterns via configuration for project-specific files (e.g., `CONVENTIONS.md`).
 
@@ -809,7 +857,7 @@ Run cross-file checks (aggregate tokens, duplicate content, contradictions, ci-c
 
 ### Reporting
 
-Rules use the `category/rule-id` naming convention (e.g., `paths/not-found`, `contradictions/conflict`). For SARIF output, map to rule IDs as `ctxlint/paths`, `ctxlint/commands`, etc.
+Rules use the `category/rule-id` naming convention (e.g., `paths/not-found`, `contradictions/conflict`). For SARIF output, the reference implementation uses the specific emitted rule as the SARIF rule ID (`ctxlint/paths/not-found`, `ctxlint/tokens/aggregate`, `ctxlint/ci-coverage/no-release-docs`), with one rule descriptor per rule.
 
 Severity mapping for SARIF: `error` → `error`, `warning` → `warning`, `info` → `note`.
 

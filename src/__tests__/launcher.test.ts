@@ -1,13 +1,57 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { spawn } from 'node:child_process';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
+import {
+  parseVersion as scriptsParseVersion,
+  parseOamVersionOutput as scriptsParseOamVersionOutput,
+  // @ts-expect-error scripts/lib is plain JS with no type declarations
+} from '../../scripts/lib/semver.mjs';
+// @ts-expect-error scripts/lib is plain JS with no type declarations
+import { discoverOamPaths as scriptsDiscoverOamPaths } from '../../scripts/lib/oam-discovery.mjs';
 
 const REPO_ROOT = path.resolve(__dirname, '../..');
 const LAUNCHER = path.resolve(REPO_ROOT, 'bin/ctxlint.mjs');
 const CLI = path.resolve(REPO_ROOT, 'dist/index.js');
 const PKG = JSON.parse(fs.readFileSync(path.resolve(REPO_ROOT, 'package.json'), 'utf-8'));
+
+// Every temp dir a test makes, removed after it. The generous hook timeout is
+// for Windows, where a dir holding a hard link to the running node.exe (the
+// OAM_INSTALL_DIR case) can take several retries to release.
+const tmpDirs: string[] = [];
+afterEach(() => {
+  for (const d of tmpDirs.splice(0)) {
+    try {
+      fs.rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    } catch {
+      // Best effort: a locked leftover in the OS temp dir must not fail a test.
+    }
+  }
+}, 60_000);
+function mkTmp(prefix: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  tmpDirs.push(dir);
+  return dir;
+}
+
+/**
+ * An environment with no oam anywhere: HOME and LOCALAPPDATA point at an empty
+ * directory, so the installed locations are empty, and PATH holds only the
+ * directory of the Node running this test. Keeps a real oam on the developer's
+ * box out of reach.
+ */
+function isolated(extra: Record<string, string> = {}): Record<string, string> {
+  const empty = mkTmp('ctxlint-launcher-home-');
+  return {
+    PATH: path.dirname(process.execPath),
+    USERPROFILE: empty,
+    HOME: empty,
+    LOCALAPPDATA: empty,
+    ...extra,
+  };
+}
+const missingOam = path.join(os.tmpdir(), 'no-such-dir', 'oam.exe');
 
 type Plan = 'in-process' | 'discover' | 'handoff-node';
 type RuntimePlan = (ctx: { mode: string; hostOam: string | undefined }) => Plan;
@@ -49,10 +93,13 @@ const ATLEAST_DECL = /function atLeast\(v, min\) \{[\s\S]*?\n\}/;
  * Extracting the text exercises the shipped logic rather than a copy that can
  * drift, and a failed extraction is a loud assertion, not a silent skip.
  */
+const PARSE_VERSION_DECL = /function parseVersion\(text\) \{[\s\S]*?\n\}/;
+const PARSE_OAM_OUTPUT_DECL = /function parseOamVersionOutput\(text\) \{[\s\S]*?\n\}/;
+
 function loadRuntimePlan(): RuntimePlan {
   const pieces = extract([
     OAM_MIN_DECL,
-    /function parseVersion\(text\) \{[\s\S]*?\n\}/,
+    PARSE_VERSION_DECL,
     ATLEAST_DECL,
     /function runtimePlan\(\{ mode, hostOam \}\) \{[\s\S]*?\n\}/,
   ]);
@@ -168,7 +215,138 @@ describe('launcher pickNewest()', () => {
   });
 });
 
+describe('launcher version parsing', () => {
+  type Parse = (text: string) => number[] | null;
+  // Extracted per test, so a missing function fails these tests, not the file.
+  const load = () =>
+    new Function(
+      `${extract([PARSE_VERSION_DECL, PARSE_OAM_OUTPUT_DECL])}\nreturn { parseVersion, parseOamVersionOutput };`,
+    )() as { parseVersion: Parse; parseOamVersionOutput: Parse };
+
+  // Unanchored, ANY executable named oam whose --version held a version
+  // anywhere was taken for oam -- Node's own `v22.1.0` included -- and once it
+  // was spawned nothing fell back. oam prints `oam X.Y.Z`, and oam's own
+  // self-update smoke accepts a binary only when stdout starts with "oam ".
+  it("reads only oam's own `oam X.Y.Z` as an oam version", () => {
+    const { parseOamVersionOutput } = load();
+    expect(parseOamVersionOutput('oam 0.21.1\n')).toEqual([0, 21, 1]);
+    expect(parseOamVersionOutput('oam 0.21.0-dev\n')).toEqual([0, 21, 0]);
+    for (const text of ['v22.1.0\n', 'not-oam 0.21.1', 'build 0.21.1 of oam', 'oam\n', '']) {
+      expect(parseOamVersionOutput(text), JSON.stringify(text)).toBeNull();
+    }
+  });
+
+  it('reads a host version only from its start', () => {
+    const { parseVersion } = load();
+    expect(parseVersion('0.20.2')).toEqual([0, 20, 2]);
+    expect(parseVersion('0.21.0-dev')).toEqual([0, 21, 0]);
+    expect(parseVersion('dev-0.21.0')).toBeNull();
+  });
+
+  // The launcher cannot import scripts/lib (it ships, scripts/ does not), so
+  // its copies are held to the scripts' versions here.
+  it('agrees with scripts/lib/semver.mjs', () => {
+    const { parseVersion, parseOamVersionOutput } = load();
+    for (const text of ['0.20.2', 'v1.2.3', '0.21.0-dev', 'dev', '', ' 1.0.0 ']) {
+      expect(parseVersion(text), JSON.stringify(text)).toEqual(scriptsParseVersion(text));
+    }
+    for (const text of ['oam 0.21.1\n', 'oam 0.21.0-rc.1', 'v22.1.0', 'oam x', 'oam 1.2.3 extra']) {
+      expect(parseOamVersionOutput(text), JSON.stringify(text)).toEqual(
+        scriptsParseOamVersionOutput(text),
+      );
+    }
+  });
+
+  // scripts/verify-oam-floor.mjs measured a cold `oam --version` past 10 s on
+  // a loaded Windows box. A bound below that reads a healthy oam as broken and
+  // silently runs the CLI on Node instead.
+  it('bounds the --version probe above the measured cold start', () => {
+    const { bound } = new Function(
+      `${extract([/const VERSION_PROBE_TIMEOUT_MS = [\d_]+;/])}\nreturn { bound: VERSION_PROBE_TIMEOUT_MS };`,
+    )() as { bound: number };
+    expect(bound).toBeGreaterThan(10_000);
+  });
+});
+
+describe('launcher discoverOamPaths()', () => {
+  type Discover = () => string[];
+  /** The launcher's real discovery, run against a posed process. */
+  function launcherDiscover(proc: { platform: string; env: Record<string, string> }): Discover {
+    const pieces = extract([
+      /const isWin = process\.platform === 'win32';/,
+      /const exe = isWin \? 'oam\.exe' : 'oam';/,
+      /function pathKey\(p\) \{[\s\S]*?\n\}/,
+      /function discoverOamPaths\(\) \{[\s\S]*?\n\}/,
+    ]);
+    return new Function(
+      'process',
+      'existsSync',
+      'realpathSync',
+      'homedir',
+      'join',
+      'delimiter',
+      `${pieces}\nreturn discoverOamPaths;`,
+    )(
+      proc,
+      fs.existsSync,
+      fs.realpathSync,
+      () => proc.env.HOME,
+      path.join,
+      path.delimiter,
+    ) as Discover;
+  }
+
+  // verify-oam-floor.mjs had its own discovery, which de-duplicated by case
+  // only, so the oam it verified was not always the one the launcher picks.
+  it('finds the same binaries, in the same order, as scripts/lib/oam-discovery.mjs', () => {
+    const exeName = process.platform === 'win32' ? 'oam.exe' : 'oam';
+    const home = mkTmp('ctxlint-discover-home-');
+    const install = mkTmp('ctxlint-discover-install-');
+    const onPath = mkTmp('ctxlint-discover-path-');
+    for (const dir of [path.join(home, '.oam', 'bin'), install, onPath]) {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, exeName), '');
+    }
+    // PATH names the install dir again (a duplicate) and a dir with no oam.
+    const env = {
+      HOME: home,
+      LOCALAPPDATA: home,
+      OAM_INSTALL_DIR: install,
+      PATH: [onPath, install, home].join(path.delimiter),
+    };
+    const fromLauncher = launcherDiscover({ platform: process.platform, env })();
+    const fromScripts = scriptsDiscoverOamPaths({ env, platform: process.platform, homedir: home });
+    expect(fromLauncher).toEqual([
+      path.join(install, exeName),
+      path.join(home, '.oam', 'bin', exeName),
+      path.join(onPath, exeName),
+    ]);
+    expect(fromScripts).toEqual(fromLauncher);
+  });
+});
+
 type LauncherRun = { stdout: string; stderr: string; code: number | null };
+
+/**
+ * Preload source that makes the launcher's `--version` probe of each path in
+ * `paths` answer `oam <version>`, the way a real oam does. Only the probe
+ * (execFileSync) is posed: spawning the path still runs the real binary.
+ * Imported under names no other preload uses, so it composes with them.
+ */
+function posingAsOam(paths: string[], version = '0.20.2'): string {
+  if (paths.length === 0) return '';
+  return [
+    'import __poseCp from "node:child_process";',
+    'import { syncBuiltinESMExports as __poseSync } from "node:module";',
+    `const __posed = new Set(${JSON.stringify(paths)});`,
+    'const __realExecFileSync = __poseCp.execFileSync;',
+    '__poseCp.execFileSync = function (cmd, args, opts) {',
+    `  if (__posed.has(cmd) && args?.[0] === "--version") return "oam ${version}\\n";`,
+    '  return __realExecFileSync.call(this, cmd, args, opts);',
+    '};',
+    '__poseSync();',
+  ].join('\n');
+}
 
 /**
  * Run the REAL bin under Node, optionally posing as oam by preloading a
@@ -183,11 +361,13 @@ type LauncherRun = { stdout: string; stderr: string; code: number | null };
  * OAM_BIN is pinned to the Node binary running this test, which makes the two
  * outcomes unmistakable without a real oam. In-process, `--version` reaches
  * dist/index.js and prints the package version with exit 0. On the discovery
- * path, the pinned Node answers `--version` with v2x.y.z, which clears the
- * floor, so it is chosen and the launcher spawns `node run <entry> -- --version`
- * -- which has no `run` subcommand, prints no version and exits non-zero. A
- * usable OAM_BIN is taken before discovery runs, so a real oam on the
- * developer's box is never reached either.
+ * path, the preload (posingAsOam) makes the launcher's `--version` probe of
+ * that Node answer `oam 0.20.2`, which clears the floor, so it is chosen and
+ * the launcher spawns `node run <entry> -- --version` -- which has no `run`
+ * subcommand, prints no version and exits non-zero. A usable OAM_BIN is taken
+ * before discovery runs, so a real oam on the developer's box is never reached
+ * either. `fakeOam` lists the paths whose probe is posed; [] poses none, and
+ * Node then answers with its own `v2x.y.z`.
  *
  * Env is a whitelist so a CTXLINT_* var exported by the developer's shell
  * cannot change what is being asserted.
@@ -196,6 +376,7 @@ function runLauncher(
   hostOam: string | undefined,
   extraEnv: Record<string, string> = {},
   extraPreload = '',
+  fakeOam: string[] = [process.execPath],
 ): Promise<LauncherRun> {
   // Every run also reports, at exit, what the LAUNCHER process's argv[1] ended
   // up as. runInProcess points it at dist/index.js; a handoff leaves it on the
@@ -208,7 +389,9 @@ function runLauncher(
       : `Object.defineProperty(process.versions, "oam", { value: ${JSON.stringify(hostOam)}, enumerable: true });`;
   const preload = [
     '--import',
-    `data:text/javascript,${encodeURIComponent(exitMarker + posing + extraPreload)}`,
+    `data:text/javascript,${encodeURIComponent(
+      [exitMarker, posing, posingAsOam(fakeOam), extraPreload].join('\n'),
+    )}`,
   ];
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [...preload, LAUNCHER, '--version'], {
@@ -285,23 +468,20 @@ describe('launcher on an oam host', () => {
 });
 
 describe('launcher with no usable oam', () => {
-  /**
-   * An environment with no oam anywhere: HOME and LOCALAPPDATA point at an
-   * empty directory, so the installed locations are empty, and PATH holds only
-   * the directory of the Node running this test. Keeps a real oam on the
-   * developer's box out of reach.
-   */
-  function isolated(extra: Record<string, string> = {}): Record<string, string> {
-    const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-launcher-home-'));
-    return {
-      PATH: path.dirname(process.execPath),
-      USERPROFILE: empty,
-      HOME: empty,
-      LOCALAPPDATA: empty,
-      ...extra,
-    };
-  }
-  const missingOam = path.join(os.tmpdir(), 'no-such-dir', 'oam.exe');
+  it.skipIf(!buildAvailable)(
+    'passes over a binary whose --version is not oam`s, and runs on Node',
+    async () => {
+      // Node itself as OAM_BIN, probed for real: it answers `v2x.y.z`, which an
+      // unanchored parse took for an oam past the floor -- the launcher then
+      // spawned `node run <entry>`, which failed with no fallback.
+      const run = await runLauncher(undefined, isolated({ OAM_BIN: process.execPath }), '', []);
+      expect(servedByCli(run), JSON.stringify(run)).toBe(true);
+      expect(run.stderr).toMatch(
+        /^ctxlint: OAM_BIN=.* could not be run, or did not report a version this launcher understands; using Node instead\.$/m,
+      );
+    },
+    TIMEOUT_MS,
+  );
 
   it.skipIf(!buildAvailable)(
     'names an OAM_BIN that does not exist instead of falling back silently',
@@ -352,7 +532,7 @@ describe('launcher with no usable oam', () => {
   it.skipIf(!buildAvailable)(
     'refuses to run on a below-floor oam host when there is no Node either',
     async () => {
-      const noNode = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-launcher-nopath-'));
+      const noNode = mkTmp('ctxlint-launcher-nopath-');
       const run = await runLauncher('0.9.0', {
         ...isolated(),
         PATH: noNode,
@@ -524,18 +704,6 @@ describe('launcher stripPermissionFlags()', () => {
 });
 
 describe('launcher handoff from an oam host', () => {
-  function isolated(extra: Record<string, string> = {}): Record<string, string> {
-    const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-launcher-home-'));
-    return {
-      PATH: path.dirname(process.execPath),
-      USERPROFILE: empty,
-      HOME: empty,
-      LOCALAPPDATA: empty,
-      ...extra,
-    };
-  }
-  const missingOam = path.join(os.tmpdir(), 'no-such-dir', 'oam.exe');
-
   it.skipIf(!buildAvailable)(
     'strips oam permission flags from NODE_OPTIONS before handing off to Node',
     async () => {
@@ -573,12 +741,12 @@ describe('launcher discovery honours OAM_INSTALL_DIR', () => {
   it.skipIf(!buildAvailable)(
     'finds an oam installed only in OAM_INSTALL_DIR',
     async () => {
-      // A stand-in "oam": the Node binary under oam's name. It answers
-      // --version with v2x.y.z, which clears the floor, so discovery picks it
-      // and spawns `oam run <entry> -- --version`, which Node cannot run --
-      // the same unmistakable spawn signature the OAM_BIN cases use.
-      const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-launcher-home-'));
-      const installDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-oam-install-'));
+      // A stand-in "oam": the Node binary under oam's name, whose --version
+      // probe is posed to answer `oam 0.20.2`. That clears the floor, so
+      // discovery picks it and spawns `oam run <entry> -- --version`, which
+      // Node cannot run -- the same unmistakable spawn signature the OAM_BIN
+      // cases use.
+      const installDir = mkTmp('ctxlint-oam-install-');
       const exeName = process.platform === 'win32' ? 'oam.exe' : 'oam';
       const fake = path.join(installDir, exeName);
       try {
@@ -587,26 +755,38 @@ describe('launcher discovery honours OAM_INSTALL_DIR', () => {
         fs.copyFileSync(process.execPath, fake);
         fs.chmodSync(fake, 0o755);
       }
-      const env = {
-        PATH: path.dirname(process.execPath),
-        USERPROFILE: empty,
-        HOME: empty,
-        LOCALAPPDATA: empty,
-        OAM_BIN: '',
-      };
-      try {
-        const without = await runLauncher(undefined, env);
-        expect(servedByCli(without), `control: no oam anywhere, ${JSON.stringify(without)}`).toBe(
-          true,
-        );
-        const withDir = await runLauncher(undefined, { ...env, OAM_INSTALL_DIR: installDir });
-        expect(servedByCli(withDir), `expected a spawn, got ${JSON.stringify(withDir)}`).toBe(
-          false,
-        );
-        expect(withDir.stderr).not.toMatch(/^ctxlint: /m);
-      } finally {
-        fs.rmSync(installDir, { recursive: true, force: true });
-      }
+      const env = isolated({ OAM_BIN: '' });
+      const without = await runLauncher(undefined, env, '', [fake]);
+      expect(servedByCli(without), `control: no oam anywhere, ${JSON.stringify(without)}`).toBe(
+        true,
+      );
+      const withDir = await runLauncher(undefined, { ...env, OAM_INSTALL_DIR: installDir }, '', [
+        fake,
+      ]);
+      expect(servedByCli(withDir), `expected a spawn, got ${JSON.stringify(withDir)}`).toBe(false);
+      expect(withDir.stderr).not.toMatch(/^ctxlint: /m);
+    },
+    TIMEOUT_MS,
+  );
+});
+
+describe('launcher in-process failure', () => {
+  it.skipIf(!buildAvailable)(
+    'reports a CLI that cannot be loaded on a supported oam host instead of a raw stack',
+    async () => {
+      // The in-process plan was the one runInProcess() call without
+      // .catch(fallbackFailed): a failed import escaped as an unhandled
+      // rejection. The hook makes importing dist/index.js fail.
+      const failImport = [
+        'import { registerHooks as __hooks } from "node:module";',
+        '__hooks({ resolve(spec, ctx, next) {',
+        '  if (spec.endsWith("/dist/index.js")) throw new Error("simulated load failure");',
+        '  return next(spec, ctx);',
+        '} });',
+      ].join('\n');
+      const run = await runLauncher('0.20.2', isolated(), failImport);
+      expect(run.code, JSON.stringify(run)).toBe(1);
+      expect(run.stderr).toMatch(/^ctxlint: could not run the CLI \(simulated load failure\)$/m);
     },
     TIMEOUT_MS,
   );

@@ -5,7 +5,9 @@ import {
   checkDuplicateRuleIds,
   checkUnusedCategories,
   checkRuleIdPrefixes,
+  checkRuleSeverityShape,
   loadCatalogSchema,
+  schemaKeywordsUsed,
 } from '../catalog-schema.js';
 
 /**
@@ -16,15 +18,17 @@ import {
  * validateCatalogObject, so we can craft minimal INVALID inputs without
  * editing any published catalog.
  *
- * Branches covered (catalog-schema.ts:57-135):
- *   - type mismatch                       (line 82-85)
- *   - minLength on a string               (line 89-90)
- *   - pattern miss on a string            (line 92-93)
- *   - format: "uri" miss on a string      (the format branch)
- *   - enum violation (string + non-string)(line 95-100, 103-105)
- *   - minItems on an array                (line 108-109)
- *   - missing required property           (line 120-123)
- *   - $ref into a missing $def -> throw   (resolveRef, line 57-64)
+ * Branches covered (validateNode in catalog-schema.ts, unless noted):
+ *   - type mismatch                       (the `type` check)
+ *   - minLength on a string               (the string branch)
+ *   - pattern miss on a string            (the string branch)
+ *   - format: "uri" miss on a string      (the string branch)
+ *   - enum violation (string + non-string)(the string branch + the non-string enum check)
+ *   - minItems on an array                (the array branch)
+ *   - missing required property           (the object branch)
+ *   - additionalProperties false / schema (the object branch)
+ *   - $ref into a missing $def -> throw   (resolveRef)
+ *   - unknown keyword / format -> throw   (checkSchemaKeywords)
  *   - nested error path reporting         (properties/items recursion)
  */
 
@@ -104,7 +108,7 @@ describe('validateCatalogObject (invalid inputs)', () => {
 
   it('flags a non-string value outside its enum (the typeof !== string branch)', () => {
     // No `type` declared so the typed-string enum branch is skipped and the
-    // dedicated non-string enum check (catalog-schema.ts:103-105) fires.
+    // dedicated non-string enum check in validateNode fires.
     const schema = {
       type: 'object',
       properties: { count: { enum: [1, 2, 3] } },
@@ -208,6 +212,63 @@ describe('validateCatalogObject (invalid inputs)', () => {
         ': missing required property "name"',
         'tags: array shorter than minItems 2',
         'version: string shorter than minLength 5',
+      ].sort(),
+    );
+  });
+
+  it('flags an undeclared property under additionalProperties: false', () => {
+    const schema = {
+      type: 'object',
+      additionalProperties: false,
+      properties: { severity: { type: 'string' } },
+    };
+    expect(validateCatalogObject({ severity: 'error' }, schema)).toEqual([]);
+    expect(validateCatalogObject({ severity: 'error', when: 'x' }, schema)).toEqual([
+      { path: 'when', message: 'unexpected property "when"' },
+    ]);
+  });
+
+  it('validates undeclared property values against an additionalProperties schema', () => {
+    const schema = {
+      type: 'object',
+      properties: { rules: { type: 'object', additionalProperties: { enum: ['error', 'info'] } } },
+    };
+    expect(validateCatalogObject({ rules: { a: 'error', b: 'info' } }, schema)).toEqual([]);
+    expect(validateCatalogObject({ rules: { a: 'error', b: 'fatal' } }, schema)).toEqual([
+      { path: 'rules.b', message: 'value "fatal" not in enum ["error","info"]' },
+    ]);
+  });
+
+  it('throws on a keyword the validator does not implement, instead of ignoring it', () => {
+    const schema = { type: 'object', properties: { n: { type: 'number', maximum: 3 } } };
+    expect(() => validateCatalogObject({ n: 99 }, schema)).toThrow(
+      /Unsupported JSON Schema keyword\(s\): maximum/,
+    );
+  });
+
+  it('throws on a format other than "uri"', () => {
+    const schema = { type: 'object', properties: { d: { type: 'string', format: 'date' } } };
+    expect(() => validateCatalogObject({ d: 'x' }, schema)).toThrow(
+      /Unsupported JSON Schema format/,
+    );
+  });
+
+  it('collects keywords through properties, $defs, items and additionalProperties only', () => {
+    const schema = {
+      type: 'object',
+      properties: { minimum: { type: 'string' } }, // a property NAMED like a keyword
+      $defs: { a: { type: 'array', items: { pattern: 'x' } } },
+      additionalProperties: { minLength: 1 },
+    };
+    expect([...schemaKeywordsUsed(schema)].sort()).toEqual(
+      [
+        '$defs',
+        'additionalProperties',
+        'items',
+        'minLength',
+        'pattern',
+        'properties',
+        'type',
       ].sort(),
     );
   });
@@ -340,5 +401,59 @@ describe('cross-field checks (invalid inputs)', () => {
   it('checkRuleIdPrefixes suppresses allowlisted legacy ids', () => {
     const catalog = { rules: [{ id: 'ci/thing', category: 'ci-coverage' }] };
     expect(checkRuleIdPrefixes(catalog, new Set(['ci/thing']))).toEqual([]);
+  });
+
+  it('checkRuleSeverityShape requires severity to be the highest per-case severity', () => {
+    const variants = [
+      { severity: 'error', when: 'a' },
+      { severity: 'info', when: 'b' },
+    ];
+    expect(
+      checkRuleSeverityShape({
+        rules: [{ id: 'a/x', severity: 'error', fixable: false, severityVariants: variants }],
+      }),
+    ).toEqual([]);
+    expect(
+      checkRuleSeverityShape({
+        rules: [{ id: 'a/x', severity: 'info', fixable: false, severityVariants: variants }],
+      }),
+    ).toEqual([
+      {
+        path: 'rules[a/x]',
+        message: 'severity "info" is not the highest per-case severity "error"',
+      },
+    ]);
+  });
+
+  it('checkRuleSeverityShape rejects one-severity splits and both split fields at once', () => {
+    const errors = checkRuleSeverityShape({
+      rules: [
+        {
+          id: 'a/x',
+          severity: 'warning',
+          fixable: false,
+          severityByFormat: { f: 'warning', g: 'warning' },
+          severityVariants: [{ severity: 'warning' }, { severity: 'info' }],
+        },
+      ],
+    });
+    expect(errors.map((e) => e.message)).toEqual([
+      'declares both severityByFormat and severityVariants',
+      'per-case severities name only one severity',
+    ]);
+  });
+
+  it('checkRuleSeverityShape ties fixDescription to fixable', () => {
+    expect(
+      checkRuleSeverityShape({
+        rules: [
+          { id: 'a/x', severity: 'error', fixable: true },
+          { id: 'a/y', severity: 'error', fixable: false, fixDescription: 'stale' },
+        ],
+      }),
+    ).toEqual([
+      { path: 'rules[a/x]', message: 'fixable rule has no fixDescription' },
+      { path: 'rules[a/y]', message: 'non-fixable rule carries a fixDescription' },
+    ]);
   });
 });

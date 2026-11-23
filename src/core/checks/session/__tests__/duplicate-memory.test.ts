@@ -141,3 +141,62 @@ describe('checkDuplicateMemory', () => {
     expect(issues).toHaveLength(1);
   });
 });
+
+describe('checkDuplicateMemory cost', () => {
+  /** A memory whose `content` reads are counted. */
+  function counted(projectDir: string, name: string, counter: { reads: number }): MemoryEntry {
+    const m = makeMemory('', projectDir, name);
+    const text = `${name} has a long enough body to clear the fifty-character minimum for comparison.\nsecond line of ${name}`;
+    Object.defineProperty(m, 'content', {
+      get: () => {
+        counter.reads++;
+        return text;
+      },
+    });
+    return m;
+  }
+
+  it('touches no memory content when no memory belongs to the current project', async () => {
+    // Only pairs with a current-project side are compared, so with none there
+    // is nothing to tokenize -- and nothing should be read.
+    const counter = { reads: 0 };
+    const memories = Array.from({ length: 50 }, (_, i) => counted(`p${i}`, `m${i}`, counter));
+    expect(await checkDuplicateMemory(makeCtx(memories))).toHaveLength(0);
+    expect(counter.reads).toBe(0);
+  });
+
+  it('skips pairs whose line counts are too far apart to reach the overlap bar', async () => {
+    // Jaccard >= 0.6 needs min/max line-set size >= 0.6, so a 10-line memory
+    // can never duplicate a 1-line one. Both still clear the length floor.
+    const long = Array.from(
+      { length: 10 },
+      (_, i) => `distinct line number ${i} of the long one`,
+    ).join('\n');
+    const short = 'distinct line number 0 of the long one, padded past fifty characters';
+    const ctx = makeCtx([
+      makeMemory(long, 'project-a', 'long'),
+      makeMemory(short, 'project-b', 'short'),
+    ]);
+    expect(await checkDuplicateMemory(ctx)).toHaveLength(0);
+  });
+});
+
+describe('checkDuplicateMemory -- project path containing an underscore', () => {
+  it('recognises the folded dir Claude Code creates as the current project', async () => {
+    const sharedContent = [
+      'This project uses TypeScript for everything',
+      'Always run pnpm test before committing',
+      'The main entry point is src/index.ts',
+    ].join('\n');
+    const ctx = makeCtx(
+      [
+        makeMemory(sharedContent, 'C--Users-x-yaw-mcp-servers-ctxlint', 'conventions'),
+        makeMemory(sharedContent, 'C--Users-x-yaw-other', 'conventions'),
+      ],
+      'C:/Users/x/yaw/mcp_servers/ctxlint',
+    );
+    const issues = await checkDuplicateMemory(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].check).toBe('session-duplicate-memory');
+  });
+});

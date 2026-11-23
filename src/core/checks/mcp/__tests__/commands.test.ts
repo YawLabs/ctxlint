@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import * as path from 'node:path';
 import { checkMcpCommands } from '../commands.js';
 import type { ParsedMcpConfig } from '../../../types.js';
 
@@ -155,7 +156,7 @@ describe('checkMcpCommands', () => {
     expect(issues).toHaveLength(0);
   });
 
-  describe('windows-npx-no-wrapper (platform-gated)', () => {
+  describe('windows-npx-no-wrapper', () => {
     // Swap process.platform for the duration of the test. Node prevents
     // direct reassignment; Object.defineProperty is the recommended workaround.
     function stubPlatform(value: string) {
@@ -165,69 +166,110 @@ describe('checkMcpCommands', () => {
         Object.defineProperty(process, 'platform', { value: original, configurable: true });
       };
     }
+    const RULE = 'mcp-commands/windows-npx-no-wrapper';
+    const npx = (command = 'npx', name = 'srv') => ({
+      name,
+      transport: 'stdio' as const,
+      command,
+      args: ['-y', '@some/pkg'],
+      line: 3,
+      raw: {},
+    });
 
-    it('fires windows-npx-no-wrapper for npx command on win32 project scope', async () => {
+    it('does NOT fire for a committed project file with no Windows evidence, on any host', async () => {
+      // The file is shared with Mac/Linux teammates; the linting host's OS
+      // says nothing about who runs it, and "cmd /c" would break them.
+      for (const platform of ['win32', 'linux', 'darwin']) {
+        const restore = stubPlatform(platform);
+        try {
+          const config = makeConfig({ scope: 'project', servers: [npx()] });
+          const issues = await checkMcpCommands(config, '/project');
+          expect(issues.find((i) => i.ruleId === RULE)).toBeUndefined();
+        } finally {
+          restore();
+        }
+      }
+    });
+
+    it('warns for a project file that is Windows-specific by its own content, on any host', async () => {
+      for (const platform of ['win32', 'linux']) {
+        const restore = stubPlatform(platform);
+        try {
+          const config = makeConfig({
+            scope: 'project',
+            servers: [
+              npx(),
+              {
+                name: 'local',
+                transport: 'stdio',
+                command: 'C:\\tools\\server.exe',
+                line: 8,
+                raw: {},
+              },
+            ],
+          });
+          const issues = await checkMcpCommands(config, '/project');
+          const w = issues.filter((i) => i.ruleId === RULE);
+          expect(w).toHaveLength(1);
+          expect(w[0].severity).toBe('warning');
+          expect(w[0].message).toBe('Server "srv": npx requires "cmd /c" wrapper on Windows');
+          expect(w[0].fix).toBeUndefined();
+        } finally {
+          restore();
+        }
+      }
+    });
+
+    it('errors for a user-scope config on a Windows host', async () => {
       const restore = stubPlatform('win32');
       try {
-        const config = makeConfig({
-          scope: 'project',
-          servers: [
-            {
-              name: 'srv',
-              transport: 'stdio',
-              command: 'npx',
-              args: ['-y', '@some/pkg'],
-              line: 3,
-              raw: {},
-            },
-          ],
-        });
+        const config = makeConfig({ scope: 'user', servers: [npx()] });
         const issues = await checkMcpCommands(config, '/project');
-        const w = issues.find((i) => i.ruleId === 'mcp-commands/windows-npx-no-wrapper');
+        const w = issues.find((i) => i.ruleId === RULE);
         expect(w).toBeDefined();
+        expect(w!.severity).toBe('error');
         expect(w!.message).toContain('cmd /c');
+        expect(w!.fix).toBeUndefined();
       } finally {
         restore();
       }
     });
 
-    it('does NOT fire on non-win32 platforms', async () => {
-      const restore = stubPlatform('linux');
+    it('does NOT fire for a user-scope config on a non-Windows host', async () => {
+      const restore = stubPlatform('darwin');
       try {
-        const config = makeConfig({
-          scope: 'project',
-          servers: [{ name: 'srv', transport: 'stdio', command: 'npx', line: 3, raw: {} }],
-        });
+        const config = makeConfig({ scope: 'user', servers: [npx()] });
         const issues = await checkMcpCommands(config, '/project');
-        expect(
-          issues.find((i) => i.ruleId === 'mcp-commands/windows-npx-no-wrapper'),
-        ).toBeUndefined();
+        expect(issues.find((i) => i.ruleId === RULE)).toBeUndefined();
       } finally {
         restore();
       }
     });
 
-    it('does NOT fire on win32 for user-scope configs', async () => {
+    it('recognises npx.cmd, bunx and pnpm as needing the wrapper too', async () => {
       const restore = stubPlatform('win32');
       try {
         const config = makeConfig({
           scope: 'user',
-          servers: [{ name: 'srv', transport: 'stdio', command: 'npx', line: 3, raw: {} }],
+          servers: [npx('npx.cmd', 'a'), npx('bunx', 'b'), npx('pnpm', 'c'), npx('NPX', 'd')],
         });
         const issues = await checkMcpCommands(config, '/project');
-        expect(
-          issues.find((i) => i.ruleId === 'mcp-commands/windows-npx-no-wrapper'),
-        ).toBeUndefined();
+        expect(issues.filter((i) => i.ruleId === RULE).map((i) => i.message)).toEqual([
+          'Server "a": npx.cmd requires "cmd /c" wrapper on Windows',
+          'Server "b": bunx requires "cmd /c" wrapper on Windows',
+          'Server "c": pnpm requires "cmd /c" wrapper on Windows',
+          'Server "d": NPX requires "cmd /c" wrapper on Windows',
+        ]);
       } finally {
         restore();
       }
     });
 
-    it('does NOT fire on win32 when command is already "cmd"', async () => {
+    it('does NOT fire when command is already "cmd"', async () => {
       const restore = stubPlatform('win32');
       try {
         const config = makeConfig({
-          scope: 'project',
+          scope: 'user',
           servers: [
             {
               name: 'srv',
@@ -240,13 +282,92 @@ describe('checkMcpCommands', () => {
           ],
         });
         const issues = await checkMcpCommands(config, '/project');
-        expect(
-          issues.find((i) => i.ruleId === 'mcp-commands/windows-npx-no-wrapper'),
-        ).toBeUndefined();
+        expect(issues.find((i) => i.ruleId === RULE)).toBeUndefined();
       } finally {
         restore();
       }
     });
+
+    it('checks Windows absolute path args on a Windows host', async () => {
+      const restore = stubPlatform('win32');
+      try {
+        const config = makeConfig({
+          scope: 'user',
+          servers: [
+            {
+              name: 's',
+              transport: 'stdio',
+              command: 'node',
+              args: ['C:\\definitely\\missing\\server.js'],
+              line: 3,
+              raw: {},
+            },
+          ],
+        });
+        const issues = await checkMcpCommands(config, '/project');
+        expect(issues.filter((i) => i.ruleId === 'mcp-commands/args-path-missing')).toHaveLength(1);
+      } finally {
+        restore();
+      }
+    });
+  });
+
+  it('does not flag package specs, URIs with any scheme, or image refs as file paths', async () => {
+    const nonPaths = [
+      '@modelcontextprotocol/server-filesystem@2025.8.21',
+      'ghcr.io/org/image:1.2.3',
+      'mcr.microsoft.com/playwright/mcp:v0.0.1',
+      'postgresql://u@db/app.public',
+      'mongodb+srv://cluster.example.net/db.json',
+    ];
+    const config = makeConfig({
+      servers: [
+        { name: 's', transport: 'stdio', command: 'npx', args: nonPaths, line: 3, raw: {} },
+      ],
+    });
+    const issues = await checkMcpCommands(config, '/project');
+    expect(issues.filter((i) => i.ruleId === 'mcp-commands/args-path-missing')).toEqual([]);
+  });
+
+  it('does not resolve args with unexpandable ${...} references literally', async () => {
+    const config = makeConfig({
+      servers: [
+        {
+          name: 's',
+          transport: 'stdio',
+          command: 'node',
+          args: ['${HOME}/dist/index.js', '${env:ROOT}/x/server.js', '${input:dir}/a.js'],
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpCommands(config, '/project');
+    expect(issues.filter((i) => i.ruleId === 'mcp-commands/args-path-missing')).toEqual([]);
+  });
+
+  it('expands ${workspaceFolder} to the project root before checking', async () => {
+    const root = path.resolve(__dirname, '..');
+    const config = makeConfig({
+      client: 'cursor',
+      relativePath: '.cursor/mcp.json',
+      servers: [
+        {
+          name: 's',
+          transport: 'stdio',
+          command: 'node',
+          args: ['${workspaceFolder}/commands.ts', '${workspaceFolder}/nope/missing.js'],
+          line: 3,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpCommands(config, root);
+    expect(
+      issues.filter((i) => i.ruleId === 'mcp-commands/args-path-missing').map((i) => i.message),
+    ).toEqual([
+      'Server "s": arg "${workspaceFolder}/nope/missing.js" looks like a file path but doesn\'t exist',
+    ]);
   });
 
   it('does not flag URL args as missing file paths', async () => {

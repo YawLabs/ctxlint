@@ -199,9 +199,59 @@ describe('applyFixes', () => {
       },
     ]);
 
-    const summary = applyFixes(result);
-    expect(summary.totalFixes).toBe(1);
-    expect(summary.filesModified).toHaveLength(1);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const summary = applyFixes(result);
+      expect(summary.totalFixes).toBe(1);
+      expect(summary.filesModified).toHaveLength(1);
+      // Without the dedupe the second copy finds its range already claimed
+      // and logs a spurious skip.
+      const messages = logSpy.mock.calls.map((args) => args.join(' ')).join('\n');
+      expect(messages).not.toContain('Skipped');
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('does not dedupe fixes whose fields merely join to the same string', () => {
+    // A ':'-joined key made (oldText "a:b", newText "c") equal to
+    // (oldText "a", newText "b:c"), dropping the second fix.
+    const filePath = writeFixture('CLAUDE.md', 'x a:b y\nx a z\n');
+    const result = makeResult([
+      {
+        path: 'CLAUDE.md',
+        isSymlink: false,
+        tokens: 10,
+        lines: 2,
+        issues: [
+          {
+            severity: 'error',
+            check: 'paths',
+            line: 1,
+            message: '',
+            fix: { file: filePath, line: 1, oldText: 'a:b', newText: 'c' },
+          },
+          {
+            severity: 'error',
+            check: 'paths',
+            line: 1,
+            message: '',
+            fix: { file: filePath, line: 1, oldText: 'a', newText: 'b:c' },
+          },
+        ],
+      },
+    ]);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      applyFixes(result);
+      // Both are distinct fixes: the longer claims "a:b", the shorter then
+      // finds no unclaimed "a" and says so (it was not silently deduped).
+      const messages = logSpy.mock.calls.map((args) => args.join(' ')).join('\n');
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe('x c y\nx a z\n');
+      expect(messages).toContain('already claimed');
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 
   it('does not log when quiet: true is passed', () => {
@@ -276,9 +326,9 @@ describe('applyFixes', () => {
   // When a directory rename lands on a line that references the renamed
   // prefix twice (e.g. "see src/old/a.ts and src/old/b.ts"), a naive
   // String.prototype.replace would only rewrite the first occurrence and
-  // leave the second dangling. We use replaceAll on literal strings so both
-  // get fixed in a single pass.
-  it('rewrites every occurrence when oldText appears twice on one line', () => {
+  // leave the second dangling. A producer that means every occurrence sets
+  // replaceAll, and both get fixed in a single pass.
+  it('rewrites every occurrence when the fix sets replaceAll', () => {
     const filePath = writeFixture(
       'CLAUDE.md',
       'Tests live in `src/old/foo.ts` and `src/old/bar.ts`.\n',
@@ -295,7 +345,13 @@ describe('applyFixes', () => {
             check: 'paths',
             line: 1,
             message: 'src/old/ renamed',
-            fix: { file: filePath, line: 1, oldText: 'src/old/', newText: 'src/new/' },
+            fix: {
+              file: filePath,
+              line: 1,
+              oldText: 'src/old/',
+              newText: 'src/new/',
+              replaceAll: true,
+            },
           },
         ],
       },
@@ -335,7 +391,13 @@ describe('applyFixes', () => {
             check: 'paths',
             line: 1,
             message: 'src/old/ renamed',
-            fix: { file: filePath, line: 1, oldText: 'src/old/', newText: 'src/new/' },
+            fix: {
+              file: filePath,
+              line: 1,
+              oldText: 'src/old/',
+              newText: 'src/new/',
+              replaceAll: true,
+            },
           },
           {
             severity: 'error',
@@ -670,12 +732,12 @@ describe('applyFixes', () => {
   // -------------------------------------------------------------------------
   // Gap 4: skipSymlinks default + --follow-symlinks override.
   //
-  // The fixer keys symlink-skipping entirely off the scanner-supplied
-  // `file.isSymlink` flag in the LintResult (fixer.ts:34-38, 51-54) -- it never
-  // touches the filesystem to detect a symlink. So these tests set
-  // isSymlink: true on a PLAIN on-disk file and assert the flag-driven branch,
-  // which is faithful to the code path and does not require a real symlink
-  // (symlink creation is EPERM on this Windows host without dev-mode anyway).
+  // The fixer skips a fix when the scanner-supplied `file.isSymlink` flag is
+  // set OR an lstat of the fix's own target reports a symlink (the
+  // skipSymlinks branch at the top of applyFixes). The flag-driven tests set
+  // isSymlink: true on a PLAIN on-disk file; the lstat-driven test needs a
+  // real symlink and skips itself where creating one is EPERM (Windows
+  // without developer mode).
   // -------------------------------------------------------------------------
   describe('skipSymlinks', () => {
     it('skips a file flagged isSymlink by default, writes nothing, logs the skip', () => {
@@ -850,6 +912,239 @@ describe('applyFixes', () => {
       const summary = applyFixes(result);
       expect(summary.totalFixes).toBe(0);
       expect(fs.readFileSync(filePath, 'utf-8')).toBe(original);
+    });
+  });
+
+  function captureLogs(fn: () => void): string {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      fn();
+      return logSpy.mock.calls.map((args) => args.join(' ')).join('\n');
+    } finally {
+      logSpy.mockRestore();
+    }
+  }
+
+  function oneFix(
+    filePath: string,
+    fix: Omit<NonNullable<LintResult['files'][number]['issues'][number]['fix']>, 'file'>,
+    check: LintResult['files'][number]['issues'][number]['check'] = 'paths',
+  ): LintResult {
+    return makeResult([
+      {
+        path: path.basename(filePath),
+        isSymlink: false,
+        tokens: 10,
+        lines: 1,
+        issues: [
+          {
+            severity: 'error',
+            check,
+            line: fix.line,
+            message: '',
+            fix: { file: filePath, ...fix },
+          },
+        ],
+      },
+    ]);
+  }
+
+  describe('log output', () => {
+    const GHP = `ghp_${'A1b2C3d4E5'.repeat(3)}abcdef`;
+    const HIGH_ENTROPY = 'q8Zt3LmP0vXa9WcR7yKd2HbN5sFj1GeU';
+
+    it('never prints an mcp-security secret, known-format or high-entropy', () => {
+      const content = `{\n  "env": {\n    "GITHUB_TOKEN": "${GHP}",\n    "API_KEY": "${HIGH_ENTROPY}"\n  }\n}\n`;
+      const filePath = writeFixture('.mcp.json', content);
+      const result = makeResult([
+        {
+          path: '.mcp.json',
+          isSymlink: false,
+          tokens: 0,
+          lines: 6,
+          issues: [
+            {
+              severity: 'error',
+              check: 'mcp-security',
+              line: 3,
+              message: '',
+              fix: {
+                file: filePath,
+                line: 3,
+                oldText: GHP,
+                newText: '${GITHUB_TOKEN}',
+                column: 22,
+              },
+            },
+            {
+              severity: 'error',
+              check: 'mcp-security',
+              line: 4,
+              message: '',
+              fix: {
+                file: filePath,
+                line: 4,
+                oldText: HIGH_ENTROPY,
+                newText: '${API_KEY}',
+                column: 17,
+              },
+            },
+          ],
+        },
+      ]);
+      for (const dryRun of [true, false]) {
+        const messages = captureLogs(() => applyFixes(result, { dryRun }));
+        expect(messages).toContain(dryRun ? 'Would fix' : 'Fixed');
+        expect(messages).not.toContain(GHP);
+        expect(messages).not.toContain(HIGH_ENTROPY);
+        expect(messages).toContain('${GITHUB_TOKEN}');
+      }
+      expect(fs.readFileSync(filePath, 'utf-8')).toContain('"API_KEY": "${API_KEY}"');
+    });
+
+    it('redacts a known-format token that rides in a non-secret fix', () => {
+      const filePath = writeFixture('CLAUDE.md', `token ${GHP} here\n`);
+      const messages = captureLogs(() =>
+        applyFixes(oneFix(filePath, { line: 1, oldText: GHP, newText: 'redacted' }), {
+          dryRun: true,
+        }),
+      );
+      expect(messages).toContain('Would fix');
+      expect(messages).not.toContain(GHP);
+    });
+
+    it('prints a header naming each file before its lines', () => {
+      fs.mkdirSync(path.join(tmpDir, 'docs'));
+      const a = writeFixture('CLAUDE.md', 'See `src/a.ts`\n');
+      const b = writeFixture(path.join('docs', 'AGENTS.md'), 'See `src/b.ts`\n');
+      const result = makeResult([
+        {
+          path: 'CLAUDE.md',
+          isSymlink: false,
+          tokens: 1,
+          lines: 1,
+          issues: [
+            {
+              severity: 'error',
+              check: 'paths',
+              line: 1,
+              message: '',
+              fix: { file: a, line: 1, oldText: 'src/a.ts', newText: 'src/aa.ts' },
+            },
+          ],
+        },
+        {
+          path: 'docs/AGENTS.md',
+          isSymlink: false,
+          tokens: 1,
+          lines: 1,
+          issues: [
+            {
+              severity: 'error',
+              check: 'paths',
+              line: 1,
+              message: '',
+              fix: { file: b, line: 1, oldText: 'src/b.ts', newText: 'src/bb.ts' },
+            },
+          ],
+        },
+      ]);
+      const lines = captureLogs(() => applyFixes(result, { dryRun: true })).split('\n');
+      const ia = lines.findIndex((l) => l.trim() === 'CLAUDE.md');
+      const ib = lines.findIndex((l) => l.trim() === 'docs/AGENTS.md');
+      expect(ia).toBeGreaterThanOrEqual(0);
+      expect(ib).toBeGreaterThan(ia);
+      expect(lines[ia + 1]).toContain('src/a.ts');
+      expect(lines[ib + 1]).toContain('src/b.ts');
+    });
+  });
+
+  describe('column-less fixes', () => {
+    it('rewrites only the first occurrence on the line by default', () => {
+      const filePath = writeFixture('CLAUDE.md', 'see old.ts and old.ts\n');
+      const summary = applyFixes(
+        oneFix(filePath, { line: 1, oldText: 'old.ts', newText: 'new.ts' }),
+        { quiet: true },
+      );
+      expect(summary.totalFixes).toBe(1);
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe('see new.ts and old.ts\n');
+    });
+
+    it('logs a skip when the text is no longer on the line', () => {
+      const filePath = writeFixture('CLAUDE.md', 'This line has no path\n');
+      const messages = captureLogs(() =>
+        applyFixes(oneFix(filePath, { line: 1, oldText: 'ghost.ts', newText: 'real.ts' })),
+      );
+      expect(messages).toContain('Skipped: text not found on line 1');
+      expect(messages).toContain('CLAUDE.md');
+    });
+  });
+
+  describe('JSON validity gate', () => {
+    it('does not blame the fix for a BOM-prefixed JSON file', () => {
+      const filePath = writeFixture(
+        '.mcp.json',
+        '\uFEFF{"mcpServers": {"a": {"command": "old"}}}\n',
+      );
+      const summary = applyFixes(
+        oneFix(filePath, { line: 1, oldText: '"old"', newText: '"new"' }),
+        { quiet: true },
+      );
+      expect(summary.totalFixes).toBe(1);
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe(
+        '\uFEFF{"mcpServers": {"a": {"command": "new"}}}\n',
+      );
+    });
+
+    it('does not blame the fix for a JSONC file (comments, trailing comma)', () => {
+      const filePath = writeFixture(
+        'mcp.json',
+        '{\n  // VS Code reads this as JSONC\n  "servers": {"a": {"command": "old"},},\n}\n',
+      );
+      const summary = applyFixes(
+        oneFix(filePath, { line: 3, oldText: '"old"', newText: '"new"' }),
+        { quiet: true },
+      );
+      expect(summary.totalFixes).toBe(1);
+      expect(fs.readFileSync(filePath, 'utf-8')).toContain('"command": "new"');
+    });
+
+    it('still refuses a fix that breaks a JSONC file', () => {
+      const original = '{\n  // c\n  "servers": {"a": {"command": "old"}},\n}\n';
+      const filePath = writeFixture('mcp.json', original);
+      const messages = captureLogs(() =>
+        applyFixes(oneFix(filePath, { line: 3, oldText: '"old"}', newText: '"new"' })),
+      );
+      expect(messages).toContain('invalid JSON');
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe(original);
+    });
+
+    it('applies the gate to an upper-case .JSON suffix', () => {
+      const original = '{"a": "old"}\n';
+      const filePath = writeFixture('CONFIG.JSON', original);
+      const messages = captureLogs(() =>
+        applyFixes(oneFix(filePath, { line: 1, oldText: '"old"}', newText: '"new"' })),
+      );
+      expect(messages).toContain('invalid JSON');
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe(original);
+    });
+  });
+
+  describe('symlinked fix target', () => {
+    it('skips a fix whose own target is a symlink even when the FileResult says it is not', (ctx) => {
+      const real = writeFixture('real.json', '{"a": "old"}\n');
+      const link = path.join(tmpDir, 'mcp.json');
+      try {
+        fs.symlinkSync(real, link, 'file');
+      } catch {
+        ctx.skip(); // EPERM: no symlink privilege on this host
+        return;
+      }
+      const messages = captureLogs(() =>
+        applyFixes(oneFix(link, { line: 1, oldText: '"old"', newText: '"new"' })),
+      );
+      expect(messages).toContain('symlink');
+      expect(fs.readFileSync(real, 'utf-8')).toBe('{"a": "old"}\n');
     });
   });
 });

@@ -22,15 +22,42 @@
  * testable without a fixture project.
  */
 
+import { htmlCommentLineMask, nonProseLineMask } from '../../utils/markdown.js';
+
 /**
  * Commands whose EXIT STATUS is the reason to run them. Deliberately narrow:
  * a general command piped into a pager is normal shell usage and must stay
  * silent. Only a verification tool's discarded status is a defect.
+ *
+ * The name must end at whitespace or end of string, so `tsc-watch` (a watcher,
+ * not a gate) is not read as `tsc`.
+ *
+ * How to refresh: add a tool here only when its documented contract is "exit
+ * non-zero on a finding" (type checkers, linters in check mode, test runners).
+ * A tool that only does so behind a flag belongs in VERIFIER_PAIRS with that
+ * flag, the way `prettier --check` is.
  */
-const VERIFIER_PATTERN = /^(tsc|eslint|biome|vitest|jest|pytest|mypy|ruff|oxlint)\b/;
+const VERIFIER_PATTERN =
+  /^(tsc|vue-tsc|svelte-check|eslint|biome|oxlint|stylelint|vitest|jest|mocha|ava|pytest|mypy|pyright|ruff|flake8)(?=\s|$)/;
 
-/** Two-token verifiers, matched before the single-token set. */
-const VERIFIER_PAIRS = [/^cargo\s+(test|clippy|check)\b/, /^go\s+(test|vet|build)\b/];
+/**
+ * Multi-token verifiers, matched before the single-token set. `m[0]` is the
+ * name reported in the message, so a pattern that needs to look at a later
+ * flag does it in a lookahead.
+ *
+ * How to refresh: one entry per (tool, gating subcommand). Keep each language's
+ * build/test/lint verbs aligned -- `go build` was listed while `cargo build`
+ * was not, which is the drift this comment exists to stop.
+ */
+const VERIFIER_PAIRS = [
+  /^cargo\s+(test|clippy|check|build)(?=\s|$)/,
+  /^go\s+(test|vet|build)(?=\s|$)/,
+  /^deno\s+(test|check|lint)(?=\s|$)/,
+  /^bun\s+test(?=\s|$)/,
+  /^playwright\s+test(?=\s|$)/,
+  /^python3?\s+-m\s+(pytest|mypy|unittest)(?=\s|$)/,
+  /^prettier(?=\s(?:.*\s)?(?:--check|-c|--list-different|-l)(?:\s|$))/,
+];
 
 /**
  * Filters and pagers. A pipeline ending in one of these reports ITS status,
@@ -41,23 +68,108 @@ const VERIFIER_PAIRS = [/^cargo\s+(test|clippy|check)\b/, /^go\s+(test|vet|build
  * inverts the meaning (grep exits 0 when it FINDS something, so
  * `tsc | grep error && echo clean` prints "clean" precisely when there are
  * errors). Both readings are defects.
+ *
+ * How to refresh: a command belongs here when it exits 0 for ordinary input
+ * regardless of what the upstream verifier printed. Search tools (`rg`) are
+ * here for the same reason as `grep`.
  */
-const FILTER_PATTERN = /^(head|tail|grep|egrep|fgrep|sed|awk|less|more|cat|tee|wc)\b/;
-
-/** Package-manager script runners, for resolving `npm run lint` to its body. */
-const SCRIPT_RUNNER = /^(?:npm\s+run|(?:pnpm|yarn|bun)(?:\s+run)?)\s+(\S+)/;
+const FILTER_PATTERN =
+  /^(head|tail|grep|egrep|fgrep|rg|sed|awk|less|more|cat|tee|wc|sort|uniq|cut|tr)(?=\s|$)/;
 
 /**
- * Script-mapped shorthands (`npm test`, `pnpm lint`) -- the same set
- * commands.ts validates as script references. Matched separately from
- * SCRIPT_RUNNER so a bare `npm install` never gets looked up as a script.
+ * Package-manager script runners, for resolving `npm run lint` to its body.
+ * pnpm/yarn/bun also accept a bare `<runner> <name>`; when `<name>` is not a
+ * script they run the local binary of that name instead (`pnpm tsc`), which
+ * verifierName handles by classifying the remainder as a direct command.
  */
-const SCRIPT_SHORTHAND =
-  /^(?:npm|pnpm|yarn|bun)\s+(test|start|build|dev|lint|format|check|typecheck|type-check|clean|serve|preview|e2e)\b/;
+const SCRIPT_RUNNER = /^(?:npm\s+run(?:-script)?|(?:pnpm|yarn|bun)(?:\s+run)?)\s+(\S+)/;
+/** The runner prefix alone, for falling through to the direct command. */
+const BARE_RUNNER_PREFIX = /^(?:pnpm|yarn|bun)(?:\s+run)?\s+/;
 
-/** Wrappers that delegate to another command; stripped before classification. */
-const WRAPPER_PATTERN = /^(npx|bunx|sudo|time|command|nice)\b/;
-const EXEC_WRAPPER_PATTERN = /^(?:pnpm|npm|yarn|bun)\s+(?:exec|dlx)\b/;
+/**
+ * npm's lifecycle commands, mapped to the script each one runs. npm, unlike
+ * pnpm/yarn/bun, does NOT run an arbitrary `npm <script>` -- only these map to
+ * a script, and the `t`/`tst` aliases run `test`. Shared with commands.ts so
+ * the two rules agree on what `npm <word>` runs.
+ *
+ * How to refresh: this is npm's own list (`npm help run-script` /
+ * `npm help test`). It changes only when npm adds a lifecycle shorthand.
+ */
+export const NPM_LIFECYCLE_SHORTHANDS: Readonly<Record<string, string>> = {
+  test: 'test',
+  t: 'test',
+  tst: 'test',
+  start: 'start',
+  stop: 'stop',
+  restart: 'restart',
+};
+
+/**
+ * `npm <lifecycle>`, matched separately from SCRIPT_RUNNER so a bare
+ * `npm install` never gets looked up as a script. The lookahead keeps
+ * `npm test-unit` from reading as `npm test`.
+ */
+const SCRIPT_SHORTHAND = new RegExp(
+  `^npm\\s+(${Object.keys(NPM_LIFECYCLE_SHORTHANDS).join('|')})(?=\\s|$)`,
+);
+
+/**
+ * Wrappers that delegate to another command, keyed by name, with the flags of
+ * each that consume a separate value (`npx -p pkg`, `nice -n 10`, `sudo -u u`).
+ * Shared with cli-subcommands.ts so the two command scanners agree on what a
+ * wrapper is -- the tables had already drifted (`command`/`nice` here only).
+ *
+ * How to refresh: add a wrapper only when its contract is "run argv[1..] as a
+ * command". A flag that changes that (`command -v` looks a name up instead of
+ * running it) is handled in stripWrapperTokens.
+ */
+export const WRAPPERS: Readonly<Record<string, readonly string[]>> = {
+  npx: ['-p', '--package'],
+  bunx: ['-p', '--package'],
+  sudo: ['-u', '-g', '-h', '-C'],
+  time: ['-f', '-o'],
+  command: [],
+  nice: ['-n'],
+};
+
+/** Wrappers that run a PACKAGE's bin, so the next token may be `pkg@version`. */
+const PACKAGE_WRAPPERS = new Set(['npx', 'bunx']);
+
+/** Two-token wrappers: `pnpm exec`, `npm exec`, `yarn dlx`, `pnpm dlx`, `bun x`. */
+export const EXEC_WRAPPER_PATTERN = /^(?:(?:pnpm|npm|yarn|bun)\s+(?:exec|dlx)|bun\s+x)(?=\s|$)/;
+
+/**
+ * Strip leading wrapper tokens (and each wrapper's flags) from an argv-style
+ * token list. `packageRunner` is true when one of the stripped wrappers runs a
+ * package bin (`npx`, `bunx`, `pnpm dlx`, `npm exec`, `bun x`), i.e. when the
+ * first remaining token may be a `pkg@version` spec rather than a command.
+ */
+export function stripWrapperTokens(tokens: string[]): { rest: string[]; packageRunner: boolean } {
+  let rest = tokens;
+  let packageRunner = false;
+  for (;;) {
+    if (rest.length >= 2 && EXEC_WRAPPER_PATTERN.test(`${rest[0]} ${rest[1]}`)) {
+      rest = rest.slice(2);
+      packageRunner = true;
+      while (rest.length > 0 && rest[0].startsWith('-')) rest = rest.slice(1);
+      continue;
+    }
+    const head = rest[0];
+    if (head === undefined || !Object.hasOwn(WRAPPERS, head)) break;
+    // `command -v x` / `command -V x` look `x` up; they do not run it.
+    if (head === 'command' && (rest[1] === '-v' || rest[1] === '-V')) break;
+    const valueFlags = WRAPPERS[head];
+    let i = 1;
+    while (i < rest.length && rest[i].startsWith('-')) {
+      if (!rest[i].includes('=') && valueFlags.includes(rest[i])) i++;
+      i++;
+    }
+    if (i >= rest.length) break; // a wrapper with nothing to wrap
+    if (PACKAGE_WRAPPERS.has(head)) packageRunner = true;
+    rest = rest.slice(i);
+  }
+  return { rest, packageRunner };
+}
 
 /**
  * Words an `echo`/`printf` uses to ANNOUNCE success. The claim has to assert
@@ -66,6 +178,21 @@ const EXEC_WRAPPER_PATTERN = /^(?:pnpm|npm|yarn|bun)\s+(?:exec|dlx)\b/;
  */
 const SUCCESS_WORD =
   /\b(ok|okay|clean|pass|passed|passes|passing|green|success|successful|done|all\s+good|no\s+errors|looks\s+good)\b/i;
+
+/**
+ * A negation or failure word BEFORE the success word turns the echo into a
+ * failure report: `grep -q "error TS" && echo "FAIL: not clean"` is a correct
+ * gate (grep found an error, so say so), not a false success claim.
+ *
+ * A zero COUNT is not a negation: "0 errors, clean" and "no issues - passed"
+ * are the commonest false success claims of all, so ZERO_COUNT is blanked out
+ * of the text before NEGATION_BEFORE looks at it.
+ */
+const NEGATION_BEFORE = /\b(not|never|no|fail|failed|fails|failure|error|errors|isn'?t|aren'?t)\b/i;
+
+/** "0 errors", "no issues", "zero failures", "0 failed", "errors: 0". */
+const ZERO_COUNT =
+  /\b(?:0|no|zero)\s+(?:errors?|issues?|problems?|warnings?|failures?|failed|failing)\b|\b(?:errors?|issues?|problems?|warnings?|failures?|failed):?\s*0\b/gi;
 
 /** `set -o pipefail` in any of its spellings (`-eo`, `-euo`, `-o`). */
 const PIPEFAIL = /\bset\s+[-\w\s]*\bpipefail\b/;
@@ -188,31 +315,28 @@ export function splitPipes(segment: string): string[] {
 }
 
 /**
- * Strip leading `VAR=value` assignments, redirections and delegating wrappers
- * (`npx`, `sudo`, `pnpm exec`, ...) plus their flags, so classification sees
- * the real command. `npx -y biome check .` reduces to `biome check .`.
+ * Strip leading `VAR=value` assignments and delegating wrappers (`npx`,
+ * `sudo`, `pnpm exec`, ...) plus their flags, so classification sees the real
+ * command. `npx -y biome check .` reduces to `biome check .`. Redirections are
+ * left in place: they trail the command (`tsc 2>&1`), and classification only
+ * reads the head.
  */
 function unwrap(part: string): string {
   let s = part.trim();
   // Leading environment assignments.
   s = s.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+)+/, '');
-  // `pnpm exec` / `npm exec` / `yarn dlx` / `bun x` style two-token wrappers.
-  const execMatch = s.match(EXEC_WRAPPER_PATTERN);
-  if (execMatch) s = s.slice(execMatch[0].length).trim();
-  // Single-token wrappers, plus any flags they carry (`npx -y`, `npx -p foo`).
-  while (WRAPPER_PATTERN.test(s)) {
-    const tokens = s.split(/\s+/).slice(1);
-    let i = 0;
-    while (i < tokens.length && tokens[i].startsWith('-')) {
-      // `-p pkg` / `--package pkg` consume a value.
-      if (tokens[i] === '-p' || tokens[i] === '--package') i++;
-      i++;
-    }
-    const next = tokens.slice(i).join(' ');
-    if (!next || next === s) break;
-    s = next;
+  const { rest } = stripWrapperTokens(s.split(/\s+/).filter(Boolean));
+  return rest.join(' ').trim();
+}
+
+/** Classify an already-unwrapped command as a direct verifier invocation. */
+function directVerifier(s: string): string | null {
+  for (const re of VERIFIER_PAIRS) {
+    const m = s.match(re);
+    if (m) return m[0].replace(/\s+/g, ' ');
   }
-  return s.trim();
+  const direct = s.match(VERIFIER_PATTERN);
+  return direct ? direct[1] : null;
 }
 
 /**
@@ -225,30 +349,25 @@ export function verifierName(part: string, scripts?: Record<string, string>): st
   const s = unwrap(part);
   if (!s) return null;
 
-  for (const re of VERIFIER_PAIRS) {
-    const m = s.match(re);
-    if (m) return m[0].replace(/\s+/g, ' ');
-  }
-  const direct = s.match(VERIFIER_PATTERN);
-  if (direct) return direct[1];
+  const direct = directVerifier(s);
+  if (direct) return direct;
 
   // One level of script indirection. Not recursive: a script body that itself
   // runs another script is rare, and each extra hop widens the blast radius.
-  const scriptName = (s.match(SCRIPT_RUNNER) ?? s.match(SCRIPT_SHORTHAND))?.[1];
-  if (scriptName && scripts) {
-    const body = scripts[scriptName];
-    if (typeof body === 'string') {
-      const first = splitPipes(splitSegments(body)[0]?.text ?? '')[0] ?? '';
-      const inner = unwrap(first);
-      for (const re of VERIFIER_PAIRS) {
-        const m = inner.match(re);
-        if (m) return m[0].replace(/\s+/g, ' ');
-      }
-      const d = inner.match(VERIFIER_PATTERN);
-      if (d) return d[1];
-    }
+  const runner = s.match(SCRIPT_RUNNER)?.[1];
+  const shorthand = runner ? undefined : s.match(SCRIPT_SHORTHAND)?.[1];
+  const scriptName = runner ?? (shorthand ? NPM_LIFECYCLE_SHORTHANDS[shorthand] : undefined);
+  if (!scriptName) return null;
+  const body = scripts?.[scriptName];
+  if (typeof body === 'string') {
+    const first = splitPipes(splitSegments(body)[0]?.text ?? '')[0] ?? '';
+    return directVerifier(unwrap(first));
   }
-  return null;
+  // Not a script: pnpm/yarn/bun then run the local binary of that name, so
+  // `pnpm tsc --noEmit` IS `tsc --noEmit`. npm does not (`npm run tsc` with no
+  // such script just fails), so only the bare runners fall through.
+  const bare = s.match(BARE_RUNNER_PREFIX);
+  return bare ? directVerifier(s.slice(bare[0].length)) : null;
 }
 
 /** Name the filter a pipeline segment starts with, or null. */
@@ -260,7 +379,9 @@ export function filterName(part: string): string | null {
 /** True when a segment is an `echo`/`printf` announcing success. */
 function isSuccessClaim(segment: string): boolean {
   if (!/^(echo|printf)\b/.test(unwrap(segment))) return false;
-  return SUCCESS_WORD.test(segment);
+  const m = SUCCESS_WORD.exec(segment);
+  if (!m) return false;
+  return !NEGATION_BEFORE.test(segment.slice(0, m.index).replace(ZERO_COUNT, ' '));
 }
 
 /**
@@ -330,18 +451,63 @@ export function pipefailInScope(content: string, line: number): boolean {
   const idx = line - 1;
   if (idx < 0 || idx >= lines.length) return false;
 
-  let fenceStart = -1;
-  let open = false;
-  for (let i = 0; i < idx; i++) {
-    if (/^\s*```/.test(lines[i])) {
-      open = !open;
-      fenceStart = open ? i + 1 : -1;
-    }
-  }
-  if (!open || fenceStart < 0) return false;
-
-  for (let i = fenceStart; i < idx; i++) {
+  const block = fenceBlocks(lines).find((b) => b.open < idx && idx < b.close);
+  if (!block) return false;
+  for (let i = block.open + 1; i < idx; i++) {
     if (PIPEFAIL.test(lines[i])) return true;
   }
   return false;
+}
+
+/** One fenced code block, by 0-indexed line. */
+export interface FenceBlock {
+  /** The opening delimiter line. */
+  open: number;
+  /**
+   * The closing delimiter line, or the first line past the block when it is
+   * unterminated. The body is always `open + 1 .. close - 1`.
+   */
+  close: number;
+  /** Info string after the opening delimiter (`bash`, `console`, ...), trimmed. */
+  info: string;
+}
+
+// `[^\n]*`, not `.*`: `.` stops at `\r`, so a CRLF file's info string would
+// fail to match and every fence would read as untagged.
+const FENCE_DELIM = /^\s*(`{3,}|~{3,})([^\n]*)$/;
+
+/**
+ * Fenced code blocks of a markdown line array.
+ *
+ * Fence MEMBERSHIP comes from utils/markdown.ts -- the same state machine the
+ * prose checks use -- so this file and cli-subcommands.ts can no longer drift
+ * from it (both used to hand-roll a tracker, and both got HTML comments and
+ * fences wrong in different ways). This only splits that mask into blocks and
+ * reads each opener's info string, which the shared mask does not expose. The
+ * delimiter regex accepts `~~~` as well as backticks, so blocks of either kind
+ * come out right as soon as the shared mask recognises them.
+ */
+export function fenceBlocks(lines: string[]): FenceBlock[] {
+  const nonProse = nonProseLineMask(lines);
+  const comment = htmlCommentLineMask(lines);
+  const fenced = (i: number) => nonProse[i] === true && comment[i] !== true;
+
+  const out: FenceBlock[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (!fenced(i)) {
+      i++;
+      continue;
+    }
+    const m = FENCE_DELIM.exec(lines[i]);
+    const marker = m ? m[1][0] : '`';
+    const closer = new RegExp(`^\\s*${marker === '`' ? '`' : '~'}{3,}`);
+    let j = i + 1;
+    while (j < lines.length && fenced(j) && !closer.test(lines[j])) j++;
+    out.push({ open: i, close: j, info: m ? m[2].trim() : '' });
+    // A closer line is consumed; a block that ended because the mask did
+    // (unterminated at EOF) resumes scanning at j.
+    i = j < lines.length && fenced(j) ? j + 1 : j;
+  }
+  return out;
 }

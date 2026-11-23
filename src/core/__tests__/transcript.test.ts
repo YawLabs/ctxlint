@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { checkSharedTempPath } from '../checks/session/shared-temp-path.js';
 import { encodeProjectDir } from '../session-parser.js';
 import { clearTranscriptCache, readProjectTranscript, turnsCarried } from '../transcript.js';
@@ -292,11 +292,14 @@ describe('session/shared-temp-path reaches agent-run commands', () => {
     ]);
 
     // The check resolves home itself, so redirect it the same way the other
-    // home-reading session checks are tested.
+    // home-reading session checks are tested. CLAUDE_CONFIG_DIR outranks
+    // HOME, so an ambient one must be cleared or the real corpus is read.
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
+    const prevConfig = process.env.CLAUDE_CONFIG_DIR;
     process.env.HOME = home;
     process.env.USERPROFILE = home;
+    delete process.env.CLAUDE_CONFIG_DIR;
     try {
       const issues = await checkSharedTempPath(ctx(project));
       expect(issues).toHaveLength(1);
@@ -306,6 +309,116 @@ describe('session/shared-temp-path reaches agent-run commands', () => {
       else process.env.HOME = prevHome;
       if (prevProfile === undefined) delete process.env.USERPROFILE;
       else process.env.USERPROFILE = prevProfile;
+      if (prevConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = prevConfig;
     }
+  });
+});
+
+describe('readProjectTranscript: caps keep the newest records', () => {
+  it('keeps the TAIL of a transcript that exceeds the line cap, and says it was capped', async () => {
+    const project = '/repo/tail';
+    const records = Array.from({ length: 6 }, (_, i) => bash(`echo ${i}`, `c${i}`));
+    const home = withTranscript(project, records);
+
+    const read = await readProjectTranscript(project, home, { maxLines: 3 });
+
+    // The newest three survive -- the oldest are what a cap should give up.
+    expect(read.events.map((e) => e.text)).toEqual(['echo 3', 'echo 4', 'echo 5']);
+    expect(read.truncated).toBe(true);
+  });
+
+  it('spends the line budget on the newest transcript first', async () => {
+    const project = '/repo/budget';
+    const home = mkdtempSync(join(tmpdir(), 'ctxlint-transcript-'));
+    roots.push(home);
+    const dir = join(home, '.claude', 'projects', encodeProjectDir(project));
+    mkdirSync(dir, { recursive: true });
+    const oldFile = join(dir, 'old.jsonl');
+    const newFile = join(dir, 'new.jsonl');
+    writeFileSync(oldFile, `${JSON.stringify(bash('old cmd', 'o1'))}\n`);
+    writeFileSync(
+      newFile,
+      `${[bash('new 1', 'n1'), bash('new 2', 'n2')].map((r) => JSON.stringify(r)).join('\n')}\n`,
+    );
+    const { utimesSync } = await import('node:fs');
+    utimesSync(oldFile, new Date(2020, 0, 1), new Date(2020, 0, 1));
+
+    const read = await readProjectTranscript(project, home, { maxLines: 2 });
+
+    expect(read.events.map((e) => e.text).sort()).toEqual(['new 1', 'new 2']);
+    expect(read.filesRead).toBe(1);
+    expect(read.truncated).toBe(true);
+  });
+
+  it('marks events from sidechain (subagent) records', async () => {
+    const project = '/repo/side';
+    const home = withTranscript(project, [
+      { ...bash('main cmd', 'm1') },
+      { ...bash('sub cmd', 's1'), isSidechain: true },
+    ]);
+    const read = await readProjectTranscript(project, home);
+    expect(read.events.map((e) => [e.text, e.sidechain === true])).toEqual([
+      ['main cmd', false],
+      ['sub cmd', true],
+    ]);
+  });
+});
+
+describe('readProjectTranscript: config dir', () => {
+  it('reads CLAUDE_CONFIG_DIR/projects when no home is passed', async () => {
+    const project = '/repo/config-dir';
+    const home = withTranscript(project, [bash('from override', 'x1')]);
+    const prev = {
+      HOME: process.env.HOME,
+      USERPROFILE: process.env.USERPROFILE,
+      CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+    };
+    const elsewhere = mkdtempSync(join(tmpdir(), 'ctxlint-nohome-'));
+    roots.push(elsewhere);
+    process.env.HOME = elsewhere;
+    process.env.USERPROFILE = elsewhere;
+    process.env.CLAUDE_CONFIG_DIR = join(home, '.claude');
+    try {
+      const read = await readProjectTranscript(project);
+      expect(read.events.map((e) => e.text)).toEqual(['from override']);
+    } finally {
+      for (const [k, v] of Object.entries(prev)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+});
+
+describe('readProjectTranscript: stream cleanup (mocked fs)', () => {
+  afterEach(() => {
+    vi.doUnmock('node:fs');
+    vi.resetModules();
+  });
+
+  it('destroys every stream it opens, including ones it stops reading early', async () => {
+    const project = '/repo/fd';
+    const home = withTranscript(
+      project,
+      Array.from({ length: 5 }, (_, i) => bash(`echo ${i}`, `f${i}`)),
+    );
+    const opened: Array<{ destroyed: boolean }> = [];
+    vi.resetModules();
+    vi.doMock('node:fs', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('node:fs')>();
+      return {
+        ...actual,
+        createReadStream: (...args: Parameters<typeof actual.createReadStream>) => {
+          const s = actual.createReadStream(...args);
+          opened.push(s);
+          return s;
+        },
+      };
+    });
+    const mod = await import('../transcript.js');
+    await mod.readProjectTranscript(project, home, { maxLines: 2 });
+    expect(opened.length).toBeGreaterThan(0);
+    expect(opened.every((s) => s.destroyed)).toBe(true);
   });
 });

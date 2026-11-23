@@ -59,7 +59,102 @@ describe('findBinInvocations', () => {
   });
 
   it('skips flags to reach the subcommand, and ignores flag-only invocations', () => {
+    expect(
+      findBinInvocations('```bash\ntailscale-mcp --log-level=debug doctor\n```\n', bins).map(
+        (i) => i.sub,
+      ),
+    ).toEqual(['doctor']);
+    // Several flags, `=`-valued and conventional booleans, are all skipped.
+    expect(
+      findBinInvocations(
+        '```bash\ntailscale-mcp --log-level=debug -q --no-color --json doctor --fix\n```\n',
+        bins,
+      ),
+    ).toEqual([
+      {
+        bin: 'tailscale-mcp',
+        sub: 'doctor',
+        cmd: 'tailscale-mcp --log-level=debug -q --no-color --json doctor --fix',
+        line: 2,
+      },
+    ]);
     expect(findBinInvocations('```bash\ntailscale-mcp --version\n```\n', bins)).toEqual([]);
+    expect(findBinInvocations('```bash\ntailscale-mcp --verbose -q\n```\n', bins)).toEqual([]);
+  });
+
+  it('does not take a value-less flag argument as the subcommand', () => {
+    // `json` is --format's value, not a subcommand; `install` may or may not be.
+    expect(findBinInvocations('```bash\ntailscale-mcp --format json install\n```\n', bins)).toEqual(
+      [],
+    );
+    // With the known set available, a known bareword after the flag is accepted.
+    const knownFor = () => new Set(['install']);
+    expect(
+      findBinInvocations('```bash\ntailscale-mcp --verbose install\n```\n', bins, {
+        knownFor,
+      }).map((i) => i.sub),
+    ).toEqual(['install']);
+  });
+
+  it('does not read a markdown blockquote as a `>` prompt', () => {
+    expect(findBinInvocations('> tailscale-mcp is a small server.\n', bins)).toEqual([]);
+    // `$` is still a prompt in prose.
+    expect(findBinInvocations('$ tailscale-mcp doctor\n', bins).map((i) => i.sub)).toEqual([
+      'doctor',
+    ]);
+  });
+
+  it('reads only $-prompted lines of a console fence; the rest is output', () => {
+    const md = '```console\n$ tailscale-mcp doctor\ntailscale-mcp started on port 3000\n```\n';
+    expect(findBinInvocations(md, bins).map((i) => [i.sub, i.line])).toEqual([['doctor', 2]]);
+  });
+
+  it('treats an unprompted untagged fence as possible output unless a line resolves', () => {
+    const output = '```\ntailscale-mcp started on port 3000\n```\n';
+    expect(findBinInvocations(output, bins)).toEqual([]);
+    expect(findBinInvocations(output, bins, { knownFor: () => new Set(['deploy-acl']) })).toEqual(
+      [],
+    );
+    // A line naming a KNOWN subcommand proves the block holds commands.
+    const commands = '```\ntailscale-mcp deploy-acl\ntailscale-mcp doctor\n```\n';
+    expect(
+      findBinInvocations(commands, bins, { knownFor: () => new Set(['deploy-acl']) }).map(
+        (i) => i.sub,
+      ),
+    ).toEqual(['deploy-acl', 'doctor']);
+    // Prompts settle it without the known set.
+    expect(
+      findBinInvocations('```\n$ tailscale-mcp doctor\nok\n```\n', bins).map((i) => i.sub),
+    ).toEqual(['doctor']);
+  });
+
+  it('does not let a `<!--` inside a fence swallow the closing fence', () => {
+    const md = '```bash\necho "<!-- not a comment"\n```\n\nRun `tailscale-mcp doctor`.\n';
+    expect(findBinInvocations(md, bins).map((i) => [i.sub, i.line])).toEqual([['doctor', 5]]);
+  });
+
+  it('still reads prose around a self-contained HTML comment, but not inside it', () => {
+    const md = 'Run `tailscale-mcp doctor`. <!-- `tailscale-mcp ghost` -->\n';
+    expect(findBinInvocations(md, bins).map((i) => i.sub)).toEqual(['doctor']);
+  });
+
+  it('matches `node <bin entry> <sub>` when the path is one of the bins', () => {
+    const md = '```bash\nnode dist/index.js doctor --json\nnode other.js doctor\n```\n';
+    expect(
+      findBinInvocations(md, bins, {
+        bins: [{ name: 'tailscale-mcp', entry: './dist/index.js' }],
+      }),
+    ).toEqual([
+      { bin: 'tailscale-mcp', sub: 'doctor', cmd: 'node dist/index.js doctor --json', line: 2 },
+    ]);
+  });
+
+  it('matches `npx <package>[@version] <sub>` for this package', () => {
+    const md =
+      '```bash\nnpx @yawlabs/tailscale-mcp@latest doctor\nnpx tailscale-mcp@1.2.3 doctor\nnpx @other/tailscale-mcp doctor\n```\n';
+    expect(
+      findBinInvocations(md, bins, { packageName: '@yawlabs/tailscale-mcp' }).map((i) => i.line),
+    ).toEqual([2, 3]);
   });
 
   it('ignores a positional path argument (not a subcommand)', () => {
@@ -132,7 +227,8 @@ describe('knownSubcommands', () => {
       'cli.js',
       `program.command('audit <path>').action(a);\nprogram.command('fix').action(f);`,
     );
-    expect([...(knownSubcommands(tmp, 'cli.js') ?? [])].sort()).toEqual(['audit', 'fix']);
+    // `help` is Commander's implicit help command.
+    expect([...(knownSubcommands(tmp, 'cli.js') ?? [])].sort()).toEqual(['audit', 'fix', 'help']);
   });
 
   // --- bail-outs: each must be null, i.e. "emit nothing" ---
@@ -208,6 +304,95 @@ describe('knownSubcommands', () => {
     write('src/main.js', `const sub = process.argv[2];\nif (sub === 'serve') serve();`);
     expect([...(knownSubcommands(tmp, 'bin/cli.js') ?? [])]).toEqual(['serve']);
   });
+
+  it('bails on a Map/Set dispatch instead of resolving the literal {help}', () => {
+    write(
+      'cli.js',
+      `const COMMANDS = new Map([['serve', serve], ['doctor', doctor]]);
+       const sub = process.argv[2];
+       if (sub === 'help') usage();
+       else if (COMMANDS.has(sub)) COMMANDS.get(sub)();`,
+    );
+    expect(knownSubcommands(tmp, 'cli.js')).toBeNull();
+  });
+
+  it('bails on a method call on the token and on an unguarded hand-off', () => {
+    write(
+      'a.js',
+      `const sub = process.argv[2];\nif (sub === 'x') x();\nif (sub.startsWith('db:')) db();`,
+    );
+    expect(knownSubcommands(tmp, 'a.js')).toBeNull();
+    write(
+      'b.js',
+      `const sub = process.argv[2];\nif (sub === 'help') usage();\nelse runCommand(sub);`,
+    );
+    expect(knownSubcommands(tmp, 'b.js')).toBeNull();
+  });
+
+  it('ends a switch at its matching brace, not at the first column-0 }', () => {
+    write(
+      'cli.js',
+      `function main() {
+  const sub = process.argv[2];
+  switch (sub) {
+    case 'audit': { return audit(); }
+    case 'fix': return fix();
+  }
+  switch (mode) { case 'not-a-subcommand': return; }
+}`,
+    );
+    expect([...(knownSubcommands(tmp, 'cli.js') ?? [])].sort()).toEqual(['audit', 'fix']);
+  });
+
+  it('adds Commander aliases and the implicit help command', () => {
+    write(
+      'cli.js',
+      `program.command('audit').alias('a').action(a);
+program.command('fix').aliases(['f', 'repair']).action(f);`,
+    );
+    expect([...(knownSubcommands(tmp, 'cli.js') ?? [])].sort()).toEqual([
+      'a',
+      'audit',
+      'f',
+      'fix',
+      'help',
+      'repair',
+    ]);
+    write('off.js', `program.command('audit').action(a);\nprogram.helpCommand(false);`);
+    expect([...(knownSubcommands(tmp, 'off.js') ?? [])]).toEqual(['audit']);
+  });
+
+  it('bails when the Commander program is handed to another function', () => {
+    write(
+      'cli.js',
+      `import { registerAudit } from './audit.js';
+program.command('fix').action(f);
+registerAudit(program);`,
+    );
+    expect(knownSubcommands(tmp, 'cli.js')).toBeNull();
+    write('add.js', `program.command('fix').action(f);\nprogram.addCommand(makeAudit());`);
+    expect(knownSubcommands(tmp, 'add.js')).toBeNull();
+  });
+
+  it('refuses a bin entry or shim target outside the project root', () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-cli-outside-'));
+    try {
+      fs.writeFileSync(
+        path.join(outside, 'cli.js'),
+        `const sub = process.argv[2];\nif (sub === 'serve') serve();`,
+      );
+      const rel = path.relative(tmp, path.join(outside, 'cli.js'));
+      expect(rel.startsWith('..')).toBe(true);
+      expect(knownSubcommands(tmp, rel)).toBeNull();
+      write(
+        'bin/shim.js',
+        `#!/usr/bin/env node\nimport '${rel.replace(/\\/g, '/').replace(/^\.\.\//, '../../')}';`,
+      );
+      expect(knownSubcommands(tmp, 'bin/shim.js')).toBeNull();
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('checkCommands — commands/unknown-subcommand', () => {
@@ -256,34 +441,85 @@ describe('checkCommands — commands/unknown-subcommand', () => {
     }
   });
 
+  const CLI = fs.readFileSync(path.join(FIXTURES, 'unknown-subcommand', 'cli.js'), 'utf-8');
+
+  async function runIn(markdown: string, pkg: Record<string, unknown>) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-sub-proh-'));
+    try {
+      fs.writeFileSync(path.join(tmp, 'package.json'), JSON.stringify(pkg));
+      fs.writeFileSync(path.join(tmp, 'cli.js'), CLI);
+      fs.writeFileSync(path.join(tmp, 'CLAUDE.md'), markdown);
+      const parsed = parseContextFile({
+        absolutePath: path.join(tmp, 'CLAUDE.md'),
+        relativePath: 'CLAUDE.md',
+        isSymlink: false,
+        type: 'context',
+      });
+      return (await checkCommands(parsed, tmp)).filter((i) => i.ruleId === RULE);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+
+  async function runWith(markdown: string) {
+    return runIn(markdown, { name: 'x', bin: { 'tailscale-mcp': 'cli.js' } });
+  }
+
+  // checkCommands must hand findBinInvocations the package name, the bins and
+  // the resolved subcommand sets; without them the evidence-based paths below
+  // never run in the real rule.
+  describe('scanner options wired through checkCommands', () => {
+    it('reads an unprompted untagged fence once a line names a known subcommand', async () => {
+      const found = await runWith(
+        '# Ops\n\n```\ntailscale-mcp deploy-acl\ntailscale-mcp doctor\n```\n',
+      );
+      expect(found.map((i) => i.line)).toEqual([5]);
+    });
+
+    it('still skips an unprompted untagged fence with no known subcommand (sample output)', async () => {
+      expect(await runWith('# Ops\n\n```\ntailscale-mcp started on port\n```\n')).toEqual([]);
+    });
+
+    it('does not report sample-output lines in an untagged fence that also holds a command', async () => {
+      // The known `deploy-acl` line proves the block holds a command, but the
+      // lines after it read as its output, not as more invocations.
+      const found = await runWith(
+        '# Ops\n\n```\ntailscale-mcp deploy-acl\ntailscale-mcp listening on port 3000\ntailscale-mcp ready: 3 checks ok\n```\n',
+      );
+      expect(found).toEqual([]);
+    });
+
+    it('still reports a near-miss of a known subcommand in such a fence', async () => {
+      const found = await runWith(
+        '# Ops\n\n```\ntailscale-mcp deploy-acl\ntailscale-mcp deploy-acls production\n```\n',
+      );
+      expect(found.map((i) => i.line)).toEqual([5]);
+    });
+
+    it('does not take the value of --debug as the subcommand', async () => {
+      expect(await runWith('# Ops\n\nRun `tailscale-mcp --debug http deploy-acl`.\n')).toEqual([]);
+    });
+
+    it('reaches the subcommand after a conventional boolean flag', async () => {
+      const found = await runWith('# Ops\n\nRun `tailscale-mcp --verbose doctor`.\n');
+      expect(found).toHaveLength(1);
+      expect(found[0].message).toContain('"doctor" is not a subcommand of tailscale-mcp');
+    });
+
+    it('matches `node <bin entry> <sub>` and `npx <package> <sub>`', async () => {
+      const found = await runIn(
+        '# Ops\n\n```bash\nnode cli.js doctor\nnpx @acme/ts-ops@latest doctor\n```\n',
+        { name: '@acme/ts-ops', bin: { 'tailscale-mcp': 'cli.js' } },
+      );
+      expect(found.map((i) => i.line)).toEqual([4, 5]);
+    });
+  });
+
   // unknown-subcommand runs its own pass over the file, so it did not inherit
   // the prohibition gate the dispatch loop applies. An invocation the doc cites
   // only to forbid is not a broken doc -- "NEVER run `<bin> doctor`" is the doc
   // working correctly.
   describe('prohibition gate', () => {
-    const CLI = fs.readFileSync(path.join(FIXTURES, 'unknown-subcommand', 'cli.js'), 'utf-8');
-
-    async function runWith(markdown: string) {
-      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-sub-proh-'));
-      try {
-        fs.writeFileSync(
-          path.join(tmp, 'package.json'),
-          JSON.stringify({ name: 'x', bin: { 'tailscale-mcp': 'cli.js' } }),
-        );
-        fs.writeFileSync(path.join(tmp, 'cli.js'), CLI);
-        fs.writeFileSync(path.join(tmp, 'CLAUDE.md'), markdown);
-        const parsed = parseContextFile({
-          absolutePath: path.join(tmp, 'CLAUDE.md'),
-          relativePath: 'CLAUDE.md',
-          isSymlink: false,
-          type: 'context',
-        });
-        return (await checkCommands(parsed, tmp)).filter((i) => i.ruleId === RULE);
-      } finally {
-        fs.rmSync(tmp, { recursive: true, force: true });
-      }
-    }
-
     it('does NOT flag an unknown subcommand cited under a prohibition', async () => {
       expect(await runWith('# Ops\n\nNEVER run `tailscale-mcp doctor` -- it hangs.\n')).toEqual([]);
     });
@@ -316,6 +552,12 @@ describe('checkCommands — commands/unknown-subcommand', () => {
       // `--json` sibling.
       expect(found[0].message).toContain('tailscale-mcp doctor');
       expect(found[0].message).not.toContain('--json');
+    });
+
+    it('does NOT flag a list under a conditional prohibition lead', async () => {
+      expect(
+        await runWith('# Ops\n\nNever run these without approval:\n\n- `tailscale-mcp nuke`\n'),
+      ).toEqual([]);
     });
   });
 });

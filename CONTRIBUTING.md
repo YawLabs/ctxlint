@@ -9,44 +9,47 @@ Thanks for your interest in contributing! This guide covers the workflow for bot
 git clone https://github.com/<your-username>/<repo-name>.git
 cd <repo-name>
 
-# 2. Install dependencies
-npm install
+# 2. Install dependencies -- pnpm, from the lockfile (package.json `packageManager`
+#    pins the version; `corepack enable` provides it). npm ignores pnpm-lock.yaml and
+#    the `pnpm.overrides` security pins, so it installs a different tree.
+pnpm install --frozen-lockfile
 
 # 3. Create a branch
 git checkout -b your-branch-name
 
 # 4. Make your changes, then verify everything passes
-npm run format && npm run lint
-npm run build
-npm test
+pnpm run format && pnpm run lint && pnpm run typecheck:scripts
+npx tsc --noEmit
+pnpm run test:run
 ```
 
 ## Submitting a Pull Request
 
 1. **One PR per change.** Keep PRs focused — a bug fix, a new feature, or a refactor, not all three.
 2. **Branch from `main`** (or `master` if that's the default branch).
-3. **Run `npm run format && npm run lint && npx tsc --noEmit && npm test`** before committing. This repo has no CI — `release.sh` is the single quality gate (lint, type-check, build, tests) and it only runs at release time, so run the checks locally before opening a PR.
-4. **Run `npm test`** and confirm all tests pass.
+3. **Run `pnpm run format && pnpm run lint && pnpm run typecheck:scripts && npx tsc --noEmit`** before committing. This repo has no CI — `release.sh` is the single quality gate (lint, type-check, build, tests) and it only runs at release time, so run the checks locally before opening a PR.
+4. **Run `pnpm run test:run`** and confirm all tests pass (`pnpm test` is the same suite in watch mode).
 5. **Write a clear PR title and description** — explain _what_ changed and _why_.
 6. **All PRs require approval** from a maintainer before merging.
 
 ## Development Workflow
 
-| Command                 | What it does                                |
-| ----------------------- | ------------------------------------------- |
-| `npm install`           | Install dependencies                        |
-| `npm run build`         | Bundle `src/` → `dist/index.js` via esbuild |
-| `npm run dev`           | Same as `build` — one-shot rebuild          |
-| `npm test`              | Run the test suite (vitest, watch mode)     |
-| `npm run test:run`      | Run the test suite once (no watch)          |
-| `npm run test:coverage` | Run tests with v8 coverage report           |
-| `npm run lint`          | Check for ESLint errors                     |
-| `npm run format`        | Auto-format via Prettier                    |
+| Command                          | What it does                                            |
+| -------------------------------- | ------------------------------------------------------- |
+| `pnpm install --frozen-lockfile` | Install dependencies exactly as locked                  |
+| `pnpm run build`                 | Bundle `src/` → `dist/index.js` via esbuild             |
+| `pnpm run dev`                   | Same as `build` — one-shot rebuild                      |
+| `pnpm test`                      | Run the test suite (vitest, watch mode)                 |
+| `pnpm run test:run`              | Run the test suite once (no watch)                      |
+| `pnpm run test:coverage`         | Run tests with v8 coverage report                       |
+| `pnpm run lint`                  | ESLint over `src/`, `bin/`, `scripts/` and `build.mjs`  |
+| `pnpm run typecheck:scripts`     | Type-check `bin/`, `scripts/` and `build.mjs` (checkJs) |
+| `pnpm run format`                | Auto-format via Prettier                                |
 
 ## Code Style
 
 - TypeScript, strict mode
-- Formatting and linting are enforced by Prettier + ESLint — run `npm run format && npm run lint` and let the tooling handle it
+- Formatting and linting are enforced by Prettier + ESLint — run `pnpm run format && pnpm run lint` and let the tooling handle it
 - No unnecessary abstractions — keep code simple and direct
 - Add tests for new functionality
 
@@ -54,8 +57,8 @@ npm test
 
 If you're an AI agent (Claude Code, Copilot, Cursor, etc.) submitting a PR:
 
-1. **Fork the repo** and work on a branch — direct pushes to the default branch are blocked.
-2. **Always run `npm run format && npm run lint && npm run build && npm test`** before committing. Do not skip this.
+1. **Fork the repo** and work on a branch, then open a PR. `main` has no branch protection, but only maintainers can push to this repo, so outside changes arrive as PRs. (The maintainer's own agents commit and push directly, per `CLAUDE.md`.)
+2. **Always run `pnpm run format && pnpm run lint && npx tsc --noEmit && pnpm run test:run`** before committing. Do not skip this.
 3. **Do not add unrelated changes** — no drive-by refactors, no extra comments, no unrelated formatting fixes.
 4. **PR description must explain the change clearly** — what problem does it solve, how does it work, how was it tested.
 5. **One logical change per PR.** If you're fixing a bug and adding a feature, that's two PRs.
@@ -69,7 +72,7 @@ A "check" is a single lint category (e.g., `paths`, `tokens`, `tier-tokens`). Ea
 ctxlint rule IDs use **`category/slug`** — a single forward-slash separating the category from the rule slug, both lowercase kebab-case (e.g. `paths/not-found`, `tier-tokens/hard-enforcement-missing`). Two distinct things enforce this, and they cover different ground:
 
 - The catalog schema (`schemas/ctxlint-catalog.schema.json`, the `rule.id` `pattern`) enforces only the **shape** — lowercase kebab-case with exactly one `/`. It cannot see whether the prefix matches the rule's `category`.
-- The **prefix-equals-category invariant** is enforced separately by `checkRuleIdPrefixes` (asserted in `src/core/__tests__/catalog-schema.test.ts`, which CI and `release.sh` run via `pnpm run test:run`). Two published legacy IDs are explicitly allowlisted there: `ci/no-release-docs` (category `ci-coverage`) and `ci/undocumented-secret` (category `ci-secrets`). They predate the convention; their IDs are published API and stay as-is. Do not add new entries to that allowlist — new rules must use their full category as the prefix.
+- The **prefix-equals-category invariant** is enforced separately by `checkRuleIdPrefixes` (asserted in `src/core/__tests__/catalog-schema.test.ts`, which `release.sh` runs via `pnpm run test:run`; there is no CI). Two published legacy IDs are explicitly allowlisted there: `ci/no-release-docs` (category `ci-coverage`) and `ci/undocumented-secret` (category `ci-secrets`). They predate the convention; their IDs are published API and stay as-is. Do not add new entries to that allowlist — new rules must use their full category as the prefix.
 
 > **Why this differs from mcp-compliance.** The sibling [`mcp-compliance`](https://github.com/YawLabs/mcp-compliance) project uses **`category-suffix`** (a hyphen, no slash) for its rule IDs. The difference is **deliberate, not drift**: ctxlint lints static config/context files on disk, mcp-compliance tests live servers over the wire, and the two rule namespaces are intentionally kept visually distinct so a `category/slug` ID is unambiguously a ctxlint rule and a `category-suffix` ID is unambiguously an mcp-compliance rule. Do not "harmonize" them. This note is the single canonical statement of the difference; other docs link here rather than restating it.
 
@@ -160,11 +163,11 @@ After editing a catalog, run `node scripts/generate-catalog-prose.mjs` (or `pnpm
 - **Unit test** at `src/core/checks/__tests__/<name>.test.ts` — feed in a fabricated `ParsedContextFile` and assert on the emitted issues. Do not read real files unless you must; use a `tmpDir` fixture when you do.
 - **Integration test** in `src/core/__tests__/integration.test.ts` — drive the CLI against a fixture and assert the rule fires (or doesn't, for negative cases).
 - Add a **fixture** under `fixtures/<scenario>/` if your check needs a real project shape (`package.json`, context files, etc.).
-- Run `npm run test:coverage` — new check files should land above 90% line coverage.
+- Run `pnpm run test:coverage` — new check files should land above 90% line coverage.
 
 ### 6. Ship it
 
-- `npm run format && npm run lint && npm run build && npm run test:run` — confirm everything is green before committing.
+- `pnpm run format && pnpm run lint && npx tsc --noEmit && pnpm run test:run` (the test scripts build first) — confirm everything is green before committing.
 - The commit message should call out the new rule IDs and whether they're stable or experimental.
 - New **stable** check → minor bump; new **experimental** check → patch bump. Per the versioning policy in `CHANGELOG.md`.
 

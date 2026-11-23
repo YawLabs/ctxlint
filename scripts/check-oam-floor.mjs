@@ -35,9 +35,11 @@
  * offline machine into a failed release would just get switched off.
  */
 
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isMainModule } from './lib/main-module.mjs';
+import { compareVersions, parseVersion } from './lib/semver.mjs';
 
 const args = process.argv.slice(2);
 const OFFLINE = args.includes('--offline');
@@ -86,18 +88,6 @@ const VERSION_RE = /(\d+)\.(\d+)\.(\d+)/g;
  * the launcher's diagnostic "this process is oam <host>, older than <floor>".
  */
 const HOST_VERSION = /\bis oam \d+\.\d+\.\d+, older than/g;
-
-export function parseVersion(text) {
-  const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(text.trim());
-  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
-}
-
-export function compareVersions(a, b) {
-  for (let i = 0; i < 3; i++) {
-    if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
-  }
-  return 0;
-}
 
 /** The source of truth: `const OAM_MIN = [x, y, z];` in the launcher. */
 export function readFloor(root) {
@@ -250,27 +240,7 @@ async function main() {
   process.exit(failed ? 1 : 0);
 }
 
-/**
- * True when `argv1` (process.argv[1]) names the module at `moduleUrl`. Node
- * realpaths the main module's URL (unless --preserve-symlinks-main) but leaves
- * argv[1] as typed, so from a junctioned or symlinked checkout a raw compare
- * of the two was false: main() was skipped and the check exited 0 in silence,
- * a silence that reads as a pass. Both sides are realpath'd, so the answer
- * holds with or without --preserve-symlinks-main.
- */
-export function isMainModule(argv1, moduleUrl) {
-  if (!argv1) return false;
-  const real = (p) => {
-    try {
-      return realpathSync(p);
-    } catch {
-      return resolve(p);
-    }
-  };
-  return real(argv1) === real(fileURLToPath(moduleUrl));
-}
-
-// Only run when invoked directly, so the helpers above stay importable.
+// Only run when invoked directly (see scripts/lib/main-module.mjs), so the helpers above stay importable.
 if (isMainModule(process.argv[1], import.meta.url)) {
   await main();
 }

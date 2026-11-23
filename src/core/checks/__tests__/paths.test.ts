@@ -219,7 +219,40 @@ describe('checkPaths', () => {
     const notFound = issues.find((i) => i.ruleId === 'paths/not-found');
     expect(notFound).toBeDefined();
     // src/lib/utils.ts is closer to src/components/utils.ts than the deeply nested one
-    expect(notFound!.fix!.newText.replace(/\\/g, '/')).toBe('src/lib/utils.ts');
+    expect(notFound!.suggestion).toBe('Did you mean src/lib/utils.ts?');
+    // Two same-basename candidates: the pick is a guess, so it is not autofixed.
+    expect(notFound!.fix).toBeUndefined();
+  });
+
+  // A basename hit is only autofixed when it is the ONLY file with that name
+  // and the path is close; a generic basename (index.ts) never is, since being
+  // the only index.ts says nothing about it being the file the doc meant.
+  it('suggests but does not autofix a generic or distant basename match', async () => {
+    seed({
+      'CLAUDE.md': 'See src/api/index.ts and docs/far/away/guide.md\n',
+      'src/web/index.ts': 'x',
+      'other/tree/entirely/guide.md': 'x',
+    });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    const byRef = new Map(issues.map((i) => [i.message, i]));
+    const api = byRef.get('src/api/index.ts does not exist');
+    expect(api?.suggestion).toBe('Did you mean src/web/index.ts?');
+    expect(api?.fix).toBeUndefined();
+    const guide = byRef.get('docs/far/away/guide.md does not exist');
+    expect(guide?.suggestion).toBe('Did you mean other/tree/entirely/guide.md?');
+    expect(guide?.fix).toBeUndefined();
+  });
+
+  it('autofixes a unique, close basename match', async () => {
+    seed({
+      'CLAUDE.md': 'See src/component/Button.tsx\n',
+      'src/components/Button.tsx': 'x',
+    });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot);
+    const notFound = issues.find((i) => i.ruleId === 'paths/not-found');
+    expect(notFound?.fix?.newText).toBe('src/components/Button.tsx');
   });
 
   it('emits paths/not-found without suggestion when no close match exists', async () => {
@@ -234,12 +267,11 @@ describe('checkPaths', () => {
     expect(notFound!.suggestion).toBeUndefined();
   });
 
-  // Regression: the basename pass is deliberately uncapped — basename
-  // equality is the signal, and edit distance only ranks among basename-equal
-  // candidates (the absolute cap applies solely to the full-path fallback
-  // pass). So a basename-equal candidate at a large path-edit distance must
-  // still win over a full-path candidate with a smaller raw Levenshtein
-  // distance.
+  // Regression: the basename pass's SUGGESTION is deliberately uncapped —
+  // basename equality is the signal, and edit distance only ranks among
+  // basename-equal candidates. So a basename-equal candidate at a large
+  // path-edit distance must still win over a full-path candidate with a
+  // smaller raw Levenshtein distance. (Only the autofix is capped.)
   it('prefers a basename match even when a full-path candidate has smaller raw distance', async () => {
     seed({
       'CLAUDE.md': 'See src/very/deeply/nested/dir/utils.ts\n',
@@ -256,8 +288,9 @@ describe('checkPaths', () => {
     expect(notFound).toBeDefined();
     // Basename-equal candidate (lib/utils.ts) should win regardless of the
     // closer-by-raw-distance full-path candidate.
-    expect(notFound!.suggestion).toContain('lib/utils.ts');
-    expect(notFound!.fix!.newText.replace(/\\/g, '/')).toBe('lib/utils.ts');
+    expect(notFound!.suggestion).toBe('Did you mean lib/utils.ts?');
+    // ...but it is far from the ref, so it is a suggestion, not an autofix.
+    expect(notFound!.fix).toBeUndefined();
   });
 
   // Length-prefilter correctness: candidates with very different lengths
@@ -401,6 +434,39 @@ describe('checkPaths', () => {
     },
   );
 
+  // A projectRoot BELOW the repo root (a monorepo package): git reports the
+  // rename as pkg/src/new.ts, but every ref and fix target here is
+  // project-root-relative, so the suggestion and the autofix must say
+  // src/new.ts, not pkg/src/new.ts (which resolves to pkg/pkg/src/new.ts).
+  it(
+    'expresses a rename target project-root-relative when projectRoot is a repo subdirectory',
+    { timeout: 30000 },
+    async () => {
+      const repo = fs.realpathSync(tmpRoot);
+      seed({ 'pkg/src/old.ts': 'a\nb\nc\nd\ne\n' });
+      const git = simpleGit(repo);
+      await git.raw(['init', '-b', 'main']);
+      await git.addConfig('user.email', 'test@example.com');
+      await git.addConfig('user.name', 'Test');
+      await git.addConfig('core.autocrlf', 'false');
+      await git.add('pkg/src/old.ts');
+      await git.commit('add');
+      await git.mv('pkg/src/old.ts', 'pkg/src/new.ts');
+      await git.commit('rename');
+      resetGit();
+
+      const pkg = path.join(repo, 'pkg');
+      const parsed = parsedWithRefs(['src/old.ts']);
+      parsed.filePath = path.join(pkg, 'CLAUDE.md');
+      const issues = await checkPaths(parsed, pkg);
+      const notFound = issues.find((i) => i.ruleId === 'paths/not-found');
+      expect(notFound).toBeDefined();
+      expect(notFound!.detail).toMatch(/commit [a-f0-9]{7}/);
+      expect(notFound!.suggestion).toBe('Did you mean src/new.ts?');
+      expect(notFound!.fix?.newText).toBe('src/new.ts');
+    },
+  );
+
   // The basename index + project-file list are cached by projectRoot
   // (getBasenameIndex / getProjectFiles check `cached?.root === projectRoot`).
   // A second checkPaths call against a DIFFERENT root, with no resetPathsCache
@@ -437,15 +503,15 @@ describe('checkPaths', () => {
       const issuesA = await checkPaths(parsedA, tmpRoot);
       const notFoundA = issuesA.find((i) => i.ruleId === 'paths/not-found');
       expect(notFoundA).toBeDefined();
-      expect(notFoundA!.fix!.newText.replace(/\\/g, '/')).toBe('lib/alpha.ts');
+      expect(notFoundA!.suggestion).toBe('Did you mean lib/alpha.ts?');
 
       const issuesB = await checkPaths(parsedB, rootB);
       const notFoundB = issuesB.find((i) => i.ruleId === 'paths/not-found');
       expect(notFoundB).toBeDefined();
       // Had the index served root A's cache, `bravo.ts` would be absent from it
-      // and the Pass-1 basename lookup would miss -- so a B-pointing fix proves
-      // the index rebuilt for root B.
-      expect(notFoundB!.fix!.newText.replace(/\\/g, '/')).toBe('lib/bravo.ts');
+      // and the Pass-1 basename lookup would miss -- so a B-pointing suggestion
+      // proves the index rebuilt for root B.
+      expect(notFoundB!.suggestion).toBe('Did you mean lib/bravo.ts?');
     } finally {
       for (let i = 0; i < 5; i++) {
         try {
@@ -472,7 +538,7 @@ describe('checkPaths', () => {
     const issues = await checkPaths(parsed, tmpRoot);
     const notFound = issues.find((i) => i.ruleId === 'paths/not-found');
     expect(notFound).toBeDefined();
-    expect(notFound!.fix!.newText.replace(/\\/g, '/')).toBe('other/bar.ts');
+    expect(notFound!.suggestion).toBe('Did you mean other/bar.ts?');
   });
 
   // ---- Fix A2 (bare-fence directory-diagram tree children) + Fix B
@@ -819,19 +885,112 @@ describe('checkPaths', () => {
 
   // Resolution fix keeps contextDir PRIMARY: a genuinely broken ./-ref in
   // .claude/CLAUDE.md still reports not-found, and its autofix newText stays in
-  // the doc's coordinate space (../lib/util.ts from .claude/), NOT the
-  // root-relative form a projectRoot primaryBase would emit. Confirms the added
-  // secondary base did not shift the fix coordinate.
+  // the doc's coordinate space (./helper/util.ts from .claude/), NOT the
+  // root-relative .claude/helper/util.ts a projectRoot primaryBase would emit.
+  // Confirms the added secondary base did not shift the fix coordinate.
   it('keeps the fix coordinate in contextDir space for a broken ./-ref in .claude/CLAUDE.md', async () => {
     seed({
       '.claude/CLAUDE.md': '- See ./helpers/util.ts for the helper.\n',
-      'lib/util.ts': 'x', // basename match at the project root
+      '.claude/helper/util.ts': 'x', // unique, close basename match
     });
     const parsed = parseContextFile(discoveredIn('.claude/CLAUDE.md'));
     const issues = await checkPaths(parsed, tmpRoot);
     const notFound = issues.find((i) => i.ruleId === 'paths/not-found');
     expect(notFound).toBeDefined();
-    expect(notFound!.fix?.newText).toBe('../lib/util.ts');
+    expect(notFound!.fix?.newText).toBe('./helper/util.ts');
+  });
+
+  // ---- Refs that leave the repo, globs ctxlint's own ignore list would hide,
+  // root comparison, and host-independent case rules. ----
+
+  it('skips globs and directory refs that resolve outside the project root, and @/ aliases', async () => {
+    const issues = await checkPaths(
+      parsedWithRefs([
+        '/api/*',
+        '/api/users/',
+        '/etc/nginx/',
+        '../other-repo/',
+        '../other-repo/*.md',
+        '@/components/ui/',
+        '@/components/**',
+        '@/lib/utils.ts',
+      ]),
+      tmpRoot,
+    );
+    expect(issues).toEqual([]);
+  });
+
+  // Control: the same shapes inside the repo are still validated.
+  it('still reports a missing in-repo glob and directory', async () => {
+    const issues = await checkPaths(parsedWithRefs(['src/gone/', 'src/*.gone']), tmpRoot);
+    expect(issues.map((i) => i.ruleId)).toEqual([
+      'paths/directory-not-found',
+      'paths/glob-no-match',
+    ]);
+  });
+
+  it('matches a glob whose literal prefix names an ignored directory (dist/*.js)', async () => {
+    seed({ 'dist/index.js': 'x', 'packages/a/build/out.js': 'x' });
+    const issues = await checkPaths(
+      parsedWithRefs(['dist/*.js', './dist/**/*.js', 'packages/a/build/*.js']),
+      tmpRoot,
+    );
+    expect(issues).toEqual([]);
+  });
+
+  // The glob ignore list is the shared IGNORED_DIRS: vendor / coverage /
+  // __pycache__ / .next / .nuxt are not walked by an unanchored glob, but a
+  // glob that names one in its literal prefix still reaches it.
+  it('does not walk the shared ignored dirs for an unanchored glob', async () => {
+    seed({
+      'vendor/lib/a.gen.go': 'x',
+      'coverage/b.gen.go': 'x',
+      '__pycache__/c.gen.go': 'x',
+      'vendor/keep.go': 'x',
+    });
+    const issues = await checkPaths(parsedWithRefs(['**/*.gen.go', 'vendor/*.go']), tmpRoot);
+    expect(issues.map((i) => [i.ruleId, i.message])).toEqual([
+      ['paths/glob-no-match', '**/*.gen.go matches no files'],
+    ]);
+  });
+
+  it('recognises a root-level dot-config doc when projectRoot has a trailing separator', async () => {
+    seed({
+      '.claude/CLAUDE.md': '- The release script is ./scripts/release.sh at the root.\n',
+      'scripts/release.sh': 'x',
+    });
+    const parsed = parseContextFile(discoveredIn('.claude/CLAUDE.md'));
+    const issues = await checkPaths(parsed, tmpRoot + path.sep);
+    expect(issues).toEqual([]);
+  });
+
+  // `..cache` is an in-root name, not a `..` escape: only a `..` SEGMENT
+  // leaves the root (isOutsideRelative).
+  it('treats an in-root directory named `..cache` as inside the project', async () => {
+    seed({ '..cache/App.ts': 'x' });
+    const issues = await checkPaths(
+      parsedWithRefs(['..cache/missing.ts', '..cache/app.ts', '..cache/App.ts']),
+      tmpRoot,
+    );
+    expect(issues.map((i) => `${i.line} ${i.ruleId}`).sort()).toEqual([
+      '1 paths/not-found',
+      '2 paths/not-found',
+    ]);
+  });
+
+  it('checks path case exactly, whatever the host file system', async () => {
+    seed({ 'src/App.ts': 'x' });
+    const issues = await checkPaths(
+      parsedWithRefs(['SRC/App.ts', 'src/app.ts', 'Src/', 'SRC/*.ts', 'src/App.ts', 'src/']),
+      tmpRoot,
+    );
+    // Not-found refs are reported after the batched rename lookup, so sort.
+    expect(issues.map((i) => `${i.line} ${i.ruleId}`).sort()).toEqual([
+      '1 paths/not-found',
+      '2 paths/not-found',
+      '3 paths/directory-not-found',
+      '4 paths/glob-no-match',
+    ]);
   });
 
   // Fix D anchoring via the ./ branch (independent of the known-first-segment

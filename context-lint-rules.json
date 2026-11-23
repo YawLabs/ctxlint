@@ -84,10 +84,10 @@
       "category": "paths",
       "severity": "error",
       "description": "Referenced file or directory does not exist at the specified path.",
-      "trigger": "Path reference in context file resolves to a non-existent file or directory.",
+      "trigger": "A path reference in a context file resolves to a non-existent file or directory. Existence is case-exact on every host. References that resolve outside the project root and `@/` TypeScript/bundler aliases are skipped.",
       "message": "{path} does not exist",
       "fixable": true,
-      "fixDescription": "Replace broken path with suggestion from git rename detection or fuzzy matching.",
+      "fixDescription": "Replace the broken path with the suggested one. The fix is attached only for a git rename (the end of a rename chain, written project-root-relative), a full-path typo match within a capped edit distance, or a unique, non-generic basename match within the same cap; other suggestions carry no fix.",
       "stability": "stable"
     },
     {
@@ -95,7 +95,7 @@
       "category": "paths",
       "severity": "error",
       "description": "Glob pattern matches zero files in the project.",
-      "trigger": "Path contains wildcard characters (*, ?) but matches no files.",
+      "trigger": "A path containing wildcard characters (*, ?) matches no files. Globs that resolve outside the project root are skipped. An unanchored glob does not search node_modules, .git, dist, build, vendor, .next, .nuxt, coverage or __pycache__ unless its literal prefix names one of them.",
       "message": "{pattern} matches no files",
       "fixable": false,
       "stability": "stable"
@@ -105,7 +105,7 @@
       "category": "paths",
       "severity": "error",
       "description": "Referenced directory does not exist.",
-      "trigger": "Path ending with / does not resolve to an existing directory.",
+      "trigger": "A path ending with / does not resolve to an existing directory. Directory references that resolve outside the project root (/etc/nginx/, ../other-repo/) are skipped; in-root names starting with `..` (`..cache/`) are checked.",
       "message": "{path} directory does not exist",
       "fixable": false,
       "stability": "stable"
@@ -114,9 +114,12 @@
       "id": "commands/script-not-found",
       "category": "commands",
       "severity": "error",
-      "description": "Package manager script name is not found in package.json scripts.",
-      "trigger": "npm run, pnpm, yarn, or bun script reference does not match a key in package.json#scripts.",
+      "description": "A package-manager script reference does not resolve to a package.json script, or uses an npm shorthand npm does not have.",
+      "trigger": "An npm run / pnpm / yarn / bun script reference, or an npm lifecycle shorthand (test, t, tst, start, stop, restart), names no script in any package.json from the context file's directory up to the project root (a package.json with no \"scripts\" key has none). `npm start` also resolves when server.js exists, and `npm restart` when start resolves. pnpm/yarn/bun without `run` are not reported when the name is a dependency bin, an own bin, a node_modules/.bin entry or a file path. Placeholder names (<script>, {name}, $X, script-name) and commands after a `cd` earlier in the same fence or $-prompt run are skipped. Also fires, even when the script exists, for an npm pseudo-shorthand npm does not run without `run` (npm build, dev, lint, format, check, typecheck, type-check, clean, serve, preview, e2e).",
       "message": "\"{cmd}\" — script \"{name}\" not found in package.json",
+      "messageVariants": [
+        "\"{cmd}\" — npm has no \"{name}\" shorthand; scripts other than test/start/stop/restart need `npm run`"
+      ],
       "fixable": false,
       "stability": "stable"
     },
@@ -124,9 +127,9 @@
       "id": "commands/make-target-not-found",
       "category": "commands",
       "severity": "error",
-      "description": "Make target is not found in Makefile.",
-      "trigger": "make command references a target not declared in the project's Makefile.",
-      "message": "\"{cmd}\" — target \"{name}\" not found in Makefile",
+      "description": "Make target is not found in the Makefile.",
+      "trigger": "A make command names a target not declared in the nearest GNUmakefile, makefile or Makefile at or above the context file (matched by exact file name). A target matches anywhere in a rule's target list, and a target list is read from its rule's own line only. Silent when the Makefile has include/-include/sinclude, a % pattern rule or a $(...) target. `make -C/-f/--directory/--file/--makefile` and commands after a `cd` earlier in the fence produce no finding.",
+      "message": "\"{cmd}\" — target \"{name}\" not found in {makefile}",
       "fixable": false,
       "stability": "stable"
     },
@@ -135,7 +138,7 @@
       "category": "commands",
       "severity": "error",
       "description": "Make command used but no Makefile exists in the project.",
-      "trigger": "Context file references a make command but no Makefile is found at the project root.",
+      "trigger": "A make command is used but no GNUmakefile, makefile or Makefile exists at or above the context file, up to the project root. `make -C/-f/--directory/--file/--makefile` and commands after a `cd` earlier in the fence produce no finding.",
       "message": "\"{cmd}\" — no Makefile found in project",
       "fixable": false,
       "stability": "stable"
@@ -145,7 +148,7 @@
       "category": "commands",
       "severity": "warning",
       "description": "npx package is not in project dependencies.",
-      "trigger": "npx package is not in package.json dependencies/devDependencies and not in node_modules/.bin.",
+      "trigger": "An npx package (an @version is stripped, and the message names the unversioned package) is not in dependencies/devDependencies or node_modules/.bin of any directory from the context file up to the project root, and is not the project's own package name or bin. Known bin-to-package aliases count: tsc/tsserver -> typescript, biome -> @biomejs/biome, playwright -> @playwright/test, netlify -> netlify-cli, changeset -> @changesets/cli.",
       "message": "\"{cmd}\" — \"{pkg}\" not found in dependencies",
       "fixable": false,
       "stability": "stable"
@@ -154,8 +157,8 @@
       "id": "commands/tool-not-found",
       "category": "commands",
       "severity": "warning",
-      "description": "Common development tool is not in project dependencies.",
-      "trigger": "Tool name (vitest, jest, eslint, prettier, tsc, etc.) not found in dependencies or node_modules/.bin.",
+      "description": "Common Node development tool is not in project dependencies.",
+      "trigger": "A Node tool name (vitest, jest, eslint, prettier, tsc, etc.) is not found in dependencies or node_modules/.bin of any directory from the context file up to the project root.",
       "message": "\"{cmd}\" — \"{tool}\" not found in dependencies or node_modules/.bin",
       "fixable": false,
       "stability": "stable"
@@ -165,7 +168,7 @@
       "category": "commands",
       "severity": "info",
       "description": "package.json is missing or unparseable, so all script/npx/tool command validation silently skips. Emitted once per context file that contains at least one command reference that would otherwise have been validated, so the skip isn't invisible.",
-      "trigger": "package.json cannot be loaded AND the context file references at least one npm-run/shorthand/npx/tool command.",
+      "trigger": "No package.json can be loaded for the context file AND it references at least one npm-run/shorthand/npx/Node-tool command.",
       "message": "package.json missing or unparseable — command checks skipped",
       "fixable": false,
       "stability": "stable"
@@ -175,8 +178,11 @@
       "category": "commands",
       "severity": "warning",
       "description": "A verification command's exit status is discarded by a pipe into a filter, so the success claim that follows cannot fail.",
-      "trigger": "A verifier (tsc, eslint, biome, vitest, pytest, cargo test, or an npm/pnpm/yarn/bun script resolving to one) heads a pipeline whose last stage is a filter or pager (head, tail, grep, sed, awk, less, cat, tee, wc), and the pipeline is followed by && plus a success-announcing echo/printf, or by an echo of $?, with no set -o pipefail in scope.",
+      "trigger": "A verifier heads a pipeline whose last stage is a filter or pager, and the pipeline is followed by && plus a success-announcing echo/printf, or by an echo/printf of $? (on the same line, or on the next line of the same fence), with no set -o pipefail in scope. Verifiers: tsc, vue-tsc, svelte-check, eslint, biome, oxlint, stylelint, vitest, jest, mocha, ava, pytest, mypy, pyright, ruff, flake8, cargo test|clippy|check|build, go test|vet|build, deno test|check|lint, bun test, playwright test, python -m pytest|mypy|unittest, prettier --check; a pnpm/yarn/bun <bin> that is not a script; or a script resolving to one (npm only via `run` or its lifecycle shorthands test/t/tst/start/stop/restart). Filters: head, tail, grep, egrep, fgrep, rg, sed, awk, less, more, cat, tee, wc, sort, uniq, cut, tr. An echo with a negation or failure word applying to the success word is not a success claim; a count before it ('0 errors', 'no issues', 'zero failures', 'errors: 0') is not a negation. Fence scope comes from the shared markdown mask (``` and ~~~ fences).",
       "message": "\"{cmd}\" — exit status comes from \"{filter}\", not \"{verifier}\"; the success claim cannot fail",
+      "messageVariants": [
+        "\"{cmd}\" — exit status comes from \"{filter}\", not \"{verifier}\"; `$?` reports the filter, not the verifier"
+      ],
       "fixable": false,
       "stability": "experimental"
     },
@@ -185,7 +191,7 @@
       "category": "commands",
       "severity": "error",
       "description": "A documented invocation of the project's own binary uses a subcommand the CLI does not implement.",
-      "trigger": "A command invokes a name declared in package.json#bin with a leading non-flag argument that is not in the CLI's known subcommand set, where that set was statically resolved as closed from the entry file.",
+      "trigger": "A command invokes a name declared in package.json#bin (or `node <bin entry>`, or `npx <package-name>[@ver]`) with a leading non-flag argument that is not in the CLI's known subcommand set, where that set was statically resolved as closed from the entry file (Commander .command() literals plus aliases and the implicit help command, or a closed process.argv dispatch; any open dispatch, .addCommand, a program handed to a function or exported, or an out-of-root entry yields no finding). Invocations are read from shell-tagged fences, $-prompt lines (`>` is not a prompt; console fences need `$ `) and inline backticks; in an unprompted untagged fence only a near-miss of a known subcommand, or one followed only by flags, is reported. After a conventional boolean flag (-v -q -y --verbose --quiet --silent --json --yes --force --dry-run, --no-*) the next bareword is the subcommand; after any other flag without `=` the bareword is ambiguous and accepted only when known.",
       "message": "\"{cmd}\" — \"{sub}\" is not a subcommand of {bin} (known: {known})",
       "fixable": false,
       "stability": "experimental"
@@ -195,7 +201,7 @@
       "category": "commands",
       "severity": "error",
       "description": "A documented Gradle task path names a project that the build's settings file does not declare.",
-      "trigger": "A ./gradlew or gradle invocation has a task path (:a:b:task) whose project part matches no project, included build or buildSrc under Gradle's name matching (exact, case-insensitive, prefix, camelCase and kebab-case abbreviation), where the project set was read from a settings file that is statically enumerable.",
+      "trigger": "A ./gradlew or gradle invocation (also behind VAR=value, env, sudo or sh/bash <script>) has a task path (:a:b:task) whose project part matches no project, included build or buildSrc under Gradle's name matching (exact, case-insensitive, prefix, camelCase and kebab-case abbreviation), where the project set was read from a settings file that is statically enumerable.",
       "message": "\"{cmd}\" — project \"{path}\" not found in {settingsFile}",
       "fixable": false,
       "stability": "experimental"
@@ -205,7 +211,7 @@
       "category": "commands",
       "severity": "error",
       "description": "A documented Maven -pl or -rf selector matches no module of the reactor.",
-      "trigger": "A ./mvnw or mvn invocation selects a module with -pl/--projects or -rf/--resume-from, and the selector matches no reactor project by relative directory, POM file, :artifactId or groupId:artifactId, where the reactor was read from the root POM's modules and subprojects (all profiles included) and is statically enumerable.",
+      "trigger": "A ./mvnw or mvn invocation (also behind VAR=value, env, sudo or sh/bash <script>) selects a module with -pl/--projects or -rf/--resume-from, and the selector matches no reactor project by relative directory, POM file, :artifactId or groupId:artifactId, where the reactor was read from the root POM's modules and subprojects (all profiles included) and is statically enumerable. Only a trailing line continuation makes the command unreadable.",
       "message": "\"{cmd}\" — {option} \"{selector}\" matches no module in the Maven reactor",
       "fixable": false,
       "stability": "experimental"
@@ -215,7 +221,7 @@
       "category": "staleness",
       "severity": "warning",
       "description": "Context file has not been updated in 30+ days while referenced code has changed.",
-      "trigger": "File last modified 30+ days ago AND paths it references have git commits since.",
+      "trigger": "The context file's last commit is 30+ days old AND paths it references have commits strictly after that commit (<hash>..HEAD). ./ and ../ references resolve against the context file's directory. Shallow clones are skipped.",
       "message": "Last updated {days} days ago. {path} has {N} commits since.",
       "fixable": false,
       "stability": "stable"
@@ -225,7 +231,7 @@
       "category": "staleness",
       "severity": "info",
       "description": "Context file has not been updated in 14-30 days while referenced code has changed.",
-      "trigger": "File last modified 14-30 days ago AND paths it references have git commits since.",
+      "trigger": "The context file's last commit is 14-30 days old AND paths it references have commits strictly after that commit (<hash>..HEAD). ./ and ../ references resolve against the context file's directory. Shallow clones are skipped.",
       "message": "Last updated {days} days ago. {path} has {N} commits since.",
       "fixable": false,
       "stability": "stable"
@@ -271,7 +277,7 @@
       "category": "tokens",
       "severity": "warning",
       "description": "Combined context files exceed recommended total token budget.",
-      "trigger": "All context files combined use 5000+ tokens (configurable) AND there are multiple files.",
+      "trigger": "All context files combined use 5000+ tokens (configurable) AND there are multiple files. A symlink whose relative target is another counted file is counted once.",
       "message": "{count} context files consume {N} tokens combined",
       "fixable": false,
       "configurable": true,
@@ -283,8 +289,8 @@
       "category": "tier-tokens",
       "severity": "info",
       "description": "Reports the heaviest top-level sections in an always-loaded context file and suggests demoting the largest to an on-demand tier (skill, subagent, or memory).",
-      "trigger": "An always-loaded context file (CLAUDE.md, AGENTS.md, .cursorrules, etc. — excluding path-scoped rules files) reaches or exceeds the tierBreakdown threshold (default 1000 tokens; the boundary is inclusive) and contains H1 or H2 sections.",
-      "message": "{N} tokens loaded every session — heaviest top-level section(s): ...",
+      "trigger": "An always-loaded context file reaches or exceeds the tierBreakdown threshold (default 1000 tokens; the boundary is inclusive) and has headings. The top level is the shallowest heading level with at least 2 sections, else the shallowest level. Always-loaded: the project-wide files listed in CONTEXT_LINT_SPEC.md section 3.5; unscoped rules in an agent rules directory (.claude/rules, .cursor/rules, .windsurf/rules with trigger always_on or none, .clinerules/, .continue/rules, .aide/rules, .amazonq/rules, .aiassistant/rules); and Cursor rules with alwaysApply: true. Rules with paths:/globs:, Cursor rules with alwaysApply: false, .mdc rules without alwaysApply: true, and .github/instructions/* are on-demand.",
+      "message": "{N} tokens loaded every session — heaviest top-level section(s):",
       "fixable": false,
       "configurable": true,
       "configKey": "tokenThresholds.tierBreakdown",
@@ -295,9 +301,9 @@
       "id": "tier-tokens/aggregate",
       "category": "tier-tokens",
       "severity": "warning",
-      "description": "Combined token cost of always-loaded context files exceeds the recommended budget.",
-      "trigger": "Two or more always-loaded files total the tierAggregate threshold (default 4000 tokens) or more; the boundary is inclusive.",
-      "message": "{count} always-loaded files total {N} tokens — loaded every session",
+      "description": "Combined token cost of one tool's always-loaded context files exceeds the recommended budget.",
+      "trigger": "Two or more ROOT-LEVEL always-loaded files of the SAME tool total the tierAggregate threshold (default 4000 tokens; the boundary is inclusive) or more. Nested files (packages/*/CLAUDE.md) do not count, a symlink to another counted file of the same tool is skipped, and AGENTS.override.md replaces AGENTS.md. Only the heaviest tool is reported. {tool} is one of: Claude Code, Codex, Amp, Gemini CLI, Cursor, Windsurf, Cline, Aider, Continue, Zed, Goose, Replit, GitHub Copilot, Junie, Aide, Amazon Q, JetBrains AI Assistant.",
+      "message": "{count} always-loaded {tool} files total {N} tokens — loaded every session",
       "fixable": false,
       "configurable": true,
       "configKey": "tokenThresholds.tierAggregate",
@@ -308,9 +314,9 @@
       "id": "tier-tokens/hard-enforcement-missing",
       "category": "tier-tokens",
       "severity": "info",
-      "description": "An always-loaded file uses inviolable framing (NEVER / ALWAYS / DO NOT / MUST NOT) paired with a concrete command, but no corresponding PreToolUse or Stop hook, permissions.deny entry, or permissions.ask entry exists in settings.json. Rules in always-loaded files are advisory — without a hook the agent may still run the command.",
-      "trigger": "Line in an always-loaded file matches NEVER|ALWAYS|DO NOT|MUST NOT with a backticked command, and the project's .claude/settings.json / .claude/settings.local.json does not contain a matching PreToolUse or Stop hook, permissions.deny entry, or permissions.ask entry (ask gates the command behind a human prompt, so it counts as enforcement). The user-global ~/.claude/settings.json is consulted only on explicit opt-in (the same gate as hook-coverage's --hooks-global).",
-      "message": "Inviolable framing without a hook to back it up",
+      "description": "An always-loaded file uses inviolable framing (NEVER / ALWAYS / DO NOT / DON'T / MUST NOT) paired with a backticked command, file, tool or code span, but nothing in settings.json enforces it. Rules in always-loaded files are advisory — without a hook or permissions entry the agent may still do it. The suggestion depends on the span kind (command, file, tool, code).",
+      "trigger": "A prose line (not fenced code or an HTML comment) in an always-loaded file has inviolable framing (NEVER, ALWAYS, DO NOT, DON'T with a straight or curly apostrophe, MUST NOT) followed in the same sentence by a backticked span ('e.g.', 'i.e.', 'etc.', 'vs.', 'cf.' do not end a sentence), and the project's .claude/settings.json / .claude/settings.local.json does not enforce it. A permissions.deny or permissions.ask Bash entry counts when its words are a prefix of the command's and its flags a subset (an exact entry with no trailing * enforces only the identical command). Edit/Write deny entries cover file rules; tool-name deny entries and case-sensitive PreToolUse matchers cover tool rules only. A hook counts through its command (interpreter prefix stripped) or the contents of its script (inside the project or the Claude config dir); for a NEVER command rule only a hook that sees Bash (empty, * or Bash-selecting matcher) counts, and script contents count only for a multi-word command or a single command on the same line as every banned flag. A one-word span after run, execute or invoke is a command. ALWAYS with a tool span is not reported. The user-global <CLAUDE_CONFIG_DIR or ~/.claude>/settings.json is consulted only on explicit opt-in (the same gate as hook-coverage's --hooks-global).",
+      "message": "Inviolable framing (\"{directive}\") without a hook to back it up",
       "fixable": false,
       "source": "code.claude.com/docs/en/hooks-guide",
       "stability": "experimental"
@@ -319,9 +325,12 @@
       "id": "redundancy/tech-mention",
       "category": "redundancy",
       "severity": "info",
-      "description": "Context file mentions a technology that is already in package.json dependencies.",
-      "trigger": "File contains phrases like 'use React' or 'built with Express' and that package is in dependencies.",
+      "description": "Context file describes the stack with a technology that is already in package.json dependencies. At most one issue per line; a line naming several gets the multi-tech message.",
+      "trigger": "A line matches \"we use|uses|using|built with|powered by|written in|this is a(n) {tech}\" or \"{tech} project|app|application|codebase\" and that package is in dependencies/devDependencies/peerDependencies/optionalDependencies. Directive lines (Use/Prefer/Avoid/Never/Always/Don't/Stick to/Default to/...) and bare imperative \"use X\" lines do not count.",
       "message": "\"{tech}\" is in package.json {depType} — agent can infer this",
+      "messageVariants": [
+        "\"{techA}\" ({depTypeA}) and \"{techB}\" ({depTypeB}) are in package.json — agent can infer these"
+      ],
       "fixable": false,
       "stability": "stable"
     },
@@ -330,7 +339,7 @@
       "category": "redundancy",
       "severity": "info",
       "description": "Context file describes the location of a directory that the agent can discover by listing files.",
-      "trigger": "File says files 'are in' or 'go in' a directory that exists in the project.",
+      "trigger": "File says files 'are in' or 'go in' a directory that exists in the project and resolves inside the project root (the verb needs a word boundary).",
       "message": "Directory \"{dir}\" exists and is discoverable — agent can find this by listing files",
       "fixable": false,
       "stability": "stable"
@@ -340,7 +349,7 @@
       "category": "redundancy",
       "severity": "warning",
       "description": "Two context files have significant content overlap.",
-      "trigger": "Two files share 60%+ of their lines (by trimmed content, lines >10 chars).",
+      "trigger": "Two files share 60%+ of their lines (Jaccard similarity of trimmed lines >10 chars). Skipped when one file is a symlink to the other.",
       "message": "{file1} and {file2} have {N}% content overlap",
       "fixable": false,
       "stability": "stable"
@@ -350,11 +359,13 @@
       "category": "contradictions",
       "severity": "warning",
       "description": "Two context files specify mutually exclusive options in the same category.",
-      "trigger": "File A says 'use Jest' while File B says 'use Vitest' (or similar conflicts across 8 categories).",
+      "trigger": "File A says 'use Jest' while File B says 'use Vitest' (or similar conflicts across 9 categories). Files are compared only when one's directory contains the other's (a dot-dir such as .cursor/rules governs its parent). Directives in fenced code and HTML comments are ignored. Naming directives are scoped by object ('for Python functions'); differently scoped ones, and a general directive with an object-scoped one, never conflict. Indentation '2/4 spaces' needs a verb (use/prefer/enforce) or indentation context. A pair issue only pairs labels unique to each side.",
       "message": "{category} conflict: \"{optionA}\" in {fileA} vs \"{optionB}\" in {fileB}",
+      "messageVariants": ["{category} conflict across {N} files: \"{option}\" in {file}, ..."],
       "fixable": false,
       "contradictionCategories": [
         "testing framework",
+        "e2e testing framework",
         "package manager",
         "indentation style",
         "semicolons",
@@ -369,16 +380,20 @@
       "id": "frontmatter/missing",
       "category": "frontmatter",
       "severity": "warning",
-      "description": "File format requires or recommends frontmatter but none is present. Severity is per-format: warning for Cursor .mdc (frontmatter is required), info for Copilot instructions and Windsurf rules (frontmatter is optional/recommended).",
-      "trigger": "Cursor .mdc, Copilot instruction, or Windsurf rule file has no --- frontmatter block.",
-      "message": "{format} file is missing frontmatter",
-      "fixable": false,
-      "appliesTo": ["cursor-mdc", "copilot-instructions", "windsurf-rules"],
       "severityByFormat": {
         "cursor-mdc": "warning",
         "copilot-instructions": "info",
         "windsurf-rules": "info"
       },
+      "description": "File format requires or recommends frontmatter but none is present. Severity is per-format: warning for Cursor .mdc (frontmatter is required), info for Copilot instructions and Windsurf rules (frontmatter is optional/recommended).",
+      "trigger": "Cursor .mdc, Copilot .github/instructions/*.instructions.md, or Windsurf .windsurf/rules/*.md file has no --- frontmatter block.",
+      "message": "Cursor .mdc file is missing frontmatter",
+      "messageVariants": [
+        "Copilot instructions file has no frontmatter",
+        "Windsurf rule file has no frontmatter"
+      ],
+      "fixable": false,
+      "appliesTo": ["cursor-mdc", "copilot-instructions", "windsurf-rules"],
       "stability": "stable"
     },
     {
@@ -386,7 +401,7 @@
       "category": "frontmatter",
       "severity": "warning",
       "description": "A required or recommended frontmatter field is absent.",
-      "trigger": "Frontmatter exists but is missing a key field (description for Cursor, applyTo for Copilot, trigger for Windsurf).",
+      "trigger": "Frontmatter exists but is missing a key field (description for Cursor .mdc, applyTo for Copilot instructions, trigger for Windsurf rules). Trailing # comments, quoted scalars, multi-line flow sequences and indented or block-scalar continuations are understood.",
       "message": "Missing \"{field}\" field in {format} frontmatter",
       "fixable": false,
       "appliesTo": ["cursor-mdc", "copilot-instructions", "windsurf-rules"],
@@ -396,8 +411,19 @@
       "id": "frontmatter/invalid-value",
       "category": "frontmatter",
       "severity": "error",
-      "description": "A frontmatter field has an invalid value. The error severity applies to the unambiguous branches (alwaysApply not a boolean, Windsurf trigger outside the enum); a possibly-malformed globs value (unbalanced brackets or quotes) is reported at warning severity because Cursor accepts bare directory/extension globs.",
-      "trigger": "alwaysApply is not true/false (error), trigger is not a valid enum value (error), or globs has unbalanced brackets/quotes (warning).",
+      "severityVariants": [
+        {
+          "severity": "error",
+          "when": "alwaysApply is not true/false (Cursor .mdc), or a Windsurf trigger is not one of always_on, glob, manual, model_decision"
+        },
+        {
+          "severity": "warning",
+          "when": "a Cursor .mdc globs value has unbalanced brackets or quotes (Cursor accepts bare directory/extension globs, so only unmistakably malformed YAML is reported)",
+          "message": "Possibly malformed globs value: \"{value}\""
+        }
+      ],
+      "description": "A frontmatter field has an invalid value.",
+      "trigger": "alwaysApply is not true/false, trigger is not a valid enum value, or globs has unbalanced brackets/quotes. Trailing # comments and quoted scalars are understood before the value is judged.",
       "message": "Invalid {field} value: \"{value}\"",
       "fixable": false,
       "appliesTo": ["cursor-mdc", "windsurf-rules"],
@@ -420,7 +446,7 @@
       "severity": "info",
       "description": "File has frontmatter but no activation mechanism.",
       "trigger": "Cursor .mdc has frontmatter with neither globs nor alwaysApply set.",
-      "message": "No activation field — rule may not be applied automatically",
+      "message": "No \"alwaysApply\" or \"globs\" field — rule may not be applied automatically",
       "fixable": false,
       "appliesTo": ["cursor-mdc"],
       "stability": "stable"
@@ -430,8 +456,8 @@
       "category": "ci-coverage",
       "severity": "info",
       "description": "Release/deploy CI workflow exists but no context file documents the process.",
-      "trigger": ".github/workflows/ contains release/deploy/publish workflow but no context file mentions the release process.",
-      "message": "Release workflow found but no context file documents the release process",
+      "trigger": ".github/workflows/ contains a release/deploy/publish/cd workflow (by filename or the workflow's top-level name:) but no context file documents the release process. Recognised documentation: a Releasing/Deploying/Publishing/Deployment heading (not '... notes/targets/environments/history/log/status'), a '<release|deploy|deployment|publish> process/workflow/steps/procedure/guide/flow' heading; a release/deploy/publish word stem followed by process/workflow/steps/via/by/using/with/happens/runs/automatically/to (deploy, publish) or by is/are plus a verb (cut, handled, triggered, automated, published, ...); an un-negated 'push <token> tag' (the token is not 'to') or 'tag push'; git tag v, npm publish, npm version <bump>, --follow-tags, release.<sh|ps1|mjs|cjs|js|ts|py>, release.yml, deploy.yml, CI/CD pipeline, continuous deploy.",
+      "message": "Release workflow(s) found ({workflows}) but no context file documents the release process",
       "fixable": false,
       "stability": "stable"
     },
@@ -440,8 +466,8 @@
       "category": "ci-secrets",
       "severity": "info",
       "description": "CI workflow references a secret not mentioned in any context file.",
-      "trigger": "${{ secrets.NAME }} found in workflow YAML but NAME not mentioned in any context file. GitHub-provided secrets (GITHUB_TOKEN, etc.) are excluded.",
-      "message": "CI secret \"{name}\" is used in {workflow} but not mentioned in any context file",
+      "trigger": "A secrets.NAME or secrets['NAME'] reference in any workflow expression or if: condition (YAML comments ignored) whose NAME is not mentioned in any context file. Names are case-insensitive (one finding per secret, first spelling shown). Only GITHUB_TOKEN is excluded. A name made only of generic words (API_KEY, ACCESS_TOKEN, AUTH_TOKEN, CLIENT_SECRET, ...) needs the exact uppercase name, a backticked mention or secrets.NAME; other names match case-insensitively with _, space or - between words.",
+      "message": "CI secret \"{name}\" is used in {workflows} but not mentioned in any context file",
       "fixable": false,
       "stability": "stable"
     },
@@ -449,9 +475,12 @@
       "id": "hook-coverage/dead-hook",
       "category": "hook-coverage",
       "severity": "warning",
-      "description": "A PreToolUse (or other) hook command, or a permissions entry, in .claude/settings.json references a script/path that does not exist on disk. The gate silently no-ops -- Claude Code cannot run a missing script, so the protection the user believes is in place does nothing. Two distinct findings share this rule: the target is genuinely absent (restore or remove the entry), or the target EXISTS but the path form does not resolve (rewrite the entry -- do not delete it). The wording and suggestion differ so the two opposite remedies are never confused.",
-      "trigger": "A hooks.<Event>[].hooks[].command or permissions.{allow,deny,ask}[] entry contains a path-shaped token (resolved through ~, $CLAUDE_PROJECT_DIR, $CLAUDE_CONFIG_DIR, $HOME) that does not exist on disk. Entries with unresolvable env vars are skipped (cannot be verified). Before reporting, alternate readings of the token are tried (MSYS drive paths with one OR two leading slashes, a stray leading slash on a repo-relative path, backslash/forward-slash flips); if one of them exists, the finding is reported as a path-form problem rather than a missing target. Scans project .claude/settings.json + settings.local.json; the user-global ~/.claude/settings.json is scanned only on explicit opt-in (--hooks-global).",
-      "message": "{origin} references \"{path}\" which does not exist on disk -- the gate silently no-ops | {origin} references \"{path}\" which does not resolve, but \"{variant}\" exists -- the path form is wrong, so the gate silently no-ops",
+      "description": "A hook command or a permissions.allow entry in .claude/settings.json (or settings.local.json) references a script/path that does not exist on disk. A hook pointing at a missing script does not run, so the gate silently no-ops; an allow rule naming a missing path matches nothing. Two distinct findings share this rule: the target is genuinely absent (restore or remove the entry), or the target EXISTS but the path form does not resolve (rewrite the entry -- do not delete it). The wording and suggestion differ so the two opposite remedies are never confused. deny and ask entries are not checked: a deny naming a missing path guards against it appearing.",
+      "trigger": "A hooks.<Event>[].hooks[].command or permissions.allow[] entry contains a path that does not exist on disk. Shell words of hook commands and Bash(...)/PowerShell(...) entries are resolved through ~, $CLAUDE_PROJECT_DIR, $CLAUDE_CONFIG_DIR and $HOME; Read/Edit/Write/MultiEdit/NotebookEdit/Glob/Grep rules use Claude Code's path-rule prefixes (// absolute, ~/ home, / relative to the settings file's source, bare or ./ relative to the cwd), and inner globs, ! negations and bare names are skipped. Entries with unresolvable env vars are skipped. Before reporting, alternate readings are tried (MSYS drive paths with one or two leading slashes, a stray leading slash, backslash/forward-slash flips, / vs // for path rules); if one exists, the path-form variant is reported. Scans project .claude/settings.json + settings.local.json; the user-global settings.json (under CLAUDE_CONFIG_DIR when set, else ~/.claude) only on explicit opt-in (--hooks-global). An unparseable settings file is skipped with a stderr warning.",
+      "message": "{origin} references \"{path}\" which does not exist on disk (in {settingsFile}) — {consequence}",
+      "messageVariants": [
+        "{origin} references \"{path}\" which does not resolve (in {settingsFile}), but \"{variant}\" exists — the path form is wrong, so {consequence}"
+      ],
       "fixable": false,
       "stability": "experimental"
     },
@@ -460,7 +489,7 @@
       "category": "content-secrets",
       "severity": "error",
       "description": "A PEM private-key header is pasted into a context file. Context files usually end up committed to git, so an inline private key is a leak.",
-      "trigger": "A line contains -----BEGIN [RSA |EC |DSA |OPENSSH |PGP ]PRIVATE KEY-----. Lines containing placeholder tokens (example, redacted, xxxx, ...), commented fake/example lines, and explicitly illustrative code fences (text, txt, example, pseudocode, none) are suppressed.",
+      "trigger": "A line contains -----BEGIN <uppercase qualifiers >PRIVATE KEY----- (RSA, EC, DSA, OPENSSH, ENCRYPTED, ...) or PGP's -----BEGIN PGP PRIVATE KEY BLOCK-----. Lines containing placeholder tokens (example, redacted, xxxx, ...), commented fake/example lines (# counts as a comment only inside a code fence), and explicitly illustrative code fences (text, txt, example, pseudocode, none) are suppressed.",
       "message": "Private key header detected in {file}",
       "fixable": false,
       "stability": "experimental"
@@ -482,6 +511,7 @@
       "description": "A GitHub token is pasted into a context file. Covers classic PATs (ghp_), fine-grained PATs (github_pat_), and server-to-server / OAuth / user / refresh tokens (ghs_ / gho_ / ghu_ / ghr_); the non-PAT variants are emitted with the label \"GitHub token\".",
       "trigger": "ghp_{36,}, github_pat_{82,}, or gh[soru]_{36,} token shapes, outside placeholder/illustrative contexts.",
       "message": "GitHub personal access token detected in {file} ({redacted-prefix}...)",
+      "messageVariants": ["GitHub token detected in {file} ({redacted-prefix}...)"],
       "fixable": false,
       "stability": "experimental"
     },
@@ -490,7 +520,7 @@
       "category": "content-secrets",
       "severity": "error",
       "description": "An Anthropic API key is pasted into a context file.",
-      "trigger": "sk-ant- prefix followed by 20+ key characters, outside placeholder/illustrative contexts. Checked before the OpenAI sk- pattern so the same substring isn't flagged twice.",
+      "trigger": "sk-ant- prefix followed by 20+ key characters that include an uppercase letter or a digit, outside placeholder/illustrative contexts. Checked before the OpenAI sk- pattern so the same substring isn't flagged twice.",
       "message": "Anthropic API key detected in {file} ({redacted-prefix}...)",
       "fixable": false,
       "stability": "experimental"
@@ -500,7 +530,7 @@
       "category": "content-secrets",
       "severity": "error",
       "description": "An OpenAI API key is pasted into a context file.",
-      "trigger": "sk- or sk-proj- prefix followed by 20+ key characters (the length floor avoids flagging sk-... ellipses in docs), outside placeholder/illustrative contexts.",
+      "trigger": "sk- or sk-proj- prefix followed by 20+ key characters that include an uppercase letter or a digit (the length floor avoids flagging sk-... ellipses in docs; the character rule avoids kebab-case names like sk-learn-compatible-estimator-api), outside placeholder/illustrative contexts.",
       "message": "OpenAI API key detected in {file} ({redacted-prefix}...)",
       "fixable": false,
       "stability": "experimental"
@@ -599,7 +629,7 @@
         ".github/git-commit-instructions.md"
       ],
       "type": "markdown",
-      "frontmatter": "optional",
+      "frontmatter": "optional (validated for .github/instructions/*.instructions.md)",
       "frontmatterFields": {
         "applyTo": {
           "required": false,
@@ -618,7 +648,7 @@
         "trigger": {
           "required": true,
           "type": "enum",
-          "values": ["always_on", "glob", "manual", "model", "model_decision"]
+          "values": ["always_on", "glob", "manual", "model_decision"]
         }
       },
       "scope": "project-wide and rule-based"
@@ -634,10 +664,10 @@
     {
       "id": "cline",
       "client": "Cline",
-      "patterns": [".clinerules"],
-      "type": "plain text",
+      "patterns": [".clinerules", ".clinerules/*.md"],
+      "type": "plain text or markdown",
       "frontmatter": "none",
-      "scope": "project-wide"
+      "scope": "project-wide and rule-based"
     },
     {
       "id": "aider",

@@ -7,7 +7,11 @@ import type { SessionContext } from '../../../types.js';
 import { checkMemoryIndexOverflow } from '../memory-index-overflow.js';
 
 const roots: string[] = [];
-const prev = { home: process.env.HOME, profile: process.env.USERPROFILE };
+const prev = {
+  home: process.env.HOME,
+  profile: process.env.USERPROFILE,
+  configDir: process.env.CLAUDE_CONFIG_DIR,
+};
 
 afterEach(() => {
   for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
@@ -15,6 +19,8 @@ afterEach(() => {
   else process.env.HOME = prev.home;
   if (prev.profile === undefined) delete process.env.USERPROFILE;
   else process.env.USERPROFILE = prev.profile;
+  if (prev.configDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+  else process.env.CLAUDE_CONFIG_DIR = prev.configDir;
 });
 
 /** Write MEMORY.md under an explicitly chosen encoded dir name. */
@@ -29,6 +35,8 @@ function seed(encodedDir: string, lines: number): string {
   );
   process.env.HOME = home;
   process.env.USERPROFILE = home;
+  // CLAUDE_CONFIG_DIR outranks HOME; an ambient one would read the real corpus.
+  delete process.env.CLAUDE_CONFIG_DIR;
   return home;
 }
 

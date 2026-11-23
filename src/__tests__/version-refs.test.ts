@@ -40,7 +40,7 @@ const README = [
 const HOOKS = [
   '- id: ctxlint',
   '  entry: npx @yawlabs/ctxlint@0.24.1 --strict',
-  '  language: node',
+  '  language: system',
   '',
 ].join('\n');
 
@@ -125,6 +125,10 @@ describe('sync-version-refs', () => {
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ version: pkgVersion }));
     fs.mkdirSync(path.join(dir, 'scripts'));
     fs.copyFileSync(SCRIPT, path.join(dir, 'scripts', 'sync-version-refs.mjs'));
+    // The script imports its entry-point check from scripts/lib.
+    fs.cpSync(path.join(ROOT, 'scripts', 'lib'), path.join(dir, 'scripts', 'lib'), {
+      recursive: true,
+    });
     return dir;
   }
 
@@ -208,5 +212,16 @@ describe('sync-version-refs', () => {
     expect(status).toBe(0);
     expect(stdout).toContain('synced README.md to 1.2.3');
     expect(read(dir, '.pre-commit-hooks.yaml')).toContain('npx @yawlabs/ctxlint@1.2.3 --strict');
+  });
+});
+
+describe('package.json runtime dependencies', () => {
+  // build.mjs bundles every import into dist/index.js (only node: builtins stay
+  // external) and bin/ctxlint.mjs imports only node: builtins, so the published
+  // package needs nothing installed beside it. A `dependencies` entry would make
+  // every cold `npx` install it anyway -- the cost build.mjs exists to remove.
+  it('declares none: everything the CLI uses is bundled', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
+    expect(pkg.dependencies ?? {}).toEqual({});
   });
 });

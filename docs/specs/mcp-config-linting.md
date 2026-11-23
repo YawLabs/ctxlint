@@ -1,5 +1,8 @@
 # MCP Config Linting — ctxlint Implementation Plan
 
+> [!WARNING]
+> **Historical design document — superseded by [`MCP_CONFIG_LINT_SPEC.md`](../../MCP_CONFIG_LINT_SPEC.md).** This is the v0.7.0-era implementation plan, kept for history. Parts of it no longer match ctxlint (type names, config shapes, flags, SARIF rule ids, fixtures, version targets). For current rules and behaviour, read `MCP_CONFIG_LINT_SPEC.md`, [`mcp-config-lint-rules.json`](../../mcp-config-lint-rules.json) and the [README](../../README.md).
+
 **Status:** Implemented
 **Date:** 2026-04-08
 **Target:** ctxlint v0.7.0

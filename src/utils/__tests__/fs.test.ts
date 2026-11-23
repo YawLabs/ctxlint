@@ -10,6 +10,8 @@ import {
   isSymlink,
   readSymlinkTarget,
   readFileContent,
+  isOutsideRelative,
+  IGNORED_DIRS,
   getAllProjectFiles,
   stripBom,
 } from '../fs.js';
@@ -341,5 +343,40 @@ describe('getAllProjectFiles', () => {
     const files = getAllProjectFiles(tmpDir).map((p) => p.replace(/\\/g, '/'));
     // File at depth >10 should NOT be found
     expect(files.some((f) => f.endsWith('/deep.txt'))).toBe(false);
+  });
+});
+
+describe('isOutsideRelative', () => {
+  it('flags .. and ../-prefixed results', () => {
+    expect(isOutsideRelative('..')).toBe(true);
+    expect(isOutsideRelative('../x.md')).toBe(true);
+    expect(isOutsideRelative('../../a/b')).toBe(true);
+  });
+
+  it('keeps in-root names that merely start with ".."', () => {
+    expect(isOutsideRelative('..foo.md')).toBe(false);
+    expect(isOutsideRelative('...')).toBe(false);
+    expect(isOutsideRelative('src/..x')).toBe(false);
+    expect(isOutsideRelative('')).toBe(false);
+  });
+
+  it('treats an absolute result (another drive on win32) as outside', () => {
+    const other = process.platform === 'win32' ? 'D:\\x\\y.md' : '/etc/passwd';
+    expect(isOutsideRelative(other)).toBe(true);
+    // An ordinary in-root path.relative result stays inside.
+    expect(isOutsideRelative(path.relative(path.resolve('/a'), path.resolve('/a/b')))).toBe(false);
+  });
+
+  it.runIf(process.platform === 'win32')('accepts the backslash form on win32', () => {
+    expect(isOutsideRelative('..\\x.md')).toBe(true);
+    expect(isOutsideRelative('..foo\\x.md')).toBe(false);
+  });
+});
+
+describe('IGNORED_DIRS', () => {
+  it('is the shared list both walkers use', () => {
+    for (const d of ['node_modules', '.git', 'dist', 'build', 'vendor', 'coverage']) {
+      expect(IGNORED_DIRS.has(d)).toBe(true);
+    }
   });
 });

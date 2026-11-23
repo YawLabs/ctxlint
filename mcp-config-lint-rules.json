@@ -52,8 +52,8 @@
       "category": "mcp-schema",
       "severity": "error",
       "description": "MCP config file is not valid JSON.",
-      "trigger": "JSON.parse fails on the file content.",
-      "message": "MCP config is not valid JSON: {parseError}",
+      "trigger": "The file does not parse. .vscode/mcp.json is parsed as JSONC (comments and trailing commas allowed), as VS Code reads it; every other client's file is parsed as strict JSON. The message reports the parse error code and position only, never source text (which could quote the start of an unquoted secret).",
+      "message": "MCP config is not valid JSON: {errorCode} at line {line} column {column}",
       "fixable": false,
       "clients": ["all"],
       "stability": "stable"
@@ -66,7 +66,7 @@
       "trigger": "Root key is \"mcpServers\" in .vscode/mcp.json, or \"servers\" in any other config file.",
       "message": "{file} must use \"{expected}\" as root key, not \"{actual}\"",
       "fixable": true,
-      "fixDescription": "Rename the root key to match the expected key for the client.",
+      "fixDescription": "Rename the root key to match the expected key for the client. No fix when the expected key is also present (the rename would create a duplicate key).",
       "clients": ["all"],
       "stability": "stable"
     },
@@ -75,7 +75,7 @@
       "category": "mcp-schema",
       "severity": "error",
       "description": "No recognized root key (\"mcpServers\" or \"servers\") found in the config.",
-      "trigger": "The parsed JSON object has neither \"mcpServers\" nor \"servers\" as a key.",
+      "trigger": "The parsed JSON object has neither \"mcpServers\" nor \"servers\" as a top-level key. Not reported for ~/.claude.json, whose servers may live only in projects[\"<path>\"].mcpServers.",
       "message": "MCP config has no \"{expected}\" key",
       "fixable": false,
       "clients": ["all"],
@@ -85,9 +85,10 @@
       "id": "mcp-schema/missing-command",
       "category": "mcp-schema",
       "severity": "error",
-      "description": "A stdio server entry has no \"command\" field.",
-      "trigger": "Server has type \"stdio\" (or no type with no url) and no \"command\" field.",
+      "description": "A stdio server entry has no string \"command\" field.",
+      "trigger": "Server has type \"stdio\" (or no type with no url) and no \"command\" field, or a \"command\" that is not a string.",
       "message": "Server \"{name}\" has no \"command\" field",
+      "messageVariants": ["Server \"{name}\": \"command\" must be a string, not {type}"],
       "fixable": false,
       "clients": ["all"],
       "stability": "stable"
@@ -118,9 +119,13 @@
       "id": "mcp-schema/unknown-transport",
       "category": "mcp-schema",
       "severity": "warning",
-      "description": "Server transport cannot be classified: the \"type\" field is not a recognized transport, or the entry has no \"command\", no \"url\", and no valid \"type\" at all.",
-      "trigger": "The parser could not classify the server's transport — a string \"type\" outside stdio/http/sse, a non-string \"type\", or an entry with neither \"command\" nor \"url\". The no-recognizable-transport case emits the message variant: Server \"{name}\" has no recognizable transport — expected \"command\", \"url\", or a valid \"type\".",
+      "description": "Server transport cannot be classified: the \"type\" field is not a recognized transport, the entry has no \"command\", no \"url\", and no valid \"type\" at all, or the entry is not an object.",
+      "trigger": "The parser could not classify the server's transport — a string \"type\" outside stdio/http/sse, a non-string \"type\", or an entry with neither \"command\" nor \"url\" — or a server entry's value is not an object (only a name's last occurrence is checked).",
       "message": "Server \"{name}\" has unknown transport type \"{type}\"",
+      "messageVariants": [
+        "Server \"{name}\" has no recognizable transport — expected \"command\", \"url\", or a valid \"type\"",
+        "Server \"{name}\" must be an object, not {type} — the client ignores this entry"
+      ],
       "fixable": false,
       "clients": ["all"],
       "stability": "stable"
@@ -141,7 +146,7 @@
       "category": "mcp-schema",
       "severity": "info",
       "description": "The config file has a root key but no server entries.",
-      "trigger": "Root key exists but the object is empty.",
+      "trigger": "A top-level root key exists but the object is empty. Not reported for ~/.claude.json without a top-level root key.",
       "message": "MCP config has no server entries",
       "fixable": false,
       "clients": ["all"],
@@ -151,11 +156,11 @@
       "id": "mcp-security/hardcoded-bearer",
       "category": "mcp-security",
       "severity": "error",
-      "description": "A git-tracked config file contains a literal Bearer token in the Authorization header.",
-      "trigger": "Authorization header value matches \"Bearer <literal>\" where the token is not an env var reference, and the file is tracked by git.",
+      "description": "A git-tracked config file contains a literal Bearer token in an Authorization or Proxy-Authorization header.",
+      "trigger": "An Authorization or Proxy-Authorization header value is \"Bearer <credentials>\" where the credentials are not entirely env var references, and the file is tracked by git.",
       "message": "Server \"{name}\" has a hardcoded Bearer token in a git-tracked file",
       "fixable": true,
-      "fixDescription": "Replace the literal token with an env var reference derived from the server name.",
+      "fixDescription": "Replace only the literal token with a reference to <SERVER>_TOKEN in the client's own syntax (${VAR}, ${env:VAR} or ${{ secrets.VAR }}), keeping the scheme, its spacing and any adjacent ${VAR}. Colliding names within a server get _2, _3; a leading digit gets a _ prefix. The fix sits on the value's own line and column. No fix for claude-desktop, amazonq or cline (no env interpolation), or when the literal is split around a ${VAR}.",
       "clients": ["all"],
       "stability": "stable"
     },
@@ -163,11 +168,11 @@
       "id": "mcp-security/hardcoded-api-key",
       "category": "mcp-security",
       "severity": "error",
-      "description": "A git-tracked config file contains a value matching known API key patterns, or a high-entropy value whose variable name suggests a secret.",
-      "trigger": "A header or env value matches known API key prefixes (sk-, ghp_, xoxb-, AKIA, AGE-SECRET-KEY-1, glpat-, sq0atp-, etc.), or is a high-entropy string > 20 chars AND the env var name contains a secret-suggesting keyword (KEY, TOKEN, SECRET, PASSWORD, AUTH, CREDENTIAL, ...) — the name gate keeps build IDs, commit SHAs, and version strings from false-positiving. File must be tracked by git.",
+      "description": "A git-tracked config file contains a literal credential: a value matching a known API key pattern, a non-Bearer Authorization value, or a high-entropy value whose name suggests a secret.",
+      "trigger": "In a git-tracked file: (1) an Authorization or Proxy-Authorization header value whose scheme is not Bearer (Basic, Token, ...) or that has no scheme, with literal credentials; (2) any other header, an env value or an arg containing a known API key pattern (sk-ant-, sk-proj-, sk-, ghp_, ghu_, github_pat_, xoxb-, xoxp-, AKIA, AGE-SECRET-KEY-1, glpat-, sq0atp-, JWT eyJ...eyJ...); or (3) a header or env value that is high-entropy (21+ characters of [A-Za-z0-9+/=_-], ${...} spans stripped, not a filesystem path with two or more segments and no + or =) under a name that suggests a secret. The name gate matches whole name tokens (split on _, - and camelCase): KEY, TOKEN, SECRET, PASSWORD, PASSWD, PASS, PASSPHRASE, AUTH, AUTHORIZATION, CREDENTIAL, CREDENTIALS, APIKEY, PRIVATE, SIGNING, SESSION, COOKIE; a separator-less token ending in TOKEN, SECRET, PASSWORD, PASSWD, PASS, KEY or CREDENTIALS also counts, except ordinary words (MONKEY, HOTKEY, BYPASS, COMPASS, ...). A name whose last token is PATH, DIR, DIRECTORY, FILE, FILENAME, NAME, URL, URI, HOST, PORT or SERVICE is excluded.",
       "message": "Server \"{name}\" has a hardcoded API key in a git-tracked file",
       "fixable": true,
-      "fixDescription": "Replace the literal value with an env var reference.",
+      "fixDescription": "Replace only the literal secret with an env var reference in the client's own syntax (${VAR}, ${env:VAR} or ${{ secrets.VAR }}), keeping any adjacent ${VAR} and an Authorization scheme. Names: an env secret keeps its env key; a non-Bearer Authorization value -> <SERVER>_CREDENTIALS; another header -> <SERVER>_<HEADER> with a leading X- dropped; an arg -> named after its flag, else <SERVER>_API_KEY. Colliding names within a server get _2, _3; a leading digit gets a _ prefix. The fix sits on the value's own line and column. No fix for claude-desktop, amazonq or cline (no env interpolation), or when the literal is split around a ${VAR}.",
       "clients": ["all"],
       "stability": "stable"
     },
@@ -175,9 +180,10 @@
       "id": "mcp-security/secret-in-url",
       "category": "mcp-security",
       "severity": "error",
-      "description": "A git-tracked config URL contains query parameters that look like secrets.",
-      "trigger": "URL contains query params like ?key=, ?token=, ?api_key= with literal values in a git-tracked file.",
+      "description": "A git-tracked config URL carries a literal credential in a secret-named query parameter or in its userinfo.",
+      "trigger": "In a git-tracked file, a URL query param named key, token, api_key, apikey, secret, password or access_token has a value that is not entirely an env var reference; or the URL userinfo holds a literal password (https://user:pw@host) or a bare username that is a known API key.",
       "message": "Server \"{name}\" has a secret in the URL query string",
+      "messageVariants": ["Server \"{name}\" has credentials in the URL userinfo"],
       "fixable": false,
       "clients": ["all"],
       "stability": "stable"
@@ -198,7 +204,7 @@
       "category": "mcp-security",
       "severity": "warning",
       "description": "Server URL uses HTTP without TLS for a non-localhost target.",
-      "trigger": "URL scheme is http:// and host is not a loopback address (localhost, [::1], 127.0.0.0/8).",
+      "trigger": "URL (with no env var placeholders) uses http:// and the host is not machine-local (localhost, localhost., *.localhost, 127.0.0.0/8, [::1], IPv4-mapped [::ffff:127.x.x.x], and the bind-all 0.0.0.0 and [::]).",
       "message": "Server \"{name}\" uses HTTP without TLS",
       "fixable": false,
       "clients": ["all"],
@@ -208,11 +214,20 @@
       "id": "mcp-commands/windows-npx-no-wrapper",
       "category": "mcp-commands",
       "severity": "error",
-      "description": "On Windows, npx commands in stdio configs require a cmd /c wrapper to spawn correctly.",
-      "trigger": "Platform is Windows, command is \"npx\" (not \"cmd\" with /c npx in args).",
-      "message": "Server \"{name}\": npx requires \"cmd /c\" wrapper on Windows",
-      "fixable": true,
-      "fixDescription": "Rewrite command from \"npx\" to \"cmd\" with [\"/c\", \"npx\", ...] args.",
+      "severityVariants": [
+        {
+          "severity": "error",
+          "when": "a user/global config, linted on a Windows host"
+        },
+        {
+          "severity": "warning",
+          "when": "a project config whose content is already Windows-specific (a drive-letter or UNC path, a .exe/.cmd/.bat command, or a cmd/powershell/pwsh command), on any host"
+        }
+      ],
+      "description": "On Windows, package-runner commands (npx, bunx, pnpm, pnpx, and their .cmd forms) in stdio configs need a cmd /c wrapper to spawn. Not auto-fixed: whether the wrapper is right depends on who runs the file.",
+      "trigger": "The command is npx, bunx, pnpm or pnpx (optionally .cmd), not wrapped as \"cmd\" with /c in args; and the config is a user/global config on a Windows host, or a project config that is Windows-specific by its own content. A project config without that evidence is never reported (it is shared with macOS/Linux teammates).",
+      "message": "Server \"{name}\": {command} requires \"cmd /c\" wrapper on Windows",
+      "fixable": false,
       "clients": ["all"],
       "stability": "stable"
     },
@@ -232,7 +247,7 @@
       "category": "mcp-commands",
       "severity": "warning",
       "description": "A stdio arg looks like a local file path but the file does not exist.",
-      "trigger": "An arg matches a file path pattern (contains / with extension, or starts with ./) and the file does not exist. Relative paths are checked in project-scope configs only — a global config's relative paths resolve against that client's own working directory. Absolute paths are cwd-independent and are checked at every scope.",
+      "trigger": "An arg looks like a file path (starts with ./ or ../, contains / with an extension, or is a Windows absolute path with an extension — the last checked on Windows hosts only) and the file does not exist. Skipped: @package specs, any scheme:// URI, name:tag image refs, and args with an unresolvable ${...}; Cursor and VS Code ${workspaceFolder}, ${userHome}, ${pathSeparator} and ${/} are expanded first. Relative paths are checked in project-scope configs only — a global config's relative paths resolve against that client's own working directory. Absolute paths are cwd-independent and are checked at every scope.",
       "message": "Server \"{name}\": arg \"{arg}\" looks like a file path but doesn't exist",
       "fixable": false,
       "clients": ["all"],
@@ -246,7 +261,7 @@
       "trigger": "Server has \"type\": \"sse\".",
       "message": "Server \"{name}\" uses deprecated SSE transport — use \"http\" (Streamable HTTP) instead",
       "fixable": true,
-      "fixDescription": "Replace \"sse\" with \"http\" in the type field.",
+      "fixDescription": "Replace \"sse\" with \"http\" in the type field, anchored at the value's column (when the key and value sit on separate lines, only \"sse\" is replaced).",
       "clients": ["all"],
       "stability": "stable"
     },
@@ -255,10 +270,10 @@
       "category": "mcp-env",
       "severity": "error",
       "description": "Environment variable reference uses the wrong syntax for the target client.",
-      "trigger": "${VAR} used in Cursor config (should be ${env:VAR}), or ${env:VAR} used in Claude Code config (should be ${VAR}).",
-      "message": "Server \"{name}\": {client} uses {expected}, not {actual}",
+      "trigger": "${VAR} used in a Cursor or Windsurf config (should be ${env:VAR}), ${env:VAR} used in a Claude Code config (should be ${VAR}), or ${VAR} / ${env:VAR} used in a Continue config (should be ${{ secrets.VAR }}). Client built-ins are not references: Cursor userHome, workspaceFolder, workspaceFolderBasename, pathSeparator, and VS Code predefined variables. One finding per wrong reference, its message suffixed with that reference (e.g. (${WORKSPACE})); when no fix can be built for the value, one finding without the suffix.",
+      "message": "Server \"{name}\": {client} uses {expected}, not {actual} ({ref})",
       "fixable": true,
-      "fixDescription": "Rewrite env var references to the correct syntax for the target client.",
+      "fixDescription": "Rewrite the one wrong reference to the client's syntax at its exact line and column, leaving the rest of the value untouched.",
       "clients": ["claude-code", "cursor", "continue", "windsurf"],
       "stability": "stable"
     },
@@ -267,7 +282,7 @@
       "category": "mcp-env",
       "severity": "info",
       "description": "A referenced environment variable is not set in the current shell environment. Deliberately info severity: many env vars are set only in CI, .env files, or shell profiles unavailable during linting.",
-      "trigger": "Env var reference found in any collected string value (env, url, command, args, headers) but the variable is not in process.env. Skipped entirely for Continue configs — their ${{ secrets.VAR }} refs resolve from GitHub Actions secrets, not the local environment, so every correct Continue config would false-positive.",
+      "trigger": "Env var reference found in any collected string value (env, url, command, args, headers) but the variable is not in process.env. Not reported for ${VAR:-default} or for a client built-in variable. Skipped entirely for Continue configs — their ${{ secrets.VAR }} refs resolve from Continue's own secrets store (Hub / local .env), not the local shell environment.",
       "message": "Server \"{name}\": environment variable \"{var}\" is not set",
       "fixable": false,
       "clients": [
@@ -296,8 +311,8 @@
       "id": "mcp-urls/malformed-url",
       "category": "mcp-urls",
       "severity": "error",
-      "description": "Server URL is not a valid URL.",
-      "trigger": "URL cannot be parsed by standard URL parser and does not contain env var placeholders.",
+      "description": "Server URL is not a valid URL for an MCP transport.",
+      "trigger": "The URL (with no env var placeholders) cannot be parsed, or parses with a scheme other than http, https, ws or wss (e.g. localhost:3000/mcp, file://...). The echoed URL has its query string, fragment and userinfo replaced with \"...\".",
       "message": "Server \"{name}\": invalid URL \"{url}\"",
       "fixable": false,
       "clients": ["all"],
@@ -307,8 +322,8 @@
       "id": "mcp-urls/localhost-in-project-config",
       "category": "mcp-urls",
       "severity": "warning",
-      "description": "A project-level config (committed to version control) references a loopback address, which won't work for other team members.",
-      "trigger": "URL host is a loopback address (localhost, [::1], 127.0.0.0/8 — the same set http-no-tls exempts) and the file is a project-level config.",
+      "description": "A project-level config (committed to version control) references a machine-local address, which won't work for other team members.",
+      "trigger": "URL host is machine-local (localhost, localhost., *.localhost, 127.0.0.0/8, [::1], IPv4-mapped [::ffff:127.x.x.x], and the bind-all 0.0.0.0 and [::] — the same set http-no-tls exempts) and the file is a project-level config.",
       "message": "Server \"{name}\": loopback URL in project config won't work for teammates",
       "fixable": false,
       "clients": ["all"],
@@ -330,7 +345,7 @@
       "category": "mcp-consistency",
       "severity": "warning",
       "description": "The same server name is configured differently across multiple client config files.",
-      "trigger": "Server name exists in 2+ same-scope config files (project-project or user-user) with different url or command/args values. Cross-scope pairs are skipped — a user/global config differing from the project one is documented client precedence (project overrides user), not drift.",
+      "trigger": "Server name exists in 2+ same-scope config files (project-project or user-user) with different url or command/args values. Env-ref syntaxes are normalised first (${env:K}, ${{ secrets.K }} and ${K:-d} all equal ${K}). Cross-scope pairs are skipped — a user/global config differing from the project one is documented client precedence (project overrides user), not drift — and so are ~/.claude.json per-project servers.",
       "message": "Server \"{name}\" is configured differently in {file1} and {file2}",
       "fixable": false,
       "clients": ["all"],
@@ -341,8 +356,11 @@
       "category": "mcp-consistency",
       "severity": "warning",
       "description": "A server name appears more than once in the same config file. JSON last-write-wins behavior means only the last definition is used.",
-      "trigger": "Duplicate key in the mcpServers/servers object.",
+      "trigger": "Duplicate key in a mcpServers/servers object, checked once per servers object (each ~/.claude.json projects[\"<path>\"].mcpServers block separately).",
       "message": "Duplicate server name \"{name}\" in {file} — only the last definition is used",
+      "messageVariants": [
+        "Duplicate server name \"{name}\" in {file} (projects[\"{path}\"]) — only the last definition is used"
+      ],
       "fixable": false,
       "clients": ["all"],
       "stability": "stable"
@@ -352,7 +370,7 @@
       "category": "mcp-consistency",
       "severity": "info",
       "description": "A server in .mcp.json is not present in another client's project config that also exists.",
-      "trigger": "Server exists in .mcp.json but is absent from .cursor/mcp.json, .vscode/mcp.json, or .amazonq/mcp.json (when those files exist).",
+      "trigger": "Server exists in .mcp.json but is absent from .cursor/mcp.json, .vscode/mcp.json, or .amazonq/mcp.json (when those files exist and parse).",
       "message": "Server \"{name}\" is in .mcp.json but missing from {file}",
       "fixable": false,
       "clients": ["all"],
@@ -374,7 +392,7 @@
       "category": "mcp-redundancy",
       "severity": "info",
       "description": "The same server is identically configured at both project and global scope, making the global entry redundant.",
-      "trigger": "Server with same name and identical config (command/args/url/env) exists at both project and global scope.",
+      "trigger": "Server with same name and identical config (command/args/url, env compared order-insensitively) exists at both project and global scope. Of ~/.claude.json's per-project blocks only the current project's is considered.",
       "message": "Server \"{name}\" is identically configured in both {projectFile} and {globalFile}",
       "fixable": false,
       "clients": ["claude-code", "cursor", "amazonq"],
@@ -391,7 +409,8 @@
       "envVarSyntax": "${VAR}",
       "envVarDefaultSyntax": "${VAR:-default}",
       "transports": ["stdio", "http", "sse"],
-      "scopePrecedence": ["local", "project", "user"]
+      "scopePrecedence": ["local", "project", "user"],
+      "notes": "With CLAUDE_CONFIG_DIR set, settings.json is read from that directory and .claude.json is preferred there, falling back to ~/.claude.json. ~/.claude.json counts as an MCP config when it has a top-level mcpServers or a non-empty projects.*.mcpServers."
     },
     {
       "id": "claude-desktop",
@@ -412,7 +431,7 @@
       "projectConfig": ".vscode/mcp.json",
       "globalConfig": null,
       "rootKey": "servers",
-      "envVarSyntax": "${VAR}",
+      "envVarSyntax": "${env:VAR}",
       "transports": ["stdio", "http", "sse"],
       "scopePrecedence": ["workspace", "user"]
     },
@@ -440,11 +459,15 @@
       "id": "cline",
       "name": "Cline",
       "projectConfig": null,
-      "globalConfig": "VS Code globalStorage: saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
+      "globalConfig": [
+        "VS Code globalStorage: saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
+        "~/.cline/data/settings/cline_mcp_settings.json"
+      ],
       "rootKey": "mcpServers",
       "envVarSyntax": null,
       "transports": ["stdio", "http", "sse"],
-      "scopePrecedence": ["global"]
+      "scopePrecedence": ["global"],
+      "notes": "Detected by a saoudrizwan.claude-dev/ path or a file named cline_mcp_settings.json. The CLI path can be overridden with CLINE_MCP_SETTINGS_PATH. No env-var interpolation, so the secret auto-fixes are omitted."
     },
     {
       "id": "amazonq",
@@ -464,7 +487,8 @@
       "rootKey": "mcpServers",
       "envVarSyntax": "${{ secrets.VAR }}",
       "transports": ["stdio", "http", "sse"],
-      "scopePrecedence": ["workspace", "global"]
+      "scopePrecedence": ["workspace", "global"],
+      "notes": "The global config.yaml is not linted (YAML); project .continue/mcpServers/*.json files are."
     }
   ]
 }

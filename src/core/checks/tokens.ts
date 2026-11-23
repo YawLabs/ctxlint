@@ -1,3 +1,4 @@
+import * as path from 'node:path';
 import type { ParsedContextFile, LintIssue } from '../types.js';
 
 export interface TokenThresholds {
@@ -18,11 +19,24 @@ export const DEFAULT_TOKEN_THRESHOLDS: TokenThresholds = {
   tierAggregate: 4000,
 };
 
+const THRESHOLD_KEYS = Object.keys(DEFAULT_TOKEN_THRESHOLDS) as (keyof TokenThresholds)[];
+
 /**
- * Merge user-supplied overrides into DEFAULT_TOKEN_THRESHOLDS. Validates the
- * info < warning < error invariant and, on violation, logs a warning and
- * falls back to defaults. Pure aside from the single stderr line on bad
- * input; safe to call concurrently from independent audit runs.
+ * Merge user-supplied overrides into DEFAULT_TOKEN_THRESHOLDS.
+ *
+ * Validation is two-staged so one bad value cannot silently disable a tier:
+ *   1. Per key: every supplied value must be a finite, non-negative number. A
+ *      string ("2000", which would otherwise compare lexically), NaN, Infinity,
+ *      null or a negative number is rejected with a message naming THAT key,
+ *      and only that key falls back to its default.
+ *   2. Ordering: the resulting per-file tiers must satisfy
+ *      info < warning < error; on violation the whole set falls back to
+ *      defaults.
+ * Config files are shape-checked earlier by config.ts; this guard also covers
+ * programmatic callers (runAudit options) that never pass through it.
+ *
+ * Pure aside from the stderr lines on bad input; safe to call concurrently
+ * from independent audit runs.
  *
  * This is the only entry point for resolving thresholds. The previous
  * module-level state (`setTokenThresholds` / `getTokenThresholds`) was
@@ -32,7 +46,20 @@ export const DEFAULT_TOKEN_THRESHOLDS: TokenThresholds = {
  */
 export function resolveTokenThresholds(overrides?: Partial<TokenThresholds>): TokenThresholds {
   if (!overrides) return DEFAULT_TOKEN_THRESHOLDS;
-  const merged = { ...DEFAULT_TOKEN_THRESHOLDS, ...overrides };
+  const merged: TokenThresholds = { ...DEFAULT_TOKEN_THRESHOLDS };
+  for (const key of THRESHOLD_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(overrides, key)) continue;
+    const value: unknown = overrides[key];
+    if (value === undefined) continue;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+      const shown = typeof value === 'string' ? `"${value}"` : String(value);
+      console.error(
+        `Warning: token threshold "${key}" must be a finite non-negative number (got ${shown}) — using the default ${DEFAULT_TOKEN_THRESHOLDS[key]}`,
+      );
+      continue;
+    }
+    merged[key] = value;
+  }
   if (merged.info >= merged.warning || merged.warning >= merged.error) {
     console.error(
       `Warning: token thresholds should satisfy info < warning < error (got ${merged.info}, ${merged.warning}, ${merged.error}) — using defaults`,
@@ -40,6 +67,11 @@ export function resolveTokenThresholds(overrides?: Partial<TokenThresholds>): To
     return DEFAULT_TOKEN_THRESHOLDS;
   }
   return merged;
+}
+
+/** Fixed-locale grouping so a finding reads the same on every host ("1,234"). */
+function fmt(n: number): string {
+  return n.toLocaleString('en-US');
 }
 
 export async function checkTokens(
@@ -56,7 +88,7 @@ export async function checkTokens(
       check: 'tokens',
       ruleId: 'tokens/excessive',
       line: 1,
-      message: `${tokens.toLocaleString()} tokens — consumes significant context window space`,
+      message: `${fmt(tokens)} tokens — consumes significant context window space`,
       suggestion: 'Consider splitting into focused sections or removing redundant content.',
     });
   } else if (tokens >= thresholds.warning) {
@@ -65,8 +97,8 @@ export async function checkTokens(
       check: 'tokens',
       ruleId: 'tokens/large',
       line: 1,
-      message: `${tokens.toLocaleString()} tokens — large context file`,
-      suggestion: 'Consider trimming — research shows diminishing returns past ~300 lines.',
+      message: `${fmt(tokens)} tokens — large context file`,
+      suggestion: 'Consider trimming — every token here is loaded into each session.',
     });
   } else if (tokens >= thresholds.info) {
     issues.push({
@@ -74,25 +106,61 @@ export async function checkTokens(
       check: 'tokens',
       ruleId: 'tokens/info',
       line: 1,
-      message: `Uses ~${tokens.toLocaleString()} tokens per session`,
+      message: `Uses ~${fmt(tokens)} tokens per session`,
     });
   }
 
   return issues;
 }
 
+export interface AggregateTokenInput {
+  path: string;
+  tokens: number;
+  /** When true and `symlinkTarget` resolves to another counted path, skipped. */
+  isSymlink?: boolean;
+  /** Raw link target as read by readlink (relative to the link's directory). */
+  symlinkTarget?: string;
+}
+
+/**
+ * Project-relative, forward-slash path a symlink points at, or null when the
+ * target is absolute (it cannot be related to the relative paths in the set).
+ */
+function resolveLinkTarget(f: AggregateTokenInput): string | null {
+  if (!f.isSymlink || !f.symlinkTarget) return null;
+  const target = f.symlinkTarget.replace(/\\/g, '/');
+  if (path.posix.isAbsolute(target) || /^[A-Za-z]:/.test(target)) return null;
+  return path.posix.normalize(
+    path.posix.join(path.posix.dirname(f.path.replace(/\\/g, '/')), target),
+  );
+}
+
 export function checkAggregateTokens(
-  files: { path: string; tokens: number }[],
+  files: AggregateTokenInput[],
   thresholds: TokenThresholds = DEFAULT_TOKEN_THRESHOLDS,
 ): LintIssue | null {
-  const total = files.reduce((sum, f) => sum + f.tokens, 0);
-  if (total >= thresholds.aggregate && files.length > 1) {
+  // A symlink whose target is another counted file (AGENTS.md -> CLAUDE.md) is
+  // the same content under a second name: counting both doubles the total.
+  // Case-insensitive default filesystems (win32, darwin) fold like scanner globs.
+  const nocase = process.platform === 'win32' || process.platform === 'darwin';
+  const fold = (p: string) => (nocase ? p.toLowerCase() : p);
+  const counted = new Set(files.map((f) => fold(f.path.replace(/\\/g, '/'))));
+  const unique = files.filter((f) => {
+    const target = resolveLinkTarget(f);
+    return !(
+      target &&
+      fold(target) !== fold(f.path.replace(/\\/g, '/')) &&
+      counted.has(fold(target))
+    );
+  });
+  const total = unique.reduce((sum, f) => sum + f.tokens, 0);
+  if (total >= thresholds.aggregate && unique.length > 1) {
     return {
       severity: 'warning',
       check: 'tokens',
       ruleId: 'tokens/aggregate',
       line: 0,
-      message: `${files.length} context files consume ${total.toLocaleString()} tokens combined`,
+      message: `${unique.length} context files consume ${fmt(total)} tokens combined`,
       suggestion: 'Consider consolidating or trimming to reduce per-session context cost.',
     };
   }

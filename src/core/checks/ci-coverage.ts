@@ -1,70 +1,81 @@
-import { readdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { existsSync } from 'node:fs';
 import type { ParsedContextFile, LintIssue } from '../types.js';
-import { stripBom } from '../../utils/fs.js';
+import { readWorkflowFiles, topLevelWorkflowName } from './workflow-files.js';
 
-// Workflow filenames or YAML `name:` values that indicate release/deploy workflows
+// Workflow filenames or top-level YAML `name:` values that indicate
+// release/deploy workflows
 const RELEASE_FILENAME_PATTERNS = [/release/i, /deploy/i, /publish/i, /\bcd\b/i];
 
-// Phrases in context files that indicate release/deploy documentation
+// Word stems, so "Releases are cut", "Releasing via", "Deploys to", "Deployment
+// is handled", "publishes to" all count -- not just the bare verb.
+const RELEASE_STEM = String.raw`releas(?:e|es|ed|ing)`;
+const DEPLOY_STEM = String.raw`deploy(?:s|ed|ing|ments?)?`;
+const PUBLISH_STEM = String.raw`publish(?:es|ed|ing)?`;
+
+// A copula only counts when a verb follows it: "Releases are cut with...",
+// "Deployment is handled by...", but not "Release notes are in CHANGELOG" or
+// "The release is on Friday".
+const COPULA_VERB = String.raw`(?:are|is)\s+(?:\w+ly\s+)?(?:cut|made|done|handled|triggered|automated|published|deployed|run|built|created|tagged|managed|performed|shipped|driven|kicked)`;
+
+// "Never push a tag", "Don't push tags", "do not push": a negated instruction
+// is not a description of how the release happens.
+const NOT_NEGATED = String.raw`(?<!\b(?:not|never|no|don['’]t|dont|doesn['’]t)\s+)`;
+
+// Phrases in context files that indicate release/deploy documentation. Each
+// stem needs a following word that makes it a statement about HOW the
+// release/deploy happens, so a passing "see the release notes" does not count.
 const RELEASE_DOC_PATTERNS = [
-  /release\s+(process|workflow|steps|via|by|using)/i,
-  /deploy\s+(process|workflow|steps|to|via|using)/i,
-  /publish\s+(to|via|using|workflow|process)/i,
-  /push\s+(?:a\s+)?(?:v[\d.]+ )?tag/i,
-  /git\s+tag\s+v/i,
-  /npm\s+publish/i,
-  /release\.yml/i,
-  /deploy\.yml/i,
+  // A heading about the release/deploy process: "## Releasing", "## Deploying
+  // to Fly", "## Deployment", "### Release process". Not "## Release notes" or
+  // "## Deployment targets", which describe something else.
+  /^#{1,6}\s+(?:.*\s)?(?:releasing|deploying|publishing|deployment)\b(?!\s+(?:notes?|targets?|environments?|history|log|status)\b)/im,
+  /^#{1,6}\s+(?:.*\s)?(?:release|deploy|deployment|publish(?:ing)?)\s+(?:process|workflow|steps|procedure|guide|flow)\b/im,
+  new RegExp(
+    String.raw`\b${RELEASE_STEM}\s+(?:process|workflow|steps|via|by|using|with|happens?|runs?|automatically|${COPULA_VERB})\b`,
+    'i',
+  ),
+  new RegExp(
+    String.raw`\b${DEPLOY_STEM}\s+(?:process|workflow|steps|to|via|by|using|with|happens?|runs?|automatically|${COPULA_VERB})\b`,
+    'i',
+  ),
+  new RegExp(
+    String.raw`\b${PUBLISH_STEM}\s+(?:to|via|by|using|with|automatically|workflow|process|${COPULA_VERB})\b`,
+    'i',
+  ),
+  // "push a v* tag", "push a v1.2.3 tag", "push the release tag": any one
+  // token may sit between the article and "tag" -- except "to" ("push to
+  // tag-protected branches" is about branches) -- and the push is not negated.
+  new RegExp(
+    String.raw`${NOT_NEGATED}\bpush(?:es|ed|ing)?\s+(?:(?:a|an|the)\s+)?(?:(?!to\b)\S+\s+)?tags?\b`,
+    'i',
+  ),
+  new RegExp(String.raw`${NOT_NEGATED}\btag\s+push`, 'i'),
+  /\bgit\s+tag\s+v/i,
+  /\bnpm\s+publish/i,
+  /\bnpm\s+version\s+(?:patch|minor|major|pre\w*|\d)/i,
+  /--follow-tags\b/i,
+  /\brelease\.(?:sh|ps1|mjs|cjs|js|ts|py)\b/i,
+  /release\.ya?ml/i,
+  /deploy\.ya?ml/i,
   /ci\/cd\s+pipeline/i,
   /continuous\s+deploy/i,
 ];
 
 async function findReleaseWorkflows(projectRoot: string): Promise<string[]> {
-  const workflowDir = join(projectRoot, '.github', 'workflows');
-  if (!existsSync(workflowDir)) return [];
-
-  let files: string[];
-  try {
-    files = await readdir(workflowDir);
-  } catch {
-    return [];
-  }
-
   const releaseWorkflows: string[] = [];
-
-  for (const f of files) {
-    if (!(f.endsWith('.yml') || f.endsWith('.yaml'))) continue;
-
-    // Check filename
+  for (const { name: f, content } of await readWorkflowFiles(projectRoot)) {
+    // Check filename, then the workflow's own top-level `name:`. Only the
+    // top-level key is the workflow name -- a nested `name:` (a step's
+    // `with: { name: release-build }`) says nothing about what the workflow
+    // does.
     if (RELEASE_FILENAME_PATTERNS.some((p) => p.test(f))) {
       releaseWorkflows.push(f);
       continue;
     }
-
-    // Check YAML `name:` field for release-related names. Allow optional
-    // leading whitespace (a `name:` nested under another key, or just an
-    // indented top-level key) and strip surrounding single/double quotes from
-    // the captured value (`name: "Release"` / `name: 'Release'`). This stays a
-    // line regex rather than a full YAML parse on purpose -- the one shape it
-    // still can't see is a block scalar (`name: >` / `name: |` with the value
-    // on the following indented line), which is vanishingly rare for a
-    // workflow name and would require real YAML parsing to resolve.
-    try {
-      const content = stripBom(await readFile(join(workflowDir, f), 'utf-8'));
-      const nameMatch = content.match(/^\s*name:\s*(.+?)\s*$/m);
-      if (nameMatch) {
-        const name = nameMatch[1].replace(/^(['"])(.*)\1$/, '$2');
-        if (RELEASE_FILENAME_PATTERNS.some((p) => p.test(name))) {
-          releaseWorkflows.push(f);
-        }
-      }
-    } catch {
-      // skip unreadable files
+    const name = topLevelWorkflowName(content);
+    if (name && RELEASE_FILENAME_PATTERNS.some((p) => p.test(name))) {
+      releaseWorkflows.push(f);
     }
   }
-
   return releaseWorkflows;
 }
 

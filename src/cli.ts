@@ -1,17 +1,19 @@
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import { Command, Option } from 'commander';
 import ora from 'ora';
 import { resetPathsCache } from './core/checks/paths.js';
-import { clearFileCache } from './core/cache.js';
 import { clearTranscriptCache } from './core/transcript.js';
 import { formatText, formatJson, formatTokenReport, formatSarif } from './core/reporter.js';
 import { applyFixes } from './core/fixer.js';
 import { freeEncoder } from './utils/tokens.js';
 import { resetGit } from './utils/git.js';
-import { resetPackageJsonCache } from './utils/fs.js';
+import { IGNORED_DIRS, resetPackageJsonCache } from './utils/fs.js';
 import { loadConfig, loadConfigFromExplicitPath } from './core/config.js';
+import { scanForContextFiles, scanForMcpConfigs } from './core/scanner.js';
 import {
   runAudit,
+  type AuditOptions,
   ALL_CHECKS,
   ALL_MCP_CHECKS,
   ALL_SESSION_CHECKS,
@@ -75,7 +77,10 @@ export async function runCli() {
     .option('--ignore <checks>', 'Comma-separated list of checks to ignore', '')
     .option('--quiet', 'Suppress all output except errors (exit code only)', false)
     .option('--config <path>', 'Path to config file (default: .ctxlintrc in project root)')
-    .option('--depth <n>', 'Max subdirectory depth to scan (default: 2)', '2')
+    // The default's own description, not the raw '2': commander renders a
+    // string default as `(default: "2")`, and the old description carried a
+    // second hand-written "(default: 2)" on top of it.
+    .addOption(new Option('--depth <n>', 'Max subdirectory depth to scan').default('2', '2'))
     .option('--mcp', 'Enable MCP config linting alongside context file checks', false)
     .option('--mcp-only', 'Run only MCP config checks, skip context file checks', false)
     .option('--mcp-global', 'Also scan user/global MCP config files (implies --mcp)', false)
@@ -130,48 +135,31 @@ export async function runCli() {
       try {
         if (spinner) spinner.text = 'Running checks...';
 
-        // Shared by the initial audit and the post-`--fix` re-audit below,
-        // so both runs see identical scope/threshold/ignore settings.
-        const auditOptions = {
-          depth: options.depth,
-          extraPatterns: config?.contextFiles,
-          exclude: config?.exclude,
-          mcp: options.mcp,
-          mcpGlobal: options.mcpGlobal,
-          mcpOnly: options.mcpOnly,
-          session: options.session,
-          sessionOnly: options.sessionOnly,
-          skills: options.skills,
-          skillsOnly: options.skillsOnly,
-          hooksGlobal: options.hooksGlobal,
-          tokenThresholds: config?.tokenThresholds,
-          ignoreRules: config?.ignoreRules,
-          noIgnoreFile: options.noIgnoreFile,
-        };
+        // Shared by the initial audit, the post-`--fix` re-audit below and
+        // every watch rerun, so all of them see identical scope/threshold/
+        // ignore settings.
+        const auditOptions = buildAuditOptions(config, options);
         let result = await runAudit(resolvedPath, activeChecks, auditOptions);
 
         spinner?.stop();
 
-        if (result.files.length === 0) {
-          if (!options.quiet) {
-            if (options.format === 'json') {
-              console.log(formatJson(result));
-            } else if (options.format === 'sarif') {
-              console.log(formatSarif(result));
-            } else {
-              console.log('\nNo context files found.\n');
-            }
-          }
+        // Nothing to fix and nothing to report: the payload printed here is
+        // the whole output. The fix and Output blocks below are skipped, so a
+        // --watch run (which carries on past this point) does not print the
+        // same JSON / SARIF document a second time.
+        const empty = result.files.length === 0;
+        if (empty) {
+          if (!options.quiet) printReport(result, options);
           if (!opts.watch) return;
         }
 
         // Apply fixes if requested. --fix-dry-run previews only. --fix writes,
-        // but in an interactive TTY we first preview, then prompt unless --yes
-        // is passed. CI (non-TTY) behavior is unchanged: --fix writes directly.
+        // but in an interactive terminal we first preview, then prompt unless
+        // --yes is passed. CI (no TTY) behavior is unchanged: --fix writes
+        // directly.
         const dryRunFlag = (opts.fixDryRun as boolean) || false;
-        const yes = (opts.yes as boolean) || false;
         const followSymlinks = (opts.followSymlinks as boolean) || false;
-        const isInteractive = !!process.stdout.isTTY && !options.quiet;
+        const confirmFirst = needsFixConfirmation(opts);
         // In json/sarif mode stdout must carry ONLY the payload: fix-progress
         // text goes to stderr, and applyFixes' own per-fix stdout lines are
         // silenced via quiet. Otherwise `--fix --format json | jq` breaks on
@@ -180,7 +168,7 @@ export async function runCli() {
         const progress = machineFormat ? console.error : console.log;
 
         let fixesApplied = false;
-        if (dryRunFlag || options.fix) {
+        if (!empty && (dryRunFlag || options.fix)) {
           const commonOpts = {
             quiet: options.quiet || machineFormat,
             skipSymlinks: !followSymlinks,
@@ -198,23 +186,26 @@ export async function runCli() {
               }
             }
           } else if (options.fix) {
-            if (isInteractive && !yes) {
+            if (confirmFirst) {
               // Show a preview, then ask for confirmation before writing.
+              // --quiet silences the surrounding progress text but not the
+              // question itself: quiet is not consent (only --yes is).
+              const say = options.quiet ? () => {} : progress;
               const preview = applyFixes(result, { ...commonOpts, dryRun: true });
               if (preview.totalFixes === 0) {
-                progress('\nNo auto-fixable issues.\n');
+                say('\nNo auto-fixable issues.\n');
               } else {
-                progress(
+                say(
                   `\n${preview.totalFixes} fix${preview.totalFixes !== 1 ? 'es' : ''} proposed across ${preview.filesModified.length} file${preview.filesModified.length !== 1 ? 's' : ''}.`,
                 );
                 const confirmed = await promptYesNo(
                   'Apply these fixes? Re-run with --yes to skip this prompt. [y/N] ',
                 );
                 if (!confirmed) {
-                  progress('Aborted. No files modified.\n');
+                  say('Aborted. No files modified.\n');
                 } else {
                   const applied = applyFixes(result, commonOpts);
-                  progress(
+                  say(
                     `\nFixed ${applied.totalFixes} issue${applied.totalFixes !== 1 ? 's' : ''} in ${applied.filesModified.length} file${applied.filesModified.length !== 1 ? 's' : ''}.\n`,
                   );
                   fixesApplied = applied.totalFixes > 0;
@@ -246,17 +237,7 @@ export async function runCli() {
         }
 
         // Output
-        if (!options.quiet) {
-          if (options.tokensOnly) {
-            console.log(formatTokenReport(result));
-          } else if (options.format === 'json') {
-            console.log(formatJson(result));
-          } else if (options.format === 'sarif') {
-            console.log(formatSarif(result));
-          } else {
-            console.log(formatText(result, options.verbose));
-          }
-        }
+        if (!options.quiet && !empty) printReport(result, options);
 
         // Exit code (skip in watch mode — don't exit on errors)
         if (
@@ -280,162 +261,8 @@ export async function runCli() {
         clearTranscriptCache();
       }
 
-      // Watch mode: re-lint when context files, MCP configs, or package.json change
       if (opts.watch) {
-        const chalk = (await import('chalk')).default;
-        console.log(chalk.dim('\nWatching for changes... (Ctrl+C to stop)\n'));
-
-        const watchPaths = [
-          path.join(resolvedPath, 'CLAUDE.md'),
-          path.join(resolvedPath, 'CLAUDE.local.md'),
-          path.join(resolvedPath, 'AGENTS.md'),
-          path.join(resolvedPath, 'AGENT.md'),
-          path.join(resolvedPath, '.cursorrules'),
-          path.join(resolvedPath, '.windsurfrules'),
-          path.join(resolvedPath, '.clinerules'),
-          path.join(resolvedPath, '.aiderules'),
-          path.join(resolvedPath, '.continuerules'),
-          path.join(resolvedPath, '.rules'),
-          path.join(resolvedPath, '.goosehints'),
-          path.join(resolvedPath, 'GEMINI.md'),
-          path.join(resolvedPath, 'replit.md'),
-          path.join(resolvedPath, 'package.json'),
-          path.join(resolvedPath, '.mcp.json'),
-          // ctxlint config — re-resolve on edit so threshold changes,
-          // ignore-list edits, and check-list overrides take effect without
-          // restarting the watcher.
-          path.join(resolvedPath, '.ctxlintrc'),
-          path.join(resolvedPath, '.ctxlintrc.json'),
-          // .ctxlintignore — re-lint when suppression rules change.
-          path.join(resolvedPath, '.ctxlintignore'),
-        ];
-
-        const watchDirs = [
-          path.join(resolvedPath, '.claude'),
-          path.join(resolvedPath, '.cursor'),
-          path.join(resolvedPath, '.github'),
-          path.join(resolvedPath, '.windsurf'),
-          path.join(resolvedPath, '.aide'),
-          path.join(resolvedPath, '.amazonq'),
-          path.join(resolvedPath, '.goose'),
-          path.join(resolvedPath, '.junie'),
-          path.join(resolvedPath, '.aiassistant'),
-          path.join(resolvedPath, '.continue'),
-          path.join(resolvedPath, '.vscode'),
-        ];
-
-        const watchers: fs.FSWatcher[] = [];
-        let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-
-        const rerun = () => {
-          if (debounceTimer) clearTimeout(debounceTimer);
-          debounceTimer = setTimeout(async () => {
-            if (process.stdout.isTTY) console.clear();
-            // Re-resolve on every tick so live edits to .ctxlintrc /
-            // .ctxlintrc.json (thresholds, ignore list, check overrides)
-            // take effect without restarting the watcher. The CLI flags
-            // (`opts`) are unchanged across the watch session, so the only
-            // moving parts are the config file and the project filesystem.
-            let liveConfig = config;
-            let liveOptions = options;
-            let liveActiveChecks = activeChecks;
-            try {
-              const resolved = resolveSession(resolvedPath, opts, true);
-              liveConfig = resolved.config;
-              liveOptions = resolved.options;
-              liveActiveChecks = resolved.activeChecks;
-            } catch (err) {
-              // A bad .ctxlintrc edit (invalid JSON, unknown check name) shouldn't
-              // kill the watcher. Surface the error and keep the previous
-              // resolution active until the user fixes the config.
-              console.error('Error reloading config:', err instanceof Error ? err.message : err);
-            }
-            try {
-              const result = await runAudit(resolvedPath, liveActiveChecks, {
-                depth: liveOptions.depth,
-                extraPatterns: liveConfig?.contextFiles,
-                exclude: liveConfig?.exclude,
-                mcp: liveOptions.mcp,
-                mcpGlobal: liveOptions.mcpGlobal,
-                mcpOnly: liveOptions.mcpOnly,
-                session: liveOptions.session,
-                sessionOnly: liveOptions.sessionOnly,
-                skills: liveOptions.skills,
-                skillsOnly: liveOptions.skillsOnly,
-                hooksGlobal: liveOptions.hooksGlobal,
-                tokenThresholds: liveConfig?.tokenThresholds,
-                ignoreRules: liveConfig?.ignoreRules,
-                noIgnoreFile: liveOptions.noIgnoreFile,
-              });
-
-              // Honor --quiet on every watch tick, matching the initial run's
-              // `if (!options.quiet)` gate. Without this, `ctxlint --watch
-              // --quiet` printed a full report on every filesystem change.
-              if (!liveOptions.quiet) {
-                if (result.files.length === 0) {
-                  console.log('\nNo context files found.\n');
-                } else if (liveOptions.tokensOnly) {
-                  console.log(formatTokenReport(result));
-                } else if (liveOptions.format === 'json') {
-                  console.log(formatJson(result));
-                } else if (liveOptions.format === 'sarif') {
-                  console.log(formatSarif(result));
-                } else {
-                  console.log(formatText(result, liveOptions.verbose));
-                }
-              }
-            } catch (err) {
-              console.error('Error:', err instanceof Error ? err.message : err);
-            } finally {
-              freeEncoder();
-              resetGit();
-              resetPathsCache();
-              resetPackageJsonCache();
-              clearFileCache();
-              clearTranscriptCache();
-            }
-            console.log(chalk.dim('\nWatching for changes... (Ctrl+C to stop)\n'));
-          }, 300);
-        };
-
-        // Watch individual files
-        for (const filePath of watchPaths) {
-          try {
-            watchers.push(fs.watch(filePath, rerun));
-          } catch {
-            // File doesn't exist yet — skip
-          }
-        }
-
-        // Watch directories (recursive)
-        for (const dir of watchDirs) {
-          try {
-            watchers.push(fs.watch(dir, { recursive: true }, rerun));
-          } catch {
-            // Directory doesn't exist — skip
-          }
-        }
-
-        // Close watchers on SIGINT / SIGTERM so the process exits cleanly
-        // without leaking file-watch handles. `once` avoids double-close if
-        // the user hammers Ctrl+C; the handlers remove themselves afterward.
-        const shutdown = () => {
-          if (debounceTimer) clearTimeout(debounceTimer);
-          for (const w of watchers) {
-            try {
-              w.close();
-            } catch {
-              // Already closed or never opened — ignore.
-            }
-          }
-          process.exit(0);
-        };
-        process.once('SIGINT', shutdown);
-        process.once('SIGTERM', shutdown);
-
-        // Keep process alive indefinitely (watch mode exits via the
-        // SIGINT/SIGTERM handlers above).
-        await new Promise(() => {});
+        await watchProject(resolvedPath, opts, { config, options, activeChecks });
       }
     });
 
@@ -445,29 +272,40 @@ export async function runCli() {
     .argument('[path]', 'Project directory', '.')
     .action(async (projectPath: string) => {
       const resolvedRoot = path.resolve(projectPath);
-      const gitDir = path.join(resolvedRoot, '.git');
-      const hooksDir = path.join(gitDir, 'hooks');
+      if (!existsAsDirectory(resolvedRoot)) {
+        console.error(
+          `Error: ${resolvedRoot} is not an existing directory. Check the path argument.`,
+        );
+        process.exit(2);
+      }
 
-      if (!fs.existsSync(gitDir)) {
+      // Ask git where it runs hooks from rather than assuming <path>/.git/hooks:
+      // that assumption crashed with ENOTDIR in a linked worktree or submodule
+      // (.git is a file there), reported success while git ran a different
+      // directory under core.hooksPath, and failed outright from a
+      // subdirectory of the repo. `--git-path hooks` covers all three; its
+      // output is relative to the directory git ran in.
+      const hooksDir = resolveHooksDir(resolvedRoot);
+      if (hooksDir === null) {
         console.error('Error: not a git repository. Run "git init" first.');
         process.exit(1);
       }
 
-      if (!fs.existsSync(hooksDir)) {
-        fs.mkdirSync(hooksDir, { recursive: true });
-      }
+      fs.mkdirSync(hooksDir, { recursive: true });
 
-      const hookPath = path.join(hooksDir, 'pre-commit');
+      const hookPath = path.join(fs.realpathSync(hooksDir), 'pre-commit');
       // Pin the hook to the version of ctxlint that wrote it, so a repo
       // checked out months later doesn't silently pull a newer ctxlint whose
       // rule set drifted. Users can re-run `ctxlint init` to bump the pin.
+      // --yes: a hook has no terminal to answer npx's install prompt, so on a
+      // machine without the pinned version cached the commit would stall.
       const fullHookContent = `#!/bin/sh
 # ctxlint pre-commit hook
-npx @yawlabs/ctxlint@${VERSION} --strict
+npx --yes @yawlabs/ctxlint@${VERSION} --strict
 `;
       const appendHookContent = `
 # ctxlint pre-commit hook
-npx @yawlabs/ctxlint@${VERSION} --strict
+npx --yes @yawlabs/ctxlint@${VERSION} --strict
 `;
 
       if (fs.existsSync(hookPath)) {
@@ -491,26 +329,84 @@ npx @yawlabs/ctxlint@${VERSION} --strict
           } else {
             console.log('Pre-commit hook already includes ctxlint.');
           }
+          console.log(`Hook: ${hookPath}`);
           return;
         }
         // Append to existing hook (without shebang — the existing hook already has one)
         fs.appendFileSync(hookPath, appendHookContent);
         console.log('Added ctxlint to existing pre-commit hook.');
+        console.log(`Hook: ${hookPath}`);
       } else {
         fs.writeFileSync(hookPath, fullHookContent, { mode: 0o755 });
-        console.log('Created pre-commit hook at .git/hooks/pre-commit');
+        console.log(`Created pre-commit hook at ${hookPath}`);
       }
 
       console.log('ctxlint will now run automatically before each commit.');
     });
 
-  program.parse();
+  // parseAsync, not parse: every action is async, and parse() returns before
+  // they settle, so a throw inside one became an unhandled rejection (a raw
+  // stack trace and exit 1). Report it the way every other failure is
+  // reported: one line on stderr, exit 2.
+  try {
+    await program.parseAsync();
+  } catch (err) {
+    console.error('Error:', err instanceof Error ? err.message : err);
+    process.exitCode = 2;
+  }
+}
+
+/**
+ * The directory git runs hooks from for the repo containing `cwd`, honouring
+ * linked worktrees, submodules and core.hooksPath; null outside a repo. Any
+ * other git failure (a corrupt config, safe.directory "dubious ownership")
+ * throws with git's own message: "run git init" would be wrong advice there.
+ */
+function resolveHooksDir(cwd: string): string | null {
+  let out: string;
+  try {
+    out = execFileSync('git', ['rev-parse', '--git-path', 'hooks'], {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error('git was not found on PATH; it is required to install a pre-commit hook.', {
+        cause: err,
+      });
+    }
+    const stderr = String((err as { stderr?: unknown }).stderr ?? '').trim();
+    if (/not a git repository/i.test(stderr)) return null;
+    throw new Error(`git rev-parse --git-path hooks failed: ${stderr || String(err)}`, {
+      cause: err,
+    });
+  }
+  const rel = out.trim();
+  return rel ? path.resolve(cwd, rel) : null;
+}
+
+/**
+ * Whether `--fix` must preview and ask before writing. Only when someone can
+ * answer: the prompt READS stdin, so both ends must be terminals. `--quiet`
+ * does not waive it -- quiet silences output, it is not consent; only `--yes`
+ * is. Takes the action's raw commander flags and is called verbatim at the
+ * call site, so the tests pin the real gate. Exported for the tests: spawned
+ * runs cannot fake a TTY.
+ */
+export function needsFixConfirmation(
+  opts: Record<string, unknown>,
+  io: { stdin: { isTTY?: boolean }; stdout: { isTTY?: boolean } } = process,
+): boolean {
+  return !!io.stdin.isTTY && !!io.stdout.isTTY && !opts.yes;
 }
 
 /**
  * Prompt the user for a yes/no answer on a TTY. Defaults to no if the response
- * is anything other than an affirmative ('y' / 'yes', case-insensitive). Only
- * called when process.stdout.isTTY is true.
+ * is anything other than an affirmative ('y' / 'yes', case-insensitive), and
+ * when input ends before any answer (Ctrl+D, a closed stdin): an unanswered
+ * question otherwise never settles, and the CLI exited 0 with no report. Only
+ * called when needsFixConfirmation() is true.
  *
  * The prompt is written to stderr: in json/sarif mode stdout must carry ONLY
  * the payload (the invariant the `machineFormat` routing above enforces), and
@@ -518,14 +414,392 @@ npx @yawlabs/ctxlint@${VERSION} --strict
  * the prompt path needs a TTY stdout that spawned e2e tests can't fake.
  */
 export async function promptYesNo(question: string): Promise<boolean> {
-  const { createInterface } = await import('node:readline/promises');
+  const { createInterface } = await import('node:readline');
   const rl = createInterface({ input: process.stdin, output: process.stderr });
-  try {
-    const answer = await rl.question(question);
-    return /^\s*y(es)?\s*$/i.test(answer);
-  } finally {
-    rl.close();
+  return new Promise<boolean>((resolve) => {
+    // First settle wins: an answer closes the interface below, and that
+    // close must not turn a "yes" into a "no".
+    rl.once('close', () => resolve(false));
+    rl.question(question, (answer) => {
+      resolve(/^\s*y(es)?\s*$/i.test(answer));
+      rl.close();
+    });
+  });
+}
+
+/**
+ * Print one run's report in the session's format. Shared by the initial run
+ * and every watch rerun. An empty result prints the empty JSON / SARIF
+ * document in machine formats (a rerun used to print the text notice there).
+ */
+function printReport(result: Awaited<ReturnType<typeof runAudit>>, options: LintOptions): void {
+  if (result.files.length === 0) {
+    if (options.format === 'json') console.log(formatJson(result));
+    else if (options.format === 'sarif') console.log(formatSarif(result));
+    else console.log('\nNo context files found.\n');
+  } else if (options.tokensOnly) {
+    console.log(formatTokenReport(result));
+  } else if (options.format === 'json') {
+    console.log(formatJson(result));
+  } else if (options.format === 'sarif') {
+    console.log(formatSarif(result));
+  } else {
+    console.log(formatText(result, options.verbose));
   }
+}
+
+/**
+ * The runAudit options for one resolved session. The single builder for the
+ * initial run, the post-`--fix` re-audit and every watch rerun, so their
+ * scope / threshold / ignore settings cannot drift apart.
+ */
+function buildAuditOptions(config: ResolvedSession['config'], options: LintOptions): AuditOptions {
+  return {
+    depth: options.depth,
+    extraPatterns: config?.contextFiles,
+    exclude: config?.exclude,
+    mcp: options.mcp,
+    mcpGlobal: options.mcpGlobal,
+    mcpOnly: options.mcpOnly,
+    session: options.session,
+    sessionOnly: options.sessionOnly,
+    skills: options.skills,
+    skillsOnly: options.skillsOnly,
+    hooksGlobal: options.hooksGlobal,
+    tokenThresholds: config?.tokenThresholds,
+    ignoreRules: config?.ignoreRules,
+    noIgnoreFile: options.noIgnoreFile,
+  };
+}
+
+// Project files whose edits always re-lint although the scanner never returns
+// them: the config, the suppression file, the package.json the commands check
+// reads, and the Claude settings hook-coverage / commands / tier-tokens read.
+const WATCH_ALWAYS = new Set([
+  'package.json',
+  '.ctxlintrc',
+  '.ctxlintrc.json',
+  '.ctxlintignore',
+  '.claude/settings.json',
+  '.claude/settings.local.json',
+]);
+// Directories whose contents are check inputs: the workflows ci-coverage /
+// ci-secrets read, and the hook scripts hook-coverage resolves (a dead-hook
+// finding clears when the script appears).
+const WATCH_ALWAYS_DIRS = ['.github/workflows', '.claude/hooks'];
+
+/** True when `rel` is (or is inside, or is a parent of) an always-relevant input. */
+function alwaysRelevant(rel: string): boolean {
+  if (WATCH_ALWAYS.has(rel)) return true;
+  return WATCH_ALWAYS_DIRS.some(
+    (d) => rel === d || rel.startsWith(`${d}/`) || d.startsWith(`${rel}/`),
+  );
+}
+
+/** Forward-slash project-relative form of `abs`, or null when it lies outside. */
+function projectRelative(root: string, abs: string): string | null {
+  const rel = path.relative(root, abs);
+  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  return rel.replace(/\\/g, '/');
+}
+
+/**
+ * The project files this session lints, as the scanner itself finds them
+ * (built-in patterns, `contextFiles`, `exclude`, `--depth`), plus the MCP
+ * configs when MCP checks run. The watcher filters events through this rather
+ * than a hand-kept copy of the scanner's file list.
+ */
+async function discoverLintedFiles(root: string, session: ResolvedSession): Promise<Set<string>> {
+  const { config, options } = session;
+  const files = await scanForContextFiles(root, {
+    depth: options.depth,
+    extraPatterns: config?.contextFiles,
+    exclude: config?.exclude,
+  });
+  if (options.mcp) files.push(...(await scanForMcpConfigs(root, { exclude: config?.exclude })));
+  return new Set(files.map((f) => f.relativePath));
+}
+
+/** True when `rel` is in `set`, or is a directory holding an entry of it (a renamed / deleted dir). */
+function touches(set: Set<string>, rel: string): boolean {
+  if (set.has(rel)) return true;
+  const prefix = `${rel}/`;
+  for (const entry of set) if (entry.startsWith(prefix)) return true;
+  return false;
+}
+
+/**
+ * Watch every directory of the project tree except IGNORED_DIRS, reporting
+ * changes as forward-slash project-relative paths (null: an event with no
+ * filename). `onError` gets a failure that leaves the tree unwatched.
+ *
+ * win32 / darwin: one native recursive fs.watch on the root (kernel-backed,
+ * one handle; ignored dirs are filtered after the event). Elsewhere (Linux),
+ * Node emulates `recursive` by watching every subdirectory with no ignore
+ * option -- node_modules included -- which is slow on a big repo and can
+ * exhaust the inotify watch limit (ENOSPC). There this watches each
+ * non-ignored directory itself and adds watchers for directories created
+ * later. Exported for the tests, which force either mode.
+ */
+export function watchTree(
+  root: string,
+  onChange: (rel: string | null) => void,
+  onError: (err: Error) => void,
+  recursive: boolean = process.platform === 'win32' || process.platform === 'darwin',
+): { close(): void; dirs(): string[] } {
+  if (recursive) {
+    const w = fs.watch(root, { recursive: true }, (_event, filename) => {
+      onChange(filename ? filename.toString().replace(/\\/g, '/') : null);
+    });
+    w.on('error', onError);
+    return { close: () => w.close(), dirs: () => [root] };
+  }
+
+  const watched = new Map<string, fs.FSWatcher>();
+  let closed = false;
+  const drop = (dir: string) => {
+    const w = watched.get(dir);
+    if (!w) return;
+    watched.delete(dir);
+    try {
+      w.close();
+    } catch {
+      // Already closed.
+    }
+  };
+  const add = (dir: string) => {
+    if (closed || watched.has(dir)) return;
+    let w: fs.FSWatcher;
+    try {
+      w = fs.watch(dir, (_event, filename) => {
+        if (!filename) {
+          onChange(null);
+          return;
+        }
+        const abs = path.join(dir, filename.toString());
+        const rel = projectRelative(root, abs);
+        if (rel === null) return;
+        onChange(rel);
+        // A directory created (or moved in) since start: watch it and the
+        // tree under it. One that disappeared: drop its watchers.
+        if (existsAsDirectory(abs)) {
+          if (!rel.split('/').some((seg) => IGNORED_DIRS.has(seg))) addTreeSafe(abs);
+        } else
+          for (const d of [...watched.keys()])
+            if (d === abs || d.startsWith(abs + path.sep)) drop(d);
+      });
+    } catch (err) {
+      // A subdirectory that vanished between listing and watching: nothing
+      // to watch. Any other failure (ENOSPC, a missing root) is the caller's.
+      if (dir !== root && (err as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw err;
+    }
+    w.on('error', (err) => {
+      // A subdirectory removed under its watcher is not a failure.
+      if (dir !== root && !existsAsDirectory(dir)) drop(dir);
+      else onError(err);
+    });
+    watched.set(dir, w);
+  };
+  const addTree = (dir: string) => {
+    add(dir);
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      // Dirent.isDirectory() is false for a symlink, so links are not followed.
+      if (entry.isDirectory() && !IGNORED_DIRS.has(entry.name)) addTree(path.join(dir, entry.name));
+    }
+  };
+  const addTreeSafe = (dir: string) => {
+    try {
+      addTree(dir);
+    } catch (err) {
+      onError(err instanceof Error ? err : new Error(String(err)));
+    }
+  };
+  // The initial walk throws to the caller (e.g. ENOSPC); later additions,
+  // from inside an event, report through onError.
+  addTree(root);
+  return {
+    close: () => {
+      closed = true;
+      for (const d of [...watched.keys()]) drop(d);
+    },
+    dirs: () => [...watched.keys()],
+  };
+}
+
+/**
+ * --watch: re-lint whenever a file this session lints changes, appears or
+ * disappears, or another check input (config, ignore file, package.json,
+ * Claude settings, workflows, hook scripts) changes. The whole project tree
+ * is watched (see watchTree), so nested context files, `contextFiles`
+ * patterns and files created after start are all seen, and a rename-on-save
+ * editor does not leave a per-file watcher deaf. Events are debounced and
+ * filtered through discoverLintedFiles; reruns are serialized. A watcher
+ * failure exits 2. Never returns otherwise: exits via SIGINT / SIGTERM.
+ */
+async function watchProject(
+  resolvedPath: string,
+  opts: Record<string, unknown>,
+  initial: ResolvedSession,
+): Promise<void> {
+  const chalk = (await import('chalk')).default;
+  let session = initial;
+  // json / sarif: stdout carries only the report documents.
+  const status = initial.options.format === 'text' ? console.log : console.error;
+  const banner = () => {
+    if (!session.options.quiet) status(chalk.dim('\nWatching for changes... (Ctrl+C to stop)\n'));
+  };
+
+  // An explicit --config is re-read on every rerun, so its edits must trigger
+  // one, wherever it lives.
+  const configPath = opts.config ? path.resolve(opts.config as string) : undefined;
+  const configRel = configPath ? projectRelative(resolvedPath, configPath) : null;
+
+  let known = new Set<string>();
+  try {
+    known = await discoverLintedFiles(resolvedPath, session);
+  } catch {
+    // The first relevant-looking event rescans.
+  }
+
+  const isIgnored = (rel: string) => rel.split('/').some((seg) => IGNORED_DIRS.has(seg));
+
+  // `null`: an event that carried no filename (allowed by fs.watch) -- re-lint.
+  const isRelevant = async (changed: Array<string | null>): Promise<boolean> => {
+    if (changed.includes(null)) return true;
+    const rels = (changed as string[]).filter((r) => !isIgnored(r));
+    if (rels.length === 0) return false;
+    if (rels.some((r) => alwaysRelevant(r) || r === configRel || touches(known, r))) return true;
+    // Not linked to anything linted so far: relevant only if the scanner
+    // picks it up now (a context file created since the last run).
+    try {
+      const now = await discoverLintedFiles(resolvedPath, session);
+      return rels.some((r) => touches(now, r));
+    } catch {
+      return true;
+    }
+  };
+
+  const relint = async () => {
+    if (process.stdout.isTTY) console.clear();
+    // Re-resolve on every rerun so live edits to .ctxlintrc / .ctxlintrc.json
+    // (thresholds, ignore list, check overrides) take effect without
+    // restarting the watcher. The CLI flags (`opts`) are fixed for the
+    // session, so the config file and the project tree are the moving parts.
+    try {
+      session = resolveSession(resolvedPath, opts, true);
+    } catch (err) {
+      // A bad .ctxlintrc edit (invalid JSON, unknown check name) shouldn't
+      // kill the watcher. Surface the error and keep the previous
+      // resolution active until the user fixes the config.
+      console.error('Error reloading config:', err instanceof Error ? err.message : err);
+    }
+    try {
+      const result = await runAudit(
+        resolvedPath,
+        session.activeChecks,
+        buildAuditOptions(session.config, session.options),
+      );
+      // Honor --quiet on every rerun, matching the initial run.
+      if (!session.options.quiet) printReport(result, session.options);
+    } catch (err) {
+      console.error('Error:', err instanceof Error ? err.message : err);
+    } finally {
+      freeEncoder();
+      resetGit();
+      resetPathsCache();
+      resetPackageJsonCache();
+      clearTranscriptCache();
+    }
+    try {
+      known = await discoverLintedFiles(resolvedPath, session);
+    } catch {
+      // Keep the previous set.
+    }
+    banner();
+  };
+
+  const pending = new Set<string | null>();
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  let queue: Promise<void> = Promise.resolve();
+  const onEvent = (rel: string | null) => {
+    pending.add(rel);
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      const changed = [...pending];
+      pending.clear();
+      queue = queue.then(async () => {
+        if (await isRelevant(changed)) await relint();
+      });
+    }, 300);
+  };
+
+  const watchers: Array<{ close(): void }> = [];
+  const onWatchError = (err: Error) => console.error('Watch error:', err.message);
+  // A failed project watcher is deaf from then on: stop with an error rather
+  // than keep printing a banner that promises reruns that never come.
+  const fatal = (err: unknown) => {
+    console.error(
+      `Error: cannot watch ${resolvedPath}: ${err instanceof Error ? err.message : err}`,
+    );
+    for (const w of watchers) {
+      try {
+        w.close();
+      } catch {
+        // Already closed.
+      }
+    }
+    process.exit(2);
+  };
+  try {
+    watchers.push(watchTree(resolvedPath, onEvent, fatal));
+  } catch (err) {
+    fatal(err);
+  }
+  if (configPath && configRel === null) {
+    try {
+      const base = path.basename(configPath);
+      const w = fs.watch(path.dirname(configPath), (_event, filename) => {
+        if (!filename || filename.toString() === base) onEvent(null);
+      });
+      w.on('error', onWatchError);
+      watchers.push(w);
+    } catch (err) {
+      console.error(
+        `Warning: cannot watch ${configPath}: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }
+
+  banner();
+
+  // Close watchers on SIGINT / SIGTERM so the process exits cleanly
+  // without leaking file-watch handles. `once` avoids double-close if
+  // the user hammers Ctrl+C; the handlers remove themselves afterward.
+  const shutdown = () => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    for (const w of watchers) {
+      try {
+        w.close();
+      } catch {
+        // Already closed — ignore.
+      }
+    }
+    process.exit(0);
+  };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
+
+  // The watchers keep the event loop alive; this keeps the action pending so
+  // nothing after it runs.
+  await new Promise(() => {});
 }
 
 /**
@@ -597,8 +871,8 @@ function resolveSession(
   const hasSessionInChecks = explicitChecks?.some((c) => c.startsWith('session-')) || false;
   const hasSkillInChecks = explicitChecks?.some((c) => c.startsWith('skill-')) || false;
   const effectiveMcp = mcpFlag || hasMcpInChecks;
-  const effectiveSession = sessionFlag || sessionOnly || hasSessionInChecks;
-  const effectiveSkills = skillsFlag || skillsOnly || hasSkillInChecks;
+  const effectiveSession = sessionFlag || hasSessionInChecks;
+  const effectiveSkills = skillsFlag || hasSkillInChecks;
 
   let checks: CheckName[];
   if (explicitChecks) {

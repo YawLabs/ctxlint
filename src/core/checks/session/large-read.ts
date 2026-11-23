@@ -22,6 +22,8 @@ import type { LintIssue, SessionContext } from '../../types.js';
  * Deliberately NOT counted:
  *   - Partial Reads (`offset`, `limit` or `pages` set). Those are the fix.
  *   - Reads that errored. An error result is not the file.
+ *   - Sidechain (subagent) Reads. They ride in the subagent's context, not
+ *     the main session's.
  *   - Results under the threshold. A small file read whole costs little.
  */
 
@@ -53,7 +55,10 @@ interface Qualifying {
 
 /** True when a Read event is a whole-file read big enough to count. */
 function qualifies(ev: TranscriptEvent): boolean {
-  if (ev.kind !== 'file-read' || ev.partial || ev.isError) return false;
+  // A sidechain Read is a subagent's: its result stays in the subagent's
+  // context, which is exactly the delegation the suggestion recommends.
+  // Charging it the parent session's carry would penalize the fix.
+  if (ev.kind !== 'file-read' || ev.partial || ev.isError || ev.sidechain) return false;
   return (ev.outputTokens ?? 0) >= LARGE_READ_TOKENS;
 }
 

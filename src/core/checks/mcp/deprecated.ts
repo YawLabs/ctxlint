@@ -1,4 +1,5 @@
-import type { ParsedMcpConfig, LintIssue } from '../../types.js';
+import { locateServerValue } from '../../mcp-parser.js';
+import type { ParsedMcpConfig, LintIssue, McpServerEntry } from '../../types.js';
 
 export async function checkMcpDeprecated(
   config: ParsedMcpConfig,
@@ -11,24 +12,20 @@ export async function checkMcpDeprecated(
   for (const server of config.servers) {
     // sse-transport: flag deprecated SSE transport
     if (server.transport === 'sse') {
-      const match = findTypeLine(config.content, server.line);
-      const line = match?.line ?? server.line;
+      const match = findTypeFix(config, server);
       const issue: LintIssue = {
         severity: 'warning',
         check: 'mcp-deprecated',
         ruleId: 'mcp-deprecated/sse-transport',
-        line,
+        line: match?.line ?? server.line,
         message: `Server "${server.name}" uses deprecated SSE transport — use "http" (Streamable HTTP) instead`,
       };
-      // Only emit a fix when we located the actual `"type": "sse"` pair.
-      // The fix's oldText is the FULL matched pair (with the file's original
-      // whitespace), not a bare `"sse"` -- the fixer does a replaceAll of
-      // oldText against the located line, so a bare `"sse"` would also rewrite
-      // a description value or another `"sse"` token sharing that line.
+      // Only emit a fix when we located the actual `"type": "sse"` value.
       if (match) {
         issue.fix = {
           file: config.filePath,
           line: match.line,
+          column: match.column,
           oldText: match.text,
           newText: match.text.replace(/"sse"$/, '"http"'),
         };
@@ -41,50 +38,31 @@ export async function checkMcpDeprecated(
 }
 
 /**
- * Locate the `"type": "sse"` pair inside one server's object. Anchors at the
- * parser-attributed server line rather than re-scanning for the name from
- * line 0 -- a name-based scan anchored on the wrong occurrence (a top-level
- * key or another server's nested key sharing the name) starts brace-tracking
- * in the wrong object and returns null or a different server's type line.
+ * Locate this server's `"type": "sse"` in the source via the parser's
+ * syntax tree -- string-aware, so braces inside a string value can't end the
+ * search early, and anchored on the server's own object, so a top-level key or
+ * another server's nested key sharing the name can't be picked instead.
  *
- * Returns the 1-indexed line AND the verbatim matched text (the file's
- * original whitespace between `"type"`, the colon, and `"sse"`). The caller
- * uses that exact text as the fix's oldText so the replaceAll the fixer does
- * is anchored to the real type pair, not a bare `"sse"` token that could also
- * appear as a description value on the same line.
+ * Returns the 1-indexed line and column plus the verbatim text to replace:
+ * the whole `"type": "sse"` pair (with the file's original whitespace) when
+ * key and value share a line, else just the `"sse"` value. The column anchors
+ * the fixer to exactly this occurrence, so a `"sse"` description value on the
+ * same line is never rewritten.
  */
-function findTypeLine(content: string, serverLine: number): { line: number; text: string } | null {
-  const lines = content.split('\n');
-  const serverStart = serverLine - 1; // serverLine is 1-indexed
-  if (serverStart < 0 || serverStart >= lines.length) return null;
-
-  // Track brace depth to stay within this server's object
-  let depth = 0;
-  let enteredObject = false;
-  const typePair = /"type"\s*:\s*"sse"/;
-  for (let i = serverStart; i < lines.length; i++) {
-    // Match the JSON key-value pair shape (not two free-floating substrings --
-    // a `"type"` value-label plus a stray `"sse"` on the same line used to
-    // false-positive) BEFORE walking this line's braces. The pair can share its
-    // line with the object's closing `}` (`"type": "sse" }`); a brace walk that
-    // returns null at depth 0 would otherwise exit before the match is checked.
-    // The pair is always at depth >= 1 (a direct child of the server object),
-    // so a match on a scanned line is genuinely inside the object.
-    if (enteredObject || i === serverStart) {
-      const m = typePair.exec(lines[i]);
-      if (m) {
-        return { line: i + 1, text: m[0] };
-      }
-    }
-    for (const ch of lines[i]) {
-      if (ch === '{') {
-        depth++;
-        enteredObject = true;
-      } else if (ch === '}') {
-        depth--;
-        if (enteredObject && depth === 0) return null; // left the server object
-      }
-    }
+function findTypeFix(
+  config: ParsedMcpConfig,
+  server: McpServerEntry,
+): { line: number; column: number; text: string } | null {
+  const loc = locateServerValue(config, server, ['type']);
+  if (!loc || loc.text !== '"sse"') return null;
+  const lineText = config.content.split('\n')[loc.line - 1] ?? '';
+  const before = /"type"\s*:\s*$/.exec(lineText.slice(0, loc.column - 1));
+  if (before) {
+    return {
+      line: loc.line,
+      column: before.index + 1,
+      text: lineText.slice(before.index, loc.column - 1 + loc.text.length),
+    };
   }
-  return null;
+  return loc;
 }

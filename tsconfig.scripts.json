@@ -1,0 +1,21 @@
+{
+  // Type-checks the plain-JS files tsconfig.json does not cover: the shipped
+  // launcher, the repo scripts and the build. checkJs over JSDoc, with
+  // noImplicitAny off -- the rest of strict applies, but annotating every
+  // parameter of these files would be churn for little gain. Run by
+  // `pnpm run typecheck:scripts` and by release.sh step 1.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noImplicitAny": false,
+    "allowJs": true,
+    "checkJs": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "types": ["node"]
+  },
+  "include": ["bin/*.mjs", "scripts/**/*.mjs", "build.mjs"]
+}

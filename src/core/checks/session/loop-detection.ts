@@ -19,6 +19,129 @@ function normalizeProject(p: string): string {
 }
 
 /**
+ * Programs whose name at the head of an entry marks it as a shell command.
+ * Deliberately excludes words that double as English (`make`, `go`, `find`,
+ * `yes`, `test`, `open`): those are in AMBIGUOUS_PROGRAMS instead.
+ */
+const PROGRAMS = new Set([
+  'git',
+  'gh',
+  'npm',
+  'pnpm',
+  'yarn',
+  'npx',
+  'bun',
+  'bunx',
+  'node',
+  'deno',
+  'tsx',
+  'python',
+  'python3',
+  'pip',
+  'pip3',
+  'uv',
+  'poetry',
+  'cargo',
+  'rustc',
+  'docker',
+  'kubectl',
+  'helm',
+  'terraform',
+  'ls',
+  'cd',
+  'cat',
+  'rm',
+  'cp',
+  'mv',
+  'mkdir',
+  'touch',
+  'echo',
+  'grep',
+  'rg',
+  'sed',
+  'awk',
+  'curl',
+  'wget',
+  'ssh',
+  'scp',
+  'tsc',
+  'vitest',
+  'jest',
+  'pytest',
+  'eslint',
+  'biome',
+  'prettier',
+  'ruff',
+  'claude',
+  'codex',
+  'aider',
+  'mvn',
+  'gradle',
+  'dotnet',
+  'brew',
+  'apt',
+  'sudo',
+  'chmod',
+  'tail',
+  'head',
+  'ps',
+  'kill',
+  'pwsh',
+  'powershell',
+  'bash',
+  'sh',
+  'zsh',
+]);
+
+/** Program names that are also everyday words; they need a command-shaped rest. */
+const AMBIGUOUS_PROGRAMS = new Set(['make', 'go', 'find', 'test', 'open', 'sort', 'which']);
+
+/** Words that mark the rest of an entry as prose rather than arguments. */
+const PROSE_WORDS =
+  /\b(?:the|a|an|it|this|that|me|please|sure|and|to|of|for|with|so|is|are|faster|better)\b/i;
+
+/**
+ * True when a history entry is a command rather than conversation. History
+ * holds what the user TYPED -- mostly prose ("continue", "yes", "fix the
+ * tests") -- and repeating a prompt is not a looping command. Counted:
+ * bash-mode lines (`!cmd`), slash commands (`/name`), and lines whose first
+ * word (after `VAR=value` assignments) is a known program or an explicit path
+ * to one (`./build.sh`).
+ */
+function isCommandShaped(display: string): boolean {
+  const line = display.trim();
+  if (line.startsWith('!')) return line.length > 1;
+  if (/^\/[A-Za-z][\w:-]*(?:\s|$)/.test(line)) return true;
+  const words = line.split(/\s+/);
+  let i = 0;
+  while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=\S*$/.test(words[i])) i++;
+  const head = words[i];
+  if (!head) return false;
+  if (/^\.{1,2}[\\/]/.test(head)) return true;
+  const program = head.toLowerCase();
+  if (PROGRAMS.has(program)) return true;
+  if (AMBIGUOUS_PROGRAMS.has(program)) return !PROSE_WORDS.test(words.slice(i + 1).join(' '));
+  return false;
+}
+
+/**
+ * The part of a command shown in a finding: its first three words, at most 60
+ * characters. Enough to recognise the command; its arguments can carry
+ * secrets (`-b <token>`) or the rest of a pasted prompt, and the finding does
+ * not need them.
+ */
+function commandHead(command: string): string {
+  const words = command.trim().split(/\s+/);
+  let head = words.slice(0, 3).join(' ');
+  let cut = words.length > 3;
+  if (head.length > 60) {
+    head = head.slice(0, 57);
+    cut = true;
+  }
+  return cut ? `${head}...` : head;
+}
+
+/**
  * Detect consecutive runs of the same command.
  * Returns each run's command, repeat count, and [startIdx, endIdx) span so
  * the cyclic scan can skip spans a consecutive-repeat already covered.
@@ -101,6 +224,9 @@ function findCyclicPatterns(
   return results;
 }
 
+/** Mints a value equal to no other, standing in for a non-command entry. */
+let breakerSeq = 0;
+
 function splitAtGaps(group: HistoryEntry[]): string[][] {
   const segments: string[][] = [];
   let seg: string[] = [];
@@ -109,7 +235,12 @@ function splitAtGaps(group: HistoryEntry[]): string[][] {
       segments.push(seg);
       seg = [];
     }
-    seg.push(group[k].display);
+    // A conversational prompt stays in the sequence as a unique breaker: it
+    // separates the commands on either side (a prompt between two runs means
+    // the user stepped in) but can never match anything, so it neither forms
+    // a run nor a cycle of its own.
+    const d = group[k].display;
+    seg.push(isCommandShaped(d) ? d : `\u0000prompt:${++breakerSeq}`);
   }
   segments.push(seg);
   return segments;
@@ -170,13 +301,12 @@ function toSessionSegments(entries: HistoryEntry[]): {
 }
 
 function toConsecutiveRepeatIssue(command: string, count: number): LintIssue {
-  const truncated = command.length > 80 ? command.slice(0, 77) + '...' : command;
   return {
     severity: 'warning',
     check: 'session-loop-detection',
     ruleId: 'session-loop-detection/consecutive-repeat',
     line: 0,
-    message: `Command run ${count} times consecutively: "${truncated}"`,
+    message: `Command run ${count} times consecutively: "${commandHead(command)}"`,
     suggestion:
       'An agent may be looping on this command. Check history.jsonl for context on what went wrong',
   };
@@ -186,6 +316,10 @@ function toConsecutiveRepeatIssue(command: string, count: number): LintIssue {
  * Detect agent looping patterns in session history:
  * - Same command run 3+ times consecutively
  * - Cyclic patterns (A,B,A,B or A,B,C,A,B,C)
+ *
+ * Only command-shaped entries take part (see `isCommandShaped`); prompts stay
+ * in the sequence as breakers that match nothing. Findings echo only the
+ * command's head (`commandHead`), never its arguments.
  */
 export async function checkLoopDetection(ctx: SessionContext): Promise<LintIssue[]> {
   const issues: LintIssue[] = [];
@@ -228,7 +362,7 @@ export async function checkLoopDetection(ctx: SessionContext): Promise<LintIssue
     const consecutiveSpans = repeats.map((r) => ({ startIdx: r.startIdx, endIdx: r.endIdx }));
     const cycles = findCyclicPatterns(displays, consecutiveSpans);
     for (const { cycle, repeats: reps } of cycles) {
-      const cycleStr = cycle.map((c) => (c.length > 40 ? c.slice(0, 37) + '...' : c)).join(' -> ');
+      const cycleStr = cycle.map(commandHead).join(' -> ');
       issues.push({
         severity: 'warning',
         check: 'session-loop-detection',

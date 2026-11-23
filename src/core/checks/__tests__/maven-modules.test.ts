@@ -155,6 +155,27 @@ describe('mavenSelectors', () => {
     expect(mavenSelectors('mvn -pl %MODULE%,[module],path/to/module test')).toEqual([]);
   });
 
+  // The name list is shared with Gradle's placeholder segments.
+  it('skips the same placeholder names as the Gradle check', () => {
+    expect(mavenSelectors('mvn -pl subproject,:subproject-name,real test')).toEqual([
+      { selector: 'real', option: '-pl' },
+    ]);
+  });
+
+  // Only a TRAILING marker continues the line; mid-line `^` / `\` are escapes.
+  it('does not bail on a continuation character in the middle of the line', () => {
+    expect(mavenSelectors('mvnw.cmd -pl core ^ -am test')).toEqual([
+      { selector: 'core', option: '-pl' },
+    ]);
+  });
+
+  it('reads past env assignments and wrappers', () => {
+    expect(mavenSelectors('MAVEN_OPTS=-Xmx2g ./mvnw -pl core test')).toEqual([
+      { selector: 'core', option: '-pl' },
+    ]);
+    expect(mavenSelectors('sh mvnw -pl core test')).toEqual([{ selector: 'core', option: '-pl' }]);
+  });
+
   it('bails when the command re-roots or shrinks the reactor', () => {
     for (const opt of [
       '-f other/pom.xml',
@@ -374,6 +395,31 @@ describe('checkCommands — commands/maven-module-not-found', () => {
       'AGENTS.md': '`mvn -pl missing test`\n',
     });
     expect(found).toEqual([]);
+  });
+
+  // macOS tmp (/var -> /private/var) and Windows junctions: the reactor holds
+  // real paths while the project root may not, and the suggestion's relative
+  // path must be computed between two real paths.
+  it('keeps the "Did you mean" suggestion when the project root is reached through a link', async () => {
+    const real = path.join(tmp, 'real');
+    for (const [rel, content] of Object.entries({
+      ...reactor,
+      'AGENTS.md': '`mvn -pl cor test`\n',
+    })) {
+      const full = path.join(real, rel);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, content);
+    }
+    const link = path.join(tmp, 'link');
+    fs.symlinkSync(real, link, 'junction');
+    const parsed = parseContextFile({
+      absolutePath: path.join(link, 'AGENTS.md'),
+      relativePath: 'AGENTS.md',
+      isSymlink: false,
+      type: 'context',
+    });
+    const found = (await checkCommands(parsed, link)).filter((i) => i.ruleId === RULE);
+    expect(found.map((i) => i.suggestion)).toEqual(['Did you mean "core"?']);
   });
 
   it('is silent without a POM', async () => {

@@ -1,3 +1,4 @@
+import { basename } from 'node:path';
 import { getGit, isGitRepo } from '../../../utils/git.js';
 import { projectDirMatchesPath } from '../../session-parser.js';
 import type { LintIssue, SessionContext } from '../../types.js';
@@ -31,7 +32,16 @@ import type { LintIssue, SessionContext } from '../../types.js';
  *
  * Only then does `git cat-file -t` decide. Resolution -- not the pattern -- is
  * what makes the finding true, which is why a repo-less scan reports nothing
- * rather than guessing.
+ * rather than guessing. And a failed resolution is not always "does not
+ * resolve", so three more cases stay silent:
+ *
+ *   - An AMBIGUOUS short SHA: git found several objects with that prefix, so
+ *     the commit exists.
+ *   - A SHALLOW or PARTIAL clone: history is missing by design, so absence
+ *     proves nothing.
+ *   - A SHA the surrounding text attributes to ANOTHER repo ("fixed in
+ *     yaw-mcp commit abc1234", "org/other@abc1234"): it was never meant to
+ *     resolve here.
  *
  * Deliberately out of scope: MISATTRIBUTION. The motivating instance cited a
  * SHA that DOES resolve but is not the commit that made the change. Detecting
@@ -80,11 +90,17 @@ function stripFences(text: string): string {
     .join('\n');
 }
 
+/** Characters of context kept on each side of a cited SHA. */
+const CONTEXT_BEFORE = 36;
+const CONTEXT_AFTER = 28;
+
 /** A candidate SHA citation with enough context to report it. */
 interface Citation {
   sha: string;
-  /** The line it was found on, trimmed for the detail block. */
+  /** The SHA with a short stretch of its line on either side, for the detail. */
   context: string;
+  /** The text before the SHA within the cue window, for the other-repo test. */
+  window: string;
 }
 
 export function extractShaCitations(text: string): Citation[] {
@@ -96,7 +112,6 @@ export function extractShaCitations(text: string): Citation[] {
     // run that would otherwise be extracted (memory frontmatter carries an
     // `originSessionId` UUID on essentially every file).
     const line = rawLine.replace(UUID, ' ');
-    HEX_TOKEN.lastIndex = 0;
     for (const m of line.matchAll(HEX_TOKEN)) {
       const sha = m[0];
       const start = m.index ?? 0;
@@ -122,13 +137,92 @@ export function extractShaCitations(text: string): Citation[] {
 
       if (seen.has(sha)) continue;
       seen.add(sha);
-      out.push({ sha, context: rawLine.trim().slice(0, 160) });
+      // A memory line can be a paragraph; the finding needs the SHA and the
+      // few words that cite it, not the rest of what the memory says.
+      const head = before.length > CONTEXT_BEFORE ? `...${before.slice(-CONTEXT_BEFORE)}` : before;
+      const tail = after.length > CONTEXT_AFTER ? `${after.slice(0, CONTEXT_AFTER)}...` : after;
+      out.push({ sha, context: `${head}${sha}${tail}`.trim(), window });
     }
   }
   return out;
 }
 
-export async function checkUnresolvableSha(ctx: SessionContext): Promise<LintIssue[]> {
+/**
+ * What a failed `git cat-file -t` means. git reports an ambiguous prefix as
+ * "short object ID <sha> is ambiguous" (then "Not a valid object name"); the
+ * commit exists, the citation is just too short to name it uniquely.
+ */
+export function classifyResolveError(message: string): 'ambiguous' | 'missing' {
+  return /\bis ambiguous\b/i.test(message) ? 'ambiguous' : 'missing';
+}
+
+/**
+ * What may sit between a repo name and the SHA it owns: `@` (`yaw-mcp@sha`),
+ * or a commit/sha cue (`yaw-mcp commit sha`, `yaw-mcp's sha sha`). Anchored at
+ * the end of the window, so the name has to be right before the SHA.
+ */
+const REPO_TO_SHA = String.raw`(?:'s)?(?:\s*@\s*|\s+(?:commit|sha)\s+)$`;
+
+/**
+ * A forge commit URL ending right before the SHA: `github.com/o/repo/commit/`,
+ * GitLab's `/-/commit/` (with nested groups), `/commits/`, `/tree/`, `/blob/`
+ * and a PR's `/pull/12/commits/`. Captures the repo segment, minus `.git`.
+ */
+const COMMIT_URL =
+  /\b[a-z0-9-]+(?:\.[a-z0-9-]+)+\/(?:[\w.-]+\/)*?([\w.-]+?)(?:\.git)?(?:\/-)?\/(?:commits?|tree|blob|pull\/\d+\/commits)\/$/;
+
+/**
+ * True when the text just before a SHA attributes it to a different repo: a
+ * sibling's name, or an `owner/repo` spec whose repo is not this one, directly
+ * followed by `@` or a commit/sha cue and then the SHA, or a commit URL for a
+ * repo other than this one. A repo named anywhere else in the window ("Unlike
+ * yaw-mcp, CI here was removed in commit ...") or a file path (`src/cli.ts
+ * commit ...`) leaves the citation pointing here.
+ */
+function namesOtherRepo(window: string, ctx: SessionContext): boolean {
+  const current = basename(ctx.currentProject.replace(/\\/g, '/')).toLowerCase();
+  const lower = window.toLowerCase();
+  const url = COMMIT_URL.exec(lower);
+  if (url) return url[1] !== current;
+  for (const sib of ctx.siblings) {
+    const name = sib.name.toLowerCase();
+    if (!name || name === current) continue;
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp(`(?:^|[^\\w/.-])${escaped}${REPO_TO_SHA}`).test(lower)) return true;
+  }
+  const spec = new RegExp(String.raw`(?:^|[\s(])([\w.-]+)\/([\w.-]+)${REPO_TO_SHA}`).exec(lower);
+  if (spec) {
+    // `src/cli.ts`, `docs/notes.md`: a file path, not a repo.
+    const fileLike = (seg: string) => /\.[a-z0-9]+$/.test(seg);
+    if (!fileLike(spec[1]) && !fileLike(spec[2]) && spec[2] !== current) return true;
+  }
+  return false;
+}
+
+/** True for a shallow or partial clone, where history is incomplete by design. */
+async function incompleteHistory(git: ReturnType<typeof getGit>): Promise<boolean> {
+  try {
+    if ((await git.raw(['rev-parse', '--is-shallow-repository'])).trim() === 'true') return true;
+  } catch {
+    // Too old a git to answer: fall through to the partial-clone probe.
+  }
+  try {
+    const partial = await git.raw(['config', '--get', 'extensions.partialClone']);
+    if (partial.trim()) return true;
+  } catch {
+    // `git config --get` exits 1 when the key is unset.
+  }
+  return false;
+}
+
+/**
+ * `maxResolve` overrides the lookup budget; tests use it to reach the cap
+ * without spawning dozens of git processes.
+ */
+export async function checkUnresolvableSha(
+  ctx: SessionContext,
+  { maxResolve = MAX_RESOLVE }: { maxResolve?: number } = {},
+): Promise<LintIssue[]> {
   const projectMemories = ctx.memories.filter((m) =>
     projectDirMatchesPath(m.projectDir, ctx.currentProject),
   );
@@ -138,36 +232,52 @@ export async function checkUnresolvableSha(ctx: SessionContext): Promise<LintIss
   // against, so report nothing rather than falling back to the shape.
   if (!(await isGitRepo(ctx.currentProject))) return [];
   const git = getGit(ctx.currentProject);
+  // A shallow or partial clone is missing commits by design; a miss there
+  // says nothing about whether the memory's citation is stale.
+  if (await incompleteHistory(git)) return [];
 
   const resolvedCache = new Map<string, boolean>();
-  let budget = MAX_RESOLVE;
+  let budget = maxResolve;
+  let undecided = 0;
 
   async function resolves(sha: string): Promise<boolean | null> {
     const cached = resolvedCache.get(sha);
     if (cached !== undefined) return cached;
-    if (budget <= 0) return null; // over budget -- treat as undecided, stay silent
+    if (budget <= 0) return null; // over budget -- undecided, stays silent
     budget--;
     let ok: boolean;
     try {
       const type = await git.raw(['cat-file', '-t', sha]);
       ok = type.trim().length > 0;
-    } catch {
-      ok = false;
+    } catch (err) {
+      // An ambiguous prefix names several existing objects: not dead.
+      ok = classifyResolveError(err instanceof Error ? err.message : String(err)) === 'ambiguous';
     }
     resolvedCache.set(sha, ok);
     return ok;
   }
 
-  const issues: LintIssue[] = [];
+  const pending: Array<{ mem: (typeof projectMemories)[number]; dead: Citation[] }> = [];
 
   for (const mem of projectMemories) {
     const dead: Citation[] = [];
     for (const cite of extractShaCitations(mem.content)) {
+      if (namesOtherRepo(cite.window, ctx)) continue;
       const ok = await resolves(cite.sha);
-      if (ok === false) dead.push(cite);
+      if (ok === null) undecided++;
+      else if (!ok) dead.push(cite);
     }
-    if (dead.length === 0) continue;
+    if (dead.length > 0) pending.push({ mem, dead });
+  }
 
+  // Said on every finding, since any of them may be one of several.
+  const budgetNote =
+    undecided > 0
+      ? `\n${undecided} more citation(s) were not checked: the lookup budget of ${maxResolve} per run was reached.`
+      : '';
+
+  const issues: LintIssue[] = [];
+  for (const { mem, dead } of pending) {
     const name = mem.name || mem.filePath.split(/[/\\]/).pop() || 'unknown';
     const list = dead.map((d) => d.sha).join(', ');
     issues.push({
@@ -176,7 +286,7 @@ export async function checkUnresolvableSha(ctx: SessionContext): Promise<LintIss
       ruleId: 'session-unresolvable-sha/unresolvable-sha',
       line: 0,
       message: `Memory "${name}" cites ${dead.length} commit(s) that do not resolve in this repository: ${list}`,
-      detail: dead.map((d) => `${d.sha}: ${d.context}`).join('\n'),
+      detail: dead.map((d) => `${d.sha}: ${d.context}`).join('\n') + budgetNote,
       suggestion:
         `Re-resolve the citation and update ${mem.filePath}. A squash-merge or rebase ` +
         'rewrites SHAs, so a memory written before the merge points at a commit that no ' +

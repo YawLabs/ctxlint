@@ -1,8 +1,8 @@
 import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { LintIssue, SessionContext } from '../../types.js';
 import { projectDirCandidates } from '../../session-parser.js';
+import { claudeConfigDir } from '../../../utils/claude-home.js';
 import { stripBom } from '../../../utils/fs.js';
 
 /**
@@ -18,11 +18,11 @@ const MAX_LINES = 200;
 const MAX_BYTES = 25 * 1024;
 
 export async function checkMemoryIndexOverflow(ctx: SessionContext): Promise<LintIssue[]> {
-  // Env-first so tests/sandboxes can redirect home, OS fallback so a shell
-  // with neither HOME nor USERPROFILE (e.g. some Windows service contexts)
-  // still resolves instead of silently skipping the check.
-  const home = process.env.HOME || process.env.USERPROFILE || homedir();
-  if (!home) return [];
+  // Claude Code's config dir: CLAUDE_CONFIG_DIR when set, else <home>/.claude
+  // (env-first so tests and sandboxes can redirect it, os.homedir() fallback
+  // so a shell with neither HOME nor USERPROFILE still resolves).
+  const configDir = claudeConfigDir();
+  if (!configDir) return [];
 
   // Try every encoding Claude Code may have used for this path. With only the
   // `encodeProjectDir` form this check silently never fired for a project whose
@@ -31,7 +31,7 @@ export async function checkMemoryIndexOverflow(ctx: SessionContext): Promise<Lin
   let content = '';
   let memoryFile = '';
   for (const encoded of projectDirCandidates(ctx.currentProject)) {
-    const candidate = join(home, '.claude', 'projects', encoded, 'memory', 'MEMORY.md');
+    const candidate = join(configDir, 'projects', encoded, 'memory', 'MEMORY.md');
     try {
       content = stripBom(await readFile(candidate, 'utf-8'));
     } catch {
@@ -66,7 +66,7 @@ export async function checkMemoryIndexOverflow(ctx: SessionContext): Promise<Lin
       check: 'session-memory-index-overflow',
       ruleId: 'session-memory-index-overflow/line-overflow',
       line: MAX_LINES + 1,
-      message: `MEMORY.md has ${lineCount.toLocaleString()} lines — only the first ${MAX_LINES} are loaded. ${excess.toLocaleString()} line(s) are effectively invisible to the agent.`,
+      message: `MEMORY.md has ${lineCount.toLocaleString('en-US')} lines — only the first ${MAX_LINES} are loaded. ${excess.toLocaleString('en-US')} line(s) are effectively invisible to the agent.`,
       detail: `File: ${memoryFile}`,
       suggestion:
         "Trim older entries, consolidate duplicates, or split into topic files (topic files stay on-demand and don't count toward this cap).",
@@ -80,7 +80,7 @@ export async function checkMemoryIndexOverflow(ctx: SessionContext): Promise<Lin
       check: 'session-memory-index-overflow',
       ruleId: 'session-memory-index-overflow/byte-overflow',
       line: 0,
-      message: `MEMORY.md is ${byteSize.toLocaleString()} bytes — only the first ${MAX_BYTES.toLocaleString()} bytes are loaded. ~${excess.toLocaleString()} bytes are effectively invisible.`,
+      message: `MEMORY.md is ${byteSize.toLocaleString('en-US')} bytes — only the first ${MAX_BYTES.toLocaleString('en-US')} bytes are loaded. ~${excess.toLocaleString('en-US')} bytes are effectively invisible.`,
       detail: `File: ${memoryFile}`,
       suggestion:
         'Each index entry should stay under ~150 characters. Trim verbose lines or move details into the corresponding topic file.',

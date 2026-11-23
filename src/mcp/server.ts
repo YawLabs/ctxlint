@@ -5,24 +5,31 @@ import { scanForContextFiles } from '../core/scanner.js';
 import { parseContextFile } from '../core/parser.js';
 import {
   runAudit,
+  contextTokenTotal,
   ALL_CHECKS,
   ALL_MCP_CHECKS,
   ALL_SESSION_CHECKS,
   ALL_SKILL_CHECKS,
 } from '../core/audit.js';
 import { applyFixes } from '../core/fixer.js';
+import { redactResultForOutput } from '../core/reporter.js';
 import { loadConfig } from '../core/config.js';
-import { fileExists, isDirectory, resetPackageJsonCache } from '../utils/fs.js';
+import { fileExists, isDirectory, isOutsideRelative, resetPackageJsonCache } from '../utils/fs.js';
 import { findRenames } from '../utils/git.js';
 import { freeEncoder, keepEncoderAlive } from '../utils/tokens.js';
 import { resetGit } from '../utils/git.js';
 import { resetPathsCache } from '../core/checks/paths.js';
 import { clearTranscriptCache } from '../core/transcript.js';
-import type { CheckName, McpCheckName, SessionCheckName, SkillCheckName } from '../core/types.js';
+import type {
+  CheckName,
+  LintResult,
+  McpCheckName,
+  SessionCheckName,
+  SkillCheckName,
+} from '../core/types.js';
 import * as path from 'node:path';
 import { VERSION } from '../version.js';
 import { INSTRUCTIONS } from './instructions.js';
-import type { LintResult } from '../core/types.js';
 
 // Per-tool enums, not a single union. Previously every tool accepted every
 // check name — so calling `ctxlint_audit` with `checks: ['mcp-schema']`
@@ -53,6 +60,11 @@ function describeDisallowed(rawPath: string): string {
   return JSON.stringify(m[0]);
 }
 
+/** A UNC (`\\host\share`) or device (`\\?\...`, `\\.\...`) path, in either slash style. */
+function isUncOrDevicePath(p: string): boolean {
+  return /^[\\/]{2}/.test(p);
+}
+
 function validateProjectPath(rawPath: string | undefined): string {
   if (!rawPath) return process.cwd();
   if (PATH_DISALLOWED.test(rawPath)) {
@@ -61,6 +73,13 @@ function validateProjectPath(rawPath: string | undefined): string {
     );
   }
   const resolved = path.resolve(rawPath);
+  // A UNC path (\\host\share, //host/share) or a device path (\\?\, \\.\)
+  // is rejected before anything touches it: stat-ing \\host\share makes
+  // Windows open an SMB connection and send the user's NTLM credentials to
+  // that host. Checked on the raw input too, in case resolution rewrote it.
+  if (process.platform === 'win32' && (isUncOrDevicePath(rawPath) || isUncOrDevicePath(resolved))) {
+    throw new Error('projectPath must be a local directory (UNC and device paths are rejected)');
+  }
   if (!isDirectory(resolved)) {
     throw new Error('projectPath is not an existing directory');
   }
@@ -114,9 +133,10 @@ function resolveWithinRoot(filePath: string, root: string): string {
   const resolvedRoot = path.resolve(root);
   const resolved = path.resolve(resolvedRoot, filePath);
   const rel = path.relative(resolvedRoot, resolved);
-  // Escapes if relative path starts with `..` segment or is an absolute path
-  // (the latter happens on Windows when drive letters differ).
-  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+  // Escapes if the relative path is a `..` segment or absolute (the latter on
+  // Windows when drive letters differ). An in-root name such as `..foo.md`
+  // starts with `..` but stays inside, so it is not a prefix test.
+  if (isOutsideRelative(rel)) {
     throw new Error('path escapes the project root');
   }
   return resolved;
@@ -133,10 +153,51 @@ function resolveWithinRoot(filePath: string, root: string): string {
  * Indentation was a third or more of the bytes on a typical audit. There is
  * deliberately no structuredContent copy: that passes through the cap
  * uncapped, so duplicating the payload there would only double the bytes.
+ *
+ * Serialized from redactResultForOutput's copy: an mcp-security fix carries
+ * the literal secret in `fix.oldText`, which must not reach the calling model.
+ *
+ * A tail cut still leaves invalid JSON, so the text is capped here, below the
+ * host's limit: past `maxBytes`, issues are dropped from the end (file order,
+ * then issue order) and files left with no issue are omitted, and a
+ * `truncated` object right after `summary` says how many of each were left
+ * out. `summary` still counts every finding. `versionSkew`, when present, sits
+ * right after `summary` too: it says whether the rest can be trusted.
  */
-export function auditText(result: LintResult): string {
-  const { summary, ...rest } = result;
-  return JSON.stringify({ summary, ...rest });
+export const MAX_AUDIT_TEXT_BYTES = 90_000;
+
+export function auditText(result: LintResult, maxBytes: number = MAX_AUDIT_TEXT_BYTES): string {
+  const { summary, versionSkew, ...rest } = redactResultForOutput(result);
+  const head = versionSkew ? { summary, versionSkew } : { summary };
+  const full = JSON.stringify({ ...head, ...rest });
+  if (Buffer.byteLength(full, 'utf8') <= maxBytes) return full;
+
+  const totalIssues = rest.files.reduce((n, f) => n + f.issues.length, 0);
+  const build = (keep: number): string => {
+    let left = keep;
+    const files: typeof rest.files = [];
+    for (const f of rest.files) {
+      if (left <= 0) break;
+      const issues = f.issues.slice(0, left);
+      left -= issues.length;
+      if (issues.length > 0) files.push({ ...f, issues });
+    }
+    const truncated = {
+      droppedIssues: totalIssues - keep,
+      droppedFiles: rest.files.length - files.length,
+      reason: `result exceeded ${maxBytes} bytes; rerun with fewer checks or a narrower projectPath for the rest`,
+    };
+    return JSON.stringify({ ...head, truncated, ...rest, files });
+  };
+  // Largest issue count whose serialization fits (monotone in `keep`).
+  let lo = 0;
+  let hi = totalIssues;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (Buffer.byteLength(build(mid), 'utf8') <= maxBytes) lo = mid;
+    else hi = mid - 1;
+  }
+  return build(lo);
 }
 
 const server = new McpServer(
@@ -216,10 +277,14 @@ server.tool(
       };
 
       if (!result.exists) {
-        // findRenames matches in git's repo-relative coordinate space; the
-        // raw input may be absolute (resolveWithinRoot permits that), which
-        // could never exact-match, so pass the root-relative resolved form.
-        const rename = await findRenames(root, path.relative(root, resolved));
+        // The raw input may be absolute (resolveWithinRoot permits that),
+        // which could never exact-match, so pass the root-relative resolved
+        // form. relativeTo 'project': the default result is git repo-root-
+        // relative, which carries a subdirectory root's prefix
+        // (`pkg/src/new.ts`) and does not resolve against `root`.
+        const rename = await findRenames(root, path.relative(root, resolved), {
+          relativeTo: 'project',
+        });
         if (rename) {
           result.renamed = true;
           result.newPath = rename.newPath;
@@ -268,7 +333,16 @@ server.tool(
         isSymlink: f.isSymlink,
       }));
 
-      const totalTokens = files.reduce((sum, f) => sum + f.tokens, 0);
+      // Same definition as an audit's summary.totalTokens: a symlinked alias
+      // of another counted file (AGENTS.md -> CLAUDE.md) is counted once.
+      const totalTokens = contextTokenTotal(
+        parsed.map((f) => ({
+          path: f.relativePath,
+          tokens: f.totalTokens,
+          isSymlink: f.isSymlink,
+          symlinkTarget: f.symlinkTarget,
+        })),
+      );
 
       return {
         content: [
@@ -296,7 +370,7 @@ server.tool(
 
 server.tool(
   'ctxlint_fix',
-  'Run the linter with --fix mode to auto-correct broken file paths in context files using git history and fuzzy matching. Returns a summary of what was fixed. Pass dryRun: true to preview what would be fixed without writing any files.',
+  'Run the selected context-file checks and apply every auto-fix they emit, writing the context files in place. Today only the paths check emits fixes: a broken file path is rewritten to its git-rename target or a close fuzzy match. Returns a summary of what was fixed. Pass dryRun: true to preview what would be fixed without writing any files.',
   {
     projectPath: z
       .string()
@@ -402,7 +476,9 @@ server.tool(
     readOnlyHint: true,
     destructiveHint: false,
     idempotentHint: true,
-    openWorldHint: false,
+    // includeGlobal reads the user's home-directory MCP configs, outside the
+    // project root -- the same reason the session and skill audits are open-world.
+    openWorldHint: true,
   },
   async ({ projectPath, checks, includeGlobal }) => {
     try {
@@ -413,6 +489,8 @@ server.tool(
         mcp: true,
         mcpOnly: true,
         mcpGlobal: includeGlobal || false,
+        // Config `exclude` drops project MCP configs too.
+        exclude: config?.exclude,
         ignoreRules: config?.ignoreRules,
       });
       return { content: [{ type: 'text' as const, text: auditText(result) }] };

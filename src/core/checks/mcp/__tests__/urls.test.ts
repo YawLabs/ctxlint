@@ -37,6 +37,60 @@ describe('checkMcpUrls', () => {
     expect(malformed!.severity).toBe('error');
   });
 
+  it.each(['localhost:3000/mcp', 'file:///tmp/mcp', 'ftp://example.com/mcp'])(
+    'flags %s (a scheme no MCP transport speaks) as malformed',
+    async (url) => {
+      const config = makeConfig({
+        servers: [{ name: 'local', transport: 'http', url, line: 3, raw: {} }],
+      });
+      const issues = await checkMcpUrls(config, '/project');
+      expect(issues.map((i) => i.ruleId)).toEqual(['mcp-urls/malformed-url']);
+    },
+  );
+
+  it.each(['http://example.com/mcp', 'https://example.com/mcp', 'wss://example.com/mcp'])(
+    'accepts the %s scheme',
+    async (url) => {
+      const config = makeConfig({
+        servers: [{ name: 'ok', transport: 'http', url, line: 3, raw: {} }],
+      });
+      const issues = await checkMcpUrls(config, '/project');
+      expect(issues.filter((i) => i.ruleId === 'mcp-urls/malformed-url')).toEqual([]);
+    },
+  );
+
+  it('does not echo the query string or userinfo of a malformed URL', async () => {
+    const config = makeConfig({
+      servers: [
+        {
+          name: 'leaky',
+          transport: 'http',
+          url: 'api.example.com/mcp?token=SUPERSECRETVALUE',
+          line: 3,
+          raw: {},
+        },
+        {
+          name: 'creds',
+          transport: 'http',
+          url: 'https://admin:hunter2pass@exa mple.com/mcp#access_token=FRAGSECRET',
+          line: 4,
+          raw: {},
+        },
+      ],
+    });
+    const issues = await checkMcpUrls(config, '/project');
+    const malformed = issues.filter((i) => i.ruleId === 'mcp-urls/malformed-url');
+    expect(malformed).toHaveLength(2);
+    const text = JSON.stringify(malformed);
+    expect(text).not.toContain('SUPERSECRETVALUE');
+    expect(text).not.toContain('hunter2pass');
+    expect(text).not.toContain('admin');
+    expect(text).not.toContain('FRAGSECRET');
+    // The non-secret parts still identify the URL.
+    expect(malformed[0].message).toContain('api.example.com/mcp?');
+    expect(malformed[1].message).toContain('@exa mple.com/mcp');
+  });
+
   it('skips URL validation when env var references present', async () => {
     const config = makeConfig({
       servers: [

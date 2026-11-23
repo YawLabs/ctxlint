@@ -18,6 +18,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isMainModule } from './lib/main-module.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -75,11 +76,17 @@ function usedCategoryIds(c) {
  */
 export function applyCountsToSpec(body, rules, categoryIds) {
   const categories = categoryIds.length;
+  const noun = categories === 1 ? 'category' : 'categories';
   let out = body;
-  out = out.replace(/\b\d+(\s+lint)?\s+rules\s+organized into\s+\d+\s+categories\b/gi, (m) =>
-    m
-      .replace(/^\d+/, String(rules))
-      .replace(/organized into\s+\d+/i, `organized into ${categories}`),
+  // The total header, in every phrasing the specs use: "N rules organized
+  // into M categories", "N lint rules in M categories", "N rules in 1
+  // category". Both numbers come from the catalog, and the noun follows M,
+  // so a catalog that gains or loses its second category cannot leave
+  // "in 2 category" behind.
+  out = out.replace(
+    /\b\d+(\s+lint)?(\s+)rules(\s+)(organized into|in)(\s+)\d+\s+categor(?:y|ies)\b/gi,
+    (_m, lint, s1, s2, joiner, s3) =>
+      `${rules}${lint ?? ''}${s1}rules${s2}${joiner}${s3}${categories} ${noun}`,
   );
   if (categories === 1) {
     const only = categoryIds[0];
@@ -87,10 +94,20 @@ export function applyCountsToSpec(body, rules, categoryIds) {
       /\b\d+(\s+lint)?\s+rules\s+in the\s+`([^`]+)`\s+category\b/gi,
       (m, _lint, name) => (name === only ? m.replace(/^\d+/, String(rules)) : m),
     );
-    out = out.replace(/\b\d+\s+rules\s+in\s+\d+\s+category\b/gi, (m) =>
-      m.replace(/^\d+/, String(rules)),
-    );
   }
+  return out;
+}
+
+/**
+ * Every rule-count header in a spec body, as {rules, categories} pairs, in
+ * order. Exported for the catalog-consistency test, which requires at least
+ * one and requires ALL of them to agree with the catalog -- checking only the
+ * first match let a second, stale header pass.
+ */
+export function specCountHeaders(body) {
+  const out = [];
+  const re = /\b(\d+)(?:\s+lint)?\s+rules\s+(?:organized into|in)\s+(\d+)\s+categor(?:y|ies)\b/gi;
+  for (const m of body.matchAll(re)) out.push({ rules: Number(m[1]), categories: Number(m[2]) });
   return out;
 }
 
@@ -150,7 +167,10 @@ function main() {
   if (outOfSync.length === 0) console.log('Catalog-derived prose already in sync.');
 }
 
-// Only run main when invoked directly, not when imported by the test.
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+// Only run main when invoked directly, not when imported by the test or by
+// build.mjs. A raw argv[1] compare skipped main() from a junctioned or
+// symlinked checkout and exited 0 having checked nothing -- see
+// scripts/lib/main-module.mjs.
+if (isMainModule(process.argv[1], import.meta.url)) {
   main();
 }

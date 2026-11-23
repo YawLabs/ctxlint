@@ -35,19 +35,38 @@ export interface IgnoreFileRule extends IgnoreRule {
   _fileGlob?: string;
 }
 
+// Case-insensitive on the platforms whose default filesystems are: glob
+// discovery (scanner.ts) finds `CLAUDE.md` for a `claude.md` spelling there,
+// so an exclude / ignore glob written in the "wrong" case must still match the
+// file discovery returned, or it silently drops nothing.
+const NOCASE = process.platform === 'win32' || process.platform === 'darwin';
+
+// Compiled matchers keyed by glob. A scan tests every discovered file against
+// every pattern; recompiling per call made that O(files x patterns) regex
+// builds. Patterns come from config / .ctxlintignore, so the set is small.
+const matcherCache = new Map<string, (p: string) => boolean>();
+
 /**
  * Test whether a file path matches a glob pattern.
- * Uses picomatch with { dot: true } so dotfiles (CLAUDE.md, .ctxlintrc, etc.)
- * are matched by patterns like `**` without needing an explicit dot prefix.
+ * Uses picomatch with { dot: true } so dotfiles (.cursorrules, .claude/, etc.)
+ * are matched by patterns like `**` without needing an explicit dot prefix,
+ * and { nocase } on win32/darwin (see NOCASE).
  */
 export function matchesGlob(filePath: string, glob: string): boolean {
-  return picomatch(glob, { dot: true })(filePath);
+  let matcher = matcherCache.get(glob);
+  if (!matcher) {
+    matcher = picomatch(glob, { dot: true, nocase: NOCASE });
+    matcherCache.set(glob, matcher);
+  }
+  return matcher(filePath);
 }
 
 /**
  * Load and parse .ctxlintignore from projectRoot.
  * Returns [] when the file does not exist or is empty.
- * Silently skips lines that cannot be parsed as a valid rule.
+ * Every non-blank, non-comment line becomes a rule: the check token is NOT
+ * validated against the known check names, so a misspelled check yields a
+ * rule that simply never matches a finding.
  */
 export function loadIgnoreFile(projectRoot: string): IgnoreFileRule[] {
   const ignoreFilePath = path.join(projectRoot, '.ctxlintignore');

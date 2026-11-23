@@ -1,18 +1,88 @@
+import * as fs from 'node:fs';
 import * as path from 'node:path';
-import levenshteinPkg from 'fast-levenshtein';
-const levenshtein = levenshteinPkg.get;
 import { globIterate } from 'glob/raw';
-import { fileExists, isDirectory, getAllProjectFiles } from '../../utils/fs.js';
+import {
+  fileExists,
+  isDirectory,
+  getAllProjectFiles,
+  IGNORED_DIRS,
+  isOutsideRelative,
+} from '../../utils/fs.js';
 import { findRenamesBatch, resetRenameCache } from '../../utils/git.js';
+import { closestMatch } from './closest-match.js';
 import type { ParsedContextFile, LintIssue } from '../types.js';
 
-// Mirrors scanner.ts IGNORED_DIRS. Without it, a doc glob like
-// `**/*.test.ts` (extractable from plain prose) crawls all of node_modules /
-// dist / build on every lint of a large repo just to answer an existence
-// question. Tradeoff: a glob whose ONLY matches live inside these dirs now
-// reports no-match -- consistent with the project-file walk, which never
-// surfaces those dirs either.
-const GLOB_IGNORE = ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'];
+// Directories a doc glob is never expanded into: the dependency, VCS,
+// build-output and cache trees, which are both huge and generated. Without
+// this, a glob like `**/*.test.ts` (extractable from plain prose) crawls all of
+// node_modules / dist / build on every lint of a large repo just to answer an
+// existence question. The list is the shared IGNORED_DIRS (utils/fs.ts), the
+// same set getAllProjectFiles skips, so the two cannot drift.
+// Tradeoff: an unanchored glob whose ONLY matches live inside these dirs
+// reports no-match. A glob that NAMES one of them in its literal prefix
+// (`dist/*.js`, `packages/a/build/*.js`) is about that tree, so that entry is
+// dropped for it -- see globIgnoreFor.
+const GLOB_IGNORE_DIRS: readonly string[] = [...IGNORED_DIRS];
+
+/** Glob metacharacters (extglob `@(...)` etc. included); a segment containing one is not literal. */
+const GLOB_MAGIC = /[*?[\]{}]|[!+@]\(/;
+
+/**
+ * The ignore list for one glob: GLOB_IGNORE_DIRS minus any directory the
+ * pattern's literal prefix (the segments before the first one with a glob
+ * metacharacter) walks into explicitly.
+ */
+function globIgnoreFor(pattern: string): string[] {
+  const literal: string[] = [];
+  for (const seg of pattern.split('/')) {
+    if (GLOB_MAGIC.test(seg)) break;
+    literal.push(seg);
+  }
+  return GLOB_IGNORE_DIRS.filter((d) => !literal.includes(d)).map((d) => `**/${d}/**`);
+}
+
+/** Path equality after resolution, ignoring trailing separators and (on Windows) case. */
+function samePath(a: string, b: string): boolean {
+  const norm = (p: string): string => {
+    const r = path.resolve(p);
+    return process.platform === 'win32' ? r.toLowerCase() : r;
+  };
+  return norm(a) === norm(b);
+}
+
+/**
+ * A checker for whether a path's segments below `projectRoot` match real
+ * directory entries EXACTLY. Windows and macOS resolve `SRC/App.ts` to
+ * `src/App.ts`, Linux does not, so a host-case existence check made results
+ * depend on where ctxlint ran -- and a ref that passes locally fails on Linux
+ * CI. Comparing against readdir names applies Linux's rule everywhere. Paths
+ * outside the project root (already skipped by the caller) keep host rules.
+ * Directory listings are cached for the life of the checker.
+ */
+function caseExactChecker(projectRoot: string): (p: string) => boolean {
+  const root = path.resolve(projectRoot);
+  const listings = new Map<string, Set<string> | null>();
+  const entries = (dir: string): Set<string> | null => {
+    if (!listings.has(dir)) {
+      try {
+        listings.set(dir, new Set(fs.readdirSync(dir)));
+      } catch {
+        listings.set(dir, null);
+      }
+    }
+    return listings.get(dir) ?? null;
+  };
+  return (p: string): boolean => {
+    const rel = path.relative(root, path.resolve(p));
+    if (rel === '' || isOutsideRelative(rel)) return true;
+    let dir = root;
+    for (const seg of rel.split(path.sep)) {
+      if (!entries(dir)?.has(seg)) return false;
+      dir = path.join(dir, seg);
+    }
+    return true;
+  };
+}
 
 let cachedProjectFiles: { root: string; files: string[] } | null = null;
 let cachedBasenameIndex: { root: string; index: Map<string, string[]> } | null = null;
@@ -73,7 +143,8 @@ export async function checkPaths(
   // baseDirs decision in the ref loop below). Loop-invariant -- depends only on
   // contextDir and projectRoot -- so compute once here, not per ref.
   const inRootDotConfigDir =
-    path.dirname(contextDir) === projectRoot && path.basename(contextDir).startsWith('.');
+    samePath(path.dirname(contextDir), projectRoot) && path.basename(contextDir).startsWith('.');
+  const caseExact = caseExactChecker(projectRoot);
 
   // Accumulator for refs that need rename lookups (not-found, non-glob, non-dir).
   // These are batched into a single findRenamesBatch call after the synchronous
@@ -105,6 +176,11 @@ export async function checkPaths(
       continue;
     }
 
+    // `@/components/ui` is a TS / bundler path alias (tsconfig `paths`, Vite
+    // `resolve.alias`) whose target directory ctxlint does not resolve. With
+    // the `@` stripped it would read as an absolute filesystem path.
+    if (isImport && normalizedRef.startsWith('/')) continue;
+
     // Where to resolve from. Explicitly-relative refs (./foo, ../foo, and the
     // Windows-style .\foo, ..\foo) and @-imports are always relative to the
     // doc's own directory. A BARE relative ref (`rules/manifest.json`) is
@@ -131,30 +207,44 @@ export async function checkPaths(
           : [contextDir]
         : [projectRoot, contextDir];
     const primaryBase = baseDirs[0];
+    const resolvedCandidates = baseDirs.map((b) => path.resolve(b, normalizedRef));
+
+    // A ref that resolves OUTSIDE the project root under every candidate base
+    // is not a repo reference ctxlint can validate: a symlink target relative
+    // to where the link lives (`ln -sf ../../scripts/x .git/hooks/y`), an
+    // absolute system path (`/etc/nginx/`), a URL path (`/api/*`), or a `../`
+    // escape above the repo (`../other-repo/`). Skip rather than emit a
+    // confident-but-wrong "broken path" + autofix into another repo. Checked
+    // before the glob and directory branches so every ref shape gets it.
+    const insideRoot = resolvedCandidates.some((p) => {
+      const rel = path.relative(projectRoot, p);
+      return rel === '' || !isOutsideRelative(rel);
+    });
+    if (!insideRoot) continue;
 
     // Check if it's a glob pattern
     if (normalizedRef.includes('*')) {
-      // Absolute globs (/etc/*.conf) must not be relativized against cwd, or
-      // glob would treat them as relative and never match. (path.isAbsolute is
-      // platform-specific: a C:/x/*.ts form only classifies absolute on Windows.)
-      // Only existence is tested, so iterate and stop at the first match
-      // instead of collecting every path the glob expands to.
+      // Absolute globs (/repo/src/*.ts) must not be relativized against cwd,
+      // or glob would treat them as relative and never match. (path.isAbsolute
+      // is platform-specific: a C:/x/*.ts form only classifies absolute on
+      // Windows.) Only existence is tested, so iterate and stop at the first
+      // case-exact match instead of collecting every path the glob expands to.
+      const ignore = globIgnoreFor(normalizedRef.replace(/^\.\//, ''));
+      const cwds = path.isAbsolute(normalizedRef) ? [undefined] : baseDirs;
       let hasMatch = false;
-      if (path.isAbsolute(normalizedRef)) {
-        const iter = globIterate(normalizedRef, {
+      for (const cwd of cwds) {
+        for await (const match of globIterate(normalizedRef, {
+          cwd,
           absolute: true,
           nodir: false,
-          ignore: GLOB_IGNORE,
-        });
-        hasMatch = !(await iter.next()).done;
-      } else {
-        for (const b of baseDirs) {
-          const iter = globIterate(normalizedRef, { cwd: b, nodir: false, ignore: GLOB_IGNORE });
-          if (!(await iter.next()).done) {
+          ignore,
+        })) {
+          if (caseExact(match)) {
             hasMatch = true;
             break;
           }
         }
+        if (hasMatch) break;
       }
       if (!hasMatch) {
         issues.push({
@@ -172,7 +262,7 @@ export async function checkPaths(
     // Check if path exists as file or directory
     const isDir = normalizedRef.endsWith('/');
     if (isDir) {
-      if (!baseDirs.some((b) => isDirectory(path.resolve(b, normalizedRef)))) {
+      if (!resolvedCandidates.some((p) => isDirectory(p) && caseExact(p))) {
         issues.push({
           severity: 'error',
           check: 'paths',
@@ -184,25 +274,13 @@ export async function checkPaths(
       continue;
     }
 
-    const resolvedCandidates = baseDirs.map((b) => path.resolve(b, normalizedRef));
-    if (resolvedCandidates.some((p) => fileExists(p) || isDirectory(p))) {
+    if (resolvedCandidates.some((p) => (fileExists(p) || isDirectory(p)) && caseExact(p))) {
       continue; // Path is valid under at least one candidate base
     }
 
-    // A ref that resolves OUTSIDE the project root under every candidate base
-    // is not a repo reference ctxlint can validate: a symlink target relative
-    // to where the link lives (`ln -sf ../../scripts/x .git/hooks/y`), an
-    // absolute system path, or a `../` escape above the repo. Skip rather than
-    // emit a confident-but-wrong "broken path" + autofix into another repo.
-    const insideRoot = resolvedCandidates.some((p) => {
-      const rel = path.relative(projectRoot, p);
-      return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
-    });
-    if (!insideRoot) continue;
-
     // Path doesn't exist anywhere sensible -- queue for batched rename lookup.
-    // findRenamesBatch matches in git's repo-relative coordinate space, while
-    // ref.value may be context-file-relative (./sub/file.md in a subdirectory
+    // findRenamesBatch takes project-root-relative paths (it translates them
+    // into git's repo-relative space itself), while ref.value may be context-file-relative (./sub/file.md in a subdirectory
     // doc) -- pass the resolved form relativized against the project root so
     // those refs can still exact-match a rename source. A bare-filename ref
     // stays bare (its resolved form relativizes back to itself), preserving the
@@ -214,9 +292,13 @@ export async function checkPaths(
 
   // Batch rename lookup -- single git subprocess for all pending refs.
   if (pending.length > 0) {
+    // relativeTo 'project': git reports renames repo-root-relative, which for a
+    // projectRoot below the repo root (a monorepo package) carries the
+    // package prefix (pkg/src/new.ts) -- wrong for a project-root-relative fix.
     const batchResult = await findRenamesBatch(
       projectRoot,
       pending.map((p) => p.relTarget),
+      { relativeTo: 'project' },
     );
 
     for (const { ref, normalizedRef, baseDir, relTarget, isImport } of pending) {
@@ -231,16 +313,18 @@ export async function checkPaths(
         suggestion = `Did you mean ${rename.newPath}?`;
         detail = `Renamed ${rename.daysAgo} days ago in commit ${rename.commitHash}`;
       } else {
-        // Fuzzy match against project files
-        const match = findClosestMatch(normalizedRef, projectFiles, basenameIndex);
-        if (match) {
-          fixTarget = match;
-          suggestion = `Did you mean ${match}?`;
+        // Fuzzy match against project files, in their (project-root-relative)
+        // coordinate space. Every hit is suggested; only a confident one is
+        // offered to --fix (see findClosestMatch).
+        const closest = findClosestMatch(relTarget, projectFiles, basenameIndex);
+        if (closest) {
+          suggestion = `Did you mean ${closest.match}?`;
+          if (closest.fixable) fixTarget = closest.match;
         }
       }
 
-      // fixTarget is always project-root-relative (rename.newPath is git
-      // repo-relative; findClosestMatch returns project-root-relative), but the
+      // fixTarget is always project-root-relative (rename.newPath was asked for
+      // with relativeTo 'project'; findClosestMatch's match is project-root-relative), but the
       // autofix replaces ref.value literally on its line. When the ref was
       // resolved from the context file's OWN directory (an explicit ./.. ref),
       // a root-relative newText would be re-interpreted relative to contextDir
@@ -296,51 +380,64 @@ export async function checkPaths(
   return issues;
 }
 
+/**
+ * Basename stems that identify nothing on their own: being the only
+ * `index.ts` in the tree does not make it the file a doc's `src/api/index.ts`
+ * meant. Compared lowercased, extension removed.
+ */
+const GENERIC_BASENAMES = new Set([
+  'index',
+  'main',
+  'mod',
+  'lib',
+  '__init__',
+  '__main__',
+  'readme',
+  'package',
+  'tsconfig',
+  'makefile',
+  'dockerfile',
+  'setup',
+]);
+
+/**
+ * The project file closest to `target` (project-root-relative), and whether
+ * it is confident enough to autofix to. Suggestions and fixes have different
+ * bars: a wrong suggestion costs the reader a glance, a wrong --fix rewrites
+ * durable source to point at an unrelated file.
+ */
 function findClosestMatch(
   target: string,
   files: string[],
   basenameIndex: Map<string, string[]>,
-): string | null {
+): { match: string; fixable: boolean } | null {
   const targetNorm = target.replace(/\\/g, '/');
   const targetBase = path.basename(targetNorm);
-
-  // Pass 1: O(1) basename-index lookup + small-list levenshtein. Files whose
-  // basename matches the target's are a strong signal regardless of overall
-  // path-edit distance, so this pass is deliberately uncapped: distance only
-  // RANKS among basename-equal candidates (the absolute cap below belongs to
-  // the full-path fallback pass alone). Pulling the candidates from the
-  // prebuilt index instead of scanning every project file makes the common
-  // case O(1) + a walk over same-basename files rather than O(F).
-  const candidates = basenameIndex.get(targetBase) ?? [];
-  let basenameMatch: string | null = null;
-  let basenameDistance = Infinity;
-  for (const fileNorm of candidates) {
-    if (fileNorm !== targetNorm) {
-      const dist = levenshtein(targetNorm, fileNorm);
-      if (dist < basenameDistance) {
-        basenameDistance = dist;
-        basenameMatch = fileNorm;
-      }
-    }
-  }
-  if (basenameMatch) return basenameMatch;
-
-  // Pass 2 (fallback): Levenshtein over full paths with an absolute cap.
-  // Length prefilter: |len(a) - len(b)| is a lower bound on Levenshtein
-  // distance, so any candidate whose length differs from the target by more
-  // than the current best can be skipped without computing.
   const absoluteCap = Math.max(targetNorm.length * 0.4, 5);
-  let fullPathMatch: string | null = null;
-  let fullPathDistance = Infinity;
-  for (const file of files) {
-    const fileNorm = file.replace(/\\/g, '/');
-    const lenDelta = Math.abs(targetNorm.length - fileNorm.length);
-    if (lenDelta >= fullPathDistance || lenDelta > absoluteCap) continue;
-    const dist = levenshtein(targetNorm, fileNorm);
-    if (dist < fullPathDistance && dist <= absoluteCap) {
-      fullPathDistance = dist;
-      fullPathMatch = fileNorm;
-    }
+
+  // Pass 1: O(1) basename-index lookup + small-list levenshtein. A file whose
+  // basename matches the target's is a strong SUGGESTION regardless of overall
+  // path-edit distance, so the pick is uncapped: distance only RANKS among
+  // basename-equal candidates. The autofix is stricter: only when that file
+  // is the ONLY one with the basename, the basename is not a generic one, and
+  // the whole path is within the same cap as pass 2. Pulling the candidates
+  // from the prebuilt index instead of scanning every project file makes the
+  // common case O(1) + a walk over same-basename files rather than O(F).
+  const candidates = (basenameIndex.get(targetBase) ?? []).filter((f) => f !== targetNorm);
+  const byBasename = closestMatch(targetNorm, candidates);
+  if (byBasename) {
+    const stem = targetBase.replace(/\.[^.]*$/, '').toLowerCase();
+    const fixable =
+      candidates.length === 1 && byBasename.distance <= absoluteCap && !GENERIC_BASENAMES.has(stem);
+    return { match: byBasename.match, fixable };
   }
-  return fullPathMatch;
+
+  // Pass 2 (fallback): Levenshtein over full paths with an absolute cap. A
+  // hit is a near-identical path (a typo), so it is fixable.
+  const byPath = closestMatch(
+    targetNorm,
+    files.map((f) => f.replace(/\\/g, '/')),
+    { maxDistance: absoluteCap },
+  );
+  return byPath ? { match: byPath.match, fixable: true } : null;
 }

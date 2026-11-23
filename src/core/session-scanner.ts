@@ -1,6 +1,5 @@
 import { readdir, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
-import { homedir } from 'node:os';
 import { createInterface } from 'node:readline';
 import { dirname, join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
@@ -14,57 +13,64 @@ import type {
 } from './types.js';
 import { parseMemoryFile } from './session-parser.js';
 import { stripBom } from '../utils/fs.js';
+import { claudeConfigDir, codexHomeDir, homeDir } from '../utils/claude-home.js';
+import { currentGitOrg } from './sibling-org.js';
 
-// Env-first so HOME/USERPROFILE overrides in tests/CI apply, with an
-// os.homedir() fallback so the pillar still resolves the real home when
-// neither is set. skill-scanner's defaultHome() resolves identically —
-// the home-scoped pillars must agree on what "home" means.
-const home = process.env.HOME || process.env.USERPROFILE || homedir();
+/** A known agent data directory and its provider. */
+interface AgentDir {
+  provider: AgentProvider;
+  /** '' when the location cannot be resolved -- never matches. */
+  dir: string;
+  historyFile?: string;
+}
 
-/** Known agent data directories and their providers */
-const AGENT_DIRS: Array<{ provider: AgentProvider; dir: string; historyFile?: string }> = [
-  { provider: 'claude-code', dir: join(home, '.claude'), historyFile: 'history.jsonl' },
-  { provider: 'codex-cli', dir: join(home, '.codex'), historyFile: 'history.jsonl' },
-  { provider: 'vibe-cli', dir: join(home, '.vibe') },
-  {
-    provider: 'amazon-q',
-    dir: join(home, '.aws', 'amazonq'),
-  },
-  {
-    provider: 'goose',
-    // On win32 the goose dir lives under %APPDATA%. If APPDATA is unset,
-    // `join('', 'Block', 'goose')` yields the cwd-relative `Block/goose`,
-    // which the HOME guard in `detectProviders` does NOT catch (HOME/USERPROFILE
-    // may still be set). Leave the dir empty so `existsSync('')` is always false
-    // and we never match a cwd-relative `Block/goose`, mirroring the HOME-guard intent.
-    dir:
-      process.platform === 'win32'
-        ? process.env.APPDATA
-          ? join(process.env.APPDATA, 'Block', 'goose')
-          : ''
-        : join(home, '.config', 'goose'),
-  },
-  { provider: 'continue', dir: join(home, '.continue') },
-  {
-    provider: 'windsurf',
-    dir: join(home, '.windsurf'),
-  },
-];
+/**
+ * Known agent data directories, resolved per call rather than at module load
+ * so a long-lived process (watch mode, the MCP server) and tests that redirect
+ * HOME / USERPROFILE / CLAUDE_CONFIG_DIR see the current environment. Home
+ * resolution lives in `utils/claude-home.ts` so every home-scoped pillar
+ * (session, transcript, skills) agrees on what "home" means.
+ */
+function agentDirs(): AgentDir[] {
+  const home = homeDir();
+  // `join('', '.vibe')` is the cwd-relative `.vibe`; `existsSync` on that
+  // resolves against cwd, so a project that happens to have its own dotdir
+  // would be mistaken for the user's global agent data. Resolve to '' instead,
+  // which `detectProviders` always rejects.
+  const underHome = (...parts: string[]) => (home ? join(home, ...parts) : '');
+  return [
+    { provider: 'claude-code', dir: claudeConfigDir(), historyFile: 'history.jsonl' },
+    { provider: 'codex-cli', dir: codexHomeDir(), historyFile: 'history.jsonl' },
+    { provider: 'vibe-cli', dir: underHome('.vibe') },
+    { provider: 'amazon-q', dir: underHome('.aws', 'amazonq') },
+    {
+      provider: 'goose',
+      // On win32 the goose dir lives under %APPDATA%. If APPDATA is unset,
+      // `join('', 'Block', 'goose')` yields the cwd-relative `Block/goose`,
+      // so leave the dir empty and never match a cwd-relative `Block/goose`.
+      dir:
+        process.platform === 'win32'
+          ? process.env.APPDATA
+            ? join(process.env.APPDATA, 'Block', 'goose')
+            : ''
+          : underHome('.config', 'goose'),
+    },
+    { provider: 'continue', dir: underHome('.continue') },
+    { provider: 'windsurf', dir: underHome('.windsurf') },
+  ];
+}
 
 /**
  * Detect which agent providers are installed on this machine.
  */
 export function detectProviders(): AgentProvider[] {
-  // `home` is empty only when HOME/USERPROFILE are unset AND os.homedir()
-  // resolves to nothing (stripped-down containers). In that case
-  // `join('', '.claude')` produces the relative path `.claude`. `existsSync`
-  // on that resolves against cwd, so a project that happens to have its
-  // own `.claude/` would get mistaken for the user's global agent data.
-  // All other readers (`readClaudeHistory`, `readClaudeMemories`, etc.) are
+  // A dir that resolved to '' (no home, no override) is skipped explicitly:
+  // all other readers (`readClaudeHistory`, `readClaudeMemories`, etc.) are
   // gated on this returning the matching provider, so short-circuiting here
   // is sufficient to prevent any cwd-relative lookups.
-  if (!home) return [];
-  return AGENT_DIRS.filter((a) => existsSync(a.dir)).map((a) => a.provider);
+  return agentDirs()
+    .filter((a) => a.dir !== '' && existsSync(a.dir))
+    .map((a) => a.provider);
 }
 
 /**
@@ -130,10 +136,29 @@ interface JsonlHistoryReaderOptions {
   projectFields: readonly string[];
   /**
    * If true, entries with no resolvable `project` are dropped. Claude Code
-   * always writes `project`; Codex CLI sometimes only writes `cwd` and
-   * occasionally neither, in which case we still want the display string.
+   * always writes `project`; Codex CLI writes no project at all, in which case
+   * we still want the display string.
    */
   requireProject: boolean;
+  /** Field names tried in order for the session id. Default `['sessionId']`. */
+  sessionFields?: readonly string[];
+  /** Field names tried in order for a numeric timestamp. Default `['timestamp']`. */
+  timestampFields?: readonly string[];
+  /**
+   * Unit of the timestamp field. Entries are normalized to epoch
+   * milliseconds, which is what the session checks compare against.
+   * Default `'ms'`.
+   */
+  timestampUnit?: 'ms' | 's';
+}
+
+/** First finite numeric value among the given field names, else 0. */
+function pickNumber(entry: Record<string, unknown>, fields: readonly string[]): number {
+  for (const f of fields) {
+    const v = entry[f];
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+  }
+  return 0;
 }
 
 /**
@@ -152,23 +177,24 @@ export async function readJsonlHistory(opts: JsonlHistoryReaderOptions): Promise
     const project = pickField(entry, opts.projectFields);
     if (opts.requireProject && !project) return null;
 
+    const rawTs = pickNumber(entry, opts.timestampFields ?? ['timestamp']);
     return {
       display,
-      timestamp: typeof entry.timestamp === 'number' ? entry.timestamp : 0,
+      timestamp: opts.timestampUnit === 's' ? rawTs * 1000 : rawTs,
       project: project.replace(/\\/g, '/'),
-      sessionId: typeof entry.sessionId === 'string' ? entry.sessionId : '',
+      sessionId: pickField(entry, opts.sessionFields ?? ['sessionId']),
       provider: opts.provider,
     };
   });
 }
 
 /**
- * Resolve a provider's history.jsonl path from AGENT_DIRS so the layout is
+ * Resolve a provider's history.jsonl path from `agentDirs()` so the layout is
  * declared in one place. Providers without a `historyFile` resolve to `''`,
  * which `parseJsonlFiltered` treats as a missing file.
  */
 function agentHistoryPath(provider: AgentProvider): string {
-  const agent = AGENT_DIRS.find((a) => a.provider === provider);
+  const agent = agentDirs().find((a) => a.provider === provider);
   return agent?.historyFile ? join(agent.dir, agent.historyFile) : '';
 }
 
@@ -186,15 +212,23 @@ async function readClaudeHistory(): Promise<HistoryEntry[]> {
 }
 
 /**
- * Read Codex CLI history.jsonl.
+ * Read Codex CLI history.jsonl (`$CODEX_HOME/history.jsonl`, default
+ * `~/.codex`). Codex writes one `{"session_id":"<uuid>","ts":<unix seconds>,
+ * "text":"<message>"}` object per line (codex-rs `message-history` crate,
+ * `HistoryEntry`). It records no working directory, so every entry is
+ * project-less: per-project checks drop it, and only checks that bind by an
+ * explicit `--repo` spec can use it.
  */
 async function readCodexHistory(): Promise<HistoryEntry[]> {
   return readJsonlHistory({
     historyPath: agentHistoryPath('codex-cli'),
     provider: 'codex-cli',
-    displayFields: ['display', 'command'],
-    projectFields: ['project', 'cwd'],
+    displayFields: ['text'],
+    projectFields: [],
     requireProject: false,
+    sessionFields: ['session_id'],
+    timestampFields: ['ts'],
+    timestampUnit: 's',
   });
 }
 
@@ -202,7 +236,9 @@ async function readCodexHistory(): Promise<HistoryEntry[]> {
  * Read all Claude Code memory files across all projects.
  */
 async function readClaudeMemories(): Promise<MemoryEntry[]> {
-  const projectsDir = join(home, '.claude', 'projects');
+  const configDir = claudeConfigDir();
+  if (!configDir) return [];
+  const projectsDir = join(configDir, 'projects');
   if (!existsSync(projectsDir)) return [];
 
   const memories: MemoryEntry[] = [];
@@ -331,16 +367,7 @@ export async function detectSiblings(projectRoot: string): Promise<SiblingRepo[]
   // (the org filter doesn't apply to repos that don't have an org). This
   // preserves parity with the <=50 branch, which never filters by org.
   if (candidates.length > 50) {
-    let currentOrg: string | undefined;
-    try {
-      const currentGit = simpleGit(projectRoot);
-      const remotes = await currentGit.getRemotes(true);
-      const origin = remotes.find((r) => r.name === 'origin');
-      const orgMatch = origin?.refs?.fetch?.match(/github\.com[:/]([^/]+)\//);
-      if (orgMatch) currentOrg = orgMatch[1];
-    } catch {
-      // no git
-    }
+    const currentOrg = await currentGitOrg(projectRoot);
 
     const results = await mapWithConcurrency(
       candidates,
@@ -389,20 +416,38 @@ async function resolveSibling(c: {
 }
 
 /**
+ * Which parts of the session context a caller needs. Each defaults to true.
+ * Reading history streams every provider's whole history.jsonl, memories
+ * parse every memory file of every project, and siblings spawn git per
+ * candidate repo -- an audit running only transcript-backed checks needs
+ * none of it, so the caller can skip what its selected checks never read.
+ * A skipped part comes back empty.
+ */
+export interface SessionDataNeeds {
+  history?: boolean;
+  memories?: boolean;
+  siblings?: boolean;
+}
+
+/**
  * Build the complete session context for a project.
  */
-export async function scanSessionData(projectRoot: string): Promise<SessionContext> {
+export async function scanSessionData(
+  projectRoot: string,
+  needs: SessionDataNeeds = {},
+): Promise<SessionContext> {
   const providers = detectProviders();
+  const { history = true, memories: wantMemories = true, siblings: wantSiblings = true } = needs;
 
   // Read history from all installed providers in parallel
   const historyPromises: Promise<HistoryEntry[]>[] = [];
-  if (providers.includes('claude-code')) historyPromises.push(readClaudeHistory());
-  if (providers.includes('codex-cli')) historyPromises.push(readCodexHistory());
+  if (history && providers.includes('claude-code')) historyPromises.push(readClaudeHistory());
+  if (history && providers.includes('codex-cli')) historyPromises.push(readCodexHistory());
 
   const [histories, memories, siblings] = await Promise.all([
     Promise.all(historyPromises).then((arrays) => arrays.flat()),
-    providers.includes('claude-code') ? readClaudeMemories() : Promise.resolve([]),
-    detectSiblings(projectRoot),
+    wantMemories && providers.includes('claude-code') ? readClaudeMemories() : Promise.resolve([]),
+    wantSiblings ? detectSiblings(projectRoot) : Promise.resolve([] as SiblingRepo[]),
   ]);
 
   // Check if aider is used in any sibling

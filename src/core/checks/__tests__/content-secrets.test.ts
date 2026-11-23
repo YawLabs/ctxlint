@@ -1,8 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { checkContentSecrets } from '../content-secrets.js';
+import { describe, it, expect } from 'vitest';
+import { checkContentSecrets, redactSecrets } from '../content-secrets.js';
 import type { ParsedContextFile, LintIssue } from '../../types.js';
 
 function makeFile(content: string, relativePath = 'CLAUDE.md'): ParsedContextFile {
@@ -18,15 +15,9 @@ function makeFile(content: string, relativePath = 'CLAUDE.md'): ParsedContextFil
   };
 }
 
-let tmpDir: string;
-
-beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), 'ctxlint-content-secrets-'));
-});
-
-afterEach(() => {
-  rmSync(tmpDir, { recursive: true, force: true });
-});
+// The check never touches the filesystem; the root is passed only to match
+// the shared check signature.
+const tmpDir = '/project';
 
 function expectIssue(issues: LintIssue[], ruleId: string): LintIssue {
   const found = issues.find((i) => i.ruleId === ruleId);
@@ -123,6 +114,48 @@ describe('checkContentSecrets - positive matches', () => {
     expectIssue(issues, 'content-secrets/private-key-header');
   });
 
+  it('flags a PGP private key block header', async () => {
+    const file = makeFile('-----BEGIN PGP PRIVATE KEY BLOCK-----\n');
+    const issues = await checkContentSecrets(file, tmpDir);
+    expectIssue(issues, 'content-secrets/private-key-header');
+  });
+
+  it('flags an encrypted PKCS#8 private key header', async () => {
+    const file = makeFile('-----BEGIN ENCRYPTED PRIVATE KEY-----\n');
+    const issues = await checkContentSecrets(file, tmpDir);
+    expectIssue(issues, 'content-secrets/private-key-header');
+  });
+
+  it('flags a token under a markdown heading that says "Fake" (# is a heading, not a comment)', async () => {
+    const file = makeFile('## Fake tokens: ghp_abcdefghijklmnopqrstuvwxyz0123456789\n');
+    const issues = await checkContentSecrets(file, tmpDir);
+    expectIssue(issues, 'content-secrets/github-pat');
+  });
+
+  // A one-line ```npm test``` is an inline code span, not a fence opener, so it
+  // must not put the heading below inside a "fence" where # reads as a comment.
+  it('flags a "Fake" heading after a one-line triple-backtick span', async () => {
+    const file = makeFile(
+      'Run ```npm test``` first.\n\n## Fake tokens: ghp_abcdefghijklmnopqrstuvwxyz0123456789\n',
+    );
+    const issues = await checkContentSecrets(file, tmpDir);
+    expectIssue(issues, 'content-secrets/github-pat');
+  });
+
+  it('flags a "Fake" heading after a line that is only a one-line triple-backtick span', async () => {
+    const file = makeFile(
+      '```npm test```\n\n## Fake tokens: ghp_abcdefghijklmnopqrstuvwxyz0123456789\n',
+    );
+    const issues = await checkContentSecrets(file, tmpDir);
+    expectIssue(issues, 'content-secrets/github-pat');
+  });
+
+  it('still honours a // comment marked fake outside a fence', async () => {
+    const file = makeFile('// fake: ghp_abcdefghijklmnopqrstuvwxyz0123456789\n');
+    const issues = await checkContentSecrets(file, tmpDir);
+    expect(issues.find((i) => i.ruleId === 'content-secrets/github-pat')).toBeUndefined();
+  });
+
   it('flags a Stripe live secret key', async () => {
     const tail = 'A'.repeat(24);
     const file = makeFile(`Stripe: sk_live_${tail}\n`);
@@ -168,8 +201,8 @@ describe('checkContentSecrets - false-positive guards', () => {
     expect(issues.find((i) => i.ruleId === 'content-secrets/github-pat')).toBeUndefined();
   });
 
-  it('does NOT flag an npm_ token on a line marked as a comment + fake', async () => {
-    const file = makeFile('# fake: npm_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n');
+  it('does NOT flag an npm_ token on a fenced shell comment marked fake', async () => {
+    const file = makeFile('```bash\n# fake: npm_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n```\n');
     const issues = await checkContentSecrets(file, tmpDir);
     expect(issues.find((i) => i.ruleId === 'content-secrets/npm-token')).toBeUndefined();
   });
@@ -184,6 +217,12 @@ describe('checkContentSecrets - false-positive guards', () => {
     const file = makeFile('placeholder Slack: xoxb-1234567890-abcdefghijk\n');
     const issues = await checkContentSecrets(file, tmpDir);
     expect(issues.find((i) => i.ruleId === 'content-secrets/slack-token')).toBeUndefined();
+  });
+
+  it('does NOT flag an all-lowercase hyphenated sk- name as an OpenAI key', async () => {
+    const file = makeFile('Wrap it with the sk-learn-compatible-estimator-api adapter.\n');
+    const issues = await checkContentSecrets(file, tmpDir);
+    expect(issues.find((i) => i.ruleId === 'content-secrets/openai-key')).toBeUndefined();
   });
 
   it('does NOT flag an OpenAI key with `sk-...` ellipsis (too short)', async () => {
@@ -354,5 +393,110 @@ describe('checkContentSecrets - output discipline', () => {
     const sameLine = issues.filter((i) => i.line === 1);
     expect(sameLine.length).toBe(1);
     expect(sameLine[0].ruleId).toBe('content-secrets/anthropic-key');
+  });
+});
+
+describe('redactSecrets', () => {
+  const GHP = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789';
+  const SAMPLES = [
+    'AKIAIOSFODNN7ZZZABCD',
+    'ASIAIOSFODNN7ZTEMABC',
+    GHP,
+    `github_pat_${'A1b2C3d4E5'.repeat(9)}`,
+    'ghs_abcdefghijklmnopqrstuvwxyz0123456789',
+    'gho_abcdefghijklmnopqrstuvwxyz0123456789',
+    'ghu_abcdefghijklmnopqrstuvwxyz0123456789',
+    'ghr_abcdefghijklmnopqrstuvwxyz0123456789',
+    'sk-ant-api03-AbCdEfGhIjKlMnOpQrStUv',
+    'sk-proj-AbCdEfGhIjKlMnOpQrStUv0123',
+    'npm_abcdefghijklmnopqrstuvwxyz0123456789',
+    'xoxb-1234567890-abcdefghij',
+    'AIzaSyA1234567890abcdefghijklmnopqrstuv',
+    // Assembled at runtime so GitHub push protection does not read the
+    // fixture as a live Stripe key (same pattern as the cases above).
+    `sk_live_${'abcdefghijklmnopqrstuvwx'}`,
+    // Full-length tokens followed by a path separator or an extension: the
+    // file-name exemption applies only to sub-floor matches.
+    'sk-proj-ABCDEFGHIJKLMNOPQRSTUVWX123/foo',
+    'npm_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8.json',
+    'ASIAABCDEFGHIJKLMNOP/x',
+  ];
+
+  it('replaces every known secret format with its short redacted prefix', () => {
+    for (const secret of SAMPLES) {
+      const out = redactSecrets(`curl -H "Authorization: Bearer ${secret}" https://x`);
+      expect(out, secret).not.toContain(secret);
+      expect(out, secret).toContain(`Bearer ${secret.slice(0, 6)}...`);
+    }
+  });
+
+  it('redacts a token cut short by a caller truncating the surrounding text', () => {
+    // tier-tokens echoes line.slice(0, 80): a token straddling the cut keeps
+    // most of its body but falls below the detector's 36-char floor.
+    const truncated = GHP.slice(0, 30);
+    const out = redactSecrets(`NEVER run \`curl -H "Bearer ${truncated}`);
+    expect(out).not.toContain(truncated);
+  });
+
+  it('still redacts truncated real tokens of the guarded formats', () => {
+    // Cut short of the detection floor, but random-looking (digits / mixed
+    // case), so they are still treated as tokens.
+    for (const cut of ['sk-proj-AbCdEf12', 'npm_abcdefgh1234', 'ASIAIOSFODNN7Z']) {
+      const out = redactSecrets(`NEVER run \`curl -H "Bearer ${cut}`);
+      expect(out, cut).not.toContain(cut);
+      expect(out, cut).toContain(`${cut.slice(0, 6)}...`);
+    }
+  });
+
+  it('redacts full-length guarded tokens even without a digit', () => {
+    for (const secret of [`npm_${'a'.repeat(36)}`, `ASIA${'Q'.repeat(16)}`]) {
+      expect(redactSecrets(`token ${secret} here`), secret).toBe(
+        `token ${secret.slice(0, 6)}... here`,
+      );
+    }
+  });
+
+  it('is idempotent', () => {
+    const text = SAMPLES.join(' and ') + ` then ${GHP}_tail sk-ant-${'x'.repeat(30)}`;
+    const once = redactSecrets(text);
+    expect(redactSecrets(once)).toBe(once);
+    for (const secret of SAMPLES) expect(once).not.toContain(secret);
+  });
+
+  it('returns ordinary text unchanged', () => {
+    const plain = [
+      'src/foo.ts does not exist -- did you mean src/bar.ts?',
+      '"npm run build" is masked by `|| true`; skill "desk-review" and task-runner-x',
+      'Server "github" has a hardcoded API key in a git-tracked file',
+      'AKIA alone, ghp_ alone, sk- alone, sk-short, npm_ci',
+      'sk-dashboard and sk-learn-lint are skill names',
+      'echo $npm_lifecycle_event in the hook',
+      'Region ASIAPACIFICREGIONS is not a key',
+      'run scripts/sk-Deploy2026.sh then open docs/sk-Guide2.md',
+      'see sk-learn-compatible-estimator-api',
+      // Ordinary identifiers that happen to carry a digit.
+      'pin sk-learn-v2-compat in requirements',
+      'see sk-2024-roadmap-v3 for the plan',
+      'the ASIA2025SUMMIT keynote',
+      'region ASIAPACIFIC2 is live',
+    ];
+    for (const s of plain) expect(redactSecrets(s)).toBe(s);
+  });
+
+  it('runs in linear time on adversarial input', () => {
+    const inputs = [
+      'sk-'.repeat(100_000),
+      'xoxb-'.repeat(100_000) + '!',
+      'ghp_'.repeat(100_000),
+      'sk-a'.repeat(100_000) + '_',
+      'AKIA'.repeat(100_000),
+      'sk-A'.repeat(100_000) + '/',
+      'npm_1'.repeat(100_000) + '.x',
+    ];
+    const start = Date.now();
+    for (const s of inputs) redactSecrets(s);
+    // Generous ceiling for a loaded machine; a quadratic scan of 300-500k
+    // chars takes minutes, not seconds.
+    expect(Date.now() - start).toBeLessThan(5000);
   });
 });

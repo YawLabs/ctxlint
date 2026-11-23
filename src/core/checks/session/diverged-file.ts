@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { jaccardSimilarityFromSets, toLineSet } from '../../../utils/similarity.js';
 import { stripBom } from '../../../utils/fs.js';
 import type { LintIssue, SessionContext } from '../../types.js';
+import { currentGitOrg, sameOrgSiblings } from '../../sibling-org.js';
 
 /** Files worth comparing across sibling repos for consistency */
 const CANONICAL_FILES = [
@@ -18,6 +19,19 @@ const CANONICAL_FILES = [
 ];
 
 const MIN_TOKEN_LEN = 3;
+
+/** Overlap band that reads as drift: similar enough to share an origin, not close enough to be in sync. */
+const DRIFT_MIN = 0.2;
+const DRIFT_MAX = 0.9;
+
+/**
+ * Files that unrelated repos share by default. Two repos with nothing in
+ * common still put `node_modules`, `dist` and `.env` in `.gitignore`, and
+ * scaffold `tsconfig.json` from the same template, so 20-50% overlap is the
+ * ambient level for these, not a sign that they were once in sync.
+ */
+const BOILERPLATE_FILES = new Set(['.gitignore', 'tsconfig.json']);
+const BOILERPLATE_DRIFT_MIN = 0.5;
 
 /**
  * Module-scope cache of tokenized canonical files keyed by absolute path.
@@ -95,11 +109,18 @@ export function resetDivergedFileCache(): void {
 /**
  * Detect files that exist in multiple sibling repos but have diverged.
  * Helps catch drift in release scripts, CI configs, linter configs, etc.
+ *
+ * Only siblings under the project's own GitHub owner are compared (see
+ * `sameOrgSiblings`): a repo that merely shares a parent directory has no
+ * reason to match this one.
  */
 export async function checkDivergedFile(ctx: SessionContext): Promise<LintIssue[]> {
   const issues: LintIssue[] = [];
+  const siblings = sameOrgSiblings(ctx.siblings, await currentGitOrg(ctx.currentProject));
+  if (siblings.length === 0) return issues;
 
   for (const fileName of CANONICAL_FILES) {
+    const driftMin = BOILERPLATE_FILES.has(fileName) ? BOILERPLATE_DRIFT_MIN : DRIFT_MIN;
     const currentPath = join(ctx.currentProject, fileName);
     if (!existsSync(currentPath)) continue;
 
@@ -109,7 +130,7 @@ export async function checkDivergedFile(ctx: SessionContext): Promise<LintIssue[
     // Check which siblings have this same file
     const diverged: Array<{ sibling: string; overlap: number; path: string }> = [];
 
-    for (const sib of ctx.siblings) {
+    for (const sib of siblings) {
       const sibPath = join(sib.path, fileName);
       if (!existsSync(sibPath)) continue;
 
@@ -123,9 +144,10 @@ export async function checkDivergedFile(ctx: SessionContext): Promise<LintIssue[
         bothEmptyIsIdentical: true,
       });
 
-      // Flag if overlap is between 20% and 90% — similar but diverged
-      // Below 20% means intentionally different, above 90% means close enough
-      if (overlap >= 0.2 && overlap < 0.9) {
+      // Flag if overlap is in the drift band -- similar but diverged. Below it
+      // means intentionally different (for boilerplate files, the higher floor
+      // is ambient overlap); at or above 90% means close enough.
+      if (overlap >= driftMin && overlap < DRIFT_MAX) {
         diverged.push({
           sibling: sib.name,
           overlap: Math.round(overlap * 100),

@@ -6,7 +6,9 @@ import { simpleGit } from 'simple-git';
 import {
   findRenames,
   findRenamesBatch,
+  fromRepoToProject,
   parseRenameLog,
+  parseRenameLogAll,
   resetGit,
   resetRenameCache,
   type RenameInfo,
@@ -489,8 +491,8 @@ describe('parseRenameLog', () => {
   // (SRC/old.ts for git's src/old.ts) resolves on disk, counts commits in
   // staleness (normalizePath folds), and must match the rename source too --
   // the comparison folds on win32 while RenameInfo keeps git's raw casing.
-  it.runIf(process.platform === 'win32')(
-    'matches a dir-case-mismatched target on win32, returning git raw casing',
+  it.runIf(process.platform === 'win32' || process.platform === 'darwin')(
+    'matches a dir-case-mismatched target on win32/darwin, returning git raw casing',
     () => {
       const raw = `${HASH} 2026-06-02T18:54:28-07:00\n\nR100\tsrc/old.ts\tsrc/new.ts\n`;
       expect(parseRenameLog(raw, 'SRC/old.ts')).toMatchObject({
@@ -500,8 +502,9 @@ describe('parseRenameLog', () => {
     },
   );
 
-  it.runIf(process.platform !== 'win32')(
-    'does not fold case on POSIX (case-sensitive filesystems; folding would invent matches)',
+  // macOS default filesystems are case-insensitive too, so it folds like win32.
+  it.runIf(process.platform !== 'win32' && process.platform !== 'darwin')(
+    'does not fold case on Linux (case-sensitive filesystems; folding would invent matches)',
     () => {
       const raw = `${HASH} 2026-06-02T18:54:28-07:00\n\nR100\tsrc/old.ts\tsrc/new.ts\n`;
       expect(parseRenameLog(raw, 'SRC/old.ts')).toBeNull();
@@ -548,5 +551,164 @@ describe('findRenamesBatch (real git mv, batched lookup)', { timeout: 30000 }, (
     const beta = result.get('src/beta.ts');
     expect(beta).not.toBeNull();
     expect(beta).toMatchObject({ oldPath: 'src/beta.ts', newPath: 'src/beta2.ts' });
+  });
+});
+
+describe('parseRenameLog / parseRenameLogAll (chains, hash widths)', () => {
+  const H1 = '1111111111111111111111111111111111111111';
+  const H2 = '2222222222222222222222222222222222222222';
+  const SHA256 = 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789';
+
+  it('accepts a 64-hex SHA-256 commit header', () => {
+    const raw = `${SHA256} 2026-06-02T18:54:28-07:00\n\nR100\tsrc/old.ts\tsrc/new.ts\n`;
+    expect(parseRenameLog(raw)).toMatchObject({ commitHash: 'abcdef0' });
+  });
+
+  it('follows a -> b -> c to the final path (newest-first log)', () => {
+    const raw =
+      `${H2} 2026-06-02T18:54:28-07:00\n\nR100\tsrc/b.ts\tsrc/c.ts\n` +
+      `${H1} 2026-05-02T18:54:28-07:00\n\nR100\tsrc/a.ts\tsrc/b.ts\n`;
+    expect(parseRenameLog(raw, 'src/a.ts')).toMatchObject({
+      oldPath: 'src/a.ts',
+      newPath: 'src/c.ts',
+      commitHash: '1111111',
+    });
+  });
+
+  it('does not follow an OLDER rename of the intermediate name', () => {
+    // b -> x happened BEFORE a -> b: that b was a different file.
+    const raw =
+      `${H2} 2026-06-02T18:54:28-07:00\n\nR100\tsrc/a.ts\tsrc/b.ts\n` +
+      `${H1} 2026-05-02T18:54:28-07:00\n\nR100\tsrc/b.ts\tsrc/x.ts\n`;
+    expect(parseRenameLog(raw, 'src/a.ts')).toMatchObject({ newPath: 'src/b.ts' });
+  });
+
+  it('terminates on a rename cycle', () => {
+    const raw =
+      `${H2} 2026-06-02T18:54:28-07:00\n\nR100\tsrc/b.ts\tsrc/a.ts\n` +
+      `${H1} 2026-05-02T18:54:28-07:00\n\nR100\tsrc/a.ts\tsrc/b.ts\n`;
+    expect(parseRenameLog(raw, 'src/a.ts')).toMatchObject({ newPath: 'src/a.ts' });
+  });
+
+  it('parseRenameLogAll keeps the newest entry per source and buckets basenames', () => {
+    const raw =
+      `${H2} 2026-06-02T18:54:28-07:00\n\n` +
+      `R100\tsrc/lib/old.ts\tsrc/lib/newer.ts\n` +
+      `R100\tpkg/old.ts\tpkg/moved.ts\n` +
+      `${H1} 2026-05-02T18:54:28-07:00\n\n` +
+      `R100\tsrc/lib/old.ts\tsrc/lib/earlier.ts\n`;
+    const parsed = parseRenameLogAll(raw);
+    expect(parsed.entries).toHaveLength(3);
+    expect(parsed.allRenames.get('src/lib/old.ts')).toMatchObject({
+      newPath: 'src/lib/newer.ts',
+      commitHash: '2222222',
+    });
+    // Two DISTINCT sources share the basename -> two bucket entries (ambiguous).
+    expect(parsed.basenameBuckets.get('old.ts')?.map((r) => r.oldPath)).toEqual([
+      'src/lib/old.ts',
+      'pkg/old.ts',
+    ]);
+  });
+
+  it('parseRenameLogAll returns empty structures for empty input', () => {
+    const parsed = parseRenameLogAll('  \n');
+    expect(parsed.entries).toEqual([]);
+    expect(parsed.allRenames.size).toBe(0);
+    expect(parsed.basenameBuckets.size).toBe(0);
+  });
+});
+
+describe('findRenames / findRenamesBatch agreement (real git)', { timeout: 60000 }, () => {
+  it('findRenamesBatch resolves a rename when projectRoot is a repo subdirectory', async () => {
+    await commit('add', [{ rel: 'pkg/src/old.ts', body: 'a\nb\nc\nd\ne\n' }]);
+    const git = simpleGit(realTmpDir);
+    await git.mv('pkg/src/old.ts', 'pkg/src/new.ts');
+    await git.commit('rename');
+    resetGit();
+    const pkg = path.join(realTmpDir, 'pkg');
+    const batch = await findRenamesBatch(pkg, ['src/old.ts', path.join(pkg, 'src', 'old.ts')]);
+    expect(batch.get('src/old.ts')).toMatchObject({ newPath: 'pkg/src/new.ts' });
+    // An absolute in-root path must resolve the same way findRenames does.
+    expect(batch.get(path.join(pkg, 'src', 'old.ts'))).toMatchObject({ newPath: 'pkg/src/new.ts' });
+    expect(await findRenames(pkg, path.join(pkg, 'src', 'old.ts'))).toMatchObject({
+      newPath: 'pkg/src/new.ts',
+    });
+  });
+
+  it("findRenamesBatch { relativeTo: 'project' } strips the subdirectory prefix", async () => {
+    await commit('add', [
+      { rel: 'pkg/src/old.ts', body: 'a\nb\nc\nd\ne\n' },
+      { rel: 'pkg/out.ts', body: 'v\nw\nx\ny\nz\n' },
+    ]);
+    const git = simpleGit(realTmpDir);
+    await git.mv('pkg/src/old.ts', 'pkg/src/new.ts');
+    fs.mkdirSync(path.join(realTmpDir, 'shared'));
+    await git.mv('pkg/out.ts', 'shared/out.ts');
+    await git.commit('rename');
+    resetGit();
+    const pkg = path.join(realTmpDir, 'pkg');
+    const batch = await findRenamesBatch(pkg, ['src/old.ts', 'out.ts'], { relativeTo: 'project' });
+    expect(batch.get('src/old.ts')).toMatchObject({ oldPath: 'src/old.ts', newPath: 'src/new.ts' });
+    // A target that left the package is expressed relative to it.
+    expect(batch.get('out.ts')).toMatchObject({ oldPath: 'out.ts', newPath: '../shared/out.ts' });
+    // The default stays repo-root-relative, from the same cache.
+    expect((await findRenamesBatch(pkg, ['src/old.ts'])).get('src/old.ts')).toMatchObject({
+      newPath: 'pkg/src/new.ts',
+    });
+  });
+
+  it("findRenames { relativeTo: 'project' } strips the subdirectory prefix", async () => {
+    await commit('add', [
+      { rel: 'pkg/src/old.ts', body: 'a\nb\nc\nd\ne\n' },
+      { rel: 'pkg/out.ts', body: 'v\nw\nx\ny\nz\n' },
+    ]);
+    const git = simpleGit(realTmpDir);
+    await git.mv('pkg/src/old.ts', 'pkg/src/new.ts');
+    fs.mkdirSync(path.join(realTmpDir, 'shared'));
+    await git.mv('pkg/out.ts', 'shared/out.ts');
+    await git.commit('rename');
+    resetGit();
+    const pkg = path.join(realTmpDir, 'pkg');
+    expect(await findRenames(pkg, 'src/old.ts', { relativeTo: 'project' })).toMatchObject({
+      oldPath: 'src/old.ts',
+      newPath: 'src/new.ts',
+    });
+    expect(await findRenames(pkg, 'out.ts', { relativeTo: 'project' })).toMatchObject({
+      oldPath: 'out.ts',
+      newPath: '../shared/out.ts',
+    });
+    // The default stays repo-root-relative.
+    expect(await findRenames(pkg, 'src/old.ts')).toMatchObject({ newPath: 'pkg/src/new.ts' });
+  });
+
+  it('fromRepoToProject re-expresses repo paths against the --show-prefix dir', () => {
+    expect(fromRepoToProject('', 'a/b.ts')).toBe('a/b.ts');
+    expect(fromRepoToProject('pkg/', 'pkg/src/x.ts')).toBe('src/x.ts');
+    expect(fromRepoToProject('pkg/', 'shared/x.ts')).toBe('../shared/x.ts');
+  });
+
+  it('follows a two-step rename to the file that exists now', async () => {
+    await commit('add', [{ rel: 'src/a.ts', body: 'a\nb\nc\nd\ne\n' }]);
+    const git = simpleGit(realTmpDir);
+    await git.mv('src/a.ts', 'src/b.ts');
+    await git.commit('a -> b');
+    await git.mv('src/b.ts', 'src/c.ts');
+    await git.commit('b -> c');
+    resetGit();
+    expect(await findRenames(realTmpDir, 'src/a.ts')).toMatchObject({ newPath: 'src/c.ts' });
+    const batch = await findRenamesBatch(realTmpDir, ['src/a.ts']);
+    expect(batch.get('src/a.ts')).toMatchObject({ newPath: 'src/c.ts' });
+  });
+
+  it('returns null when the rename target no longer exists', async () => {
+    await commit('add', [{ rel: 'src/a.ts', body: 'a\nb\nc\nd\ne\n' }]);
+    const git = simpleGit(realTmpDir);
+    await git.mv('src/a.ts', 'src/b.ts');
+    await git.commit('a -> b');
+    await git.rm('src/b.ts');
+    await git.commit('delete b');
+    resetGit();
+    expect(await findRenames(realTmpDir, 'src/a.ts')).toBeNull();
+    expect((await findRenamesBatch(realTmpDir, ['src/a.ts'])).get('src/a.ts')).toBeNull();
   });
 });

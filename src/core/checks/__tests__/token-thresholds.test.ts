@@ -5,20 +5,7 @@ import {
   resolveTokenThresholds,
   DEFAULT_TOKEN_THRESHOLDS,
 } from '../tokens.js';
-import type { ParsedContextFile } from '../../types.js';
-
-function makeParsedFile(tokens: number): ParsedContextFile {
-  return {
-    filePath: '/test/CLAUDE.md',
-    relativePath: 'CLAUDE.md',
-    isSymlink: false,
-    totalTokens: tokens,
-    totalLines: 10,
-    content: '',
-    sections: [],
-    references: { paths: [], commands: [] },
-  };
-}
+import { makeParsedFile } from './token-fixtures.js';
 
 describe('custom token thresholds', () => {
   it('uses custom info threshold', async () => {
@@ -106,5 +93,84 @@ describe('custom token thresholds', () => {
   it('resolveTokenThresholds with no overrides returns the canonical default object', () => {
     expect(resolveTokenThresholds()).toBe(DEFAULT_TOKEN_THRESHOLDS);
     expect(resolveTokenThresholds(undefined)).toBe(DEFAULT_TOKEN_THRESHOLDS);
+  });
+
+  it('uses a custom per-file boundary inclusively', async () => {
+    const thresholds = resolveTokenThresholds({ info: 100, warning: 200, error: 300 });
+    expect(await checkTokens(makeParsedFile(99), '/test', thresholds)).toHaveLength(0);
+    expect((await checkTokens(makeParsedFile(100), '/test', thresholds))[0].ruleId).toBe(
+      'tokens/info',
+    );
+    expect((await checkTokens(makeParsedFile(199), '/test', thresholds))[0].ruleId).toBe(
+      'tokens/info',
+    );
+    expect((await checkTokens(makeParsedFile(200), '/test', thresholds))[0].ruleId).toBe(
+      'tokens/large',
+    );
+    expect((await checkTokens(makeParsedFile(299), '/test', thresholds))[0].ruleId).toBe(
+      'tokens/large',
+    );
+    expect((await checkTokens(makeParsedFile(300), '/test', thresholds))[0].ruleId).toBe(
+      'tokens/excessive',
+    );
+  });
+});
+
+describe('per-key threshold validation', () => {
+  function capture(fn: () => void): string {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      fn();
+      return errSpy.mock.calls.map((args) => args.join(' ')).join('\n');
+    } finally {
+      errSpy.mockRestore();
+    }
+  }
+
+  it.each([
+    ['a string', '2000'],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['null', null],
+    ['a negative number', -5],
+  ])('rejects %s for one key with a key-specific message and keeps the rest', (_label, bad) => {
+    let thresholds = DEFAULT_TOKEN_THRESHOLDS;
+    const msg = capture(() => {
+      thresholds = resolveTokenThresholds({
+        info: 100,
+        warning: bad as unknown as number,
+      });
+    });
+    expect(msg).toContain('"warning" must be a finite non-negative number');
+    expect(msg).not.toContain('should satisfy');
+    // The good key survives; only the bad key reverts to its default.
+    expect(thresholds.info).toBe(100);
+    expect(thresholds.warning).toBe(DEFAULT_TOKEN_THRESHOLDS.warning);
+  });
+
+  it.each(['aggregate', 'tierBreakdown', 'tierAggregate'] as const)(
+    'validates the %s key too',
+    (key) => {
+      let thresholds = DEFAULT_TOKEN_THRESHOLDS;
+      const msg = capture(() => {
+        thresholds = resolveTokenThresholds({ [key]: 'big' as unknown as number });
+      });
+      expect(msg).toContain(`"${key}" must be a finite non-negative number`);
+      expect(thresholds[key]).toBe(DEFAULT_TOKEN_THRESHOLDS[key]);
+    },
+  );
+
+  it('accepts zero as a valid threshold', () => {
+    const msg = capture(() => {
+      expect(resolveTokenThresholds({ aggregate: 0 }).aggregate).toBe(0);
+    });
+    expect(msg).toBe('');
+  });
+
+  it('treats an explicitly undefined key as not supplied', () => {
+    const msg = capture(() => {
+      expect(resolveTokenThresholds({ info: undefined }).info).toBe(DEFAULT_TOKEN_THRESHOLDS.info);
+    });
+    expect(msg).toBe('');
   });
 });

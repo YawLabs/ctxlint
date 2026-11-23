@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
@@ -29,33 +29,47 @@ function run(args: string[]): { stdout: string; stderr: string; exitCode: number
 }
 
 describe('entry point routing (index.ts)', () => {
-  it('--mcp-server flag launches MCP server (exits when stdin closes)', () => {
-    // The MCP server reads from stdin; with no input it should start then exit
+  // Send a real MCP initialize request over stdio and require the server's own
+  // answer: closing stdin right after makes the server exit, so the spawn
+  // returns instead of waiting on the timeout.
+  function mcpInitialize(args: string[]): any {
+    const init = {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'entry-test', version: '1.0' },
+      },
+    };
+    let stdout: string;
     try {
-      execFileSync('node', [CLI, '--mcp-server'], {
+      stdout = execFileSync('node', [CLI, ...args], {
         encoding: 'utf-8',
-        input: '', // empty stdin causes immediate close
-        timeout: 5000,
+        input: JSON.stringify(init) + '\n',
+        timeout: 60000,
       });
     } catch (err: any) {
-      // Server exits with error when stdin closes — that's expected behavior
-      // The key assertion: it did NOT run the CLI linter (no "No context files" output)
-      expect(err.stdout || '').not.toContain('No context files');
-      expect(err.stdout || '').not.toContain('Scanning');
+      stdout = err.stdout || '';
     }
+    for (const line of stdout.split('\n')) {
+      try {
+        const msg = JSON.parse(line);
+        if (msg.id === 1) return msg;
+      } catch {
+        continue;
+      }
+    }
+    return undefined;
+  }
+
+  it('--mcp-server flag launches MCP server (answers initialize over stdio)', () => {
+    expect(mcpInitialize(['--mcp-server'])?.result?.serverInfo?.name).toBe('ctxlint');
   });
 
   it('`serve` subcommand launches MCP server (alias for --mcp-server)', () => {
-    try {
-      execFileSync('node', [CLI, 'serve'], {
-        encoding: 'utf-8',
-        input: '',
-        timeout: 5000,
-      });
-    } catch (err: any) {
-      expect(err.stdout || '').not.toContain('No context files');
-      expect(err.stdout || '').not.toContain('Scanning');
-    }
+    expect(mcpInitialize(['serve'])?.result?.serverInfo?.name).toBe('ctxlint');
   });
 
   it('without --mcp-server runs the CLI linter', () => {
@@ -63,6 +77,169 @@ describe('entry point routing (index.ts)', () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain('CLAUDE.md');
   });
+
+  // A mode flag counts only as a standalone option: here "--lsp" is the
+  // VALUE of --checks, so the CLI runs and rejects it as a check name rather
+  // than an LSP server starting and waiting on stdin.
+  it('a mode flag given as an option value does not switch modes', () => {
+    const { stderr, exitCode } = run(['--checks', '--lsp']);
+    expect(exitCode).toBe(2);
+    expect(stderr).toContain('unknown check name in --checks: --lsp');
+
+    const mcp = run(['--ignore', '--mcp-server']);
+    expect(mcp.exitCode).toBe(2);
+    expect(mcp.stderr).toContain('unknown check name in --ignore: --mcp-server');
+  });
+
+  it('serve --help prints usage instead of starting the server', () => {
+    const { stdout, exitCode } = run(['serve', '--help']);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain('Usage: ctxlint serve');
+    expect(stdout).toContain('ctxlint ./serve');
+  });
+
+  // Matches `--mcp-server --version`: the version, not the usage text.
+  it('serve -V / --version prints the version', () => {
+    for (const flag of ['-V', '--version']) {
+      const { stdout, exitCode } = run(['serve', flag]);
+      expect(exitCode).toBe(0);
+      expect(stdout.trim()).toBe(VERSION);
+    }
+  });
+
+  it('--help alongside a server flag prints the CLI help', () => {
+    for (const flag of ['--lsp', '--mcp-server']) {
+      const { stdout, exitCode } = run([flag, '--help']);
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain('Usage: ctxlint');
+      expect(stdout).toContain('--strict');
+    }
+  });
+
+  // index.ts keeps its own list of value-taking options (it routes before
+  // commander loads). Every `--x <value>` option --help shows must be on it,
+  // or `--that-option --lsp` would start the LSP server again.
+  it("index.ts's value-option list matches the CLI's value-taking options", () => {
+    const { stdout } = run(['--help']);
+    const fromHelp = [...stdout.matchAll(/^ {2}(--[a-z-]+) <[a-z]+>/gm)].map((m) => m[1]).sort();
+    const source = fs.readFileSync(path.resolve(__dirname, '../index.ts'), 'utf-8');
+    const list = source.match(/const VALUE_OPTIONS = new Set\(\[([^\]]*)\]\)/)?.[1];
+    expect(list).toBeDefined();
+    const fromIndex = [...list!.matchAll(/'(--[a-z-]+)'/g)].map((m) => m[1]).sort();
+    expect(fromHelp.length).toBeGreaterThan(0);
+    expect(fromIndex).toEqual(fromHelp);
+  });
+});
+
+describe('CLI --watch', () => {
+  // Spawned (not execFileSync): watch mode never exits on its own.
+  function startWatch(args: string[]) {
+    const child = spawn('node', [CLI, ...args], { stdio: 'pipe' });
+    const out = { stdout: '', stderr: '', exited: false as boolean, code: null as number | null };
+    child.stdout.on('data', (d: Buffer) => (out.stdout += d.toString()));
+    child.stderr.on('data', (d: Buffer) => (out.stderr += d.toString()));
+    child.on('exit', (code) => {
+      out.exited = true;
+      out.code = code;
+    });
+    return { child, out };
+  }
+
+  async function until(pred: () => boolean, what: string, ms = 30000): Promise<void> {
+    const deadline = Date.now() + ms;
+    while (!pred()) {
+      if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+
+  // With no context files the run printed the JSON twice, then the watch
+  // banner on stdout, then exited 0 because no file watcher could be opened.
+  // It must print one document, keep the banner off stdout, stay alive, and
+  // pick up a context file created later -- here a nested one the old
+  // hand-kept list of root files could never have seen.
+  it('with no context files: one JSON document, banner on stderr, stays alive, sees new nested files', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-watch-'));
+    const { child, out } = startWatch([dir, '--watch', '--format', 'json']);
+    try {
+      await until(() => out.stderr.includes('Watching for changes') || out.exited, 'banner');
+      expect(out.exited).toBe(false);
+      expect(out.stdout).not.toContain('Watching for changes');
+      expect(JSON.parse(out.stdout).files).toEqual([]);
+
+      // Let the watcher settle before the first write so the event is not lost.
+      await new Promise((r) => setTimeout(r, 1000));
+      const before = out.stdout.length;
+      fs.mkdirSync(path.join(dir, 'pkg'));
+      fs.writeFileSync(path.join(dir, 'pkg', 'CLAUDE.md'), '# Nested\n');
+      await until(() => {
+        const tail = out.stdout.slice(before);
+        return tail.includes('pkg/CLAUDE.md') && tail.trimEnd().endsWith('}');
+      }, 'rerun output');
+      const rerun = JSON.parse(out.stdout.slice(before));
+      expect(rerun.files.map((f: { path: string }) => f.path)).toEqual(['pkg/CLAUDE.md']);
+      expect(out.exited).toBe(false);
+    } finally {
+      if (!out.exited) {
+        const exited = new Promise((r) => child.once('exit', r));
+        child.kill();
+        await exited;
+      }
+      // Windows can hold the just-released watch handle briefly.
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
+  }, 90000);
+
+  // The scanner never returns .claude/settings.json or workflow files, but
+  // hook-coverage and ci-coverage read them: editing one must re-lint.
+  it('re-lints when .claude/settings.json or a workflow changes', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-watch-'));
+    fs.writeFileSync(path.join(dir, 'CLAUDE.md'), '# Project\n');
+    fs.mkdirSync(path.join(dir, '.claude'));
+    fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), '{"hooks":{}}\n');
+    const { child, out } = startWatch([dir, '--watch', '--format', 'json']);
+    const docs = () => out.stdout.split(/\n(?=\{)/).filter((s) => s.trim()).length;
+    try {
+      await until(() => out.stderr.includes('Watching for changes') || out.exited, 'banner');
+      expect(out.exited).toBe(false);
+      expect(docs()).toBe(1);
+
+      await new Promise((r) => setTimeout(r, 1000));
+      const before = out.stdout.length;
+      fs.writeFileSync(
+        path.join(dir, '.claude', 'settings.json'),
+        JSON.stringify({
+          hooks: {
+            PreToolUse: [{ hooks: [{ type: 'command', command: 'bash .claude/hooks/gone.sh' }] }],
+          },
+        }),
+      );
+      await until(() => {
+        const tail = out.stdout.slice(before);
+        return tail.includes('dead-hook') && tail.trimEnd().endsWith('}');
+      }, 'settings.json rerun');
+      expect(JSON.parse(out.stdout.slice(before)).files.length).toBeGreaterThan(0);
+
+      const beforeWf = out.stdout.length;
+      fs.mkdirSync(path.join(dir, '.github', 'workflows'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, '.github', 'workflows', 'release.yml'),
+        'on: push\njobs:\n  publish:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm publish\n',
+      );
+      await until(() => {
+        const tail = out.stdout.slice(beforeWf);
+        return tail.trimEnd().endsWith('}') && tail.includes('"files"');
+      }, 'workflow rerun');
+      expect(out.exited).toBe(false);
+    } finally {
+      if (!out.exited) {
+        const exited = new Promise((r) => child.once('exit', r));
+        child.kill();
+        await exited;
+      }
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
+  }, 120000);
 });
 
 describe('CLI --mcp flag (config linting, not server)', () => {
@@ -86,8 +263,11 @@ describe('CLI --mcp flag (config linting, not server)', () => {
       '--mcp',
     ]);
     const parsed = JSON.parse(stdout);
-    // Should have files (MCP configs found as .mcp.json)
-    expect(parsed.files).toBeDefined();
+    // The project's .mcp.json is linted, and by the MCP checks: --mcp adds
+    // them on top of the context checks rather than being ignored.
+    const mcpFile = parsed.files.find((f: { path: string }) => f.path === '.mcp.json');
+    expect(mcpFile).toBeDefined();
+    expect(mcpFile.issues.map((i: { check: string }) => i.check)).toContain('mcp-security');
   });
 });
 
@@ -97,10 +277,19 @@ describe('CLI help and version', () => {
     expect(stdout).toContain('--mcp-server');
     expect(stdout).toContain('--mcp-only');
     expect(stdout).toContain('--mcp-global');
-    expect(stdout).toContain('--mcp');
+    // Its own row: a bare toContain('--mcp') is satisfied by --mcp-server.
+    expect(stdout).toMatch(/^ {2}--mcp {2,}\S/m);
     expect(stdout).toContain('--strict');
     expect(stdout).toContain('--fix');
     expect(stdout).toContain('--format');
+  });
+
+  // A default that commander also renders printed "(default: 2) (default: "2")".
+  it('--help prints each default once', () => {
+    const { stdout } = run(['--help']);
+    const depthRow = stdout.split('\n').find((l) => l.trimStart().startsWith('--depth'));
+    expect(depthRow).toBeDefined();
+    expect(depthRow!.match(/\(default:/g)).toHaveLength(1);
   });
 
   it('--help description mentions MCP', () => {
@@ -171,7 +360,7 @@ describe('package.json consistency', () => {
       .readFileSync(path.resolve(__dirname, '../../.pre-commit-hooks.yaml'), 'utf-8')
       .split(/\r?\n/);
     expect(hooks.filter((l) => l.trim().startsWith('entry:')).map((l) => l.trim())).toEqual([
-      `entry: npx @yawlabs/ctxlint@${PKG.version} --strict`,
+      `entry: npx --yes @yawlabs/ctxlint@${PKG.version} --strict`,
     ]);
 
     const readme = fs

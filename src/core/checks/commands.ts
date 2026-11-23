@@ -1,14 +1,22 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parse as parseJsonc } from 'jsonc-parser';
-import levenshteinPkg from 'fast-levenshtein';
-import { loadPackageJson, stripBom } from '../../utils/fs.js';
-import { analyzeMaskedExitStatus, pipefailInScope } from './exit-status.js';
+import { fileExists, loadPackageJson, stripBom } from '../../utils/fs.js';
+import type { PackageJson } from '../../utils/fs.js';
+import { closestMatch } from './closest-match.js';
+import {
+  analyzeMaskedExitStatus,
+  fenceBlocks,
+  NPM_LIFECYCLE_SHORTHANDS,
+  pipefailInScope,
+} from './exit-status.js';
+import type { FenceBlock, MaskedExitStatus } from './exit-status.js';
 import { findBinInvocations, knownSubcommands, ownedBins } from './cli-subcommands.js';
 import type { BinInvocation } from './cli-subcommands.js';
 import {
   findGradleBuildRoot,
   gradleProjectRefs,
+  gradleUsesWrapper,
   readGradleProjectSet,
   unresolvedGradleProject,
 } from './gradle-projects.js';
@@ -17,6 +25,7 @@ import {
   mavenBaseDirs,
   mavenSelectors,
   readMavenReactor,
+  realPath,
   selectorMatches,
 } from './maven-modules.js';
 import type { ReactorProject } from './maven-modules.js';
@@ -29,14 +38,13 @@ import {
 } from '../../utils/markdown.js';
 import type { ParsedContextFile, LintIssue, CommandReference } from '../types.js';
 
-const levenshtein = levenshteinPkg.get;
-
 // Match npm/pnpm/yarn/bun script invocations. `run` is required for npm
-// (bare `npm install` is never a script reference), optional for
-// pnpm/yarn/bun. Groups: [1] the non-npm manager, [2] an explicit `run`,
-// [3] the candidate script name — [1] and [2] let scriptNameFromMatch
-// exempt builtin subcommands (`pnpm install`, `yarn add`, ...) from
-// script-name validation.
+// (bare `npm install` is never a script reference; npm's four lifecycle
+// shorthands are NPM_SHORTHAND_PATTERN's job), optional for pnpm/yarn/bun.
+// Groups: [1] the non-npm manager, [2] an explicit `run`, [3] the candidate
+// script name — [1] and [2] let scriptNameFromMatch exempt builtin
+// subcommands (`pnpm install`, `yarn add`, ...) from script-name validation,
+// and let the caller fall back to a bin or file for an implicit `run`.
 const NPM_SCRIPT_PATTERN = /^(?:npm\s+run|(pnpm|yarn|bun)(?:\s+(run))?)\s+(\S+)/;
 const MAKE_PATTERN = /^make\s+\S/;
 
@@ -122,19 +130,56 @@ function isManagerBuiltin(manager: string, sub: string): boolean {
 }
 
 /**
+ * A script name that is documentation shorthand, not a script: a marked
+ * placeholder (`npm run <script>`, `pnpm {name}`, `yarn $SCRIPT`, `...`) or a
+ * generic stand-in name (`npm run script-name`). Same idea as the Gradle and
+ * Maven placeholder filters.
+ */
+const SCRIPT_PLACEHOLDER = /[<>{}$*%[\]]|\.\.\.|^(?:script|task|command)(?:[-_]?name)?$/i;
+
+/**
  * Resolve the script name from an NPM_SCRIPT_PATTERN match, or null when the
  * captured token is not actually a script name: a flag (`pnpm -r build` —
- * the real script is unknowable without parsing pnpm's flag table), a shared
- * package-manager builtin invoked without an explicit `run`, or a
- * manager-specific builtin (`bun test`).
+ * the real script is unknowable without parsing pnpm's flag table), a
+ * placeholder, a shared package-manager builtin invoked without an explicit
+ * `run`, or a manager-specific builtin (`bun test`).
  */
 function scriptNameFromMatch(match: RegExpMatchArray): string | null {
   const [, manager, explicitRun, name] = match;
   if (name.startsWith('-')) return null;
+  if (SCRIPT_PLACEHOLDER.test(name)) return null;
   if (manager && !explicitRun && PM_BUILTIN_SUBCOMMANDS.has(name)) return null;
   if (manager && !explicitRun && isManagerBuiltin(manager, name)) return null;
   return name;
 }
+
+/**
+ * `npm <word>` for the words docs commonly use as if they were shorthands.
+ * npm runs a script without `run` ONLY for its lifecycle commands (test, with
+ * its `t`/`tst` aliases, start, stop, restart); every other word here is an
+ * unknown npm command whether or not a script of that name exists. pnpm, yarn
+ * and bun take an implicit `run` for any name and are handled by
+ * NPM_SCRIPT_PATTERN, so they never reach this pattern. The lookahead keeps
+ * `npm test-unit` from reading as `npm test`. The lifecycle half comes from
+ * NPM_LIFECYCLE_SHORTHANDS (exit-status.ts), which exit-status-masked uses to
+ * resolve the same `npm <word>` to its script, so the two cannot drift.
+ */
+const NPM_SHORTHAND_PATTERN = new RegExp(
+  `^npm\\s+(${[
+    ...Object.keys(NPM_LIFECYCLE_SHORTHANDS),
+    'build',
+    'dev',
+    'lint',
+    'format',
+    'check',
+    'typecheck',
+    'type-check',
+    'clean',
+    'serve',
+    'preview',
+    'e2e',
+  ].join('|')})(?=\\s|$)`,
+);
 
 /**
  * Extract the package name from an `npx` command. Walks past leading flags
@@ -164,38 +209,135 @@ function extractNpxPackage(cmd: string): string | null {
   return null;
 }
 
-// Patterns whose validation branch is gated on a parsed package.json. When
-// package.json is missing/unparseable every one of these branches silently
-// no-ops, so we track whether any reference WOULD have been checked and emit a
-// single info diagnostic (asymmetric otherwise with the make-target branch,
-// which has its own no-makefile error).
-const PKG_DEPENDENT_TOOL_PATTERN = /^(vitest|jest|pytest|mocha|eslint|prettier|tsc)\b/;
+// Node tools run bare (`vitest run`, `tsc --noEmit`), checked for availability
+// against the dependencies. Node-only: a Python tool such as pytest must not
+// be here, or a Python repo is told its package.json is missing. Like the
+// script/shorthand/npx branches, this one is gated on a parsed package.json;
+// when there is none every such branch silently no-ops, so we track whether
+// any reference WOULD have been checked and emit a single info diagnostic
+// (asymmetric otherwise with the make-target branch, which has its own
+// no-makefile error).
+const PKG_DEPENDENT_TOOL_PATTERN = /^(vitest|jest|mocha|eslint|prettier|tsc)\b/;
 
-// Bin names whose npm package is named differently, consulted before the
-// dependency lookup in the tool-availability branch. Without it `tsc` is
-// looked up verbatim in deps and any project linted without node_modules
-// (fresh checkout, CI) gets a false tool-not-found despite typescript being
-// in devDependencies. `tsc` -> `typescript` is the only mapping among
-// PKG_DEPENDENT_TOOL_PATTERN's tools (and the npx-branch comment's named
-// mappings) where bin and package diverge — vitest/jest/mocha/eslint/prettier
-// are identity. The node_modules/.bin fallback keeps using the BIN name.
-const BIN_TO_PACKAGE: Record<string, string> = {
-  tsc: 'typescript',
+// Bin names whose npm package is named differently, consulted by
+// resolvesAsBin. Without it `tsc` is looked up verbatim in deps and any
+// project linted without node_modules (fresh checkout, CI) gets a false
+// tool-not-found / npx-not-in-deps despite typescript being in
+// devDependencies. Covers the bins docs commonly invoke whose package name
+// diverges; identity mappings (vitest, eslint, prettier, ...) need no entry.
+// The node_modules/.bin fallback keeps using the BIN name.
+const BIN_TO_PACKAGE: Record<string, string[]> = {
+  tsc: ['typescript'],
+  tsserver: ['typescript'],
+  biome: ['@biomejs/biome'],
+  playwright: ['@playwright/test'],
+  netlify: ['netlify-cli'],
+  changeset: ['@changesets/cli'],
 };
-const PKG_SHORTHAND_PATTERN =
-  /^(npm|pnpm|yarn|bun)\s+(test|start|build|dev|lint|format|check|typecheck|clean|serve|preview|e2e)\b/;
 
 function wouldNeedPackageJson(cmd: string): boolean {
-  // Builtin subcommands / flag-first invocations are never validated, so
-  // they must not trigger the package-json-missing info either.
+  // Builtin subcommands / flag-first / placeholder invocations are never
+  // validated, so they must not trigger the package-json-missing info either.
   const scriptMatch = cmd.match(NPM_SCRIPT_PATTERN);
-  if (scriptMatch && scriptNameFromMatch(scriptMatch) !== null) return true;
-  const shorthandMatch = cmd.match(PKG_SHORTHAND_PATTERN);
-  // A manager-builtin shorthand (`bun test`) is never script-validated, so it
-  // would not have been checked even with a package.json — don't surface the
-  // skip.
-  if (shorthandMatch && !isManagerBuiltin(shorthandMatch[1], shorthandMatch[2])) return true;
-  return /^npx\b/.test(cmd) || PKG_DEPENDENT_TOOL_PATTERN.test(cmd);
+  if (scriptMatch) return scriptNameFromMatch(scriptMatch) !== null;
+  return (
+    NPM_SHORTHAND_PATTERN.test(cmd) || /^npx\b/.test(cmd) || PKG_DEPENDENT_TOOL_PATTERN.test(cmd)
+  );
+}
+
+/**
+ * The package.json files and directories a context file's Node commands
+ * resolve against: every directory from the context file's own up to the
+ * project root (nearest first), and the parseable package.json files among
+ * them. A nested package (`packages/web/CLAUDE.md`) therefore gets its own
+ * scripts, while dependencies hoisted to a workspace root still count.
+ */
+interface PackageScope {
+  dirs: string[];
+  manifests: Array<{ dir: string; pkg: PackageJson }>;
+}
+
+/**
+ * Directories from the context file's up to `projectRoot`, nearest first. A
+ * context file outside the project root yields just the root.
+ */
+function dirsUpToRoot(contextFile: string, projectRoot: string): string[] {
+  const root = path.resolve(projectRoot);
+  let dir = path.dirname(path.resolve(contextFile));
+  const outside = (d: string): boolean => {
+    const rel = path.relative(root, d);
+    return rel.startsWith('..') || path.isAbsolute(rel);
+  };
+  if (outside(dir)) return [root];
+  const dirs: string[] = [];
+  for (;;) {
+    dirs.push(dir);
+    if (path.relative(root, dir) === '') return dirs;
+    const parent = path.dirname(dir);
+    if (parent === dir) return dirs;
+    dir = parent;
+  }
+}
+
+function packageScope(contextFile: string, projectRoot: string): PackageScope {
+  const dirs = dirsUpToRoot(contextFile, projectRoot);
+  const manifests: PackageScope['manifests'] = [];
+  for (const dir of dirs) {
+    const pkg = loadPackageJson(dir);
+    if (pkg) manifests.push({ dir, pkg });
+  }
+  return { dirs, manifests };
+}
+
+function hasOwnKey(record: Record<string, string> | undefined, key: string): boolean {
+  return typeof record === 'object' && record !== null && Object.hasOwn(record, key);
+}
+
+function dependsOn(pkg: PackageJson, name: string): boolean {
+  return [
+    pkg.dependencies,
+    pkg.devDependencies,
+    pkg.peerDependencies,
+    pkg.optionalDependencies,
+  ].some((deps) => hasOwnKey(deps, name));
+}
+
+/** Whether any package.json in scope defines `name` as a script. */
+function scriptDefined(scope: PackageScope, name: string): boolean {
+  return scope.manifests.some((m) => hasOwnKey(m.pkg.scripts, name));
+}
+
+/** `prettier@3` -> `prettier`, `@scope/pkg@1.2.0` -> `@scope/pkg`. */
+function stripVersion(spec: string): string {
+  const at = spec.indexOf('@', 1);
+  return at > 0 ? spec.slice(0, at) : spec;
+}
+
+/**
+ * Whether `spec` (a bin or package name, optionally `@version`ed) is
+ * something the project can run: a dependency (directly, or through
+ * BIN_TO_PACKAGE for a bin whose package is named differently), the
+ * project's own package or one of its own bins, or a bin in a
+ * node_modules/.bin at or above the context file. The one resolver behind
+ * npx-not-in-deps, tool-not-found and the pnpm/yarn/bun bin fallback.
+ */
+function resolvesAsBin(spec: string, scope: PackageScope): boolean {
+  const name = stripVersion(spec);
+  const scoped = name.startsWith('@');
+  const binName = name.slice(name.lastIndexOf('/') + 1);
+  for (const { pkg } of scope.manifests) {
+    if (pkg.name === name || dependsOn(pkg, name)) return true;
+    if (scoped) continue;
+    const aliases = Object.hasOwn(BIN_TO_PACKAGE, name) ? BIN_TO_PACKAGE[name] : [];
+    if (aliases.some((p) => dependsOn(pkg, p))) return true;
+    if (ownedBins(pkg).some((b) => b.name === name)) return true;
+  }
+  return scope.dirs.some((d) => fileExists(path.join(d, 'node_modules', '.bin', binName)));
+}
+
+/** `bun src/main.ts`, `yarn ./scripts/x.js`: a file, which the manager runs directly. */
+function looksLikeFilePath(token: string): boolean {
+  return /[\\/]/.test(token) || /\.(?:[cm]?[jt]sx?|json)$/.test(token);
 }
 
 /**
@@ -266,11 +408,10 @@ function isDeniedCommand(cmd: string, deniedPrefixes: string[]): boolean {
  * the phrase anyway. Matching is case-insensitive because prohibition prose
  * is ("Do not run", "don't use", "NEVER run") -- over-suppressing a
  * warning-severity nudge is the cheap direction, per the module's
- * false-negative-over-false-positive posture. Known accepted false negative
- * under that posture: "Don't forget to run `npx x`" suppresses even though
- * the command is recommended -- the negation binds to "forget", not the
- * command, and telling those apart needs verb analysis this check
- * deliberately avoids. Complements isDeniedCommand above: that credits an
+ * false-negative-over-false-positive posture. A negation turned back into a
+ * requirement does NOT suppress: "Don't forget to run `npx x`", "Never push
+ * without running `npx x`" (see negationTurnedRequirement, shared with the
+ * list-lead path). Complements isDeniedCommand above: that credits an
  * explicit permissions.deny entry, this covers repos that write the
  * prohibition in prose without a matching deny rule.
  */
@@ -345,12 +486,90 @@ function isProhibitedAt(rawLine: string, offset: number): boolean {
   const prefix = masked.slice(0, Math.max(0, offset));
   // Only the clause the command sits in can govern it.
   const clause = narrowAtContrastComma(prefix.split(CLAUSE_TERMINATOR).pop() ?? '');
-  return PROHIBITION_TOKEN.test(clause);
+  return PROHIBITION_TOKEN.test(clause) && !negationTurnedRequirement(clause);
+}
+
+const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s+/;
+const HEADING = /^\s{0,3}#{1,6}\s/;
+
+/**
+ * A prohibition can also govern a whole LIST from the line that introduces it:
+ *
+ *     ## Never run these
+ *
+ *     - `npx netlify deploy`
+ *     - `npm run release`
+ *
+ * True when line `lineNo` (1-based) is a list item and the nearest line above
+ * the list -- skipping blank lines, other items and indented continuations --
+ * is a heading or a `...:` intro line whose final clause carries a
+ * prohibition (same clause rules as the same-line check). A paragraph under a
+ * prohibition heading is NOT covered: only list items read as the forbidden
+ * set, and prose ("Instead use `npx y`") is often the recommended way out.
+ *
+ * A lead whose negation is turned back into a requirement does NOT suppress:
+ * "Never push without running:", "Don't forget to run:", "Do not merge until
+ * you run:" all REQUIRE the list. The test is the text after the lead's last
+ * prohibition token: an omission verb right after it (forget, skip), or a
+ * without/until/unless condition that itself runs something, means the
+ * negation governs something else (pushing, forgetting), not the commands. A
+ * plain condition ("Never run these without approval:") still prohibits.
+ * isProhibitedAt applies that test to the lead's final clause, the same rule
+ * the same-line check uses ("Don't forget to run `npx x`" flags too).
+ */
+function isProhibitedByListLead(lines: string[], lineNo: number): boolean {
+  if (!LIST_ITEM.test(lines[lineNo - 1] ?? '')) return false;
+  for (let i = lineNo - 2; i >= 0; i--) {
+    const line = lines[i];
+    if (line.trim() === '' || LIST_ITEM.test(line) || /^\s+\S/.test(line)) continue;
+    if (!HEADING.test(line) && !line.trimEnd().endsWith(':')) return false;
+    return isProhibitedAt(line, line.length);
+  }
+  return false;
+}
+
+/**
+ * Verbs that, right after a never/don't/avoid, negate the negation itself:
+ * "don't forget Y", "never skip Y", "do not fail to Y" all require Y.
+ */
+const NEGATED_OMISSION =
+  /^\s*(?:forget(?:ting)?|skip(?:ping)?|omit(?:ting)?|neglect(?:ing)?|fail(?:ing)?\s+to)\b/i;
+
+/**
+ * A condition after the negation: "never X without Y", "do not X until Y".
+ * It is a requirement on the list only when the condition itself runs
+ * something ("without running:", "until you run:"); "Never run these without
+ * approval:" or "Don't run these until main is green:" keep the commands as
+ * the forbidden set.
+ */
+const CONDITION = /\b(?:without|until|unless)\b/i;
+const EXECUTION_VERB =
+  /\b(?:run(?:ning)?|us(?:e|ing)|call(?:ing)?|invok(?:e|ing)|execut(?:e|ing)|execs?)\b/i;
+
+/**
+ * True when the text after `line`'s last prohibition token reads as a
+ * requirement. `line` may already be code-span masked (isProhibitedAt passes
+ * its masked clause); masking again is a no-op.
+ */
+function negationTurnedRequirement(line: string): boolean {
+  const masked = maskCodeSpans(line, inlineCodeSpans(line));
+  let end = -1;
+  for (const m of masked.matchAll(new RegExp(PROHIBITION_TOKEN.source, 'gi'))) {
+    end = (m.index ?? 0) + m[0].length;
+  }
+  if (end < 0) return false;
+  const tail = masked.slice(end);
+  if (NEGATED_OMISSION.test(tail)) return true;
+  const cond = CONDITION.exec(tail);
+  return cond !== null && EXECUTION_VERB.test(tail.slice(cond.index + cond[0].length));
 }
 
 /** `ref.column` is 1-based and points at the first char of the command. */
 function isProhibitedRef(lines: string[], ref: CommandReference): boolean {
-  return isProhibitedAt(lines[ref.line - 1] ?? '', ref.column - 1);
+  return (
+    isProhibitedAt(lines[ref.line - 1] ?? '', ref.column - 1) ||
+    isProhibitedByListLead(lines, ref.line)
+  );
 }
 
 /**
@@ -359,6 +578,7 @@ function isProhibitedRef(lines: string[], ref: CommandReference): boolean {
  * miss yields `false` -- never suppress on a guess.
  */
 function isProhibitedInvocation(lines: string[], inv: BinInvocation): boolean {
+  if (isProhibitedByListLead(lines, inv.line)) return true;
   const line = lines[inv.line - 1] ?? '';
   // findBinInvocations builds its non-fence candidates from inline code spans,
   // so prefer the span whose content IS this invocation -- an exact identity,
@@ -371,7 +591,7 @@ function isProhibitedInvocation(lines: string[], inv: BinInvocation): boolean {
   //     -> for the second, AFFIRMATIVE invocation it matched inside the FIRST
   //        span (the shorter command is a prefix of the longer one), inheriting
   //        that span's prohibition and suppressing a finding that should fire.
-  // Fenced candidates have no prose prefix, and the `$`/`>` prompt form is a
+  // Fenced candidates have no prose prefix, and the `$ ` prompt form is a
   // whole-line candidate; both fall through to the search, where a miss
   // declines to suppress rather than guessing.
   for (const span of inlineCodeSpans(line)) {
@@ -386,8 +606,15 @@ export async function checkCommands(
   projectRoot: string,
 ): Promise<LintIssue[]> {
   const issues: LintIssue[] = [];
-  const pkgJson = loadPackageJson(projectRoot);
-  const makefile = loadMakefile(projectRoot);
+  // Script, npx and tool references resolve against the nearest package.json
+  // at or above the context file (see PackageScope); `pkgJson` is that nearest
+  // one, null when none in scope parses.
+  const scope = packageScope(file.filePath, projectRoot);
+  const pkgJson = scope.manifests[0]?.pkg ?? null;
+  const makefiles = scope.dirs.flatMap((d) => {
+    const m = loadMakefile(d);
+    return m ? [m] : [];
+  });
   const deniedPrefixes = loadDeniedCommandPrefixes(projectRoot);
   const contentLines = file.content.split('\n');
   // Commands written inside an HTML comment are commentary ABOUT a command,
@@ -436,7 +663,16 @@ export async function checkCommands(
     }
   }
 
-  issues.push(...checkUnknownSubcommand(file, projectRoot, pkgJson, deniedPrefixes, contentLines));
+  // The project's OWN binaries are the root package's.
+  issues.push(
+    ...checkUnknownSubcommand(
+      file,
+      projectRoot,
+      loadPackageJson(projectRoot),
+      deniedPrefixes,
+      contentLines,
+    ),
+  );
 
   const jvmCache: JvmBuildCache = { gradle: new Map(), maven: new Map() };
 
@@ -451,7 +687,9 @@ export async function checkCommands(
     // references and every one of those branches short-circuits the loop.
     // A finding here is about the command's SHAPE, not its resolvability, so
     // the two are independent and may both fire on one line.
-    const masked = analyzeMaskedExitStatus(cmd, pkgJson?.scripts);
+    const masked =
+      analyzeMaskedExitStatus(cmd, pkgJson?.scripts) ??
+      maskedByNextLine(contentLines, ref, pkgJson?.scripts);
     if (masked && !pipefailInScope(file.content, ref.line)) {
       const why =
         masked.kind === 'success-claim'
@@ -497,81 +735,75 @@ export async function checkCommands(
       continue;
     }
 
-    // Check npm/pnpm/yarn script references
+    // Scripts and make targets resolve in the directory the command runs in,
+    // which a `cd` earlier in the same snippet moves somewhere unknown.
+    const cdEarlier = (): boolean => cdEarlierInFence(file.content, ref.line);
+
+    // npm/pnpm/yarn/bun script references
     const scriptMatch = cmd.match(NPM_SCRIPT_PATTERN);
-    if (scriptMatch && pkgJson) {
+    if (scriptMatch) {
+      if (!pkgJson || cdEarlier()) continue;
       const scriptName = scriptNameFromMatch(scriptMatch);
-      if (scriptName && pkgJson.scripts && !(scriptName in pkgJson.scripts)) {
-        const available = Object.keys(pkgJson.scripts).join(', ');
+      if (scriptName === null || scriptDefined(scope, scriptName)) continue;
+      // Without an explicit `run`, pnpm/yarn/bun fall back to a dependency's
+      // bin (`pnpm vitest run`) or a file (`bun src/main.ts`) when no script
+      // has the name.
+      const [, manager, explicitRun] = scriptMatch;
+      if (manager && !explicitRun) {
+        if (looksLikeFilePath(scriptName) || resolvesAsBin(scriptName, scope)) continue;
+      }
+      issues.push(missingScript(cmd, scriptName, pkgJson, ref.line));
+      continue;
+    }
+
+    // npm without `run`: only the lifecycle commands run a script.
+    const shorthandMatch = cmd.match(NPM_SHORTHAND_PATTERN);
+    if (shorthandMatch) {
+      if (!pkgJson || cdEarlier()) continue;
+      const word = shorthandMatch[1];
+      const script = Object.hasOwn(NPM_LIFECYCLE_SHORTHANDS, word)
+        ? NPM_LIFECYCLE_SHORTHANDS[word]
+        : undefined;
+      if (!script) {
         issues.push({
           severity: 'error',
           check: 'commands',
           ruleId: 'commands/script-not-found',
           line: ref.line,
-          message: `"${cmd}" — script "${scriptName}" not found in package.json`,
-          suggestion: available ? `Available scripts: ${available}` : undefined,
+          message: `"${cmd}" — npm has no "${word}" shorthand; scripts other than test/start/stop/restart need \`npm run\``,
+          suggestion: `Use "npm run ${word}"`,
         });
+        continue;
+      }
+      if (!npmLifecycleResolves(scope, script)) {
+        issues.push(missingScript(cmd, script, pkgJson, ref.line));
       }
       continue;
     }
 
-    // Check shorthand npm/pnpm/yarn/bun commands that map to scripts
-    const shorthandMatch = cmd.match(PKG_SHORTHAND_PATTERN);
-    if (shorthandMatch && pkgJson) {
-      const manager = shorthandMatch[1];
-      const scriptName = shorthandMatch[2];
-      if (isManagerBuiltin(manager, scriptName)) continue; // e.g. `bun test`
-      if (pkgJson.scripts && !(scriptName in pkgJson.scripts)) {
-        issues.push({
-          severity: 'error',
-          check: 'commands',
-          ruleId: 'commands/script-not-found',
-          line: ref.line,
-          message: `"${cmd}" — script "${scriptName}" not found in package.json`,
-        });
-      }
+    // npx package references. Denied/prohibited commands were already skipped
+    // by the shared gate above the dispatch.
+    if (/^npx\b/.test(cmd)) {
+      const spec = pkgJson ? extractNpxPackage(cmd) : null;
+      if (!spec || resolvesAsBin(spec, scope)) continue;
+      issues.push({
+        severity: 'warning',
+        check: 'commands',
+        ruleId: 'commands/npx-not-in-deps',
+        line: ref.line,
+        message: `"${cmd}" — "${stripVersion(spec)}" not found in dependencies`,
+        suggestion:
+          'If this is a global tool, consider adding it to devDependencies for reproducibility',
+      });
       continue;
     }
 
-    // Check npx package references
-    if (/^npx\b/.test(cmd) && pkgJson) {
-      const pkgName = extractNpxPackage(cmd);
-      if (!pkgName) continue;
-
-      const allDeps = {
-        ...pkgJson.dependencies,
-        ...pkgJson.devDependencies,
-        ...pkgJson.peerDependencies,
-        ...pkgJson.optionalDependencies,
-      };
-
-      // Normalize: npx packages may be invoked by bin name which differs from package name
-      // Common mappings: tsc -> typescript, prettier -> prettier, etc.
-      // Only warn if the package isn't in deps AND isn't in node_modules/.bin
-      if (!(pkgName in allDeps)) {
-        // Denied/prohibited commands were already skipped by the shared gate
-        // above the dispatch.
-        const binPath = path.join(projectRoot, 'node_modules', '.bin', pkgName);
-        try {
-          fs.accessSync(binPath);
-        } catch {
-          issues.push({
-            severity: 'warning',
-            check: 'commands',
-            ruleId: 'commands/npx-not-in-deps',
-            line: ref.line,
-            message: `"${cmd}" — "${pkgName}" not found in dependencies`,
-            suggestion:
-              'If this is a global tool, consider adding it to devDependencies for reproducibility',
-          });
-        }
-      }
-      continue;
-    }
-
-    // Check Makefile targets
+    // Makefile targets
     if (MAKE_PATTERN.test(cmd)) {
-      if (!makefile) {
+      // `-C dir` / `-f file` pick a makefile somewhere else: neither "no
+      // makefile here" nor a target lookup in this one would be about it.
+      if (makeRetargets(cmd) || cdEarlier()) continue;
+      if (makefiles.length === 0) {
         issues.push({
           severity: 'error',
           check: 'commands',
@@ -579,51 +811,99 @@ export async function checkCommands(
           line: ref.line,
           message: `"${cmd}" — no Makefile found in project`,
         });
-      } else {
-        const target = extractMakeTarget(cmd);
-        if (target && !hasMakeTarget(makefile, target)) {
-          issues.push({
-            severity: 'error',
-            check: 'commands',
-            ruleId: 'commands/make-target-not-found',
-            line: ref.line,
-            message: `"${cmd}" — target "${target}" not found in Makefile`,
-          });
-        }
+        continue;
+      }
+      const target = extractMakeTarget(cmd);
+      if (target && !makefiles.some((m) => makefileMayDefine(m.content, target))) {
+        issues.push({
+          severity: 'error',
+          check: 'commands',
+          ruleId: 'commands/make-target-not-found',
+          line: ref.line,
+          message: `"${cmd}" — target "${target}" not found in ${makefiles[0].name}`,
+        });
       }
       continue;
     }
 
-    // Check common tool availability
+    // Common tool availability
     const toolMatch = cmd.match(PKG_DEPENDENT_TOOL_PATTERN);
-    if (toolMatch && pkgJson) {
-      const tool = toolMatch[1];
-      const pkgName = BIN_TO_PACKAGE[tool] ?? tool;
-      const allDeps = {
-        ...pkgJson.dependencies,
-        ...pkgJson.devDependencies,
-        ...pkgJson.peerDependencies,
-        ...pkgJson.optionalDependencies,
-      };
-      if (!(pkgName in allDeps)) {
-        // Check node_modules/.bin
-        const binPath = path.join(projectRoot, 'node_modules', '.bin', tool);
-        try {
-          fs.accessSync(binPath);
-        } catch {
-          issues.push({
-            severity: 'warning',
-            check: 'commands',
-            ruleId: 'commands/tool-not-found',
-            line: ref.line,
-            message: `"${cmd}" — "${tool}" not found in dependencies or node_modules/.bin`,
-          });
-        }
-      }
+    if (toolMatch && pkgJson && !resolvesAsBin(toolMatch[1], scope)) {
+      issues.push({
+        severity: 'warning',
+        check: 'commands',
+        ruleId: 'commands/tool-not-found',
+        line: ref.line,
+        message: `"${cmd}" — "${toolMatch[1]}" not found in dependencies or node_modules/.bin`,
+      });
     }
   }
 
   return issues;
+}
+
+function missingScript(
+  cmd: string,
+  scriptName: string,
+  pkgJson: PackageJson,
+  line: number,
+): LintIssue {
+  const available = Object.keys(pkgJson.scripts ?? {}).join(', ');
+  return {
+    severity: 'error',
+    check: 'commands',
+    ruleId: 'commands/script-not-found',
+    line,
+    message: `"${cmd}" — script "${scriptName}" not found in package.json`,
+    suggestion: available ? `Available scripts: ${available}` : undefined,
+  };
+}
+
+/**
+ * Whether an npm lifecycle command has something to run. npm's own defaults
+ * apply when the script is absent: `npm start` runs `node server.js` if that
+ * file exists, and `npm restart` runs stop + start, so it resolves whenever
+ * `start` does.
+ */
+function npmLifecycleResolves(scope: PackageScope, script: string): boolean {
+  if (scriptDefined(scope, script)) return true;
+  const startResolves = (): boolean =>
+    scriptDefined(scope, 'start') ||
+    scope.manifests.some((m) => fileExists(path.join(m.dir, 'server.js')));
+  if (script === 'start') return startResolves();
+  if (script === 'restart') return startResolves();
+  return false;
+}
+
+/**
+ * commands/exit-status-masked across two lines of one fence: the pipeline on
+ * this line and the `$?` read on the next,
+ *
+ *     npx tsc --noEmit | head -20
+ *     echo "exit=$?"
+ *
+ * which is the same defect as `...| head -20; echo "exit=$?"` on one line. Only
+ * the `$?` shape spans lines (a success claim needs `&&`, which a newline is
+ * not), and only when the next line is in the same fence: separate fences and
+ * prose lines are separate shells.
+ */
+function maskedByNextLine(
+  lines: string[],
+  ref: CommandReference,
+  scripts: Record<string, string> | undefined,
+): MaskedExitStatus | null {
+  const idx = ref.line - 1;
+  const block = enclosingFence(lines, idx);
+  if (!block || idx + 1 >= block.close) return null;
+  const nextCmd = lines[idx + 1].trim().replace(/^[$>]\s+/, '');
+  if (!nextCmd) return null;
+  const masked = analyzeMaskedExitStatus(`${ref.value}; ${nextCmd}`, scripts);
+  return masked?.kind === 'status-echo' ? masked : null;
+}
+
+/** The fenced block whose body holds 0-based line `idx`, if any. */
+function enclosingFence(lines: string[], idx: number): FenceBlock | undefined {
+  return fenceBlocks(lines).find((b) => b.open < idx && idx < b.close);
 }
 
 /**
@@ -645,11 +925,26 @@ function checkUnknownSubcommand(
   const bins = ownedBins(pkgJson);
   if (bins.length === 0) return [];
 
-  const invocations = findBinInvocations(file.content, new Set(bins.map((b) => b.name)));
+  // Resolve each bin's dispatch table at most once per file. The scanner needs
+  // the same sets (an unprompted untagged fence is read only on evidence, and a
+  // bareword after an ambiguous flag only when it is known), so it shares the
+  // memo through `knownFor`.
+  const resolved = new Map<string, Set<string> | null>();
+  const knownFor = (name: string): Set<string> | null => {
+    if (!resolved.has(name)) {
+      const bin = bins.find((b) => b.name === name);
+      resolved.set(name, bin ? knownSubcommands(projectRoot, bin.entry) : null);
+    }
+    return resolved.get(name) ?? null;
+  };
+
+  const invocations = findBinInvocations(file.content, new Set(bins.map((b) => b.name)), {
+    packageName: pkgJson?.name,
+    bins,
+    knownFor,
+  });
   if (invocations.length === 0) return [];
 
-  // Resolve each bin's dispatch table at most once per file.
-  const resolved = new Map<string, Set<string> | null>();
   const issues: LintIssue[] = [];
 
   for (const inv of invocations) {
@@ -657,11 +952,7 @@ function checkUnknownSubcommand(
     // cites only to forbid ("NEVER run `ctxlint doctor`") is not a broken doc.
     if (isDeniedCommand(inv.cmd, deniedPrefixes)) continue;
     if (isProhibitedInvocation(contentLines, inv)) continue;
-    if (!resolved.has(inv.bin)) {
-      const bin = bins.find((b) => b.name === inv.bin);
-      resolved.set(inv.bin, bin ? knownSubcommands(projectRoot, bin.entry) : null);
-    }
-    const known = resolved.get(inv.bin);
+    const known = knownFor(inv.bin);
     // null = the dispatch could not be read as a closed set. Silence beats a
     // confident-but-wrong "that subcommand does not exist".
     if (!known || known.size === 0) continue;
@@ -705,7 +996,7 @@ function checkGradleProjects(
   if (refs.length === 0 || cdEarlierInFence(file.content, ref.line)) return [];
 
   // `./gradlew` runs only where the wrapper is; plain `gradle` runs anywhere.
-  const wrapper = !/^gradle(?:\s|$)/.test(ref.value);
+  const wrapper = gradleUsesWrapper(ref.value);
   const buildRoot = findGradleBuildRoot(file.filePath, projectRoot, wrapper);
   if (!buildRoot) return [];
   if (!cache.gradle.has(buildRoot)) cache.gradle.set(buildRoot, readGradleProjectSet(buildRoot));
@@ -777,8 +1068,13 @@ function checkMavenModules(
     if (!selector.includes(':') && bases.every((b) => outside(projectRoot, b.dir, selector))) {
       continue;
     }
+    // Reactor basedirs are real paths (readMavenReactor realpaths every POM);
+    // relativize against the base's real path too, or a root reached through
+    // a symlink or junction (macOS /var -> /private/var) yields `../../private/...`
+    // candidates that never match.
+    const baseReal = realPath(bases[0].dir) ?? bases[0].dir;
     const known = bases[0].reactor.flatMap((p) => [
-      path.relative(bases[0].dir, p.basedir).replace(/\\/g, '/'),
+      path.relative(baseReal, p.basedir).replace(/\\/g, '/'),
       ...(p.artifactId && !p.artifactId.includes('${') ? [`:${p.artifactId}`] : []),
     ]);
     issues.push({
@@ -808,12 +1104,9 @@ function cdEarlierInFence(content: string, line: number): boolean {
   const lines = content.split('\n');
   const idx = line - 1;
   const changesDir = (text: string): boolean => /(?:^|[\s;&|(])(?:cd|pushd)(?:\s|$)/.test(text);
-  let fenceStart = -1;
-  for (let i = 0; i < idx && i < lines.length; i++) {
-    if (/^\s*```/.test(lines[i])) fenceStart = fenceStart < 0 ? i + 1 : -1;
-  }
-  if (fenceStart >= 0) {
-    for (let i = fenceStart; i < idx; i++) if (changesDir(lines[i])) return true;
+  const block = enclosingFence(lines, idx);
+  if (block) {
+    for (let i = block.open + 1; i < idx; i++) if (changesDir(lines[i])) return true;
     return false;
   }
   // Outside a fence, a run of `$`-prompt lines is one shell session too:
@@ -845,34 +1138,59 @@ function mavenConfigRetargets(dir: string): boolean {
 
 /** `Did you mean "x"?` for the nearest candidate within a small edit distance. */
 function closestSuggestion(target: string, candidates: string[]): string | undefined {
-  let best: string | undefined;
-  let bestDist = Infinity;
-  for (const c of candidates) {
-    const d = levenshtein(target.toLowerCase(), c.toLowerCase());
-    if (d < bestDist) {
-      bestDist = d;
-      best = c;
-    }
-  }
-  if (best === undefined || bestDist > Math.max(2, Math.floor(target.length * 0.3)))
-    return undefined;
-  return `Did you mean "${best}"?`;
+  const best = closestMatch(target, candidates, {
+    ignoreCase: true,
+    maxDistance: Math.max(2, Math.floor(target.length * 0.3)),
+  });
+  return best ? `Did you mean "${best.match}"?` : undefined;
 }
 
-function loadMakefile(projectRoot: string): string | null {
+/** The makefile names GNU make tries, in its own order. */
+const MAKEFILE_NAMES = ['GNUmakefile', 'makefile', 'Makefile'];
+
+/**
+ * The makefile `make` would read in `dir`, or null when there is none. Names
+ * are matched against the directory listing, not opened by name, so a
+ * case-insensitive host neither reads `Makefile` as `makefile` (and words the
+ * message wrongly) nor finds a `MAKEFILE` that make on Linux would not.
+ */
+function loadMakefile(dir: string): { name: string; content: string } | null {
+  let entries: string[];
   try {
-    return stripBom(fs.readFileSync(path.join(projectRoot, 'Makefile'), 'utf-8'));
+    entries = fs.readdirSync(dir);
   } catch {
     return null;
   }
+  for (const name of MAKEFILE_NAMES) {
+    if (!entries.includes(name)) continue;
+    try {
+      return { name, content: stripBom(fs.readFileSync(path.join(dir, name), 'utf-8')) };
+    } catch {
+      // unreadable (a directory named Makefile, permissions): try the next name
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether a `make` invocation reads a makefile other than the one in the
+ * directory it runs from: `-C dir` / `--directory`, `-f file` / `--file` /
+ * `--makefile`, separate or attached, including inside a short-flag bundle
+ * (`-kC native`).
+ */
+function makeRetargets(cmd: string): boolean {
+  return cmd
+    .split(/\s+/)
+    .slice(1)
+    .some((t) => /^-[A-Za-z]*[Cf]/.test(t) || /^--(?:directory|file|makefile)(?:=|$)/.test(t));
 }
 
 /**
  * Extract the target of a `make` invocation. `NAME=value` overrides are
  * skipped (they don't consume the next token). Any flag token bails out
- * entirely: flags like `-C dir` / `-f file` take a value, so the first
- * non-flag token may be a flag's argument rather than a target — a skipped
- * validation is safer than reporting a flag (or its value) as missing.
+ * entirely: flags like `-j 4` / `-l 2` take a value, so the first non-flag
+ * token may be a flag's argument rather than a target — a skipped validation
+ * is safer than reporting a flag (or its value) as missing.
  */
 function extractMakeTarget(cmd: string): string | null {
   for (const token of cmd.split(/\s+/).slice(1)) {
@@ -883,13 +1201,36 @@ function extractMakeTarget(cmd: string): string | null {
   return null;
 }
 
-function hasMakeTarget(makefile: string, target: string): boolean {
-  // Match "target:" at the start of a line (standard rule syntax, including
-  // double-colon rules). The (?!:?=) lookahead keeps `target := value` /
-  // `target ::= value` variable assignments from counting as rules. `.PHONY:
-  // target` lines deliberately do NOT count — .PHONY only marks phony-ness;
-  // without its own rule line the target is still unrunnable.
-  const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const pattern = new RegExp(`^${escaped}\\s*:(?!:?=)`, 'm');
-  return pattern.test(makefile);
+/**
+ * A rule line's target list: everything before the first `:` on a line that
+ * does not start with a tab (a recipe). The `(?!:?=)` lookahead keeps
+ * `target := value` / `target ::= value` variable assignments from counting
+ * as rules; `[^:=#]` keeps `x = a:b` assignments and comments out, and the
+ * `\n` in it keeps the match on ONE line -- without it a colon-less line such
+ * as `ifeq ($(CI),true)` ran into the next rule's target list, its `$` opened
+ * the target set and make-target-not-found never fired. Double-colon rules
+ * (`target::`) still match.
+ */
+const RULE_LINE = /^ *([^\s#:=][^:=#\n]*):(?!:?=)/gm;
+
+/** `include`, `-include` and `sinclude` pull in rules this lint cannot see. */
+const INCLUDE_DIRECTIVE = /^ *(?:-|s)?include\s/m;
+
+/**
+ * Could `makefile` define `target`? True when some rule line lists it anywhere
+ * in its target list (`build test: deps` defines both), or when the target set
+ * is open: an include directive, a pattern rule (`%.o: %.c` builds `foo.o`) or
+ * a computed target (`$(BIN):`) can each make any name a target, and a wrong
+ * "target not found" is worse than silence. `.PHONY: target` lines
+ * deliberately do NOT count as defining `target` -- .PHONY only marks
+ * phony-ness; without its own rule line the target is still unrunnable.
+ */
+function makefileMayDefine(makefile: string, target: string): boolean {
+  if (INCLUDE_DIRECTIVE.test(makefile)) return true;
+  for (const m of makefile.matchAll(RULE_LINE)) {
+    const targets = m[1].trim().split(/\s+/);
+    if (targets.some((t) => t.includes('%') || t.includes('$'))) return true;
+    if (targets.includes(target)) return true;
+  }
+  return false;
 }

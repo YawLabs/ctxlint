@@ -241,6 +241,36 @@ describe('readJsonlHistory', () => {
   });
 });
 
+describe('readJsonlHistory timestamp and session fields', () => {
+  it('maps the real Codex CLI shape {session_id, ts (seconds), text}', async () => {
+    // codex-rs `message-history` writes exactly these three keys; `ts` is
+    // unix SECONDS, normalized to the epoch-ms every session check compares.
+    const file = path.join(tmpDir, 'history.jsonl');
+    writeJsonl(file, [{ session_id: 'c-1', ts: 1_700_000_000, text: 'npm test' }]);
+
+    const entries = await readJsonlHistory({
+      historyPath: file,
+      provider: 'codex-cli',
+      displayFields: ['text'],
+      projectFields: [],
+      requireProject: false,
+      sessionFields: ['session_id'],
+      timestampFields: ['ts'],
+      timestampUnit: 's',
+    });
+
+    expect(entries).toEqual([
+      {
+        display: 'npm test',
+        timestamp: 1_700_000_000_000,
+        project: '',
+        sessionId: 'c-1',
+        provider: 'codex-cli',
+      },
+    ]);
+  });
+});
+
 describe('readJsonlHistory mid-stream read errors (mocked fs)', () => {
   afterEach(() => {
     vi.doUnmock('node:fs');
@@ -339,11 +369,19 @@ describe('detectSiblings >50-candidate branch', () => {
 describe('home resolution OS fallback', () => {
   let prevHome: string | undefined;
   let prevUserProfile: string | undefined;
+  let prevConfigDir: string | undefined;
+  let prevCodexHome: string | undefined;
   let fakeHome: string;
 
   beforeEach(() => {
     prevHome = process.env.HOME;
     prevUserProfile = process.env.USERPROFILE;
+    prevConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    prevCodexHome = process.env.CODEX_HOME;
+    // An ambient CLAUDE_CONFIG_DIR (Claude Code itself may export one) would
+    // satisfy claude-code detection on its own and make these cases vacuous.
+    delete process.env.CLAUDE_CONFIG_DIR;
+    delete process.env.CODEX_HOME;
     fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxlint-home-'));
   });
 
@@ -354,7 +392,36 @@ describe('home resolution OS fallback', () => {
     else process.env.HOME = prevHome;
     if (prevUserProfile === undefined) delete process.env.USERPROFILE;
     else process.env.USERPROFILE = prevUserProfile;
+    if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prevConfigDir;
+    if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = prevCodexHome;
     fs.rmSync(fakeHome, { recursive: true, force: true });
+  });
+
+  it('detects claude-code from CLAUDE_CONFIG_DIR when ~/.claude is absent', async () => {
+    const configDir = path.join(fakeHome, 'custom-claude');
+    fs.mkdirSync(configDir, { recursive: true });
+    process.env.HOME = path.join(fakeHome, 'no-claude-here');
+    process.env.USERPROFILE = path.join(fakeHome, 'no-claude-here');
+    process.env.CLAUDE_CONFIG_DIR = configDir;
+
+    const mod = await import('../session-scanner.js');
+    expect(mod.detectProviders()).toContain('claude-code');
+  });
+
+  it('re-resolves home on every call instead of caching it at module load', async () => {
+    const mod = await import('../session-scanner.js');
+    const first = path.join(fakeHome, 'first');
+    process.env.HOME = first;
+    process.env.USERPROFILE = first;
+    expect(mod.detectProviders()).not.toContain('claude-code');
+
+    const second = path.join(fakeHome, 'second');
+    fs.mkdirSync(path.join(second, '.claude'), { recursive: true });
+    process.env.HOME = second;
+    process.env.USERPROFILE = second;
+    expect(mod.detectProviders()).toContain('claude-code');
   });
 
   it('falls back to os.homedir() when HOME and USERPROFILE are unset', async () => {
@@ -446,5 +513,54 @@ describe('detectProviders goose dir (win32, APPDATA unset)', () => {
       restore();
       vi.resetModules();
     }
+  });
+});
+
+describe('scanSessionData needs', () => {
+  const KEYS = ['HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME'] as const;
+  let saved: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+  });
+
+  afterEach(() => {
+    for (const k of KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  it('skips the history, memories and siblings a caller says it does not need', async () => {
+    const home = path.join(tmpDir, 'home');
+    fs.mkdirSync(path.join(home, '.claude', 'projects', 'p', 'memory'), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, '.claude', 'history.jsonl'),
+      `${JSON.stringify({ display: 'npm test', project: '/p', timestamp: 1 })}\n`,
+    );
+    fs.writeFileSync(path.join(home, '.claude', 'projects', 'p', 'memory', 'm.md'), 'memory body');
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    delete process.env.CLAUDE_CONFIG_DIR;
+    delete process.env.CODEX_HOME;
+    const project = path.join(tmpDir, 'parent', 'me');
+    fs.mkdirSync(project, { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, 'parent', 'sib'));
+    fs.writeFileSync(path.join(tmpDir, 'parent', 'sib', 'package.json'), '{}');
+
+    const { scanSessionData } = await import('../session-scanner.js');
+    const full = await scanSessionData(project);
+    expect(full.history).toHaveLength(1);
+    expect(full.memories).toHaveLength(1);
+    expect(full.siblings).toHaveLength(1);
+
+    const none = await scanSessionData(project, {
+      history: false,
+      memories: false,
+      siblings: false,
+    });
+    expect(none.history).toEqual([]);
+    expect(none.memories).toEqual([]);
+    expect(none.siblings).toEqual([]);
   });
 });

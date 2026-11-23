@@ -118,7 +118,7 @@ describe('checkFrontmatter', () => {
   describe('Copilot instructions', () => {
     it('warns when missing applyTo field', async () => {
       const file = makeFile(
-        '.github/instructions/test.md',
+        '.github/instructions/test.instructions.md',
         '---\ndescription: test\n---\nContent.',
       );
       const issues = await checkFrontmatter(file, '/project');
@@ -127,7 +127,10 @@ describe('checkFrontmatter', () => {
     });
 
     it('info when no frontmatter at all', async () => {
-      const file = makeFile('.github/instructions/test.md', 'Just content, no frontmatter.');
+      const file = makeFile(
+        '.github/instructions/test.instructions.md',
+        'Just content, no frontmatter.',
+      );
       const issues = await checkFrontmatter(file, '/project');
       expect(issues.length).toBeGreaterThan(0);
       expect(issues[0].severity).toBe('info');
@@ -182,7 +185,10 @@ describe('checkFrontmatter', () => {
     });
 
     it('errors on unclosed Copilot instructions frontmatter', async () => {
-      const file = makeFile('.github/instructions/test.md', '---\napplyTo: "**/*.ts"\n\nBody.');
+      const file = makeFile(
+        '.github/instructions/test.instructions.md',
+        '---\napplyTo: "**/*.ts"\n\nBody.',
+      );
       const issues = await checkFrontmatter(file, '/project');
       expect(issues.length).toBe(1);
       expect(issues[0].ruleId).toBe('frontmatter/unclosed');
@@ -223,5 +229,162 @@ describe('checkFrontmatter', () => {
       const invalid = issues.find((i) => i.ruleId === 'frontmatter/invalid-value');
       expect(invalid).toBeDefined();
     });
+  });
+});
+
+describe('checkFrontmatter -- CRLF line endings', () => {
+  // Windows checkouts with core.autocrlf=true hand the check CRLF content
+  // (readFileContent only strips the BOM). Each case is the byte-for-byte CRLF
+  // twin of an LF input and must produce identical issues.
+  const crlf = (s: string) => s.replace(/\n/g, '\r\n');
+
+  async function both(relativePath: string, lf: string) {
+    const lfIssues = await checkFrontmatter(makeFile(relativePath, lf), '/project');
+    const crlfIssues = await checkFrontmatter(makeFile(relativePath, crlf(lf)), '/project');
+    return { lfIssues, crlfIssues };
+  }
+
+  it('does not report a CRLF-closed .mdc frontmatter as unclosed', async () => {
+    const { lfIssues, crlfIssues } = await both(
+      '.cursor/rules/test.mdc',
+      '---\ndescription: My rule\nglobs: src/**/*.ts\nalwaysApply: false\n---\nBody',
+    );
+    expect(lfIssues).toEqual([]);
+    expect(crlfIssues).toEqual(lfIssues);
+  });
+
+  it('parses CRLF field values without a trailing carriage return', async () => {
+    const { lfIssues, crlfIssues } = await both(
+      '.cursor/rules/test.mdc',
+      '---\ndescription: ok\nalwaysApply: maybe\n---\nBody.',
+    );
+    expect(lfIssues.map((i) => i.ruleId)).toEqual(['frontmatter/invalid-value']);
+    expect(crlfIssues).toEqual(lfIssues);
+    expect(crlfIssues[0].message).not.toContain('\r');
+  });
+
+  it('accepts CRLF Windsurf and Copilot frontmatter identically to LF', async () => {
+    const ws = await both('.windsurf/rules/r.md', '---\ntrigger: manual\n---\nBody');
+    expect(ws.lfIssues).toEqual([]);
+    expect(ws.crlfIssues).toEqual(ws.lfIssues);
+    const gh = await both(
+      '.github/instructions/a.instructions.md',
+      '---\napplyTo: "**/*.ts"\n---\nBody',
+    );
+    expect(gh.lfIssues).toEqual([]);
+    expect(gh.crlfIssues).toEqual(gh.lfIssues);
+  });
+
+  it('accepts a closing fence with trailing whitespace', async () => {
+    const file = makeFile(
+      '.cursor/rules/test.mdc',
+      '---\ndescription: My rule\nalwaysApply: true\n--- \nBody.',
+    );
+    const issues = await checkFrontmatter(file, '/project');
+    expect(issues).toEqual([]);
+  });
+});
+
+describe('checkFrontmatter -- YAML value forms', () => {
+  const mdc = (fm: string) => makeFile('.cursor/rules/test.mdc', `---\n${fm}\n---\nBody.`);
+  const windsurf = (fm: string) => makeFile('.windsurf/rules/test.md', `---\n${fm}\n---\nBody.`);
+
+  it('ignores a trailing # comment on alwaysApply', async () => {
+    const issues = await checkFrontmatter(
+      mdc('description: My rule\nalwaysApply: true # always on'),
+      '/project',
+    );
+    expect(issues).toEqual([]);
+  });
+
+  it('accepts a quoted alwaysApply value', async () => {
+    const issues = await checkFrontmatter(
+      mdc('description: My rule\nalwaysApply: "true"'),
+      '/project',
+    );
+    expect(issues).toEqual([]);
+  });
+
+  it('keeps a # that is inside quotes or not preceded by whitespace', async () => {
+    // `"a #b"` is a quoted scalar, `x#y` a plain scalar containing `#`.
+    const issues = await checkFrontmatter(
+      mdc('description: "Rule #1 for src"\nglobs: src/x#y/**\nalwaysApply: false'),
+      '/project',
+    );
+    expect(issues).toEqual([]);
+  });
+
+  it('ignores a trailing # comment on a Windsurf trigger', async () => {
+    const issues = await checkFrontmatter(windsurf('trigger: glob # note'), '/project');
+    expect(issues).toEqual([]);
+  });
+
+  it('joins a multi-line flow sequence for globs', async () => {
+    const issues = await checkFrontmatter(
+      mdc(
+        'description: My rule\nglobs: [\n  "src/**/*.ts",\n  "src/**/*.tsx"\n]\nalwaysApply: false',
+      ),
+      '/project',
+    );
+    expect(issues).toEqual([]);
+  });
+
+  it('still flags a flow sequence that is never closed', async () => {
+    const issues = await checkFrontmatter(
+      mdc('description: My rule\nglobs: [\n  "src/**/*.ts",\nalwaysApply: false'),
+      '/project',
+    );
+    expect(issues.map((i) => i.ruleId)).toEqual(['frontmatter/invalid-value']);
+  });
+
+  it('reads a description written on the next indented line', async () => {
+    const issues = await checkFrontmatter(
+      mdc('description:\n  Applies to the TypeScript sources\nalwaysApply: true'),
+      '/project',
+    );
+    expect(issues).toEqual([]);
+  });
+
+  it('reads a folded block-scalar description', async () => {
+    const issues = await checkFrontmatter(
+      mdc('description: >-\n  Applies to the\n  TypeScript sources\nalwaysApply: true'),
+      '/project',
+    );
+    expect(issues).toEqual([]);
+  });
+
+  it('still reports an empty description', async () => {
+    const issues = await checkFrontmatter(mdc('description:\nalwaysApply: true'), '/project');
+    expect(issues.map((i) => i.ruleId)).toEqual(['frontmatter/missing-field']);
+  });
+
+  it('still reads YAML list items for globs', async () => {
+    const issues = await checkFrontmatter(
+      mdc('description: d\nglobs:\n  - "src/**" # sources\n  - tests/**\nalwaysApply: false'),
+      '/project',
+    );
+    expect(issues).toEqual([]);
+  });
+});
+
+describe('checkFrontmatter -- file matching and Windsurf triggers', () => {
+  it('only treats *.instructions.md under .github/instructions/ as Copilot instructions', async () => {
+    const readme = makeFile('.github/instructions/README.md', 'How these files work.');
+    expect(await checkFrontmatter(readme, '/project')).toEqual([]);
+    const real = makeFile('.github/instructions/ts.instructions.md', 'No frontmatter.');
+    expect((await checkFrontmatter(real, '/project')).map((i) => i.ruleId)).toEqual([
+      'frontmatter/missing',
+    ]);
+  });
+
+  it('rejects trigger: model, which is not a documented Windsurf trigger', async () => {
+    const file = makeFile('.windsurf/rules/test.md', '---\ntrigger: model\n---\nBody.');
+    const issues = await checkFrontmatter(file, '/project');
+    expect(issues.map((i) => i.ruleId)).toEqual(['frontmatter/invalid-value']);
+  });
+
+  it('accepts trigger: model_decision', async () => {
+    const file = makeFile('.windsurf/rules/test.md', '---\ntrigger: model_decision\n---\nBody.');
+    expect(await checkFrontmatter(file, '/project')).toEqual([]);
   });
 });

@@ -17,10 +17,10 @@
     {
       "id": "session/missing-secret",
       "category": "session",
-      "severity": "error",
-      "description": "GitHub secret set on sibling repos but not this project.",
-      "trigger": "gh secret set command found in agent history for 2+ siblings but not current project.",
-      "message": "Secret \"{name}\" is set on {count} sibling repos but not this project",
+      "severity": "warning",
+      "description": "GitHub secret set on sibling repos but not this project, according to session history. Warning, not error: the evidence is only typed/run history, and secrets set in the web UI or at org level are invisible to it.",
+      "trigger": "`gh secret set NAME` found in session history (typed history, plus agent-run commands from the current project's transcript) for 2+ siblings but not the current project. A command with --repo/-R binds ONLY that repo, not the directory it was typed in; --org commands bind nothing. Bodies written as $(...) or backticks are parsed as one value.",
+      "message": "GitHub secret \"{name}\" is set on {count} sibling repos ({siblings}) but not on this project",
       "fixable": false,
       "stability": "stable"
     },
@@ -29,8 +29,8 @@
       "category": "session",
       "severity": "warning",
       "description": "Canonical file has diverged from sibling repos.",
-      "trigger": "File exists in current project and siblings with 20-90% line overlap.",
-      "message": "\"{file}\" has {overlap}% overlap with {sibling} — may have diverged",
+      "trigger": "File exists in the current project and in siblings with the same GitHub owner (all siblings when the owner is unknown) with 20-90% line overlap (50-90% for .gitignore and tsconfig.json).",
+      "message": "{file} has diverged from sibling repos: {sibling} ({overlap}% overlap), ...",
       "fixable": false,
       "canonicalFiles": [
         "release.sh",
@@ -49,8 +49,8 @@
       "category": "session",
       "severity": "warning",
       "description": "GitHub Actions workflow missing from this project.",
-      "trigger": "Workflow file exists in 2+ siblings but not current project (which has .github).",
-      "message": "Workflow \"{workflow}\" exists in {count} sibling repos but not this project",
+      "trigger": "Workflow file exists in 2+ siblings with the same GitHub owner (all siblings when the owner is unknown) but not in the current project (which has .github).",
+      "message": "GitHub Actions workflow \"{workflow}\" exists in {count} sibling repos ({siblings}) but not in this project",
       "fixable": false,
       "stability": "stable"
     },
@@ -60,7 +60,7 @@
       "severity": "info",
       "description": "Memory file references paths that no longer exist.",
       "trigger": "Claude Code memory file contains path references to files that have been deleted or moved.",
-      "message": "Memory references \"{path}\" which no longer exists",
+      "message": "Memory \"{name}\" references {count} path(s) that no longer exist: {paths}",
       "fixable": false,
       "stability": "stable"
     },
@@ -70,7 +70,7 @@
       "severity": "info",
       "description": "Near-duplicate memory entries across projects.",
       "trigger": "Two memory files from different projects have >60% line overlap, and at least one of the pair belongs to the current project (otherwise every lint run from any repo would resurface the same unrelated cross-project duplicates).",
-      "message": "\"{file1}\" and \"{file2}\" have {overlap}% content overlap",
+      "message": "Memory \"{nameA}\" ({projectA}) and \"{nameB}\" ({projectB}) have {overlap}% overlap",
       "fixable": false,
       "stability": "stable"
     },
@@ -79,7 +79,7 @@
       "category": "session",
       "severity": "warning",
       "description": "Same command run 3+ times consecutively in agent history.",
-      "trigger": "Agent history for the current project (entries lacking a project path or timestamp are excluded), grouped into sessions (by provider + session ID, split at >30-minute timestamp gaps), shows the same display string 3+ times in a row within a single session segment. Single-command sessions are additionally merged per provider into one stream (split at the same gaps) so rapid one-shot respawn loops are caught.",
+      "trigger": "Agent history for the current project (entries lacking a project path or timestamp are excluded), grouped into sessions (by provider + session ID, split at >30-minute timestamp gaps), shows the same command 3+ times in a row within a single session segment. Only command-shaped entries take part (!bash, /slash, a known program head, or a ./path executable); prompts break runs but never match. Single-command sessions are additionally merged per provider into one stream (split at the same gaps) so rapid one-shot respawn loops are caught. The message shows the command head (first 3 words, at most 60 chars, \"...\" when cut).",
       "message": "Command run {count} times consecutively: \"{command}\"",
       "fixable": false,
       "stability": "experimental"
@@ -89,7 +89,7 @@
       "category": "session",
       "severity": "warning",
       "description": "Cyclic command pattern detected in agent history.",
-      "trigger": "Within a single session segment (same provider + session ID, split at >30-minute gaps; entries lacking a project path or timestamp are excluded), agent history shows a repeating sequence of 2-3 commands (e.g. A,B,A,B) repeated 2+ times. Spans already reported by session/consecutive-repeat are not re-reported. The merged one-shot stream is not scanned for cycles.",
+      "trigger": "Within a single session segment (same provider + session ID, split at >30-minute gaps; entries lacking a project path or timestamp are excluded), command-shaped history entries show a repeating sequence of 2-3 commands (e.g. A,B,A,B) repeated 2+ times. Spans already reported by session/consecutive-repeat are not re-reported. The merged one-shot stream is not scanned for cycles. Cycle elements are shown as command heads, as in session/consecutive-repeat.",
       "message": "Cyclic pattern repeated {count} times: {cycle}",
       "fixable": false,
       "stability": "experimental"
@@ -99,8 +99,11 @@
       "category": "session",
       "severity": "warning",
       "description": "MEMORY.md exceeds Claude Code's session-load cap. The first 200 lines / 25KB are loaded every session; anything beyond is effectively invisible to the agent.",
-      "trigger": "~/.claude/projects/<encoded-project>/memory/MEMORY.md exceeds 200 lines OR 25,600 bytes.",
-      "message": "MEMORY.md has {N} lines — only the first 200 are loaded. {excess} lines are effectively invisible.",
+      "trigger": "<CLAUDE_CONFIG_DIR or ~/.claude>/projects/<encoded-project>/memory/MEMORY.md exceeds 200 lines OR 25,600 bytes. Numbers use en-US grouping.",
+      "message": "MEMORY.md has {N} lines — only the first 200 are loaded. {excess} line(s) are effectively invisible to the agent.",
+      "messageVariants": [
+        "MEMORY.md is {N} bytes — only the first 25,600 bytes are loaded. ~{excess} bytes are effectively invisible."
+      ],
       "fixable": false,
       "source": "code.claude.com/docs/en/memory",
       "stability": "stable"
@@ -110,7 +113,7 @@
       "category": "session",
       "severity": "error",
       "description": "A fixed, non-session-scoped temp path is written and later read back.",
-      "trigger": "Agent history writes a literal path under /tmp, /var/tmp, $TMPDIR or %TEMP% with no per-run component, then reads the same path.",
+      "trigger": "The current project's history writes a literal path under a shared temp root (/tmp, /var/tmp, $TMPDIR, $TEMP, $TMP, %TEMP%, C:/Users/*/AppData/Local/Temp, Windows/Temp, and their /c/ forms) with no per-run component, then reads the same path back. Paths under a scratchpad directory, or carrying a UUID or a 16+ hex run, are not flagged. Read verbs include cat, type, source, cp/copy source, tail, head, grep, diff and node|bash|sh|python <path>.",
       "message": "Fixed temp path \"{path}\" is written and later read back",
       "fixable": false,
       "stability": "stable"
@@ -119,9 +122,13 @@
       "id": "session/unverified-gate-claimed-clean",
       "category": "session",
       "severity": "warning",
-      "description": "A quality gate is asserted as passing while its invocation failed or produced no output.",
-      "trigger": "A lint/typecheck/test/build command errors or emits nothing, and nearby agent prose claims it passed.",
+      "description": "A quality gate is asserted as passing while its invocation failed, crashed or produced no output.",
+      "trigger": "A gate (the invoked lint/typecheck/test/build program, an npm/pnpm/yarn/bun script, a make target, or a cargo/go subcommand) errors, crashes (crash signatures count even in non-empty output) or emits nothing — empty output counts only for tools that are not silent on success (tsc, vue-tsc and eslint are exempt) — and later agent prose in the same session claims that gate passed. The claim must name the failed gate and must not be negated or stated as future intent ('make' is intent only in verb position).",
       "message": "'{gate}' asserted as passing, but the invocation produced no output",
+      "messageVariants": [
+        "'{gate}' asserted as passing, but the invocation reported an error",
+        "'{gate}' asserted as passing, but the invocation crashed"
+      ],
       "fixable": false,
       "stability": "stable"
     },
@@ -130,7 +137,7 @@
       "category": "session",
       "severity": "warning",
       "description": "Many files edited on the default branch with no intervening commit.",
-      "trigger": "Ten or more distinct files written while on main/master without a commit or branch-away in between.",
+      "trigger": "Ten or more distinct files inside the project are written in one session while on main/master without a successful commit or branch-away in between. Creating a branch (checkout -b/-B/--orphan, switch -c/-C/--create/--force-create/--orphan, worktree add) resets at once; git switch <x> / git checkout <x> reset only when the session's next branch stamp is off the default branch. An operand naming an existing file is never a branch move, and a failed checkout or commit does not reset. Each session accumulates separately; a successful commit in any session clears all. The message names the branch the writes landed on.",
       "message": "{count} files edited on '{branch}' with no intervening commit",
       "fixable": false,
       "stability": "stable"
@@ -140,8 +147,8 @@
       "category": "session",
       "severity": "warning",
       "description": "A memory cites a git SHA that does not resolve in the repository.",
-      "trigger": "A 7-40 character hex token outside code fences, preceded on the same line by a commit-citation cue (commit, SHA, HEAD, landed in, reverted, ...), does not resolve via git cat-file. UUID members, digest prefixes, decimal ids and version fragments are excluded before resolution; without a git repository the rule reports nothing.",
-      "message": "cited commit {sha} does not resolve in this repository",
+      "trigger": "A 7-40 character hex token outside code fences, preceded on the same line by a commit-citation cue (commit, SHA, HEAD, landed in, reverted, ...), does not resolve via git cat-file (ambiguous short SHAs count as existing). UUID members, digest prefixes, decimal ids and version fragments are excluded before resolution. A SHA attributed to another repo is not checked: a sibling name or owner/repo spec right before it joined by @ or commit/sha (specs that look like file paths do not count), or a forge commit URL for another repo (GitHub /commit/, /commits/, /tree/, /blob/, /pull/N/commits/, GitLab /-/commit/). Without a git repository, or in a shallow or partial clone, the rule reports nothing.",
+      "message": "Memory \"{name}\" cites {count} commit(s) that do not resolve in this repository: {shas}",
       "fixable": false,
       "stability": "experimental"
     },
@@ -150,7 +157,7 @@
       "category": "session",
       "severity": "info",
       "description": "Measures session context spent on whole-file Reads of large files. Each result is re-sent as prompt context (cache reads) on every later turn of its session; the finding is a baseline for judging read-routing changes, reported as one summary per project.",
-      "trigger": "One or more whole-file Read calls (no offset, limit or pages) in the current project's transcripts whose result is 4,000 tokens or more. Carry is each result's tokens times the later turns of its session that re-sent it, up to the session's end or its next /compact boundary; a turn is a distinct assistant message id.",
+      "trigger": "One or more whole-file Read calls (no offset, limit or pages) in the current project's transcripts whose result is 4,000 tokens or more; sidechain (subagent) Reads are not counted. Carry is each result's tokens times the later turns of its session that re-sent it, up to the session's end or its next /compact boundary; a turn is a distinct assistant message id.",
       "message": "{count} whole-file Reads of 4,000+ tokens ({tokens} tokens); est. {carry} tokens of cache-read carry on later turns",
       "fixable": false,
       "stability": "experimental"
@@ -164,16 +171,19 @@
       "historyLocation": "~/.claude/history.jsonl",
       "historyFormat": "JSONL",
       "memoryLocation": "~/.claude/projects/*/memory/*.md",
-      "documented": true
+      "documented": true,
+      "transcriptLocation": "~/.claude/projects/<encoded-project>/*.jsonl",
+      "notes": "Read from CLAUDE_CONFIG_DIR instead of ~/.claude when it is set. Transcripts are read for the current project only, capped at the 5 most recent files and 200,000 lines (newest lines kept)."
     },
     {
       "id": "codex-cli",
       "name": "Codex CLI",
       "provider": "OpenAI",
-      "historyLocation": "~/.codex/history.jsonl",
+      "historyLocation": "$CODEX_HOME/history.jsonl (default ~/.codex/history.jsonl)",
       "historyFormat": "JSONL",
       "sessionsLocation": "~/.codex/sessions/**/*.jsonl",
-      "documented": true
+      "documented": true,
+      "notes": "History lines are {session_id, ts (unix seconds), text}; Codex records no project path for them."
     },
     {
       "id": "aider",
@@ -213,8 +223,8 @@
     },
     {
       "id": "continue",
-      "name": "Continue",
-      "provider": "Continue.dev",
+      "name": "Continue.dev",
+      "provider": "Continue",
       "historyLocation": "~/.continue/sessions/*.json",
       "historyFormat": "JSON",
       "documented": false,
@@ -229,15 +239,5 @@
       "documented": false,
       "notes": "Partially documented; format marked unstable by vendor."
     }
-  ],
-  "agents": [
-    "claude-code",
-    "codex-cli",
-    "aider",
-    "vibe-cli",
-    "amazon-q",
-    "goose",
-    "continue",
-    "windsurf"
   ]
 }

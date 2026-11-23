@@ -219,4 +219,65 @@ describe('checkMcpDeprecated', () => {
     const issues = await checkMcpDeprecated(config, '/project');
     expect(issues).toHaveLength(0);
   });
+
+  it('ignores braces inside string values when locating the type pair', async () => {
+    // A line-based brace count read the "}" inside the description as the
+    // server object closing and gave up before reaching the type line.
+    const config = makeConfig({
+      content: [
+        '{',
+        '  "mcpServers": {',
+        '    "old": {',
+        '      "description": "template is {x} }",',
+        '      "type": "sse",',
+        '      "url": "https://old.example.com/sse"',
+        '    }',
+        '  }',
+        '}',
+      ].join('\n'),
+      servers: [
+        {
+          name: 'old',
+          transport: 'sse',
+          url: 'https://old.example.com/sse',
+          line: 3,
+          raw: { type: 'sse', url: 'https://old.example.com/sse' },
+        },
+      ],
+    });
+    const issues = await checkMcpDeprecated(config, '/project');
+    expect(issues).toHaveLength(1);
+    expect(issues[0].line).toBe(5);
+    expect(issues[0].fix).toEqual({
+      file: '/project/.mcp.json',
+      line: 5,
+      column: 7,
+      oldText: '"type": "sse"',
+      newText: '"type": "http"',
+    });
+  });
+
+  it('fixes just the value when the type pair spans lines', async () => {
+    const config = makeConfig({
+      content:
+        '{ "mcpServers": { "old": { "type":\n  "sse", "url": "https://x.example.com/sse" } } }',
+      servers: [
+        {
+          name: 'old',
+          transport: 'sse',
+          url: 'https://x.example.com/sse',
+          line: 1,
+          raw: { type: 'sse', url: 'https://x.example.com/sse' },
+        },
+      ],
+    });
+    const issues = await checkMcpDeprecated(config, '/project');
+    expect(issues[0].fix).toEqual({
+      file: '/project/.mcp.json',
+      line: 2,
+      column: 3,
+      oldText: '"sse"',
+      newText: '"http"',
+    });
+  });
 });

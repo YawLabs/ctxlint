@@ -1,8 +1,8 @@
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { claudeConfigDir } from '../utils/claude-home.js';
 import { countTokens } from '../utils/tokens.js';
 import { projectDirCandidates } from './session-parser.js';
 
@@ -15,7 +15,8 @@ import { projectDirCandidates } from './session-parser.js';
  * AGENT did -- the command it ran, the gate that crashed, the branch the edits
  * landed on -- is invisible from there.
  *
- * The transcripts under `~/.claude/projects/<encoded>/<uuid>.jsonl` do carry all
+ * The transcripts under `~/.claude/projects/<encoded>/<uuid>.jsonl` (`~/.claude`
+ * being Claude Code's config dir, `CLAUDE_CONFIG_DIR` when set) do carry all
  * of it: `tool_use` blocks with their inputs, the matching `tool_result` with
  * `is_error` and output, and a `gitBranch` stamp on every assistant record.
  *
@@ -65,6 +66,13 @@ export interface TranscriptEvent {
   /** Length of the tool_result's text, in UTF-16 code units. Undefined when unpaired. */
   outputChars?: number;
   /**
+   * `command` only: the head and tail of the result text (up to
+   * `OUTPUT_EXCERPT_CHARS` of each, joined by a newline when the middle was
+   * cut). Enough to spot a crash banner at either end without keeping whole
+   * outputs in this memoized read. Undefined when unpaired.
+   */
+  outputExcerpt?: string;
+  /**
    * `file-read` only: `countTokens` of the result text -- what the Read put
    * into the prompt of every later turn. Undefined when unpaired.
    */
@@ -76,6 +84,13 @@ export interface TranscriptEvent {
   outputLines?: number;
   /** Branch recorded on the record, when the harness stamped one. */
   gitBranch?: string;
+  /**
+   * The record is a sidechain one: a subagent's work, written into the parent
+   * session's file under the parent's session id and turn. Its tool results
+   * live in the SUBAGENT's context, not the parent's, so a consumer measuring
+   * what the main session carries must leave these out.
+   */
+  sidechain?: boolean;
   /**
    * 1-based ordinal of the assistant turn this event belongs to, within its
    * session. A turn is one API response; see `turnOf` for how one is counted.
@@ -99,6 +114,9 @@ const READ_TOOLS: Record<string, string> = {
   Read: 'file_path',
 };
 
+/** Characters kept from each end of a command's output (`outputExcerpt`). */
+const OUTPUT_EXCERPT_CHARS = 1000;
+
 /** Read inputs that narrow the call to a slice of the file. */
 const PARTIAL_READ_FIELDS = ['offset', 'limit', 'pages'];
 
@@ -110,12 +128,22 @@ const COMMAND_TOOLS: Record<string, string> = {
 
 /**
  * Bounds. A single transcript reaches tens of megabytes, and a long-lived repo
- * accumulates many. Both caps are surfaced on the result rather than applied
- * silently -- a check that reports "clean" off a truncated read would be
- * asserting something it did not look at.
+ * accumulates many. Both caps are surfaced on the result (`truncated`) rather
+ * than applied silently -- a check that reports "clean" off a truncated read
+ * would be asserting something it did not look at -- and every consumer says
+ * so in its finding (`truncationNote`).
+ *
+ * The caps give up the OLDEST records: the newest transcripts are read first,
+ * and a transcript that would overrun the line budget is read from its tail.
  */
 const MAX_TRANSCRIPTS = 5;
 const MAX_LINES = 200000;
+
+/** Overrides for the read bounds. Tests use them to exercise the caps cheaply. */
+export interface TranscriptLimits {
+  maxTranscripts?: number;
+  maxLines?: number;
+}
 
 export interface TranscriptRead {
   events: TranscriptEvent[];
@@ -130,6 +158,19 @@ export interface TranscriptRead {
    * Sessions that never compacted have no entry.
    */
   sessionCompactions: Map<string, number[]>;
+}
+
+/**
+ * One line for a finding's detail when the read was capped, else undefined.
+ * A check that found nothing in a capped read has not shown the project clean,
+ * and a check that found something may have missed more.
+ */
+export function truncationNote(read: TranscriptRead): string | undefined {
+  if (!read.truncated) return undefined;
+  return (
+    `Transcript read was capped (${read.filesRead} most recent transcript` +
+    `${read.filesRead === 1 ? '' : 's'}, newest lines kept): older activity was not examined.`
+  );
 }
 
 function emptyRead(): TranscriptRead {
@@ -179,22 +220,23 @@ function resultText(content: unknown): string {
 const cache = new Map<string, Promise<TranscriptRead>>();
 
 /**
- * Env-first so tests and sandboxes can redirect home, OS fallback so a shell
- * with neither HOME nor USERPROFILE still resolves. Mirrors the resolution
- * `session/memory-index-overflow` uses to find MEMORY.md.
+ * Read the project's transcripts. `home`, when given, pins the corpus to
+ * `<home>/.claude/projects`; otherwise Claude Code's config dir is resolved
+ * per call (`CLAUDE_CONFIG_DIR`, else `<home>/.claude` -- see
+ * `utils/claude-home.ts`), the same resolution every home-scoped check uses.
  */
-function resolveHome(): string {
-  return process.env.HOME || process.env.USERPROFILE || homedir();
-}
-
 export function readProjectTranscript(
   project: string,
-  home = resolveHome(),
+  home?: string,
+  limits: TranscriptLimits = {},
 ): Promise<TranscriptRead> {
-  const key = `${home} ${project}`;
+  const configDir = claudeConfigDir(home);
+  const maxTranscripts = limits.maxTranscripts ?? MAX_TRANSCRIPTS;
+  const maxLines = limits.maxLines ?? MAX_LINES;
+  const key = `${configDir} ${project} ${maxTranscripts} ${maxLines}`;
   let hit = cache.get(key);
   if (!hit) {
-    hit = readUncached(project, home);
+    hit = readUncached(project, configDir, maxTranscripts, maxLines);
     cache.set(key, hit);
   }
   return hit;
@@ -214,8 +256,8 @@ export function clearTranscriptCache(): void {
  * than one project-dir encoding (see `projectDirCandidates`), and a session's
  * transcripts can be split across both, so read every form that is present.
  */
-function candidateDirs(project: string, home: string): string[] {
-  const root = join(home, '.claude', 'projects');
+function candidateDirs(project: string, configDir: string): string[] {
+  const root = join(configDir, 'projects');
   return projectDirCandidates(project)
     .map((n) => join(root, n))
     .filter((d) => existsSync(d));
@@ -242,9 +284,34 @@ interface ReadState {
   anonymous: number;
 }
 
-async function readUncached(project: string, home: string): Promise<TranscriptRead> {
-  if (!home || !project) return emptyRead();
-  const dirs = candidateDirs(project, home);
+/**
+ * Lines in a file, as readline would yield them: one per newline, plus a final
+ * unterminated line. A byte scan, so it costs I/O but no parsing or memory.
+ */
+async function countLines(p: string): Promise<number> {
+  const stream = createReadStream(p);
+  let lines = 0;
+  let last = -1;
+  try {
+    for await (const chunk of stream) {
+      const buf = chunk as Buffer;
+      for (let i = 0; i < buf.length; i++) if (buf[i] === 0x0a) lines++;
+      if (buf.length > 0) last = buf[buf.length - 1];
+    }
+  } finally {
+    stream.destroy();
+  }
+  return last !== -1 && last !== 0x0a ? lines + 1 : lines;
+}
+
+async function readUncached(
+  project: string,
+  configDir: string,
+  maxTranscripts: number,
+  maxLines: number,
+): Promise<TranscriptRead> {
+  if (!configDir || !project) return emptyRead();
+  const dirs = candidateDirs(project, configDir);
   if (dirs.length === 0) return emptyRead();
 
   const names: Array<{ dir: string; name: string }> = [];
@@ -268,27 +335,43 @@ async function readUncached(project: string, home: string): Promise<TranscriptRe
     // oldest ones, not whichever the directory listing happened to yield last.
     .sort((a, b) => b.mtime - a.mtime);
 
-  let truncated = files.length > MAX_TRANSCRIPTS;
-  const selected = files.slice(0, MAX_TRANSCRIPTS);
+  let truncated = files.length > maxTranscripts;
+  const selected = files.slice(0, maxTranscripts);
 
-  const st: ReadState = { events: [], pending: new Map(), sessions: new Map(), anonymous: 0 };
-  let lines = 0;
-
+  // Spend the line budget newest-first. A file that fits is read whole; the
+  // one that overruns it keeps only its LAST `remaining` lines (the newest
+  // records, which is what a cap should keep), and older files after it are
+  // skipped. Knowing where the tail starts takes a counting pass per file: a
+  // byte scan, cheap next to the JSON parse it bounds.
+  const plan: Array<{ p: string; skip: number }> = [];
+  let remaining = maxLines;
   for (const { p } of selected) {
-    if (lines >= MAX_LINES) {
+    if (remaining <= 0) {
       truncated = true;
       break;
     }
-    const rl = createInterface({
-      input: createReadStream(p, { encoding: 'utf-8' }),
-      crlfDelay: Infinity,
-    });
+    let total: number;
+    try {
+      total = await countLines(p);
+    } catch {
+      // Locked or vanished between listing and open: nothing to read.
+      continue;
+    }
+    const take = Math.min(total, remaining);
+    if (take < total) truncated = true;
+    plan.push({ p, skip: total - take });
+    remaining -= take;
+  }
+
+  const st: ReadState = { events: [], pending: new Map(), sessions: new Map(), anonymous: 0 };
+
+  for (const { p, skip } of plan) {
+    const input = createReadStream(p, { encoding: 'utf-8' });
+    const rl = createInterface({ input, crlfDelay: Infinity });
+    let index = 0;
     try {
       for await (const raw of rl) {
-        if (++lines >= MAX_LINES) {
-          truncated = true;
-          break;
-        }
+        if (index++ < skip) continue;
         const line = raw.trim();
         if (!line) continue;
         let rec: Record<string, unknown>;
@@ -304,7 +387,10 @@ async function readUncached(project: string, home: string): Promise<TranscriptRe
       // (EBUSY/EPERM on Windows). Degrade to what was read rather than losing
       // the whole audit.
     } finally {
+      // `rl.close()` alone leaves the underlying stream (and its fd) open
+      // when the loop exits early or throws; destroy it explicitly.
       rl.close();
+      input.destroy();
     }
   }
 
@@ -322,7 +408,7 @@ async function readUncached(project: string, home: string): Promise<TranscriptRe
 
   return {
     events: st.events,
-    filesRead: selected.length,
+    filesRead: plan.length,
     truncated,
     sessionTurns,
     sessionCompactions,
@@ -417,6 +503,7 @@ function collect(rec: Record<string, unknown>, st: ReadState): void {
 
   const timestamp = Date.parse(asString(rec.timestamp)) || 0;
   const gitBranch = asString(rec.gitBranch) || undefined;
+  const sidechain = rec.isSidechain === true;
 
   for (const raw of content) {
     if (!raw || typeof raw !== 'object') continue;
@@ -431,6 +518,7 @@ function collect(rec: Record<string, unknown>, st: ReadState): void {
           text,
           tool: '',
           gitBranch,
+          ...(sidechain ? { sidechain } : {}),
           turn,
           timestamp,
           sessionId,
@@ -468,6 +556,7 @@ function collect(rec: Record<string, unknown>, st: ReadState): void {
         }
       }
       if (ev) {
+        if (sidechain) ev.sidechain = true;
         const id = asString(block.id);
         if (id) ev.toolUseId = id;
         st.events.push(ev);
@@ -485,6 +574,12 @@ function collect(rec: Record<string, unknown>, st: ReadState): void {
       ev.isError = block.is_error === true;
       ev.emptyOutput = out.trim().length === 0;
       ev.outputChars = out.length;
+      if (ev.kind === 'command') {
+        ev.outputExcerpt =
+          out.length <= OUTPUT_EXCERPT_CHARS * 2
+            ? out
+            : `${out.slice(0, OUTPUT_EXCERPT_CHARS)}\n${out.slice(-OUTPUT_EXCERPT_CHARS)}`;
+      }
       if (ev.kind === 'file-read') {
         // Counted here, while the text is in hand, because the text itself is
         // not kept: this read is memoized, and Read results are the bulk of a

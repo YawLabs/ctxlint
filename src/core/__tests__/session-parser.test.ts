@@ -8,6 +8,7 @@ import {
   extractPaths,
   parseFrontmatter,
   parseMemoryFile,
+  projectDirCandidates,
   projectDirMatchesPath,
 } from '../session-parser.js';
 
@@ -68,6 +69,43 @@ describe('projectDirMatchesPath', () => {
     const encoded = encodeProjectDir('/home/jeff/a/b');
     expect(projectDirMatchesPath(encoded, '/home/jeff/a-b')).toBe(true);
     expect(projectDirMatchesPath(encoded, '/home/jeff/a.b')).toBe(true);
+  });
+
+  it('matches the folded dir Claude Code creates for a path containing _', () => {
+    // This repo lives under mcp_servers; Claude Code's dir is ...-mcp-servers-...
+    const p = 'C:\\Users\\jeff\\yaw\\mcp_servers\\ctxlint';
+    expect(projectDirMatchesPath('C--Users-jeff-yaw-mcp-servers-ctxlint', p)).toBe(true);
+    // The older, unfolded form still matches.
+    expect(projectDirMatchesPath('C--Users-jeff-yaw-mcp_servers-ctxlint', p)).toBe(true);
+  });
+
+  it('matches a lowercase drive letter against the uppercase dir name', () => {
+    expect(projectDirMatchesPath('C--Users-jeff-yaw-ctxlint', 'c:/Users/jeff/yaw/ctxlint')).toBe(
+      true,
+    );
+  });
+
+  it('matches when every non-alphanumeric character is folded to -', () => {
+    expect(
+      projectDirMatchesPath('-home-jeff-my-repo--scope-pkg-x', '/home/jeff/my repo/@scope/pkg+x'),
+    ).toBe(true);
+  });
+});
+
+describe('projectDirCandidates', () => {
+  it('lists the exact encoding first, then the folded forms, without duplicates', () => {
+    expect(projectDirCandidates('c:/x/my_repo v2')).toEqual([
+      'c--x-my_repo v2',
+      'C--x-my_repo v2',
+      'c--x-my-repo v2',
+      'C--x-my-repo v2',
+      'c--x-my-repo-v2',
+      'C--x-my-repo-v2',
+    ]);
+  });
+
+  it('offers a single candidate for a plain POSIX path', () => {
+    expect(projectDirCandidates('/home/jeff/repo')).toEqual(['-home-jeff-repo']);
   });
 });
 
@@ -276,6 +314,28 @@ describe('parseFrontmatter', () => {
   it('returns only body when frontmatter is unclosed', () => {
     const content = '---\nname: oops\nno closing delimiter';
     const result = parseFrontmatter(content);
+    expect(result.body).toBe(content);
+  });
+
+  it('parses the CRLF twin of a memory file identically to LF', () => {
+    // Windows checkouts with core.autocrlf=true produce CRLF memory files.
+    const lf = '---\nname: my-memory\ndescription: A test\ntype: feedback\n---\n\nbody';
+    const crlfResult = parseFrontmatter(lf.replace(/\n/g, '\r\n'));
+    expect(crlfResult).toEqual(parseFrontmatter(lf));
+    expect(crlfResult.name).toBe('my-memory');
+    expect(crlfResult.type).toBe('feedback');
+  });
+
+  it('closes on a fence with trailing whitespace, like the other frontmatter readers', () => {
+    const result = parseFrontmatter('---\nname: x\n---  \nbody');
+    expect(result.name).toBe('x');
+    expect(result.body).toBe('body');
+  });
+
+  it('does not close on an indented fence', () => {
+    const content = '---\nname: x\n  ---\nbody';
+    const result = parseFrontmatter(content);
+    expect(result.name).toBeUndefined();
     expect(result.body).toBe(content);
   });
 

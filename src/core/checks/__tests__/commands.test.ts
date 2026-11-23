@@ -337,7 +337,7 @@ describe('checkCommands', () => {
   // ---- Prohibition-scope tightening: four over-suppression shapes were
   // empirically confirmed (each probed to 0 flags while the doc MANDATED the
   // command, i.e. a genuine missing dep went unreported). Shapes 1-3 must
-  // flag; shape 4 is pinned as a deliberately accepted false negative. ----
+  // flag; shape 4 (a negation turned requirement) must flag too. ----
 
   // Shape 1a: "Instead of <bad way>, run `npx x`" RECOMMENDS the command --
   // comparative framings were dropped from the prohibition token set.
@@ -443,20 +443,30 @@ describe('checkCommands', () => {
     expect(issues.find((i) => i.ruleId === 'commands/npx-not-in-deps')).toBeUndefined();
   });
 
-  // Shape 4: known ACCEPTED false negative, pinned deliberately. "Don't
-  // forget to run `npx x`" suppresses even though the command is recommended:
-  // the negation binds to "forget", not the command, and telling those apart
-  // needs verb analysis this check deliberately avoids -- the module's
-  // documented posture is false-negative-over-false-positive for this
-  // warning-severity nudge. If this test starts failing because the mention
-  // now FLAGS, that's a posture change to make consciously, not a bug fix.
-  it('accepted false negative: "Don\'t forget to run `npx x`" stays suppressed', async () => {
-    seed(
-      {
-        'CLAUDE.md': "# Release\n\nDon't forget to run `npx changeset-tool` before releasing.\n",
-      },
-      { dependencies: {}, devDependencies: {} },
-    );
+  // Shape 4 (was a pinned accepted false negative): "Don't forget to run
+  // `npx x`" RECOMMENDS the command -- the negation binds to "forget". The
+  // same-line check now applies the list-lead rule: an omission verb (forget,
+  // skip, ...) or a without/until/unless condition that runs something turns
+  // the negation into a requirement, so the mention flags.
+  it.each([
+    ["Don't forget to run `npx changeset-tool` before releasing."],
+    ['Never skip running `npx changeset-tool` before releasing.'],
+    ['Never push without running `npx changeset-tool` first.'],
+    ['Do not merge until you run `npx changeset-tool`.'],
+  ])('flags a command a negation turns into a requirement (%s)', async (sentence) => {
+    seed({ 'CLAUDE.md': `# Release\n\n${sentence}\n` }, { dependencies: {}, devDependencies: {} });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/npx-not-in-deps')).toBeDefined();
+  });
+
+  // Control for shape 4: a true inline prohibition still suppresses, with or
+  // without a non-executing condition.
+  it.each([
+    ['Never run `npx changeset-tool` directly.'],
+    ['Never run without approval: `npx changeset-tool`.'],
+  ])('keeps suppressing a true inline prohibition (%s)', async (sentence) => {
+    seed({ 'CLAUDE.md': `# Release\n\n${sentence}\n` }, { dependencies: {}, devDependencies: {} });
     const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
     const issues = await checkCommands(parsed, tmpRoot);
     expect(issues.find((i) => i.ruleId === 'commands/npx-not-in-deps')).toBeUndefined();
@@ -792,10 +802,13 @@ describe('checkCommands', () => {
     expect(issues.find((i) => i.ruleId === 'commands/package-json-missing')).toBeUndefined();
   });
 
-  it('flags shorthand package manager test/build/etc. when script missing', async () => {
+  // `npm test` is the npm shorthand branch proper: npm needs `run` for every
+  // script EXCEPT its four lifecycle shorthands. (`pnpm test` would not reach
+  // that branch -- pnpm/yarn/bun take an implicit `run` for any script name.)
+  it('flags the npm `test` shorthand when the test script is missing', async () => {
     seed(
       {
-        'CLAUDE.md': '# Commands\n\n```bash\npnpm test\n```\n',
+        'CLAUDE.md': '# Commands\n\n```bash\nnpm test\n```\n',
       },
       { scripts: {} },
     );
@@ -803,7 +816,7 @@ describe('checkCommands', () => {
     const issues = await checkCommands(parsed, tmpRoot);
     const byRule = issues.find((i) => i.ruleId === 'commands/script-not-found');
     expect(byRule).toBeDefined();
-    expect(byRule!.message).toContain('test');
+    expect(byRule!.message).toBe('"npm test" — script "test" not found in package.json');
   });
 
   // Package-manager builtins invoked without `run` (`pnpm install`,
@@ -907,9 +920,6 @@ describe('checkCommands', () => {
     expect(byRule!.message).toContain('"missing"');
   });
 
-  // Cover the full set of shorthand package managers (the regex matches
-  // npm|pnpm|yarn|bun followed by test|start|build|dev|lint|…) so a future
-  // edit to the pattern can't silently drop one.
   // `bun test` runs Bun's builtin test runner — no `test` script required, so
   // it must never produce commands/script-not-found, even when package.json
   // has no `test` script. (`npm/pnpm/yarn test` DO resolve to a script and
@@ -938,6 +948,9 @@ describe('checkCommands', () => {
     expect(issues.find((i) => i.ruleId === 'commands/package-json-missing')).toBeUndefined();
   });
 
+  // Every manager and both spellings (implicit and explicit `run`) of the
+  // script-reference branch, so a future edit to the pattern can't silently
+  // drop one. The exact message pins WHICH token was read as the script.
   it.each([
     { cmd: 'yarn test', script: 'test' },
     { cmd: 'pnpm test', script: 'test' },
@@ -945,6 +958,8 @@ describe('checkCommands', () => {
     { cmd: 'bun start', script: 'start' },
     { cmd: 'bun run dev', script: 'dev' },
     { cmd: 'yarn run lint', script: 'lint' },
+    { cmd: 'npm run e2e', script: 'e2e' },
+    { cmd: 'npm start', script: 'start' },
   ])('flags $cmd when $script is missing from package.json', async ({ cmd, script }) => {
     seed(
       {
@@ -956,6 +971,380 @@ describe('checkCommands', () => {
     const issues = await checkCommands(parsed, tmpRoot);
     const byRule = issues.find((i) => i.ruleId === 'commands/script-not-found');
     expect(byRule).toBeDefined();
-    expect(byRule!.message).toContain(script);
+    expect(byRule!.message).toBe(`"${cmd}" — script "${script}" not found in package.json`);
+  });
+
+  // ---- pnpm/yarn/bun without `run` fall back to a dependency's bin or a file
+  // when no script has the name, so a missing script is not an error then. ----
+
+  it.each([
+    { cmd: 'pnpm vitest run', pkg: { devDependencies: { vitest: '^4' } } },
+    { cmd: 'pnpm tsc --noEmit', pkg: { devDependencies: { typescript: '^5' } } },
+    { cmd: 'yarn eslint .', pkg: { devDependencies: { eslint: '^9' } } },
+    { cmd: 'bun src/main.ts', pkg: {} },
+    { cmd: 'pnpm my-own-cli --help', pkg: { name: 'x', bin: { 'my-own-cli': 'cli.js' } } },
+  ])('does NOT flag "$cmd" as a missing script (bin or file)', async ({ cmd, pkg }) => {
+    seed({ 'CLAUDE.md': `# Commands\n\n\`\`\`bash\n${cmd}\n\`\`\`\n` }, { scripts: {}, ...pkg });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/script-not-found')).toBeUndefined();
+  });
+
+  it('does NOT flag `pnpm <bin>` when the bin is only in node_modules/.bin', async () => {
+    fs.mkdirSync(path.join(tmpRoot, 'node_modules', '.bin'), { recursive: true });
+    fs.writeFileSync(path.join(tmpRoot, 'node_modules', '.bin', 'some-bin'), '');
+    seed({ 'CLAUDE.md': '# Commands\n\n```bash\npnpm some-bin\n```\n' }, { scripts: {} });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/script-not-found')).toBeUndefined();
+  });
+
+  // Control: the fallback is only for implicit `run`. An explicit `pnpm run`
+  // never reaches a bin, and an unknown name is still a missing script.
+  it('still flags an explicit `pnpm run <dep-bin>` and an unknown implicit name', async () => {
+    seed(
+      { 'CLAUDE.md': '# Commands\n\n```bash\npnpm run vitest\npnpm nosuchthing\n```\n' },
+      { scripts: {}, devDependencies: { vitest: '^4' } },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(
+      issues.filter((i) => i.ruleId === 'commands/script-not-found').map((i) => i.line),
+    ).toEqual([4, 5]);
+  });
+
+  // ---- Nested context files resolve against the nearest package.json /
+  // Makefile, not only the project root's. ----
+
+  it("checks a nested doc's scripts against its own package.json", async () => {
+    seed(
+      {
+        'packages/web/package.json': JSON.stringify({ scripts: { dev: 'vite' } }),
+        'packages/web/CLAUDE.md': '# Web\n\n```bash\nnpm run dev\nnpm run gone\n```\n',
+      },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('packages/web/CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(
+      issues.filter((i) => i.ruleId === 'commands/script-not-found').map((i) => i.message),
+    ).toEqual(['"npm run gone" — script "gone" not found in package.json']);
+  });
+
+  it("checks a nested doc's make targets against its own Makefile", async () => {
+    seed(
+      {
+        'native/Makefile': 'build:\n\techo b\n',
+        'native/AGENTS.md': '# Native\n\n```bash\nmake build\nmake gone\n```\n',
+      },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('native/AGENTS.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/no-makefile')).toBeUndefined();
+    expect(
+      issues.filter((i) => i.ruleId === 'commands/make-target-not-found').map((i) => i.line),
+    ).toEqual([5]);
+  });
+
+  it('skips npm scripts and make targets after a cd earlier in the same fence', async () => {
+    seed(
+      {
+        'CLAUDE.md':
+          '# Sub\n\n```bash\ncd tools/other\nnpm run gone\nmake gone\n```\n\n```bash\nnpm run gone\n```\n',
+        Makefile: 'build:\n\techo b\n',
+      },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(
+      issues.filter((i) => i.ruleId !== 'commands/exit-status-masked').map((i) => i.line),
+    ).toEqual([10]);
+  });
+
+  // ---- npx resolves bin names, versions and the project's own package. ----
+
+  it.each([
+    { cmd: 'npx tsc --noEmit', pkg: { devDependencies: { typescript: '^5' } } },
+    { cmd: 'npx prettier@3 --check .', pkg: { devDependencies: { prettier: '^3' } } },
+    { cmd: 'npx biome check', pkg: { devDependencies: { '@biomejs/biome': '^2' } } },
+    { cmd: 'npx playwright test', pkg: { devDependencies: { '@playwright/test': '^1' } } },
+    { cmd: 'npx @acme/widget init', pkg: { name: '@acme/widget' } },
+    { cmd: 'npx @acme/widget@1.2.0 init', pkg: { name: '@acme/widget' } },
+    { cmd: 'npx widget init', pkg: { name: '@acme/widget', bin: { widget: 'cli.js' } } },
+  ])('does NOT flag "$cmd" as npx-not-in-deps', async ({ cmd, pkg }) => {
+    seed({ 'CLAUDE.md': `# Commands\n\n\`\`\`bash\n${cmd}\n\`\`\`\n` }, pkg);
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/npx-not-in-deps')).toBeUndefined();
+  });
+
+  it('still flags a versioned npx package that is not a dependency, naming it unversioned', async () => {
+    seed({ 'CLAUDE.md': '# Commands\n\n```bash\nnpx prettier@3 --check .\n```\n' }, {});
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    const byRule = issues.find((i) => i.ruleId === 'commands/npx-not-in-deps');
+    expect(byRule?.message).toBe(
+      '"npx prettier@3 --check ." — "prettier" not found in dependencies',
+    );
+  });
+
+  it('does not treat a prototype property as a dependency (npx constructor)', async () => {
+    seed({ 'CLAUDE.md': '# Commands\n\n```bash\nnpx constructor\n```\n' }, { devDependencies: {} });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/npx-not-in-deps')).toBeDefined();
+  });
+
+  // ---- Makefile target detection ----
+
+  it('finds a target anywhere in a multi-target rule line', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nmake test\nmake deps\nmake gone\n```\n',
+        Makefile: 'build test: deps\n\techo x\ndeps:\n\techo d\n',
+      },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(
+      issues.filter((i) => i.ruleId === 'commands/make-target-not-found').map((i) => i.message),
+    ).toEqual(['"make gone" — target "gone" not found in Makefile']);
+  });
+
+  it.each([
+    ['an ifeq with a $(...) test', 'ifeq ($(CI),true)\nbuild:\n\techo b\nendif\n'],
+    ['an ifneq with a $(...) test', 'ifneq ($(OS),Windows_NT)\nbuild:\n\techo b\nendif\n'],
+  ])(
+    'keeps a rule target list on one line, so %s before a rule does not open the target set',
+    async (_what, makefile) => {
+      seed(
+        {
+          'CLAUDE.md': '# Commands\n\n```bash\nmake build\nmake gone\n```\n',
+          Makefile: makefile,
+        },
+        { scripts: {} },
+      );
+      const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+      const issues = await checkCommands(parsed, tmpRoot);
+      expect(
+        issues.filter((i) => i.ruleId === 'commands/make-target-not-found').map((i) => i.line),
+      ).toEqual([5]);
+    },
+  );
+
+  it('does not read the words of an ifdef line before a rule as targets', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nmake CI\n```\n',
+        Makefile: 'ifdef CI\nbuild:\n\techo b\nendif\n',
+      },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(
+      issues.filter((i) => i.ruleId === 'commands/make-target-not-found').map((i) => i.line),
+    ).toEqual([4]);
+  });
+
+  it.each([
+    ['an include', 'include mk/common.mk\nbuild:\n\techo b\n'],
+    ['a -include', '-include local.mk\nbuild:\n\techo b\n'],
+    ['a pattern rule', '%.o: %.c\n\tcc -c $<\n'],
+    ['a computed target', '$(BIN): main.o\n\tcc -o $@ $^\n'],
+  ])('is silent on targets when the Makefile has %s', async (_what, makefile) => {
+    seed(
+      { 'CLAUDE.md': '# Commands\n\n```bash\nmake foo.o\n```\n', Makefile: makefile },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/make-target-not-found')).toBeUndefined();
+  });
+
+  it('recognises GNUmakefile as the makefile', async () => {
+    seed(
+      {
+        'CLAUDE.md': '# Commands\n\n```bash\nmake build\nmake gone\n```\n',
+        GNUmakefile: 'build:\n\techo b\n',
+      },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/no-makefile')).toBeUndefined();
+    expect(
+      issues.filter((i) => i.ruleId === 'commands/make-target-not-found').map((i) => i.line),
+    ).toEqual([5]);
+  });
+
+  it('does NOT report no-makefile for `make -C dir` / `make -f file`, which pick another makefile', async () => {
+    seed(
+      {
+        'CLAUDE.md':
+          '# Commands\n\n```bash\nmake -C native all\nmake -f build/ci.mk test\nmake --directory=native all\n```\n',
+      },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/no-makefile')).toBeUndefined();
+  });
+
+  // Control: a flag that does not pick a makefile still needs one.
+  it('still reports no-makefile for `make -j4 build`', async () => {
+    seed({ 'CLAUDE.md': '# Commands\n\n```bash\nmake -j4 build\n```\n' }, { scripts: {} });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/no-makefile')).toBeDefined();
+  });
+
+  // ---- pytest is a Python tool: no package.json nudge for it. ----
+
+  it('does not ask a Python repo for a package.json because of pytest', async () => {
+    seed({ 'CLAUDE.md': '# Commands\n\n```bash\npytest -q\n```\n' }, null);
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues).toEqual([]);
+  });
+
+  // ---- npm shorthands: only test/start/stop/restart run a script without `run`. ----
+
+  it('flags `npm build` even when a build script exists (npm has no build shorthand)', async () => {
+    seed({ 'CLAUDE.md': '# Commands\n\n```bash\nnpm build\n```\n' }, { scripts: { build: 'tsc' } });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    const byRule = issues.find((i) => i.ruleId === 'commands/script-not-found');
+    expect(byRule?.message).toBe(
+      '"npm build" — npm has no "build" shorthand; scripts other than test/start/stop/restart need `npm run`',
+    );
+    expect(byRule?.suggestion).toBe('Use "npm run build"');
+  });
+
+  it('reports `npm lint` as an invalid npm command, not a missing script', async () => {
+    seed({ 'CLAUDE.md': '# Commands\n\n```bash\nnpm lint\n```\n' }, { scripts: {} });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    const byRule = issues.find((i) => i.ruleId === 'commands/script-not-found');
+    expect(byRule?.message).toContain('npm has no "lint" shorthand');
+  });
+
+  it('does not flag `npm start` without a start script when server.js exists', async () => {
+    seed(
+      { 'CLAUDE.md': '# Commands\n\n```bash\nnpm start\n```\n', 'server.js': '' },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/script-not-found')).toBeUndefined();
+  });
+
+  it('does not read `npm test-unit` as the `npm test` shorthand', async () => {
+    seed(
+      { 'CLAUDE.md': '# Commands\n\n```bash\nnpm test-unit\n```\n' },
+      { scripts: { test: 'x' } },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.message.includes('script "test"'))).toBeUndefined();
+  });
+
+  // ---- package.json without a scripts key, and prototype names ----
+
+  it('reports a missing script when package.json has no scripts key at all', async () => {
+    seed({ 'CLAUDE.md': '# Commands\n\n```bash\nnpm run build\n```\n' }, { name: 'x' });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/script-not-found')).toBeDefined();
+  });
+
+  it('does not treat a prototype property as a script (npm run constructor)', async () => {
+    seed({ 'CLAUDE.md': '# Commands\n\n```bash\nnpm run constructor\n```\n' }, { scripts: {} });
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/script-not-found')).toBeDefined();
+  });
+
+  it('does not report a `<script>` placeholder as a missing script', async () => {
+    seed(
+      { 'CLAUDE.md': '# Commands\n\nRun any script with `npm run <script>` or `pnpm {name}`.\n' },
+      { scripts: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.find((i) => i.ruleId === 'commands/script-not-found')).toBeUndefined();
+  });
+
+  // ---- A prohibition heading / intro line governs the list under it. ----
+
+  it('suppresses list items under a prohibition heading', async () => {
+    seed(
+      {
+        'CLAUDE.md':
+          '# Rules\n\n## Never run these\n\n- `npx pkg-alpha`\n- `npx pkg-beta --prod`\n\nAlso avoid these:\n* `npx pkg-gamma`\n',
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.filter((i) => i.ruleId === 'commands/npx-not-in-deps')).toEqual([]);
+  });
+
+  // Control: the same list under a neutral heading, and a paragraph (not a
+  // list item) under the prohibition heading, still flag.
+  it('still flags list items under a neutral heading and prose under a prohibition heading', async () => {
+    seed(
+      {
+        'CLAUDE.md':
+          '# Rules\n\n## Commands\n\n- `npx pkg-alpha`\n\n## Never run these\n\nInstead use `npx pkg-beta`.\n',
+      },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(
+      issues.filter((i) => i.ruleId === 'commands/npx-not-in-deps').map((i) => i.line),
+    ).toEqual([5, 9]);
+  });
+
+  // A lead line can carry a negation and still REQUIRE the list: the negation
+  // governs "push"/"forget", and "without"/"forget" flip it back.
+  it.each([
+    ['Never push without running:'],
+    ["Don't forget to run:"],
+    ['Do not merge until you run:'],
+    ['## Never skip these'],
+  ])('still flags list items under a requirement lead (%s)', async (lead) => {
+    seed(
+      { 'CLAUDE.md': `# Rules\n\n${lead}\n\n- \`npx pkg-alpha\`\n- \`npx pkg-beta\`\n` },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(
+      issues.filter((i) => i.ruleId === 'commands/npx-not-in-deps').map((i) => i.line),
+    ).toEqual([5, 6]);
+  });
+
+  it.each([
+    ['Never run these:'],
+    ["Don't use the following:"],
+    ['Avoid:'],
+    // A condition on the prohibition does not turn it into a requirement: the
+    // commands are still the forbidden set.
+    ['Never run these without approval:'],
+    ['Never run these unless you are the release owner:'],
+    ["Don't run these until main is green:"],
+  ])('suppresses list items under a true prohibition lead (%s)', async (lead) => {
+    seed(
+      { 'CLAUDE.md': `# Rules\n\n${lead}\n\n- \`npx pkg-alpha\`\n- \`npx pkg-beta\`\n` },
+      { dependencies: {}, devDependencies: {} },
+    );
+    const parsed = parseContextFile(discoveredIn('CLAUDE.md'));
+    const issues = await checkCommands(parsed, tmpRoot);
+    expect(issues.filter((i) => i.ruleId === 'commands/npx-not-in-deps')).toEqual([]);
   });
 });

@@ -48,14 +48,6 @@ export interface CatalogMeta {
   spec: string | null;
   /** Human label used in README's "Specifications" family table. */
   label: string;
-  /**
-   * Rule-ID format the catalog uses. ctxlint catalogs use `category/slug`
-   * (a `/` separator); the sibling mcp-compliance project uses
-   * `category-suffix` (a `-` separator). Documented here so the difference is
-   * deliberate and machine-checkable, not accidental drift. See
-   * docs/research / CONTRIBUTING for the canonical rationale.
-   */
-  ruleIdFormat: 'category/slug';
 }
 
 /**
@@ -68,28 +60,24 @@ export const CATALOGS: readonly CatalogMeta[] = [
     catalog: 'context-lint-rules.json',
     spec: 'CONTEXT_LINT_SPEC.md',
     label: 'AI Context File Linting Spec',
-    ruleIdFormat: 'category/slug',
   },
   {
     key: 'mcp-config',
     catalog: 'mcp-config-lint-rules.json',
     spec: 'MCP_CONFIG_LINT_SPEC.md',
     label: 'MCP Config Linting Spec',
-    ruleIdFormat: 'category/slug',
   },
   {
     key: 'agent-session',
     catalog: 'agent-session-lint-rules.json',
     spec: 'AGENT_SESSION_LINT_SPEC.md',
     label: 'Agent Session Linting Spec',
-    ruleIdFormat: 'category/slug',
   },
   {
     key: 'agent-skill',
     catalog: 'agent-skill-lint-rules.json',
     spec: 'AGENT_SKILL_LINT_SPEC.md',
     label: 'Agent Skill Linting Spec',
-    ruleIdFormat: 'category/slug',
   },
 ];
 
@@ -102,7 +90,14 @@ export interface CatalogShape {
   mcpSpecCompatibility?: string;
   repository?: string;
   categories?: Array<{ id: string; name?: string; description?: string }>;
-  rules?: Array<{ id: string; category: string; severity: string }>;
+  rules?: Array<{
+    id: string;
+    category: string;
+    severity: string;
+    fixable?: boolean;
+    severityByFormat?: Record<string, string>;
+    severityVariants?: Array<{ severity: string; when: string; message?: string }>;
+  }>;
   [k: string]: unknown;
 }
 
@@ -116,15 +111,4 @@ export function readCatalog(meta: CatalogMeta): CatalogShape {
 export function ruleCount(meta: CatalogMeta): number {
   const c = readCatalog(meta);
   return Array.isArray(c.rules) ? c.rules.length : 0;
-}
-
-/**
- * Number of distinct categories actually used by a catalog's rules.
- * Intentionally retained for API parity with `ruleCount`; not currently
- * consumed by the TS layer (the .mjs prose generator computes its own).
- */
-export function categoryCount(meta: CatalogMeta): number {
-  const c = readCatalog(meta);
-  const used = new Set((c.rules ?? []).map((r) => r.category));
-  return used.size;
 }

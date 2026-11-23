@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { stripBom } from '../../utils/fs.js';
-import { CONTINUATION, shellWords } from './gradle-projects.js';
+import { PLACEHOLDER_NAME, readUtf8BuildFile } from './jvm-shared.js';
+import { endsWithContinuation, shellWords, stripCommandPrefix } from './shell-words.js';
 
 /**
  * Static analysis behind `commands/maven-module-not-found`.
@@ -69,7 +69,9 @@ export function readMavenReactor(baseDir: string): ReactorProject[] | null {
 
     let xml: string;
     try {
-      xml = readXml(pomFile);
+      // Throws on a UTF-16 POM (BOM or NUL bytes): valid XML that Maven reads,
+      // but read as UTF-8 it parses as an empty project with no modules.
+      xml = readUtf8BuildFile(pomFile);
     } catch {
       // A module listed but absent fails the build on its own; it cannot be
       // proven absent from the reactor either way, so the set is unknowable.
@@ -101,17 +103,6 @@ export function realPath(p: string): string | null {
   } catch {
     return null;
   }
-}
-
-/**
- * Read a POM as text. A UTF-16 POM (BOM or NUL bytes) is valid XML that Maven
- * reads, but read as UTF-8 it parses as an empty project with no modules; it
- * throws instead, so the reactor is treated as unknowable.
- */
-function readXml(file: string): string {
-  const buf = fs.readFileSync(file);
-  if (buf.includes(0)) throw new Error('not UTF-8');
-  return stripBom(buf.toString('utf-8'));
 }
 
 interface PomModel {
@@ -229,7 +220,7 @@ function decodeEntities(s: string): string {
 const MAVEN_HEAD = /^(?:\.[\\/])?mvnw(?:\.cmd)?$|^mvn(?:\.cmd)?$/;
 
 /** Options that consume the next token as their value (CLIManager 3.9 and 4.0, union). */
-const VALUE_OPTIONS = new Set([
+const MAVEN_VALUE_OPTIONS = new Set([
   '-D',
   '--define',
   '-P',
@@ -266,15 +257,30 @@ const VALUE_OPTIONS = new Set([
  * Options that change the reactor the selectors resolve against: `-f` re-roots
  * it, `-N` shrinks it to one POM, `-af` reads further arguments from a file.
  */
-const RETARGET_OPTIONS = new Set(['-f', '--file', '-N', '--non-recursive', '-af', '--at-file']);
+const MAVEN_RETARGET_OPTIONS = new Set([
+  '-f',
+  '--file',
+  '-N',
+  '--non-recursive',
+  '-af',
+  '--at-file',
+]);
 
 /**
- * Names documentation uses as stand-ins for a real module, tested against the
- * whole selector and against its artifactId part (`:module`,
- * `com.example:my-module`). Mirrors PLACEHOLDER_SEGMENT in gradle-projects.ts.
+ * A selector that is documentation shorthand rather than a module: a marked
+ * placeholder (`<module>`, `{module}`, `${module}`, `%MODULE%`, `[module]`,
+ * `...`, `path/to/...`), or -- tested against the whole selector and against
+ * its artifactId part (`:module`, `com.example:my-module`) -- one of the
+ * placeholder names shared with the Gradle check.
  */
-const PLACEHOLDER =
-  /[<>{}$*%[\]]|\.\.\.|^path\/to\/|^(?:module|project|submodule|component|feature)(?:[-_]?(?:name|path|id))?$|^(?:my|your|some|example|sample)[-_]|^(?:foo|bar|baz|xxx|name)$/i;
+const PLACEHOLDER_MARKER = /[<>{}$*%[\]]|\.\.\.|^path\/to\//;
+
+function isPlaceholderSelector(sel: string): boolean {
+  const idPart = sel.slice(sel.lastIndexOf(':') + 1);
+  return (
+    PLACEHOLDER_MARKER.test(sel) || PLACEHOLDER_NAME.test(sel) || PLACEHOLDER_NAME.test(idPart)
+  );
+}
 
 /** One module selector found in a Maven command. */
 export interface MavenSelector {
@@ -289,11 +295,14 @@ export interface MavenSelector {
  * command is not a Maven invocation or retargets the reactor.
  */
 export function mavenSelectors(cmd: string): MavenSelector[] | null {
-  const tokens = shellWords(cmd);
-  if (!tokens || tokens.length === 0 || !MAVEN_HEAD.test(tokens[0])) return null;
+  const words = shellWords(cmd);
+  if (!words) return null;
+  const tokens = stripCommandPrefix(words);
+  if (tokens.length === 0 || !MAVEN_HEAD.test(tokens[0])) return null;
   // The command continues on a line we do not see (`-pl core \`), which may
-  // add `-f` or the real selector list.
-  if (tokens.some((t) => CONTINUATION.test(t))) return null;
+  // add `-f` or the real selector list. Same trailing-only rule as Gradle: a
+  // mid-line marker is an escape, not a line break.
+  if (endsWithContinuation(tokens)) return null;
 
   const out: MavenSelector[] = [];
   const addList = (option: string, value: string, isList: boolean): void => {
@@ -302,8 +311,7 @@ export function mavenSelectors(cmd: string): MavenSelector[] | null {
       if (isList) sel = sel.replace(/^[!+-]/, '');
       // `?sel` is optional in Maven 4: a miss is logged, not fatal.
       if (!sel || sel.startsWith('?')) continue;
-      const idPart = sel.slice(sel.lastIndexOf(':') + 1);
-      if (PLACEHOLDER.test(sel) || PLACEHOLDER.test(idPart)) continue;
+      if (isPlaceholderSelector(sel)) continue;
       out.push({ selector: sel, option });
     }
   };
@@ -313,7 +321,7 @@ export function mavenSelectors(cmd: string): MavenSelector[] | null {
     if (!tok.startsWith('-')) continue;
     const eq = tok.indexOf('=');
     const bare = eq > 0 && tok.startsWith('--') ? tok.slice(0, eq) : tok;
-    if (RETARGET_OPTIONS.has(bare)) return null;
+    if (MAVEN_RETARGET_OPTIONS.has(bare)) return null;
     // `-fpom.xml` attaches the value to a single-char option.
     if (/^-f[^\w-]?.+/.test(tok) && !/^-(?:fae|ff|fn|fos)$/.test(tok)) return null;
 
@@ -327,7 +335,7 @@ export function mavenSelectors(cmd: string): MavenSelector[] | null {
       }
       continue;
     }
-    if (VALUE_OPTIONS.has(tok)) i++;
+    if (MAVEN_VALUE_OPTIONS.has(tok)) i++;
   }
   return out;
 }

@@ -1,8 +1,8 @@
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { resolve, isAbsolute } from 'node:path';
 import type { LintIssue, SessionContext } from '../../types.js';
 import { projectDirMatchesPath } from '../../session-parser.js';
+import { homeDir } from '../../../utils/claude-home.js';
 
 /**
  * Resolve a reference to an absolute filesystem path for existence checking.
@@ -13,10 +13,11 @@ import { projectDirMatchesPath } from '../../session-parser.js';
  */
 function resolveRef(ref: string, projectRoot: string): string | null {
   if (ref.startsWith('~/') || ref === '~') {
-    // Mirror the home-scoped scanners (session-scanner.ts, skill-scanner.ts,
-    // memory-index-overflow.ts): fall back to os.homedir() so ~/ refs still
-    // resolve when neither HOME nor USERPROFILE is set.
-    const home = process.env.HOME || process.env.USERPROFILE || homedir();
+    // The same home the home-scoped scanners resolve (utils/claude-home.ts),
+    // os.homedir() fallback included, so ~/ refs still resolve when neither
+    // HOME nor USERPROFILE is set. `~` is the HOME directory, not the Claude
+    // config dir: a memory saying `~/.claude/x` means exactly that path.
+    const home = homeDir();
     if (!home) return null;
     return ref === '~' ? home : resolve(home, ref.slice(2));
   }

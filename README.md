@@ -23,7 +23,7 @@ Multiply that across a team with 5 context files, 3 MCP configs, and 2 people wh
 
 ctxlint is a linter purpose-built for this. It reads your context files, cross-references them against your actual codebase, and catches the drift before your agent does.
 
-- **Instant startup** — ships as a single self-contained bundle with zero runtime dependencies. `npx` downloads a ~400 KB tarball and starts immediately
+- **Instant startup** — ships as a single self-contained bundle with zero runtime dependencies. `npx` downloads a ~670 KB tarball and starts immediately
 - **Catches real problems** — broken paths, wrong commands, stale references, contradictions across files
 - **Smart suggestions** — detects git renames and fuzzy-matches to suggest the right path
 - **Auto-fix** — `--fix` rewrites broken paths automatically using git history
@@ -69,31 +69,31 @@ Useful if you want `ctxlint` available in every project without per-project setu
 
 ## What It Checks
 
-| Check                    | What it finds                                                                                                                                                                                                                                                                    |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Broken paths**         | File references in context that don't exist in your project                                                                                                                                                                                                                      |
-| **Wrong commands**       | Build/test commands that don't match your package.json scripts or Makefile targets, and Gradle project paths or Maven `-pl` modules your build doesn't declare                                                                                                                   |
-| **Stale context**        | Context files not updated after recent code changes                                                                                                                                                                                                                              |
-| **Token waste**          | How much context window your files consume per session                                                                                                                                                                                                                           |
-| **Redundancy**           | Content the agent can already infer (e.g. "We use React" when react is in package.json)                                                                                                                                                                                          |
-| **Contradictions**       | Conflicting directives across context files (e.g. "use Jest" in one, "use Vitest" in another)                                                                                                                                                                                    |
-| **Frontmatter**          | Invalid or missing YAML frontmatter in Cursor .mdc, Copilot instructions, and Windsurf rules                                                                                                                                                                                     |
-| **CI coverage**          | Release/deploy workflows in `.github/workflows/` not documented in any context file                                                                                                                                                                                              |
-| **CI secrets**           | Secrets used in CI workflows (`${{ secrets.X }}`) not mentioned in context files                                                                                                                                                                                                 |
-| **Inline secrets**       | Real secrets pasted into context files — private-key headers, AWS/GitHub/Anthropic/OpenAI/npm/Slack/Google/Stripe token shapes. Messages never echo the secret (6-char redacted prefix only)                                                                                     |
-| **Dead hooks**           | PreToolUse hooks / permissions entries in `.claude/settings.json` pointing at scripts that no longer exist (a dead gate silently no-ops). Scans project `.claude/settings.json[.local]` by default; pass `--hooks-global` to also scan the user-global `~/.claude/settings.json` |
-| **Missing secrets**      | GitHub secrets set on sibling repos but missing from current project                                                                                                                                                                                                             |
-| **Diverged configs**     | Canonical config files (CI, tsconfig, etc.) drifting across sibling projects                                                                                                                                                                                                     |
-| **Missing workflows**    | GitHub Actions workflows present in 2+ siblings but absent here                                                                                                                                                                                                                  |
-| **Stale memory**         | Claude Code memory entries referencing paths that no longer exist                                                                                                                                                                                                                |
-| **Duplicate memory**     | Near-duplicate memories across projects (>60% content overlap)                                                                                                                                                                                                                   |
-| **Loop detection**       | Agent stuck in loops — repeated commands or cyclic patterns in session history                                                                                                                                                                                                   |
-| **Memory overflow**      | `MEMORY.md` past Claude Code's 200-line / 25KB session-load cap — entries beyond it are invisible to the agent                                                                                                                                                                   |
-| **Shared temp path**     | A fixed temp path (e.g. `/tmp/pkg.bak`) the agent writes and later reads back — any concurrent session can overwrite it in between                                                                                                                                               |
-| **Unverified gate**      | A lint/typecheck/test/build run that errored or printed nothing, followed by agent prose claiming it passed                                                                                                                                                                      |
-| **Default-branch edits** | 10+ files edited on `main`/`master` with no intervening commit or branch-away                                                                                                                                                                                                    |
-| **Unresolvable SHA**     | A memory cites a commit SHA that does not resolve in this repository                                                                                                                                                                                                             |
-| **Large reads**          | Whole-file Reads of 4,000+ tokens, with an estimate of the tokens they re-send as cached context on later turns (an info-level baseline)                                                                                                                                         |
+| Check                    | What it finds                                                                                                                                                                                                                                                                   |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Broken paths**         | File references in context that don't exist in your project. Existence is case-exact on every OS, so `src/Utils.ts` for `src/utils.ts` is reported on Windows and macOS too                                                                                                     |
+| **Wrong commands**       | Build/test commands that don't match your package.json scripts or Makefile targets, and Gradle project paths or Maven `-pl` modules your build doesn't declare                                                                                                                  |
+| **Stale context**        | Context files not updated after recent code changes                                                                                                                                                                                                                             |
+| **Token waste**          | How much context window your files consume per session                                                                                                                                                                                                                          |
+| **Redundancy**           | Content the agent can already infer (e.g. "We use React" when react is in package.json)                                                                                                                                                                                         |
+| **Contradictions**       | Conflicting directives across context files (e.g. "use Jest" in one, "use Vitest" in another)                                                                                                                                                                                   |
+| **Frontmatter**          | Invalid or missing YAML frontmatter in Cursor .mdc, Copilot `.github/instructions/*.instructions.md`, and Windsurf rules                                                                                                                                                        |
+| **CI coverage**          | Release/deploy workflows in `.github/workflows/` not documented in any context file                                                                                                                                                                                             |
+| **CI secrets**           | Secrets used in CI workflows (`${{ secrets.X }}`) not mentioned in context files                                                                                                                                                                                                |
+| **Inline secrets**       | Real secrets pasted into context files — private-key headers, AWS/GitHub/Anthropic/OpenAI/npm/Slack/Google/Stripe token shapes. Messages never echo the secret (6-char redacted prefix only)                                                                                    |
+| **Dead hooks**           | Hook commands and `permissions.allow` entries in `.claude/settings.json` pointing at scripts or paths that no longer exist (a dead gate silently no-ops). Scans project `.claude/settings.json[.local]` by default; pass `--hooks-global` to also scan the user-global settings |
+| **Missing secrets**      | GitHub secrets set on sibling repos but missing from current project                                                                                                                                                                                                            |
+| **Diverged configs**     | Canonical config files (CI, tsconfig, etc.) drifting across sibling projects                                                                                                                                                                                                    |
+| **Missing workflows**    | GitHub Actions workflows present in 2+ siblings but absent here                                                                                                                                                                                                                 |
+| **Stale memory**         | Claude Code memory entries referencing paths that no longer exist                                                                                                                                                                                                               |
+| **Duplicate memory**     | Near-duplicate memories across projects (>60% content overlap)                                                                                                                                                                                                                  |
+| **Loop detection**       | Agent stuck in loops — repeated commands or cyclic patterns in session history                                                                                                                                                                                                  |
+| **Memory overflow**      | `MEMORY.md` past Claude Code's 200-line / 25KB session-load cap — entries beyond it are invisible to the agent                                                                                                                                                                  |
+| **Shared temp path**     | A fixed temp path (e.g. `/tmp/pkg.bak`) the agent writes and later reads back — any concurrent session can overwrite it in between                                                                                                                                              |
+| **Unverified gate**      | A lint/typecheck/test/build run that errored or printed nothing, followed by agent prose claiming it passed                                                                                                                                                                     |
+| **Default-branch edits** | 10+ files edited on `main`/`master` with no intervening commit or branch-away                                                                                                                                                                                                   |
+| **Unresolvable SHA**     | A memory cites a commit SHA that does not resolve in this repository                                                                                                                                                                                                            |
+| **Large reads**          | Whole-file Reads of 4,000+ tokens, with an estimate of the tokens they re-send as cached context on later turns (an info-level baseline)                                                                                                                                        |
 
 ## Supported Context Files
 
@@ -105,7 +105,7 @@ Useful if you want `ctxlint` available in every project without per-project setu
 | `.github/copilot-instructions.md`, `.github/instructions/*.md`, `.github/git-commit-instructions.md` | GitHub Copilot              |
 | `.windsurfrules`, `.windsurf/rules/*.md`                                                             | Windsurf                    |
 | `GEMINI.md`                                                                                          | Gemini CLI                  |
-| `.clinerules`                                                                                        | Cline                       |
+| `.clinerules`, `.clinerules/*.md`                                                                    | Cline                       |
 | `.aiderules`                                                                                         | Aider                       |
 | `.aide/rules/*.md`                                                                                   | Aide / Codestory            |
 | `.amazonq/rules/*.md`                                                                                | Amazon Q Developer          |
@@ -141,20 +141,32 @@ npx @yawlabs/ctxlint@latest --mcp-global
 | `.amazonq/mcp.json`           | Amazon Q Developer                     |
 | `.continue/mcpServers/*.json` | Continue                               |
 
-With `--mcp-global`, also scans Claude Desktop, Cursor, Windsurf, and Amazon Q global configs.
+With `--mcp-global`, also scans the user-level configs:
+
+| File                                                                                                                                                                                         | Client         |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- |
+| `~/.claude.json` (top-level `mcpServers`, or non-empty `projects.*.mcpServers` from `claude mcp add`)                                                                                        | Claude Code    |
+| `~/.claude/settings.json` (only when it has a top-level `mcpServers` or `servers` key)                                                                                                       | Claude Code    |
+| `claude_desktop_config.json` (`~/Library/Application Support/Claude/` on macOS, `%APPDATA%\Claude\` on Windows)                                                                              | Claude Desktop |
+| `~/.cursor/mcp.json`                                                                                                                                                                         | Cursor         |
+| `~/.codeium/windsurf/mcp_config.json`                                                                                                                                                        | Windsurf       |
+| `~/.aws/amazonq/mcp.json`                                                                                                                                                                    | Amazon Q       |
+| `saoudrizwan.claude-dev/settings/cline_mcp_settings.json` in VS Code's `globalStorage`, and the Cline CLI's `~/.cline/data/settings/cline_mcp_settings.json` (or `$CLINE_MCP_SETTINGS_PATH`) | Cline          |
+
+When `CLAUDE_CONFIG_DIR` is set, `settings.json` is read from that directory, and `.claude.json` is read from it too, falling back to `~/.claude.json`. Config `exclude` globs also drop project MCP configs.
 
 ### What MCP config checks catch
 
-| Check           | What it finds                                                                          |
-| --------------- | -------------------------------------------------------------------------------------- |
-| **Schema**      | Invalid JSON, wrong root key (`servers` vs `mcpServers`), missing required fields      |
-| **Security**    | Hardcoded API keys and Bearer tokens in git-tracked config files                       |
-| **Commands**    | Missing `cmd /c` wrapper for npx on Windows, broken file paths in args                 |
-| **Deprecated**  | SSE transport usage (deprecated March 2025, use Streamable HTTP)                       |
-| **Env vars**    | Wrong env var syntax for the client (`${VAR}` vs `${env:VAR}` vs `${{ secrets.VAR }}`) |
-| **URLs**        | Malformed URLs, localhost in project configs, missing path component                   |
-| **Consistency** | Same server configured differently across client configs                               |
-| **Redundancy**  | Disabled servers, identical configs at multiple scopes                                 |
+| Check           | What it finds                                                                                                                                          |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Schema**      | Invalid JSON, wrong root key (`servers` vs `mcpServers`), missing required fields                                                                      |
+| **Security**    | Hardcoded API keys, JWTs, Bearer and other `Authorization` credentials, and credentials in URLs (query string or userinfo) in git-tracked config files |
+| **Commands**    | Missing `cmd /c` wrapper for npx on Windows, broken file paths in args                                                                                 |
+| **Deprecated**  | SSE transport usage (deprecated March 2025, use Streamable HTTP)                                                                                       |
+| **Env vars**    | Wrong env var syntax for the client (`${VAR}` vs `${env:VAR}` vs `${{ secrets.VAR }}`)                                                                 |
+| **URLs**        | Malformed URLs or a scheme other than http/https/ws/wss, localhost in project configs, missing path component                                          |
+| **Consistency** | Same server configured differently across client configs                                                                                               |
+| **Redundancy**  | Disabled servers, identical configs at multiple scopes                                                                                                 |
 
 ### Example MCP config output
 
@@ -166,7 +178,7 @@ MCP Configs
     ✓ mcp-schema
     ✓ mcp-commands
   .cursor/mcp.json
-    ✗ mcp-env  Server "api": Cursor uses ${env:VAR}, not ${VAR}
+    ✗ mcp-env  Server "api": Cursor uses ${env:VAR}, not ${VAR} (${API_KEY})
     ✓ mcp-schema
   .vscode/mcp.json
     ✗ mcp-schema  .vscode/mcp.json must use "servers" as root key, not "mcpServers"
@@ -208,22 +220,26 @@ Session checks are **opt-in** because they access files outside the project dire
 
 Checks whose signal is what the agent did (commands run, files written or read) also read the current project's Claude Code session transcripts, `~/.claude/projects/<encoded-project>/*.jsonl`, bounded to the 5 most recent.
 
+### Claude Code config directory
+
+Every Claude Code path ctxlint reads outside the project follows `CLAUDE_CONFIG_DIR` when it is set, the way Claude Code itself does: history, memories and transcripts (`--session`), skills and agents (`--skills`), the user-global `settings.json` (`--hooks-global`, `--mcp-global` and the `tier-tokens/hard-enforcement-missing` hook lookup), and `.claude.json` (`--mcp-global`). Codex history follows `CODEX_HOME`. The home directory is resolved as Claude Code resolves it: `USERPROFILE` before `HOME` on Windows.
+
 ### What session checks catch
 
-| Check                     | What it finds                                                                                                                                    |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Missing secrets**       | `gh secret set` ran on 2+ sibling repos but not this one                                                                                         |
-| **Diverged configs**      | Shared config files (CI workflows, tsconfig, .prettierrc, etc.) with 20-90% line overlap — enough to be related, different enough to be drifting |
-| **Missing workflows**     | GitHub Actions workflows in 2+ siblings but absent from this project                                                                             |
-| **Stale memory**          | Memory entries referencing file paths that no longer exist                                                                                       |
-| **Duplicate memory**      | Near-duplicate memory entries across projects (>60% overlap)                                                                                     |
-| **Loop detection**        | Agent stuck in a loop — 3+ consecutive identical commands, or cyclic A,B,A,B patterns                                                            |
-| **Memory index overflow** | `MEMORY.md` exceeds Claude Code's documented 200-line / 25KB session-load cap, so entries past the cap are invisible to the agent                |
-| **Shared temp path**      | A fixed temp path (e.g. `/tmp/pkg.bak`) the agent writes and later reads back — any concurrent session can overwrite it in between               |
-| **Unverified gate**       | A lint/typecheck/test/build run that errored or printed nothing, followed by agent prose claiming it passed                                      |
-| **Default-branch edits**  | 10+ files edited on `main`/`master` with no intervening commit or branch-away                                                                    |
-| **Unresolvable SHA**      | A memory cites a commit SHA that does not resolve in this repository                                                                             |
-| **Large reads**           | Whole-file Reads of 4,000+ tokens, with an estimate of the tokens they re-send as cached context on later turns (an info-level baseline)         |
+| Check                     | What it finds                                                                                                                                                                                                                          |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Missing secrets**       | `gh secret set` ran on 2+ sibling repos but not this one                                                                                                                                                                               |
+| **Diverged configs**      | Shared config files (CI workflows, tsconfig, .prettierrc, etc.) with 20-90% line overlap (50-90% for `.gitignore` and `tsconfig.json`) with a sibling of the same GitHub owner — enough to be related, different enough to be drifting |
+| **Missing workflows**     | GitHub Actions workflows in 2+ siblings but absent from this project                                                                                                                                                                   |
+| **Stale memory**          | Memory entries referencing file paths that no longer exist                                                                                                                                                                             |
+| **Duplicate memory**      | Near-duplicate memory entries across projects (>60% overlap)                                                                                                                                                                           |
+| **Loop detection**        | Agent stuck in a loop — 3+ consecutive identical commands, or cyclic A,B,A,B patterns                                                                                                                                                  |
+| **Memory index overflow** | `MEMORY.md` exceeds Claude Code's documented 200-line / 25KB session-load cap, so entries past the cap are invisible to the agent                                                                                                      |
+| **Shared temp path**      | A fixed temp path (e.g. `/tmp/pkg.bak`) the agent writes and later reads back — any concurrent session can overwrite it in between                                                                                                     |
+| **Unverified gate**       | A lint/typecheck/test/build run that errored or printed nothing, followed by agent prose claiming it passed                                                                                                                            |
+| **Default-branch edits**  | 10+ files edited on `main`/`master` with no intervening commit or branch-away                                                                                                                                                          |
+| **Unresolvable SHA**      | A memory cites a commit SHA that does not resolve in this repository                                                                                                                                                                   |
+| **Large reads**           | Whole-file Reads of 4,000+ tokens, with an estimate of the tokens they re-send as cached context on later turns (an info-level baseline)                                                                                               |
 
 ### Session Linting Specification
 
@@ -293,9 +309,11 @@ Options:
   -h, --help                Display help
 
 Commands:
-  init                 Set up a git pre-commit hook
+  init [path]          Set up a git pre-commit hook that runs ctxlint --strict
   serve                Start the MCP server (same as --mcp-server)
 ```
+
+`--lsp` speaks JSON-RPC over stdio on its own; an editor's `--stdio` / `--clientProcessId` transport flags are accepted and ignored. `ctxlint serve --help` prints the serve usage, and `ctxlint serve --version` the version. A first argument of `serve` always starts the MCP server, so to lint a directory named `serve`, pass it as a path: `ctxlint ./serve`. `--lsp` and `--mcp-server` count only as standalone options (`--checks --lsp` is a checks list), and alongside `--help` or `--version` they print help or the version instead of starting a server.
 
 **Available checks:** `paths`, `commands`, `staleness`, `tokens`, `tier-tokens`, `redundancy`, `contradictions`, `frontmatter`, `ci-coverage`, `ci-secrets`, `content-secrets`, `hook-coverage`, `mcp-schema`, `mcp-security`, `mcp-commands`, `mcp-deprecated`, `mcp-env`, `mcp-urls`, `mcp-consistency`, `mcp-redundancy`, `session-missing-secret`, `session-diverged-file`, `session-missing-workflow`, `session-stale-memory`, `session-duplicate-memory`, `session-loop-detection`, `session-memory-index-overflow`, `session-shared-temp-path`, `session-unverified-gate-claimed-clean`, `session-default-branch-accumulation`, `session-unresolvable-sha`, `session-large-read`, `skill-frontmatter`, `skill-broken-ref`, `skill-trigger-collision`, `skill-orphaned`, `skill-dead-tool-restriction`
 
@@ -307,7 +325,7 @@ Passing any `mcp-*` check name implies `--mcp`. Passing any `session-*` check na
 npx @yawlabs/ctxlint@latest --watch
 ```
 
-Re-lints automatically when any context file, MCP config, or `package.json` changes. Useful during development when you're editing context files alongside code.
+Re-lints automatically when any context file, MCP config, `package.json`, `.ctxlintrc[.json]`, `.ctxlintignore`, `.claude/settings.json`, `.claude/settings.local.json`, or anything under `.github/workflows/` or `.claude/hooks/` changes. Useful during development when you're editing context files alongside code. With `--format json` or `sarif` the watch banner goes to stderr, and `--quiet` suppresses it. If the project watcher cannot start, ctxlint exits 2 with `Error: cannot watch <root>: ...`.
 
 ## Use in CI
 
@@ -324,7 +342,7 @@ Re-lints automatically when any context file, MCP config, or `package.json` chan
 | `1`  | Strict mode caught at least one error or warning (`--strict` is set) |
 | `2`  | Config error, invalid CLI option, or internal failure                |
 
-In non-strict mode ctxlint always exits `0` — it's a reporting tool by default. Pass `--strict` to enforce in CI.
+In non-strict mode ctxlint always exits `0` — it's a reporting tool by default. Pass `--strict` to enforce in CI. An internal failure prints `Error: <message>` on stderr (no stack trace).
 
 ### GitHub Action
 
@@ -354,13 +372,17 @@ Or with options:
     sarif_file: ctxlint.sarif
 ```
 
+Each SARIF result's `ruleId` is the specific rule (`ctxlint/paths/not-found`), with a matching rule descriptor. Artifact URIs are percent-encoded with forward slashes. Cross-file findings (`(project)`, `(mcp)`, session and skill buckets) carry their label as a `logicalLocation`, plus a `physicalLocation` at line 1 of an anchor file when the scan has one, so Code Scanning can show them. Hook-coverage findings are filed under the `.claude/settings.json` or `.claude/settings.local.json` they come from (user-global ones stay under `(project)`).
+
 ## Auto-fix
 
 ```bash
 npx @yawlabs/ctxlint@latest --fix
 ```
 
-When a broken path was renamed in git or has a close match in the project, `--fix` rewrites the context file automatically.
+When a broken path was renamed in git or has a close match in the project, `--fix` rewrites the context file automatically. With `--mcp`, it also moves hardcoded MCP secrets into environment-variable references written in the client's own syntax (`${VAR}`, `${env:VAR}` or `${{ secrets.VAR }}`), replacing only the secret itself. There is no secret fix for Claude Desktop, Amazon Q or Cline, whose configs have no interpolation.
+
+`--fix` asks for confirmation only when both stdin and stdout are terminals (`--yes` skips it, `--quiet` does not). The log groups lines under a header naming each file and redacts secrets. A fix whose text is no longer on its line is logged as `Skipped: text not found on line N`. For JSON files the post-fix parse check compares against how well the original parsed, so a BOM-prefixed or JSONC file is not blamed on the fix.
 
 ## Pre-commit Hook
 
@@ -370,7 +392,7 @@ When a broken path was renamed in git or has a close match in the project, `--fi
 npx @yawlabs/ctxlint@latest init
 ```
 
-Sets up a git pre-commit hook that runs `ctxlint --strict` before each commit.
+Sets up a git pre-commit hook that runs `npx --yes @yawlabs/ctxlint@<version> --strict` before each commit, pinned to the installed ctxlint version, and prints the hook's absolute path. The hook goes where git runs hooks from (`git rev-parse --git-path hooks`), so `init` works in linked worktrees, submodules and repo subdirectories, and honours `core.hooksPath`. A path that does not exist, or a git failure other than "not a git repository", exits 2.
 
 ### pre-commit framework
 
@@ -383,6 +405,8 @@ repos:
     hooks:
       - id: ctxlint
 ```
+
+The hook is `language: system` and runs `npx --yes @yawlabs/ctxlint@<rev> --strict`, so it needs `npx` on `PATH` and installs nothing into the pre-commit cache.
 
 ## Config File
 
@@ -417,37 +441,37 @@ The `exclude` array is its counterpart: globs of context files to drop from the 
 
 ### Config Reference
 
-| Field                           | Type       | Default    | Meaning                                                                                                                                                                                                                                                   |
-| ------------------------------- | ---------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `checks`                        | `string[]` | all checks | Checks to run. Check names include `paths`, `commands`, `tokens`, `tier-tokens`, `redundancy`, `contradictions`, `frontmatter`, `staleness`, `ci-coverage`, `ci-secrets`, `content-secrets`, `hook-coverage`, plus any `mcp-*` / `session-*` / `skill-*`. |
-| `ignore`                        | `string[]` | `[]`       | Checks to skip, evaluated after `checks`.                                                                                                                                                                                                                 |
-| `ignoreRules`                   | `object[]` | `[]`       | Per-finding suppression, finer than `ignore`: each rule drops only the findings it matches, and the first matching rule wins. Rules that never fire, and rules missing a `reason`, are listed in the text report and in JSON `_meta.ignoreReport`.        |
-| `ignoreRules[].check`           | `string`   | required   | The check the rule applies to, by exact name (`paths`, `session-stale-memory`, ...).                                                                                                                                                                      |
-| `ignoreRules[].match`           | `string`   | none       | Regex tested against the finding's message. A rule with neither `match` nor `pathPattern` drops every finding of its check; with both, both must match.                                                                                                   |
-| `ignoreRules[].pathPattern`     | `string`   | none       | Regex tested against each path a finding names; the rule fires only when every path matches. Honored only for `session-stale-memory`: on any other check the rule never fires, and loading the config prints a warning.                                   |
-| `ignoreRules[].reason`          | `string`   | none       | Why the finding is suppressed. Optional, but rules without one are listed in the report for review.                                                                                                                                                       |
-| `strict`                        | `boolean`  | `false`    | Exit non-zero on any warning or error.                                                                                                                                                                                                                    |
-| `tokenThresholds`               | `object`   | see below  | Per-file and cross-file token thresholds.                                                                                                                                                                                                                 |
-| `tokenThresholds.info`          | `number`   | `1000`     | Per-file info threshold for `tokens/info`.                                                                                                                                                                                                                |
-| `tokenThresholds.warning`       | `number`   | `3000`     | Per-file warning threshold for `tokens/large`.                                                                                                                                                                                                            |
-| `tokenThresholds.error`         | `number`   | `8000`     | Per-file error threshold for `tokens/excessive`.                                                                                                                                                                                                          |
-| `tokenThresholds.aggregate`     | `number`   | `5000`     | Cross-file total threshold for `tokens/aggregate`.                                                                                                                                                                                                        |
-| `tokenThresholds.tierBreakdown` | `number`   | `1000`     | Always-loaded file threshold for `tier-tokens/section-breakdown`.                                                                                                                                                                                         |
-| `tokenThresholds.tierAggregate` | `number`   | `4000`     | Combined always-loaded threshold for `tier-tokens/aggregate`.                                                                                                                                                                                             |
-| `contextFiles`                  | `string[]` | `[]`       | Extra glob patterns to scan alongside the built-in list.                                                                                                                                                                                                  |
-| `exclude`                       | `string[]` | `[]`       | Globs of context files to drop from the scan entirely, matched against each file's project-relative path. Removes files rather than suppressing findings, so excluded files are also invisible to the cross-file checks.                                  |
-| `mcp`                           | `boolean`  | `false`    | Enable MCP config checks by default (same as `--mcp`).                                                                                                                                                                                                    |
-| `mcpOnly`                       | `boolean`  | `false`    | Run only MCP config checks, skip context-file checks (same as `--mcp-only`).                                                                                                                                                                              |
-| `mcpGlobal`                     | `boolean`  | `false`    | Also scan user/global MCP configs (same as `--mcp-global`).                                                                                                                                                                                               |
-| `session`                       | `boolean`  | `false`    | Enable session audit checks (cross-project consistency); same as `--session`.                                                                                                                                                                             |
-| `sessionOnly`                   | `boolean`  | `false`    | Run only session checks, skip context and MCP checks (same as `--session-only`).                                                                                                                                                                          |
-| `skills`                        | `boolean`  | `false`    | Enable agent-skill checks (`~/.claude/skills` + `~/.claude/agents`); same as `--skills`.                                                                                                                                                                  |
-| `skillsOnly`                    | `boolean`  | `false`    | Run only agent-skill checks, skip everything else (same as `--skills-only`).                                                                                                                                                                              |
-| `hooksGlobal`                   | `boolean`  | `false`    | Also scan the user-global `~/.claude/settings.json` in the dead-hook check (same as `--hooks-global`).                                                                                                                                                    |
+| Field                           | Type       | Default    | Meaning                                                                                                                                                                                                                                                                                    |
+| ------------------------------- | ---------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `checks`                        | `string[]` | all checks | Checks to run. Check names include `paths`, `commands`, `tokens`, `tier-tokens`, `redundancy`, `contradictions`, `frontmatter`, `staleness`, `ci-coverage`, `ci-secrets`, `content-secrets`, `hook-coverage`, plus any `mcp-*` / `session-*` / `skill-*`.                                  |
+| `ignore`                        | `string[]` | `[]`       | Checks to skip, evaluated after `checks`.                                                                                                                                                                                                                                                  |
+| `ignoreRules`                   | `object[]` | `[]`       | Per-finding suppression, finer than `ignore`: each rule drops only the findings it matches, and the first matching rule wins. Rules that never fire, and rules missing a `reason`, are listed in the text report and in JSON `_meta.ignoreReport`.                                         |
+| `ignoreRules[].check`           | `string`   | required   | The check the rule applies to, by exact name (`paths`, `session-stale-memory`, ...).                                                                                                                                                                                                       |
+| `ignoreRules[].match`           | `string`   | none       | Regex tested against the finding's message, both as raw and as redacted, so a rule copied from redacted output still fires. A rule with neither `match` nor `pathPattern` drops every finding of its check; with both, both must match.                                                    |
+| `ignoreRules[].pathPattern`     | `string`   | none       | Regex tested against each path a finding names; the rule fires only when every path matches. Honored only for `session-stale-memory`: on any other check the rule never fires, and loading the config prints a warning.                                                                    |
+| `ignoreRules[].reason`          | `string`   | none       | Why the finding is suppressed. Optional, but rules without one are listed in the report for review.                                                                                                                                                                                        |
+| `strict`                        | `boolean`  | `false`    | Exit non-zero on any warning or error.                                                                                                                                                                                                                                                     |
+| `tokenThresholds`               | `object`   | see below  | Per-file and cross-file token thresholds.                                                                                                                                                                                                                                                  |
+| `tokenThresholds.info`          | `number`   | `1000`     | Per-file info threshold for `tokens/info`.                                                                                                                                                                                                                                                 |
+| `tokenThresholds.warning`       | `number`   | `3000`     | Per-file warning threshold for `tokens/large`.                                                                                                                                                                                                                                             |
+| `tokenThresholds.error`         | `number`   | `8000`     | Per-file error threshold for `tokens/excessive`.                                                                                                                                                                                                                                           |
+| `tokenThresholds.aggregate`     | `number`   | `5000`     | Cross-file total threshold for `tokens/aggregate`.                                                                                                                                                                                                                                         |
+| `tokenThresholds.tierBreakdown` | `number`   | `1000`     | Always-loaded file threshold for `tier-tokens/section-breakdown`.                                                                                                                                                                                                                          |
+| `tokenThresholds.tierAggregate` | `number`   | `4000`     | Combined always-loaded threshold for `tier-tokens/aggregate`.                                                                                                                                                                                                                              |
+| `contextFiles`                  | `string[]` | `[]`       | Extra glob patterns to scan alongside the built-in list.                                                                                                                                                                                                                                   |
+| `exclude`                       | `string[]` | `[]`       | Globs of context files and project MCP configs to drop from the scan entirely, matched against each file's project-relative path (case-insensitively on Windows and macOS). Removes files rather than suppressing findings, so excluded files are also invisible to the cross-file checks. |
+| `mcp`                           | `boolean`  | `false`    | Enable MCP config checks by default (same as `--mcp`).                                                                                                                                                                                                                                     |
+| `mcpOnly`                       | `boolean`  | `false`    | Run only MCP config checks, skip context-file checks (same as `--mcp-only`).                                                                                                                                                                                                               |
+| `mcpGlobal`                     | `boolean`  | `false`    | Also scan user/global MCP configs (same as `--mcp-global`).                                                                                                                                                                                                                                |
+| `session`                       | `boolean`  | `false`    | Enable session audit checks (cross-project consistency); same as `--session`.                                                                                                                                                                                                              |
+| `sessionOnly`                   | `boolean`  | `false`    | Run only session checks, skip context and MCP checks (same as `--session-only`).                                                                                                                                                                                                           |
+| `skills`                        | `boolean`  | `false`    | Enable agent-skill checks (`~/.claude/skills` + `~/.claude/agents`); same as `--skills`.                                                                                                                                                                                                   |
+| `skillsOnly`                    | `boolean`  | `false`    | Run only agent-skill checks, skip everything else (same as `--skills-only`).                                                                                                                                                                                                               |
+| `hooksGlobal`                   | `boolean`  | `false`    | Also scan the user-global `~/.claude/settings.json` in the dead-hook check (same as `--hooks-global`).                                                                                                                                                                                     |
 
 Config file resolution order: `.ctxlintrc` → `.ctxlintrc.json` in the project root. Use `--config <path>` to point elsewhere. CLI flags override config fields.
 
-CLI flags override config file settings. Use `--config <path>` to load a config from a custom location.
+The config is validated on load. Invalid JSON, a non-object root, a field of the wrong type (`Invalid config in <file>: "<key>" must be an array of strings`, and likewise for booleans, objects, numbers and each `ignoreRules[i]` field), or a config file that exists but cannot be read is an error (exit 2). An unknown key, an unknown `tokenThresholds` key, or a threshold that is not a finite non-negative number is a warning on stderr; a bad threshold falls back to its default.
 
 ### Ignore file (`.ctxlintignore`)
 
@@ -467,9 +491,22 @@ redundancy .claude/**    # redundancy findings in files under .claude/
 - Dropped counts, rules that dropped nothing, and rules without a reason are listed in the same "Ignore rules" report as `ignoreRules`.
 - `--no-ignore-file` skips the file for a run; `ignoreRules` still apply. `--watch` re-lints when the file changes.
 
+### Inline suppressions
+
+An HTML comment in a context file suppresses findings on one line:
+
+```markdown
+<!-- ctxlint-ignore-next-line -->
+<!-- ctxlint-ignore-next-line paths -->
+<!-- ctxlint-ignore-line paths tokens -->
+<!-- ctxlint-ignore-next-line paths/not-found -->
+```
+
+With no target, every check on that line is suppressed. A target is a check name (`paths`), which matches the check and every rule under it, or a full rule ID (`paths/not-found`), which matches only that rule. Directives inside fenced code or inline code spans are ignored, so a file can document the syntax. A comment that starts like a directive but does not parse prints `Warning: unrecognized ctxlint directive at <file>:<line>: ...` on stderr.
+
 ## Use as MCP Server
 
-ctxlint ships with an MCP server that exposes seven tools (`ctxlint_audit`, `ctxlint_mcp_audit`, `ctxlint_session_audit`, `ctxlint_skill_audit`, `ctxlint_validate_path`, `ctxlint_token_report`, `ctxlint_fix`). All read-only tools declare annotations so MCP clients can skip confirmation dialogs.
+ctxlint ships with an MCP server that exposes seven tools (`ctxlint_audit`, `ctxlint_mcp_audit`, `ctxlint_session_audit`, `ctxlint_skill_audit`, `ctxlint_validate_path`, `ctxlint_token_report`, `ctxlint_fix`). All read-only tools declare annotations so MCP clients can skip confirmation dialogs. `ctxlint_audit` and `ctxlint_mcp_audit` honour the project's config `exclude`. The four audit tools cap their text at 90,000 bytes, and add a `truncated` field (`droppedIssues`, `droppedFiles`, `reason`) when they drop findings to fit; `summary` still counts everything. On Windows, `projectPath` rejects UNC and device paths.
 
 Launch it with the `serve` subcommand (or the equivalent `--mcp-server` flag, kept for back-compat):
 
@@ -552,6 +589,11 @@ npx @yawlabs/ctxlint@latest --format json
 ```
 
 Returns structured JSON with all file results, issues, and summary — useful for building integrations or dashboards.
+
+- `summary.totalTokens` counts context files only, a symlink alias once. MCP configs keep their per-file `tokens` but are not in the total. The text report's "Token usage" line and the `--tokens` Total print the same number.
+- An issue may carry a `file` field naming the file it was read from: hook-coverage findings from a project `.claude/settings.json` or `.claude/settings.local.json` set it to that file's project-relative path (user-global findings have none).
+- `versionSkew: { checkoutVersion, runningVersion }` appears only when ctxlint scans a ctxlint checkout of a different version than the one running.
+- Secrets never reach the output: messages, suggestions and details are redacted (6-character prefix + `...`), and so are credentials inside `fix.oldText` / `fix.newText` (URL passwords, secret-named query values, key-shaped strings). `--fix` itself works on the real text in-process.
 
 ## Specifications
 

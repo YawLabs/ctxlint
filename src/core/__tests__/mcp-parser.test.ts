@@ -2,7 +2,15 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { classifyGitTrackedError, parseMcpConfig } from '../mcp-parser.js';
+import {
+  classifyGitTrackedError,
+  collectServerNameKeys,
+  collectServerSets,
+  getClaudeProjectScope,
+  locateServerValue,
+  parseMcpConfig,
+  parseMcpContent,
+} from '../mcp-parser.js';
 import type { DiscoveredFile } from '../scanner.js';
 
 const FIXTURES = path.resolve(__dirname, '../../../fixtures/mcp-configs');
@@ -19,6 +27,7 @@ afterEach(() => {
 
 function writeTmp(content: string, name = '.mcp.json'): DiscoveredFile {
   const abs = path.join(tmpDir, name);
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
   fs.writeFileSync(abs, content);
   return { absolutePath: abs, relativePath: name, isSymlink: false, type: 'mcp-config' };
 }
@@ -77,6 +86,33 @@ describe('parseMcpConfig', () => {
     const config = await parseMcpConfig(file, path.join(FIXTURES, 'invalid-json'), 'project');
     expect(config.parseErrors.length).toBeGreaterThan(0);
     expect(config.servers).toHaveLength(0);
+  });
+
+  it('reports only the position of a JSON error, never quoted source text', () => {
+    // An unquoted token value: V8's JSON.parse message quotes ~10 chars of
+    // source around it, which would leak the start of the secret.
+    const token = `ghp_${'A'.repeat(36)}`;
+    const config = parseMcpContent(
+      `{\n  "mcpServers": {\n    "gh": { "env": { "TOKEN": ${token} } }\n  }\n}\n`,
+      { filePath: '/p/.mcp.json', relativePath: '.mcp.json', scope: 'project' },
+    );
+    expect(config.parseErrors).toHaveLength(1);
+    expect(config.parseErrors[0]).toMatch(/at line 3 column \d+$/);
+    expect(config.parseErrors[0]).not.toContain('ghp_');
+  });
+
+  it.each([
+    '~/AppData/Roaming/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json',
+    '~/.cline/data/settings/cline_mcp_settings.json',
+    '~/custom/cline_mcp_settings.json',
+  ])('classifies %s as the cline client', (relativePath) => {
+    const config = parseMcpContent('{"mcpServers": {}}', {
+      filePath: '/x',
+      relativePath,
+      scope: 'global',
+    });
+    expect(config.client).toBe('cline');
+    expect(config.expectedRootKey).toBe('mcpServers');
   });
 
   it('detects wrong root key', async () => {
@@ -283,6 +319,189 @@ describe('parseMcpConfig', () => {
   });
 });
 
+describe('collectServerNameKeys', () => {
+  it('accepts the root key only at the top level and stops when its object closes', () => {
+    // A nested `mcpServers` (Claude Code's per-project shape) used to latch
+    // the scan, and every later depth+1 key -- across the rest of the file --
+    // was collected as a server name.
+    const content = JSON.stringify(
+      {
+        projects: {
+          '/a': { mcpServers: { github: { command: 'a' } } },
+          '/b': { mcpServers: { github: { command: 'b' } } },
+        },
+        mcpServers: { top: { command: 'x' } },
+        other: { notAServer: 1 },
+      },
+      null,
+      2,
+    );
+    expect(collectServerNameKeys(content, 'mcpServers').map((k) => k.name)).toEqual(['top']);
+  });
+
+  it('returns nothing when the root key exists only nested', () => {
+    const content = JSON.stringify({ projects: { '/a': { mcpServers: { gh: {} } } } });
+    expect(collectServerNameKeys(content, 'mcpServers')).toEqual([]);
+  });
+});
+
+describe('parseMcpConfig: ~/.claude.json per-project servers', () => {
+  const stateFile = (obj: unknown) => writeTmp(JSON.stringify(obj, null, 2), '.claude.json');
+
+  it('keeps each project block a separate server set (no cross-project duplicates)', async () => {
+    const file = stateFile({
+      projects: {
+        '/a': { mcpServers: { github: { command: 'a' } } },
+        '/b': { mcpServers: { github: { command: 'b' } } },
+      },
+      mcpServers: { github: { command: 'top' } },
+    });
+    const config = await parseMcpConfig(file, tmpDir, 'user');
+    const sets = collectServerSets(config.content, config.actualRootKey, config.relativePath);
+    expect(sets.map((s) => s.projectPath ?? null)).toEqual([null, '/a', '/b']);
+    for (const set of sets) expect(set.keys.map((k) => k.name)).toEqual(['github']);
+    expect(config.servers.map((s) => s.command)).toEqual(['top', 'a', 'b']);
+  });
+
+  it('lints per-project servers with correct lines when there is no top-level key', async () => {
+    const file = stateFile({
+      numStartups: 3,
+      projects: {
+        '/a': { allowedTools: [], mcpServers: { github: { command: 'npx' } } },
+      },
+    });
+    const config = await parseMcpConfig(file, tmpDir, 'user');
+    expect(config.parseErrors).toEqual([]);
+    expect(config.actualRootKey).toBeNull();
+    expect(config.servers.map((s) => s.name)).toEqual(['github']);
+    const lines = config.content.split('\n');
+    expect(lines[config.servers[0].line - 1]).toContain('"github"');
+    expect(getClaudeProjectScope(config.servers[0])).toEqual({
+      projectPath: '/a',
+      isCurrentProject: false,
+    });
+  });
+
+  it('marks the per-project block for the linted project root as current', async () => {
+    const file = stateFile({
+      projects: { [tmpDir.split(path.sep).join('/')]: { mcpServers: { gh: { command: 'npx' } } } },
+    });
+    const config = await parseMcpConfig(file, tmpDir, 'user');
+    expect(getClaudeProjectScope(config.servers[0])?.isCurrentProject).toBe(true);
+  });
+
+  it('only reads projects.* for the Claude Code state file', async () => {
+    const file = writeTmp(
+      JSON.stringify({ projects: { '/a': { mcpServers: { gh: { command: 'npx' } } } } }),
+      '.mcp.json',
+    );
+    const config = await parseMcpConfig(file, tmpDir, 'project');
+    expect(config.servers).toHaveLength(0);
+  });
+});
+
+describe('parseMcpConfig: JSONC', () => {
+  const jsonc = [
+    '{',
+    '  // workspace servers',
+    '  "servers": {',
+    '    "api": { "url": "https://api.example.com/mcp", },',
+    '  },',
+    '}',
+  ].join('\n');
+
+  it('accepts comments and trailing commas in .vscode/mcp.json', async () => {
+    const config = await parseMcpConfig(writeTmp(jsonc, '.vscode/mcp.json'), tmpDir, 'project');
+    expect(config.parseErrors).toEqual([]);
+    expect(config.servers.map((s) => [s.name, s.line])).toEqual([['api', 4]]);
+  });
+
+  it('still rejects comments in .mcp.json (Claude Code reads strict JSON)', async () => {
+    const config = await parseMcpConfig(
+      writeTmp(jsonc.replace('"servers"', '"mcpServers"'), '.mcp.json'),
+      tmpDir,
+      'project',
+    );
+    expect(config.parseErrors.length).toBeGreaterThan(0);
+  });
+
+  it('still reports genuinely broken JSONC in .vscode/mcp.json', async () => {
+    const config = await parseMcpConfig(
+      writeTmp('{ "servers": { "a": ', '.vscode/mcp.json'),
+      tmpDir,
+      'project',
+    );
+    expect(config.parseErrors.length).toBeGreaterThan(0);
+    expect(config.servers).toHaveLength(0);
+  });
+});
+
+describe('parseMcpConfig: Windsurf serverUrl', () => {
+  it('reads serverUrl as the url of a remote Windsurf server', async () => {
+    const file = writeTmp(
+      JSON.stringify({ mcpServers: { remote: { serverUrl: 'https://api.example.com/mcp' } } }),
+      '.codeium/windsurf/mcp_config.json',
+    );
+    const config = await parseMcpConfig(file, tmpDir, 'user');
+    expect(config.client).toBe('windsurf');
+    expect(config.servers[0].transport).toBe('http');
+    expect(config.servers[0].url).toBe('https://api.example.com/mcp');
+  });
+
+  it('does not treat serverUrl as a url for other clients', async () => {
+    const file = writeTmp(
+      JSON.stringify({ mcpServers: { remote: { serverUrl: 'https://api.example.com/mcp' } } }),
+    );
+    const config = await parseMcpConfig(file, tmpDir, 'project');
+    expect(config.servers[0].transport).toBe('unknown');
+    expect(config.servers[0].url).toBeUndefined();
+  });
+});
+
+describe('locateServerValue', () => {
+  it('finds the line and column of a nested value in pretty-printed JSON', async () => {
+    const content = [
+      '{',
+      '  "mcpServers": {',
+      '    "api": {',
+      '      "command": "npx",',
+      '      "env": {',
+      '        "TOKEN": "${env:TOKEN}"',
+      '      }',
+      '    }',
+      '  }',
+      '}',
+    ].join('\n');
+    const config = await parseMcpConfig(writeTmp(content), tmpDir, 'project');
+    const loc = locateServerValue(config, config.servers[0], ['env', 'TOKEN']);
+    expect(loc).toEqual({ line: 6, column: 18, text: '"${env:TOKEN}"' });
+    expect(locateServerValue(config, config.servers[0], ['env', 'NOPE'])).toBeNull();
+  });
+
+  it('locates values in the last duplicate definition (the one JSON.parse keeps)', async () => {
+    const content = [
+      '{ "mcpServers": {',
+      '  "a": { "type": "stdio" },',
+      '  "a": { "type": "sse" }',
+      '} }',
+    ].join('\n');
+    const config = await parseMcpConfig(writeTmp(content), tmpDir, 'project');
+    expect(locateServerValue(config, config.servers[0], ['type'])?.line).toBe(3);
+  });
+
+  it('locates values of per-project servers in ~/.claude.json', async () => {
+    const content = JSON.stringify(
+      { projects: { '/a': { mcpServers: { gh: { command: 'npx', args: ['-y', 'pkg'] } } } } },
+      null,
+      2,
+    );
+    const config = await parseMcpConfig(writeTmp(content, '.claude.json'), tmpDir, 'user');
+    const loc = locateServerValue(config, config.servers[0], ['args', 1]);
+    expect(loc?.text).toBe('"pkg"');
+    expect(config.content.split('\n')[loc!.line - 1]).toContain('"pkg"');
+  });
+});
+
 describe('classifyGitTrackedError', () => {
   it('classifies the two determined-untracked shapes', () => {
     expect(
@@ -290,6 +509,16 @@ describe('classifyGitTrackedError', () => {
     ).toBe('untracked');
     expect(
       classifyGitTrackedError('fatal: not a git repository (or any of the parent directories)'),
+    ).toBe('untracked');
+  });
+
+  it('classifies a file outside the repository as untracked', () => {
+    // A global config linted from inside a repo: git answered, the file just
+    // isn't in this repo.
+    expect(
+      classifyGitTrackedError(
+        "fatal: C:/Users/me/.cursor/mcp.json: 'C:/Users/me/.cursor/mcp.json' is outside repository at 'C:/repo'",
+      ),
     ).toBe('untracked');
   });
 

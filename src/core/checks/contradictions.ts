@@ -1,3 +1,4 @@
+import { nonProseLineMask } from '../../utils/markdown.js';
 import type { ParsedContextFile, LintIssue } from '../types.js';
 
 /**
@@ -8,24 +9,44 @@ import type { ParsedContextFile, LintIssue } from '../types.js';
 interface DirectiveCategory {
   name: string;
   options: DirectiveOption[];
+  /**
+   * Directives in this category only conflict when they name the same object:
+   * "camelCase for variables" and "PascalCase for React components" are
+   * complementary, not contradictory. The object is the noun phrase after
+   * "for" (see directiveObject); a directive with none is "general". General
+   * directives are compared with each other, never with a scoped one: "Use
+   * snake_case for Python functions." is an exception to "Use camelCase.",
+   * not a contradiction of it, whether both sit in one file or in two (the
+   * more specific rule wins either way, and polyglot repos split them).
+   */
+  scopedByObject?: boolean;
 }
 
 interface DirectiveOption {
   label: string;
   patterns: RegExp[];
+  /**
+   * Label a NEGATED match registers instead of being dropped, for binary
+   * categories where "don't X" is itself a choice: "Don't use semicolons"
+   * endorses "no semicolons".
+   */
+  negatedLabel?: string;
 }
 
 // Define mutually exclusive directive categories
 const DIRECTIVE_CATEGORIES: DirectiveCategory[] = [
   {
+    // Unit-test runners. E2E/browser frameworks live in their own category
+    // below: "Vitest for unit tests" + "Playwright for e2e" is a normal stack.
     name: 'testing framework',
     options: [
       {
         label: 'Jest',
-        // The third pattern bounds the gap between `test` and `with <fw>` to a
-        // few intra-clause chars so prose like "run our test suite and then
-        // deploy with jest" no longer matches the framework directive — only
-        // tight phrasings like "test with jest" / "tests run with jest" do.
+        // The third pattern allows nothing between `test` and `with <fw>` but
+        // the rest of the word (`tests`, `testing`), so prose like "run our
+        // test suite and then deploy with jest" does not match the framework
+        // directive -- only tight phrasings like "test with jest" / "tests
+        // with jest" do ("tests run with jest" does not).
         patterns: [/\buse\s+jest\b/i, /\bjest\s+for\s+test/i, /\btest\w*\s+with\s+jest\b/i],
       },
       {
@@ -40,6 +61,11 @@ const DIRECTIVE_CATEGORIES: DirectiveCategory[] = [
         label: 'pytest',
         patterns: [/\buse\s+pytest\b/i, /\bpytest\s+for\s+test/i, /\btest\w*\s+with\s+pytest\b/i],
       },
+    ],
+  },
+  {
+    name: 'e2e testing framework',
+    options: [
       {
         label: 'Playwright',
         patterns: [/\buse\s+playwright\b/i, /\bplaywright\s+for\s+(?:e2e|test)/i],
@@ -92,12 +118,26 @@ const DIRECTIVE_CATEGORIES: DirectiveCategory[] = [
         patterns: [/\buse\s+tabs\b/i, /\btab\s+indentation\b/i, /\bindent\s+with\s+tabs\b/i],
       },
       {
+        // A bare "2 spaces" is not enough ("Leave 2 spaces after a sentence"):
+        // it needs a directive verb or indentation context.
         label: '2 spaces',
-        patterns: [/\b2[\s-]?space\s+indent/i, /\bindent\s+with\s+2\s+spaces/i],
+        patterns: [
+          /\b2[\s-]?space\s+indent/i,
+          /\bindent\s+with\s+2\s+spaces/i,
+          /\b(?:use|prefer|enforce)\s+2\s+spaces\b/i,
+          /\bindent(?:ation|ed|s)?\s*(?:is|of|by|:|=)?\s*2\s+spaces\b/i,
+          /\b2\s+spaces\s+(?:for\s+|of\s+)?(?:indent|per\s+(?:indent|level))/i,
+        ],
       },
       {
         label: '4 spaces',
-        patterns: [/\b4[\s-]?space\s+indent/i, /\bindent\s+with\s+4\s+spaces/i],
+        patterns: [
+          /\b4[\s-]?space\s+indent/i,
+          /\bindent\s+with\s+4\s+spaces/i,
+          /\b(?:use|prefer|enforce)\s+4\s+spaces\b/i,
+          /\bindent(?:ation|ed|s)?\s*(?:is|of|by|:|=)?\s*4\s+spaces\b/i,
+          /\b4\s+spaces\s+(?:for\s+|of\s+)?(?:indent|per\s+(?:indent|level))/i,
+        ],
       },
     ],
   },
@@ -106,6 +146,7 @@ const DIRECTIVE_CATEGORIES: DirectiveCategory[] = [
     options: [
       {
         label: 'semicolons',
+        negatedLabel: 'no semicolons',
         patterns: [
           /\buse\s+semicolons\b/i,
           /\balways\s+(?:use\s+)?semicolons\b/i,
@@ -144,6 +185,7 @@ const DIRECTIVE_CATEGORIES: DirectiveCategory[] = [
   },
   {
     name: 'naming convention',
+    scopedByObject: true,
     options: [
       {
         label: 'camelCase',
@@ -202,8 +244,20 @@ const DIRECTIVE_CATEGORIES: DirectiveCategory[] = [
   },
 ];
 
+// Every pattern that ends in `\b` gets `(?![\w-])` instead, so a tool name
+// followed by a hyphen is not read as the tool: `use npm-check-updates` is not
+// "use npm", `use jest-dom` is not "use jest".
+for (const category of DIRECTIVE_CATEGORIES) {
+  for (const option of category.options) {
+    option.patterns = option.patterns.map((p) =>
+      p.source.endsWith('\\b') ? new RegExp(`${p.source.slice(0, -2)}(?![\\w-])`, p.flags) : p,
+    );
+  }
+}
+
 interface DetectedDirective {
   file: string;
+  /** Category name, qualified by the directive's object for scoped categories. */
   category: string;
   label: string;
   line: number;
@@ -220,13 +274,23 @@ interface DetectedDirective {
 // The window is clause-scoped: it looks back NEGATION_WINDOW chars and the
 // negation must not be separated from the match by clause punctuation, so
 // "Never use yarn; use pnpm" still registers the pnpm endorsement. `n['’]t`
-// covers the contraction family (don't / doesn't / won't / shouldn't).
-const NEGATION_BEFORE_MATCH = /(?:\b(?:never|not|avoid|stop|instead\s+of)\b|n['’]t\b)[^.;:,!?]*$/i;
-const NEGATION_WINDOW = 20;
+// covers the contraction family (don't / doesn't / won't / shouldn't). "no
+// longer" is a negation ("We no longer use yarn"), and "never, ever" is one
+// negation despite its comma.
+const NEGATION_BEFORE_MATCH =
+  /(?:\b(?:never(?:\s*,\s*ever)?|not|no\s+longer|avoid|stop|instead\s+of)\b|n['’]t\b)[^.;:,!?]*$/i;
+const NEGATION_WINDOW = 24;
 
 function isNegated(line: string, matchIndex: number): boolean {
   const windowStart = Math.max(0, matchIndex - NEGATION_WINDOW);
   return NEGATION_BEFORE_MATCH.test(line.slice(windowStart, matchIndex));
+}
+
+interface PatternMatches {
+  /** First occurrence that is not negated, if any. */
+  plain: RegExpExecArray | null;
+  /** First negated occurrence, if any. */
+  negated: RegExpExecArray | null;
 }
 
 // Negation is per-occurrence, not per-line: in "Don't use pnpm in CI, use
@@ -235,42 +299,156 @@ function isNegated(line: string, matchIndex: number): boolean {
 // non-global exec stops at the first occurrence — if that one happens to be
 // negated, the endorsement is dropped and a real cross-file conflict is
 // suppressed. Scan every occurrence; ANY non-negated one registers.
-function hasUnnegatedMatch(pattern: RegExp, line: string): boolean {
+function scanMatches(pattern: RegExp, line: string): PatternMatches {
   const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
   const global = new RegExp(pattern.source, flags);
+  const out: PatternMatches = { plain: null, negated: null };
   let m: RegExpExecArray | null;
   while ((m = global.exec(line)) !== null) {
-    if (!isNegated(line, m.index)) return true;
+    if (!isNegated(line, m.index)) {
+      out.plain = m;
+      return out;
+    }
+    out.negated ??= m;
   }
-  return false;
+  return out;
+}
+
+// The object of a naming directive: "camelCase for variable names" ->
+// "variable". Read from the case token onward, so it works whichever pattern
+// matched ("use camelCase for ..." / "camelCase naming for ...").
+const NAMING_OBJECT =
+  /(?:camel|snake|pascal|kebab)[\s_-]?case\b(?:\s+(?:naming|conventions?))?\s+for\s+([^.;:,!?()]+)/i;
+const OBJECT_STOP_WORDS = new Set([
+  'and',
+  'or',
+  'in',
+  'when',
+  'unless',
+  'except',
+  'where',
+  'but',
+  'with',
+  'to',
+  'that',
+  'which',
+  'across',
+  'throughout',
+  'everywhere',
+]);
+const OBJECT_LEADING_WORDS = new Set([
+  'all',
+  'the',
+  'a',
+  'an',
+  'any',
+  'every',
+  'our',
+  'your',
+  'new',
+]);
+const OBJECT_TRAILING_WORDS = new Set(['name', 'names', 'naming', 'identifier', 'identifiers']);
+
+function singular(word: string): string {
+  if (word === 'filenames' || word === 'filename') return 'file';
+  if (/(?:ss|sh|ch|x)es$/.test(word)) return word.slice(0, -2);
+  if (word.length > 3 && word.endsWith('s') && !word.endsWith('ss')) return word.slice(0, -1);
+  return word;
+}
+
+/** Normalised object of a naming directive, or '' when it names none. */
+function directiveObject(line: string, matchIndex: number): string {
+  const m = NAMING_OBJECT.exec(line.slice(matchIndex));
+  if (!m) return '';
+  const words: string[] = [];
+  for (const w of m[1].toLowerCase().split(/\s+/).filter(Boolean)) {
+    if (OBJECT_STOP_WORDS.has(w)) break;
+    if (words.length === 0 && OBJECT_LEADING_WORDS.has(w)) continue;
+    words.push(w);
+    if (words.length === 3) break;
+  }
+  while (words.length > 1 && OBJECT_TRAILING_WORDS.has(words[words.length - 1])) words.pop();
+  return words.map(singular).join(' ');
 }
 
 function detectDirectives(file: ParsedContextFile): DetectedDirective[] {
   const directives: DetectedDirective[] = [];
   const lines = file.content.split('\n');
+  // Fenced code and HTML comments are illustrations/commentary, not the
+  // file's own policy: a ```markdown fence SHOWING "Always use yarn" must not
+  // register a yarn directive.
+  const nonProse = nonProseLineMask(lines);
 
   for (let i = 0; i < lines.length; i++) {
+    if (nonProse[i]) continue;
     const line = lines[i];
+    const seen = new Set<string>(); // `${category}::${label}` already registered on this line
+
+    const register = (category: string, label: string): void => {
+      const key = `${category}::${label}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      directives.push({
+        file: file.relativePath,
+        category,
+        label,
+        line: i + 1,
+        text: line.trim(),
+      });
+    };
 
     for (const category of DIRECTIVE_CATEGORIES) {
       for (const option of category.options) {
+        let negatedFallback: RegExpExecArray | null = null;
+        let registered = false;
         for (const pattern of option.patterns) {
-          if (hasUnnegatedMatch(pattern, line)) {
-            directives.push({
-              file: file.relativePath,
-              category: category.name,
-              label: option.label,
-              line: i + 1,
-              text: line.trim(),
-            });
+          const { plain, negated } = scanMatches(pattern, line);
+          if (plain) {
+            register(qualifiedCategory(category, line, plain.index), option.label);
+            registered = true;
             break; // One match per option per line is enough
           }
+          negatedFallback ??= negated;
+        }
+        if (!registered && negatedFallback && option.negatedLabel) {
+          register(qualifiedCategory(category, line, negatedFallback.index), option.negatedLabel);
         }
       }
     }
   }
 
   return directives;
+}
+
+function qualifiedCategory(category: DirectiveCategory, line: string, matchIndex: number): string {
+  if (!category.scopedByObject) return category.name;
+  const object = directiveObject(line, matchIndex);
+  return object ? `${category.name} (${object})` : category.name;
+}
+
+/**
+ * The directory a context file governs, as a forward-slash path ('' = project
+ * root). A file inside a tool-config directory (`.cursor/rules/x.mdc`,
+ * `.github/copilot-instructions.md`, `.claude/rules/x.md`) governs the
+ * directory that holds that config dir, not the config dir itself.
+ */
+function governedDir(relativePath: string): string {
+  const segments = relativePath.replace(/\\/g, '/').split('/');
+  segments.pop();
+  const dot = segments.findIndex((seg) => seg.startsWith('.') && seg !== '.' && seg !== '..');
+  const kept = dot === -1 ? segments : segments.slice(0, dot);
+  return kept.filter((seg) => seg !== '.').join('/');
+}
+
+/**
+ * Two files can only contradict each other when both apply to the same code:
+ * one's directory is an ancestor of (or equal to) the other's. Sibling
+ * packages (`packages/a/CLAUDE.md` with Jest, `packages/b/CLAUDE.md` with
+ * Vitest) legitimately make different choices.
+ */
+function sameScope(dirA: string, dirB: string): boolean {
+  if (dirA === dirB || dirA === '' || dirB === '') return true;
+  return dirB.startsWith(`${dirA}/`) || dirA.startsWith(`${dirB}/`);
 }
 
 export function checkContradictions(files: ParsedContextFile[]): LintIssue[] {
@@ -330,7 +508,13 @@ export function checkContradictions(files: ParsedContextFile[]): LintIssue[] {
     // in TS, double in JSON" => {single, double}) is a SUPERSET of a file that
     // picks just one of them, not a contradiction: the picker's label is
     // already present in the lister, so there is no label the lister lacks.
-    const conflictsWith = (a: Set<string>, b: Set<string>): boolean => {
+    //
+    // Files are only compared when one's directory contains the other's (see
+    // sameScope).
+    const conflictsWith = (fileA: string, fileB: string): boolean => {
+      if (!sameScope(governedDir(fileA), governedDir(fileB))) return false;
+      const a = fileLabels.get(fileA)!;
+      const b = fileLabels.get(fileB)!;
       let aHasExtra = false;
       let bHasExtra = false;
       for (const l of a) if (!b.has(l)) aHasExtra = true;
@@ -338,10 +522,9 @@ export function checkContradictions(files: ParsedContextFile[]): LintIssue[] {
       return aHasExtra && bHasExtra;
     };
     const conflictingFiles = [...fileLabels.keys()].filter((f) => {
-      const myLabels = fileLabels.get(f)!;
-      for (const [otherFile, otherLabels] of fileLabels) {
+      for (const otherFile of fileLabels.keys()) {
         if (otherFile === f) continue;
-        if (conflictsWith(myLabels, otherLabels)) return true;
+        if (conflictsWith(f, otherFile)) return true;
       }
       return false;
     });
@@ -351,27 +534,14 @@ export function checkContradictions(files: ParsedContextFile[]): LintIssue[] {
     const idx = directiveIndex.get(category)!;
 
     if (conflictingFiles.length === 2) {
-      // Pair conflict — keep the original (file, label) × (file, label) shape
-      // so existing suggestion text still applies naturally.
       const [fileA, fileB] = conflictingFiles;
-      const labelsA = fileLabels.get(fileA)!;
-      const labelsB = fileLabels.get(fileB)!;
-      for (const labelA of labelsA) {
-        for (const labelB of labelsB) {
-          if (labelA === labelB) continue;
-          const directiveA = idx.get(`${fileA}::${labelA}`)!;
-          const directiveB = idx.get(`${fileB}::${labelB}`)!;
-          issues.push({
-            severity: 'warning',
-            check: 'contradictions',
-            ruleId: 'contradictions/conflict',
-            line: directiveA.line,
-            message: `${category} conflict: "${directiveA.label}" in ${fileA} vs "${directiveB.label}" in ${fileB}`,
-            suggestion: `Align on one ${category} across all context files`,
-            detail: `${fileA}:${directiveA.line} says "${directiveA.text}" but ${fileB}:${directiveB.line} says "${directiveB.text}"`,
-          });
-        }
-      }
+      issues.push(
+        ...pairIssues(
+          category,
+          { file: fileA, labels: fileLabels.get(fileA)!, index: idx },
+          { file: fileB, labels: fileLabels.get(fileB)!, index: idx },
+        ),
+      );
     } else {
       // 3+ file cluster — emit ONE issue listing all (file, label) entries so
       // the user sees a coherent disagreement rather than N choose 2 pairs.
@@ -397,4 +567,39 @@ export function checkContradictions(files: ParsedContextFile[]): LintIssue[] {
   }
 
   return issues;
+}
+
+interface PairSide {
+  file: string;
+  labels: Set<string>;
+  /** `${file}::${label}` -> directive, for this side's category bucket. */
+  index: Map<string, DetectedDirective>;
+}
+
+/**
+ * Pair conflict -- the (file, label) x (file, label) shape. Only labels one
+ * file holds and the other lacks can disagree: a label both files share is
+ * common ground, so pairing it with the other side's extra label would report
+ * a "conflict" the first file itself agrees with.
+ */
+function pairIssues(category: string, a: PairSide, b: PairSide): LintIssue[] {
+  const out: LintIssue[] = [];
+  for (const labelA of a.labels) {
+    if (b.labels.has(labelA)) continue;
+    for (const labelB of b.labels) {
+      if (a.labels.has(labelB)) continue;
+      const directiveA = a.index.get(`${a.file}::${labelA}`)!;
+      const directiveB = b.index.get(`${b.file}::${labelB}`)!;
+      out.push({
+        severity: 'warning',
+        check: 'contradictions',
+        ruleId: 'contradictions/conflict',
+        line: directiveA.line,
+        message: `${category} conflict: "${directiveA.label}" in ${a.file} vs "${directiveB.label}" in ${b.file}`,
+        suggestion: `Align on one ${category} across all context files`,
+        detail: `${a.file}:${directiveA.line} says "${directiveA.text}" but ${b.file}:${directiveB.line} says "${directiveB.text}"`,
+      });
+    }
+  }
+  return out;
 }

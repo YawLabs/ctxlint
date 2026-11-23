@@ -1,4 +1,5 @@
 import { resolve, basename } from 'node:path';
+import { readProjectTranscript, truncationNote } from '../../transcript.js';
 import type { LintIssue, SessionContext, SiblingRepo } from '../../types.js';
 
 /** Normalize a path for equality comparison across Windows/POSIX. */
@@ -6,15 +7,8 @@ function normalizePath(p: string): string {
   return resolve(p).replace(/\\/g, '/').toLowerCase();
 }
 
-// Locate the `gh secret set` invocation, then capture `--repo owner/repo`
-// separately so the flag binds regardless of where it sits on the line. The
-// old single regex required `--repo` immediately after NAME, so
-// `gh secret set NAME -b "val" --repo org/repo` (body before flag) silently
-// dropped the repo binding.
-const SECRET_SET_PREFIX = /gh\s+secret\s+set\s+/;
-// Match `--repo`/`-R` with either a space or `=` separator so `-R org/foo` and
-// `--repo=org/foo` bind the repo too, not just `--repo <space>`.
-const REPO_FLAG_PATTERN = /(?:--repo|-R)(?:\s+|=)(\S+)/;
+/** Locates each `gh secret set` invocation on a line. */
+const SECRET_SET_PREFIX = /\bgh\s+secret\s+set\b/g;
 // Flags that take a value; their value token must be skipped when hunting for
 // the secret NAME, so a flag-first ordering like `gh secret set --repo org/foo
 // NAME -b x` doesn't capture `--repo` (or `org/foo`) as the name. NOTE: `-u`/
@@ -40,34 +34,106 @@ const VALUE_FLAGS = new Set([
 ]);
 
 /**
- * Extract the secret NAME from a `gh secret set ...` command. Returns the first
- * non-flag token after `set`, skipping known flag+value pairs (e.g. `--repo
- * org/foo`, `-b xxx`) and bare flags. Returns undefined if no NAME is present.
+ * Split the command text that follows `gh secret set` into shell words, up to
+ * the first top-level command separator (`&&`, `||`, `;`, `|`, newline) --
+ * a `--repo` on a later chained command belongs to that command, not this
+ * one. Quotes, `$(...)` (nesting included) and backticks are kept inside one
+ * word, so a body such as `-b $(echo x | tr a-z A-Z)` is one value rather
+ * than four tokens whose second would be read as the NAME. Surrounding quotes
+ * are stripped from each word.
  */
-function extractSecretName(display: string): string | undefined {
-  const prefixMatch = display.match(SECRET_SET_PREFIX);
-  if (!prefixMatch) return undefined;
-  const rest = display.slice(prefixMatch.index! + prefixMatch[0].length);
-  const tokens = rest.split(/\s+/).filter((t) => t.length > 0);
-  for (let i = 0; i < tokens.length; i++) {
-    const tok = tokens[i];
-    if (!tok.startsWith('-')) return tok;
-    // A flag: if it carries a value (and isn't written as `--flag=value`),
-    // skip the following token too.
-    if (VALUE_FLAGS.has(tok) && !tok.includes('=')) {
+function shellWords(rest: string): string[] {
+  const words: string[] = [];
+  let cur = '';
+  let quote: string | null = null;
+  let depth = 0;
+  let tick = false;
+  const flush = () => {
+    if (cur) words.push(cur.replace(/^(["'])(.*)\1$/s, '$2'));
+    cur = '';
+  };
+  for (let i = 0; i < rest.length; i++) {
+    const c = rest[i];
+    if (quote) {
+      cur += c;
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (tick) {
+      cur += c;
+      if (c === '`') tick = false;
+      continue;
+    }
+    if (depth > 0) {
+      cur += c;
+      if (c === '(') depth++;
+      else if (c === ')') depth--;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      quote = c;
+      cur += c;
+    } else if (c === '`') {
+      tick = true;
+      cur += c;
+    } else if (c === '$' && rest[i + 1] === '(') {
+      depth = 1;
+      cur += '$(';
       i++;
-      // A quoted value may span multiple whitespace-split tokens
-      // (`-b "two words" NAME`). Consume through the token carrying the
-      // closing quote so the NAME hunt resumes after the full value instead
-      // of returning a fragment like `words"` as the secret name.
-      const val = tokens[i];
-      const quote = val && (val[0] === '"' || val[0] === "'") ? val[0] : undefined;
-      if (quote && !(val.length > 1 && val.endsWith(quote))) {
-        while (i + 1 < tokens.length && !tokens[i].endsWith(quote)) i++;
-      }
+    } else if (c === '\n' || c === ';' || c === '|' || (c === '&' && rest[i + 1] === '&')) {
+      break;
+    } else if (/\s/.test(c)) {
+      flush();
+    } else {
+      cur += c;
     }
   }
-  return undefined;
+  flush();
+  return words;
+}
+
+interface SecretSet {
+  name: string;
+  /** The `--repo`/`-R` value, when the command names one. */
+  repo?: string;
+}
+
+/**
+ * Parse every `gh secret set ...` on a line into its NAME and `--repo`
+ * target. The NAME is the first non-flag word, skipping known flag+value
+ * pairs (`--repo org/foo`, `-b xxx`) and bare flags; a command with no NAME
+ * is dropped.
+ */
+function parseSecretSets(display: string): SecretSet[] {
+  const found: SecretSet[] = [];
+  for (const m of display.matchAll(SECRET_SET_PREFIX)) {
+    const words = shellWords(display.slice(m.index + m[0].length));
+    let name: string | undefined;
+    let repo: string | undefined;
+    // `--org` sets an organization secret, not a repo one: it says nothing
+    // about which repo directory has the secret, so it binds nothing.
+    let notRepoScoped = false;
+    for (let i = 0; i < words.length; i++) {
+      const w = words[i];
+      if (!w.startsWith('-')) {
+        name ??= w;
+        continue;
+      }
+      if (/^(-o|--org)(=|$)/.test(w)) notRepoScoped = true;
+      // `--repo=org/foo`, `-R=org/foo`
+      const eq = w.match(/^(--repo|-R)=(.+)$/);
+      if (eq) {
+        repo = eq[2].replace(/^["']|["']$/g, '');
+        continue;
+      }
+      if (VALUE_FLAGS.has(w)) {
+        const val = words[++i];
+        if ((w === '--repo' || w === '-R') && val) repo = val;
+      }
+    }
+    if (name && !notRepoScoped) found.push({ name, repo });
+  }
+  return found;
 }
 
 /** The repo name from a `--repo` value, dropping any `owner/` segment. */
@@ -110,29 +176,34 @@ interface SecretRecord {
 }
 
 /**
- * Detect secrets set via `gh secret set` in agent history.
- * Flag repos in the same org that are missing a secret siblings have.
+ * Detect secrets set via `gh secret set` in agent history and in the current
+ * project's transcripts. Flag a secret siblings have that this project lacks.
+ *
+ * Severity is warning, not error: the evidence is only what was typed or run
+ * in a recorded session. A secret set in the GitHub web UI, by another
+ * machine, or at org level never shows up here, so "not seen" is not proof
+ * of "not set".
  */
 export async function checkMissingSecret(ctx: SessionContext): Promise<LintIssue[]> {
   const issues: LintIssue[] = [];
   const secrets: SecretRecord[] = [];
 
-  // Extract all `gh secret set` commands from history
-  for (const entry of ctx.history) {
-    const name = extractSecretName(entry.display);
-    if (!name) continue;
+  // User-typed lines (history.jsonl) plus the commands the AGENT ran in this
+  // project, which only the transcript records. Transcript commands are
+  // attributed to the current project: that is the only project whose
+  // transcripts are read.
+  const transcript = await readProjectTranscript(ctx.currentProject);
+  const lines: Array<{ display: string; project: string }> = [
+    ...ctx.history.map((h) => ({ display: h.display, project: h.project })),
+    ...transcript.events
+      .filter((e) => e.kind === 'command')
+      .map((e) => ({ display: e.text, project: ctx.currentProject })),
+  ];
 
-    // Capture `--repo`/`-R` (space- or `=`-separated) independently of where it
-    // appears on the line, so a body-before-flag ordering still binds the repo.
-    // Strip surrounding quotes from the captured value (e.g. `--repo="org/foo"`).
-    const repoMatch = entry.display.match(REPO_FLAG_PATTERN);
-    const repo = repoMatch ? repoMatch[1].replace(/^["']|["']$/g, '') : undefined;
-
-    secrets.push({
-      name,
-      repo,
-      project: entry.project,
-    });
+  for (const entry of lines) {
+    for (const { name, repo } of parseSecretSets(entry.display)) {
+      secrets.push({ name, repo, project: entry.project });
+    }
   }
 
   if (secrets.length === 0) return issues;
@@ -145,14 +216,21 @@ export async function checkMissingSecret(ctx: SessionContext): Promise<LintIssue
   for (const s of secrets) {
     if (!byName.has(s.name)) byName.set(s.name, { projects: new Set(), repos: new Set() });
     const bucket = byName.get(s.name)!;
-    // A project-less history entry (Codex CLI occasionally writes neither
-    // `project` nor `cwd`; the scanner keeps those with project '') must not
-    // be path-matched: normalizePath('') resolves to the linter's cwd, which
-    // IS the current project in the dominant `ctxlint .` usage, so a
-    // project-less `gh secret set` would read as "current project has the
-    // secret" and suppress a real finding. Its --repo spec still binds.
+    // A command that names `--repo` set the secret on THAT repo and says
+    // nothing about the directory it was typed in: `gh secret set X --repo
+    // org/bar` run from sibling foo is evidence about bar alone, and run from
+    // the current project it must not mark the current project as having it.
+    if (s.repo) {
+      bucket.repos.add(s.repo);
+      continue;
+    }
+    // A project-less history entry (Codex CLI records no working directory;
+    // the scanner keeps those with project '') must not be path-matched:
+    // normalizePath('') resolves to the linter's cwd, which IS the current
+    // project in the dominant `ctxlint .` usage, so a project-less `gh secret
+    // set` would read as "current project has the secret" and suppress a real
+    // finding.
     if (s.project) bucket.projects.add(s.project);
-    if (s.repo) bucket.repos.add(s.repo);
   }
 
   // Check if current project is missing any secret that 2+ siblings have.
@@ -161,16 +239,18 @@ export async function checkMissingSecret(ctx: SessionContext): Promise<LintIssue
   // (e.g. `ctxlint-fork` matching a `ctxlint` current via basename contains).
   const currentNorm = normalizePath(ctx.currentProject);
   const currentBase = basename(currentNorm);
+  // A capped transcript read may have missed the agent setting it here.
+  const note = truncationNote(transcript);
 
   for (const [secretName, { projects, repos }] of byName) {
     const normalizedProjects = [...projects].map(normalizePath);
     const repoSpecs = [...repos];
 
-    // Current project "has" the secret if a history entry's project path
-    // equals the current project path, OR if a --repo flag value names this
-    // project's basename (gh secret set --repo owner/REPO_BASE — the current
-    // project has no remote owner to compare against, so basename is all we
-    // can match on here).
+    // Current project "has" the secret if a repo-less command was run in the
+    // current project path, OR if a --repo flag value names this project's
+    // basename (gh secret set --repo owner/REPO_BASE — the current project
+    // has no remote owner to compare against, so basename is all we can match
+    // on here).
     const currentHas =
       normalizedProjects.some((p) => p === currentNorm) ||
       repoSpecs.some((r) => repoBasename(r) === currentBase);
@@ -178,7 +258,7 @@ export async function checkMissingSecret(ctx: SessionContext): Promise<LintIssue
     if (currentHas) continue;
 
     // Need at least 2 other projects to have it. A sibling matches if a
-    // history project path equals its path, OR a --repo spec names it. For
+    // repo-less command ran in its path, OR a --repo spec names it. For
     // owner-qualified specs (owner/repo) match the full owner/repo against the
     // sibling's git remote/org; for bare names fall back to basename.
     const siblingMatches = ctx.siblings.filter((sib) => {
@@ -190,13 +270,18 @@ export async function checkMissingSecret(ctx: SessionContext): Promise<LintIssue
     if (siblingMatches.length >= 2) {
       const sibNames = siblingMatches.map((s) => s.name).join(', ');
       issues.push({
-        severity: 'error',
+        severity: 'warning',
         check: 'session-missing-secret',
         ruleId: 'session-missing-secret/missing-secret',
         line: 0,
         message: `GitHub secret "${secretName}" is set on ${siblingMatches.length} sibling repos (${sibNames}) but not on this project`,
-        suggestion: `Run: gh secret set ${secretName} --repo <owner>/<repo>`,
-        detail: `Found in agent history: ${siblingMatches.length} sibling repos have this secret configured`,
+        suggestion:
+          `If this project needs it, run: gh secret set ${secretName} --repo <owner>/<repo>. ` +
+          'Check `gh secret list` first: a secret set in the web UI or at org level is not ' +
+          'visible in session history.',
+        detail:
+          `Found in session history: ${siblingMatches.length} sibling repos had this secret set` +
+          (note ? `\n${note}` : ''),
       });
     }
   }

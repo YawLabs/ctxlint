@@ -16,6 +16,6 @@ export const INSTRUCTIONS = [
   '- ctxlint_skill_audit: skill and subagent definitions (~/.claude/skills/*/SKILL.md, ~/.claude/agents/*.md).',
   '- ctxlint_validate_path: check one referenced path, with a git-rename suggestion when it moved.',
   '- ctxlint_token_report: the cheap probe. Token counts per context file, no checks run; use it to size a project before a full audit.',
-  '- ctxlint_fix: WRITES context files to repair broken paths unless dryRun is true. Preview with dryRun first.',
-  'Audit results are JSON with summary first, then per-file issues. Every tool takes projectPath (default: the server cwd).',
+  '- ctxlint_fix: WRITES context files, applying every auto-fix the selected checks emit (today: broken paths), unless dryRun is true. Preview with dryRun first.',
+  'Audit results are JSON with summary first, then per-file issues. A result too large to return whole drops its last issues and says so in a truncated field; summary still counts everything. Every tool takes projectPath (default: the server cwd).',
 ].join('\n');

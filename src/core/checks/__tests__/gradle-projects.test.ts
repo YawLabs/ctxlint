@@ -7,12 +7,13 @@ import { checkCommands } from '../commands.js';
 import {
   findGradleBuildRoot,
   gradleProjectRefs,
+  gradleUsesWrapper,
   matchGradleName,
   parseSettings,
   readGradleProjectSet,
-  shellWords,
   unresolvedGradleProject,
 } from '../gradle-projects.js';
+import { shellWords } from '../shell-words.js';
 import { resetPackageJsonCache } from '../../../utils/fs.js';
 
 const FIXTURES = path.resolve(__dirname, '../../../../fixtures');
@@ -40,15 +41,7 @@ include 'streams:test-utils'`;
     ]);
   });
 
-  it('reads Kotlin calls, trailing commas, listOf spreads and a leading colon', () => {
-    const src = `include(":a")
-include(
-    "b:c",
-    "d",
-)
-include(*listOf("e", "f").toTypedArray())`;
-    // `.toTypedArray()` after the listOf is a continuation, so that include is not literal.
-    expect(paths(src)).toBeNull();
+  it('reads Kotlin calls, trailing commas, an arrayOf spread and a leading colon', () => {
     expect(paths(`include(":a")\ninclude(\n  "b:c",\n  "d",\n)\ninclude(*arrayOf("e"))`)).toEqual([
       ':a',
       ':b',
@@ -56,6 +49,20 @@ include(*listOf("e", "f").toTypedArray())`;
       ':d',
       ':e',
     ]);
+  });
+
+  it('unwraps listOf / setOf arguments (Settings.include(Iterable))', () => {
+    expect(paths(`include(listOf("e", "f"))\ninclude(setOf(":g:h"))`)).toEqual([
+      ':e',
+      ':f',
+      ':g',
+      ':g:h',
+    ]);
+  });
+
+  it('is open when a list wrapper is followed by a call it cannot read', () => {
+    // `.toTypedArray()` after the listOf is a continuation, so the include is not literal.
+    expect(paths(`include(":a")\ninclude(*listOf("e", "f").toTypedArray())`)).toBeNull();
   });
 
   it('treats includeFlat names as whole root-level names', () => {
@@ -286,6 +293,29 @@ describe('gradleProjectRefs', () => {
 
   it('bails on a trailing line continuation', () => {
     expect(gradleProjectRefs('./gradlew :a:check \\')).toBeNull();
+  });
+
+  it('reads past env assignments and sh / bash / sudo / env wrappers', () => {
+    const expected = [{ token: ':a:test', segments: ['a'], absolute: true }];
+    for (const cmd of [
+      'JAVA_HOME=/opt/jdk ./gradlew :a:test',
+      'CI=1 GRADLE_OPTS="-Xmx2g" ./gradlew :a:test',
+      'sh gradlew :a:test',
+      'bash ./gradlew :a:test',
+      'sudo ./gradlew :a:test',
+      'sudo -E ./gradlew :a:test',
+      'env JAVA_HOME=/opt/jdk gradle :a:test',
+    ]) {
+      expect(gradleProjectRefs(cmd), cmd).toEqual(expected);
+    }
+    // `sh -c '...'` runs a script string, not a command whose words we read.
+    expect(gradleProjectRefs(`sh -c './gradlew :a:test'`)).toBeNull();
+  });
+
+  it('knows whether a prefixed command runs the wrapper or plain gradle', () => {
+    expect(gradleUsesWrapper('JAVA_HOME=/opt/jdk gradle :a:test')).toBe(false);
+    expect(gradleUsesWrapper('sh gradlew :a:test')).toBe(true);
+    expect(gradleUsesWrapper('./gradlew :a:test')).toBe(true);
   });
 
   it('skips placeholders, marked or not', () => {

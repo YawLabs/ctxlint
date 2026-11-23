@@ -1,6 +1,6 @@
 declare const __VERSION__: string | undefined;
 
-// Bundled by tsup/esbuild: __VERSION__ is replaced at build time from package.json.
+// Bundled by esbuild (build.mjs): __VERSION__ is replaced at build time from package.json.
 // Unbundled in vitest: reads package.json at runtime using ESM-compatible imports.
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';

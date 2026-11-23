@@ -17,10 +17,28 @@ inputs:
 runs:
   using: 'composite'
   steps:
-    - name: Set up Node.js
+    # Node: the job's own, when it already has one that ctxlint supports
+    # (engines: node >=20) -- a composite action's setup-node changes the Node
+    # every LATER step of the consumer's job runs on, so it is only installed
+    # when the job has none, or one older than 20. Then it is the current LTS
+    # ('lts/*'), never a pinned major that reaches end of life under the
+    # consumer. The check runs only node itself, so no input reaches a shell.
+    - name: Check for a usable Node.js
+      id: node
+      shell: bash
+      run: |
+        if command -v node >/dev/null 2>&1 &&
+          [ "$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)" -ge 20 ]; then
+          echo "usable=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "usable=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Set up Node.js (only when the job has no usable one)
+      if: steps.node.outputs.usable != 'true'
       uses: actions/setup-node@v6
       with:
-        node-version: '20'
+        node-version: 'lts/*'
 
     - name: Run ctxlint
       shell: bash

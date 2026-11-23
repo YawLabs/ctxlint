@@ -11,12 +11,41 @@ vi.mock('node:fs', () => ({
   existsSync: vi.fn(),
 }));
 
+// The current project's GitHub owner comes from its git remote; stub it so
+// each case states the owner it means instead of spawning git.
+vi.mock('../../../sibling-org.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../sibling-org.js')>()),
+  currentGitOrg: vi.fn(async () => undefined),
+}));
+
 import { readFile, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { currentGitOrg } from '../../../sibling-org.js';
 
 const mockReadFile = vi.mocked(readFile);
 const mockStat = vi.mocked(stat);
 const mockExistsSync = vi.mocked(existsSync);
+const mockCurrentGitOrg = vi.mocked(currentGitOrg);
+
+/**
+ * Serve `content` for one canonical file and identical text for every other,
+ * so a case's finding count is the number of files it meant to diverge --
+ * a mock returning the same diverged text for all eight files would make
+ * every canonical file fire at once and hide a count regression.
+ */
+function onlyFile(
+  fileName: string,
+  byRepo: Record<string, string>,
+): (p: unknown) => Promise<string> {
+  return async (p) => {
+    const ps = String(p).replace(/\\/g, '/');
+    if (!ps.endsWith(`/${fileName}`)) return 'identical line one\nidentical line two\n';
+    for (const [repo, content] of Object.entries(byRepo)) {
+      if (ps.includes(`/repos/${repo}/`)) return content;
+    }
+    return '';
+  };
+}
 
 function makeSibling(name: string, basePath = '/repos'): SiblingRepo {
   return { path: `${basePath}/${name}`, name };
@@ -32,6 +61,7 @@ beforeEach(() => {
   // with a clean slate. Without this, a stat result from one test would
   // satisfy the cache lookup in the next.
   resetDivergedFileCache();
+  mockCurrentGitOrg.mockResolvedValue(undefined);
   // Default stat: files have stable mtime/size keyed by path so the cache
   // hits behave deterministically. Tests that want to simulate "file
   // changed" can override mockStat per-call.
@@ -74,16 +104,14 @@ describe('checkDivergedFile', () => {
     const sibContent =
       'line one is shared\nline two is shared\nline three differs in sib\nline four also differs\n';
 
-    mockReadFile.mockImplementation(async (p) => {
-      const ps = String(p).replace(/\\/g, '/');
-      if (ps.includes('/repos/current/')) return currentContent;
-      if (ps.includes('/repos/foo/')) return sibContent;
-      return '';
-    });
+    mockReadFile.mockImplementation(
+      onlyFile('release.sh', { current: currentContent, foo: sibContent }),
+    );
 
     const ctx = makeCtx([makeSibling('foo')]);
     const issues = await checkDivergedFile(ctx);
-    expect(issues.length).toBeGreaterThanOrEqual(1);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('release.sh');
     expect(issues[0].check).toBe('session-diverged-file');
     expect(issues[0].severity).toBe('warning');
     // detail carries navigable absolute paths for both the current file and
@@ -120,19 +148,15 @@ describe('checkDivergedFile', () => {
       'lo only four line',
     ].join('\n');
 
-    mockReadFile.mockImplementation(async (p) => {
-      const ps = String(p).replace(/\\/g, '/');
-      if (ps.includes('/repos/current/')) return currentContent;
-      if (ps.includes('/repos/hi/')) return hiContent;
-      if (ps.includes('/repos/lo/')) return loContent;
-      return '';
-    });
+    mockReadFile.mockImplementation(
+      onlyFile('release.sh', { current: currentContent, hi: hiContent, lo: loContent }),
+    );
 
     // The higher-overlap sibling iterates FIRST; the report must still lead
     // with the lowest-overlap (most-drifted) sibling.
     const ctx = makeCtx([makeSibling('hi'), makeSibling('lo')]);
     const issues = await checkDivergedFile(ctx);
-    expect(issues.length).toBeGreaterThanOrEqual(1);
+    expect(issues).toHaveLength(1);
     const msg = issues[0].message;
     expect(msg).toContain('lo (25% overlap)');
     expect(msg).toContain('hi (50% overlap)');
@@ -247,5 +271,61 @@ describe('checkDivergedFile', () => {
 
     await checkDivergedFile(ctx);
     expect(mockReadFile.mock.calls.length).toBeGreaterThan(firstPassReads);
+  });
+
+  const shared = ['shared alpha line', 'shared beta line', 'shared gamma line'];
+
+  it('compares only against siblings under the same GitHub owner', async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockCurrentGitOrg.mockResolvedValue('acme');
+    const current = [...shared, 'current only delta'].join('\n');
+    const drifted = [...shared, 'sib only epsilon line', 'sib only zeta line'].join('\n');
+    mockReadFile.mockImplementation(
+      onlyFile('release.sh', { current, mine: drifted, theirs: drifted }),
+    );
+
+    const ctx = makeCtx([
+      { path: '/repos/mine', name: 'mine', gitOrg: 'acme' },
+      { path: '/repos/theirs', name: 'theirs', gitOrg: 'someone-else' },
+    ]);
+    const issues = await checkDivergedFile(ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('mine');
+    expect(issues[0].message).not.toContain('theirs');
+  });
+
+  it('holds boilerplate files (.gitignore, tsconfig.json) to a higher overlap bar', async () => {
+    mockExistsSync.mockReturnValue(true);
+    // 2 shared of 8 distinct lines = 25%: drift for release.sh, but two
+    // unrelated repos' .gitignore files overlap that much by default.
+    const current = [
+      'node_modules line',
+      'dist output line',
+      'cur a line',
+      'cur b line',
+      'cur c line',
+    ].join('\n');
+    const sib = [
+      'node_modules line',
+      'dist output line',
+      'sib a line',
+      'sib b line',
+      'sib c line',
+    ].join('\n');
+    mockReadFile.mockImplementation(onlyFile('.gitignore', { current, foo: sib }));
+    expect(await checkDivergedFile(makeCtx([makeSibling('foo')]))).toHaveLength(0);
+
+    resetDivergedFileCache();
+    // 4 shared of 6 distinct lines = 67%: still flagged.
+    const close = ['node_modules line', 'dist output line', 'coverage line', 'env file line'];
+    mockReadFile.mockImplementation(
+      onlyFile('.gitignore', {
+        current: [...close, 'cur a line'].join('\n'),
+        foo: [...close, 'sib a line'].join('\n'),
+      }),
+    );
+    const issues = await checkDivergedFile(makeCtx([makeSibling('foo')]));
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('.gitignore');
   });
 });

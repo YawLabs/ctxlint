@@ -1,10 +1,18 @@
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
-import { parseTree, findNodeAtLocation, getNodeValue, type Node } from 'jsonc-parser';
+import {
+  parseTree,
+  findNodeAtLocation,
+  getNodeValue,
+  printParseErrorCode,
+  type Node,
+  type ParseError,
+} from 'jsonc-parser';
+import { claudeConfigDir, homeDir } from '../../utils/claude-home.js';
 import { stripBom, fileExists } from '../../utils/fs.js';
 import { offsetToPosition } from '../../utils/positions.js';
 import type { LintIssue } from '../types.js';
+import { hookShellWords } from './shell-words.js';
 
 /**
  * hook-coverage/dead-hook — the INVERSE of tier-tokens/hard-enforcement-missing.
@@ -22,6 +30,16 @@ import type { LintIssue } from '../types.js';
  * by default. The user-global `~/.claude/settings.json` is scanned ONLY when the
  * caller opts in (`--hooks-global` / `hooksGlobal`), mirroring the opt-in posture
  * the session + skills pillars use for reading outside the project directory.
+ *
+ * What is checked, and why only that:
+ *  - hook `command`s and `Bash(...)`/`PowerShell(...)` permission entries are
+ *    shell; their path-shaped words are statted.
+ *  - `Read(...)`/`Edit(...)`/`Write(...)` (and the other path tools) use
+ *    Claude Code's own path-rule prefixes, which are NOT shell paths -- see
+ *    resolveRulePath.
+ *  - only `allow` entries and hooks are reported. A `deny`/`ask` rule naming a
+ *    missing path is a guard against the path appearing (`Read(./.env)`), and
+ *    it is working as written.
  */
 
 interface SettingsSource {
@@ -44,32 +62,54 @@ interface PathCandidate {
   raw: string;
   /** Absolute resolved path, or null if it referenced an env var we can't resolve. */
   resolved: string | null;
+  /**
+   * `shell` for a word of a hook command or `Bash(...)` rule; `rule` for a
+   * Read/Edit-style rule body, which follows Claude Code's path-rule syntax
+   * and so has its own alternate spellings (see ruleVariant).
+   */
+  kind: 'shell' | 'rule';
+}
+
+/**
+ * Where `~` and the user-global settings resolve. `configDir` is Claude Code's
+ * config directory (claudeConfigDir: `CLAUDE_CONFIG_DIR`, else
+ * `<home>/.claude`); either may be '' when nothing resolves.
+ */
+interface Homes {
+  home: string;
+  configDir: string;
 }
 
 function loadSettingsSources(
   projectRoot: string,
-  homeDir: string,
+  homes: Homes,
   includeUserGlobal: boolean,
 ): SettingsSource[] {
-  const home = homeDir;
+  // Display paths use `/` on every OS: they are shown in messages, and a
+  // message that differs by platform makes reports non-portable.
   const candidates: Array<{ filePath: string; displayPath: string; isUserGlobal: boolean }> = [
     {
       filePath: path.join(projectRoot, '.claude', 'settings.json'),
-      displayPath: path.join('.claude', 'settings.json'),
+      displayPath: '.claude/settings.json',
       isUserGlobal: false,
     },
     {
       filePath: path.join(projectRoot, '.claude', 'settings.local.json'),
-      displayPath: path.join('.claude', 'settings.local.json'),
+      displayPath: '.claude/settings.local.json',
       isUserGlobal: false,
     },
   ];
   // User-global ~/.claude/settings.json is read only on explicit opt-in, so the
-  // default run never touches files outside the project directory.
-  if (includeUserGlobal) {
+  // default run never touches files outside the project directory. It lives
+  // in Claude Code's config dir, which CLAUDE_CONFIG_DIR can move.
+  if (includeUserGlobal && homes.configDir) {
+    const isDefault =
+      homes.home !== '' && path.resolve(homes.configDir) === path.resolve(homes.home, '.claude');
     candidates.push({
-      filePath: path.join(home, '.claude', 'settings.json'),
-      displayPath: '~/.claude/settings.json',
+      filePath: path.join(homes.configDir, 'settings.json'),
+      displayPath: isDefault
+        ? '~/.claude/settings.json'
+        : path.join(homes.configDir, 'settings.json').replace(/\\/g, '/'),
       isUserGlobal: true,
     });
   }
@@ -82,7 +122,18 @@ function loadSettingsSources(
     } catch {
       continue; // missing file is expected
     }
-    const tree = parseTree(content, [], { allowTrailingComma: true });
+    // A malformed file is skipped with one notice, not checked on the partial
+    // tree jsonc-parser recovers: entries after the error are silently lost,
+    // so "no dead hooks" would be a claim about half a file. Same leniency
+    // (jsonc, trailing commas) and same stderr channel as tier-tokens.
+    const errors: ParseError[] = [];
+    const tree = parseTree(content, errors, { allowTrailingComma: true });
+    if (errors.length > 0) {
+      console.warn(
+        `ctxlint: hook-coverage skipped ${c.displayPath}: could not parse (${printParseErrorCode(errors[0].error)} at offset ${errors[0].offset})`,
+      );
+      continue;
+    }
     sources.push({ ...c, content, tree });
   }
   return sources;
@@ -97,29 +148,31 @@ function loadSettingsSources(
 function expandPath(
   raw: string,
   projectRoot: string,
-  homeDir: string,
+  homes: Homes,
   platform: NodeJS.Platform,
 ): string | null {
   let s = raw;
-  // Leading ~ -> home dir.
+  // Leading ~ -> home dir. With no home there is nothing to join onto (it
+  // would yield a cwd-relative path), so the path cannot be checked.
   if (s === '~' || s.startsWith('~/') || s.startsWith('~\\')) {
-    s = path.join(homeDir, s.slice(1));
+    if (!homes.home) return null;
+    s = path.join(homes.home, s.slice(1));
   }
-  const replacements: Record<string, string> = {
-    CLAUDE_PROJECT_DIR: projectRoot,
-    CLAUDE_CONFIG_DIR: path.join(homeDir, '.claude'),
-    HOME: homeDir,
-    USERPROFILE: homeDir,
-  };
+  const replacements: Record<string, string> = { CLAUDE_PROJECT_DIR: projectRoot };
+  if (homes.configDir) replacements.CLAUDE_CONFIG_DIR = homes.configDir;
+  if (homes.home) {
+    replacements.HOME = homes.home;
+    replacements.USERPROFILE = homes.home;
+  }
   s = s.replace(/\$\{?([A-Z_][A-Z0-9_]*)\}?/g, (m, name: string) =>
-    name in replacements ? replacements[name] : m,
+    Object.hasOwn(replacements, name) ? replacements[name] : m,
   );
   // Windows-style %VAR% (settings authored on Windows). Expand the same
   // documented vars (case-insensitively, matching cmd.exe semantics); leave
   // anything else in place so the bail-out below catches it.
   s = s.replace(/%([A-Za-z_][A-Za-z0-9_]*)%/g, (m, name: string) => {
     const upper = name.toUpperCase();
-    return upper in replacements ? replacements[upper] : m;
+    return Object.hasOwn(replacements, upper) ? replacements[upper] : m;
   });
   // Any remaining $VAR or %VAR% means we can't resolve -> bail (don't
   // false-positive a path we can't actually check).
@@ -173,12 +226,15 @@ export function isMsysFlag(token: string): boolean {
  * (`c:/Users/x`) so the existence check resolves. Windows-only: on POSIX
  * `/c/...` is a genuine absolute path and must never be rewritten.
  *
- * A DOUBLED leading slash (`//c/Users/x`) is accepted too. Git Bash renders a
- * drive path that way when suppressing MSYS translation, and Claude Code writes
- * the form into settings verbatim, so it shows up in real `permissions.allow`
- * entries. Left untranslated it looks like a UNC path, `fileExists` fails, and
- * a live directory gets reported as a dead gate -- which has led to correct
- * entries being deleted on the linter's advice.
+ * A DOUBLED leading slash (`//c/Users/x`) is accepted too, for two reasons.
+ * In a `Read(...)`/`Edit(...)` rule `//` is Claude Code's documented
+ * filesystem-absolute prefix, and on Windows paths are normalized to POSIX
+ * form before matching, so `Read(//c/Users/x/**)` is the documented way to name
+ * `C:\Users\x` (code.claude.com/docs/en/permissions, "How path patterns
+ * match"). In shell, Git Bash renders a drive path that way when suppressing
+ * MSYS translation. Left untranslated it looks like a UNC path, `fileExists`
+ * fails, and a live directory gets reported as a dead gate -- which has led to
+ * correct entries being deleted on the linter's advice.
  *
  * The single-letter capture is what keeps this safe for genuine UNC paths: a
  * real `//host/share` has a multi-character hostname, and a one-letter UNC host
@@ -208,7 +264,7 @@ export function translateMsysDrivePath(s: string, platform: NodeJS.Platform): st
 function findExistingVariant(
   raw: string,
   projectRoot: string,
-  homeDir: string,
+  homes: Homes,
   platform: NodeJS.Platform,
 ): string | null {
   const token = stripMatcherWildcard(raw);
@@ -227,61 +283,186 @@ function findExistingVariant(
   if (token.includes('\\')) variants.add(token.replace(/\\/g, '/'));
 
   for (const v of variants) {
-    const resolved = expandPath(v, projectRoot, homeDir, platform);
+    const resolved = expandPath(v, projectRoot, homes, platform);
     if (resolved !== null && fileExists(resolved)) return resolved;
   }
   return null;
 }
 
 /**
- * Pull script-path candidates out of a hook command line. A command can be a
- * bare path ("./.claude/hooks/gate.sh") or an interpreter invocation
- * ("bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/gate.sh\" --flag"). We tokenize on
- * whitespace, strip surrounding quotes, and keep tokens that look like paths.
+ * Windows command flags written with a single slash (`cmd /c dir`,
+ * `taskkill /F /IM x.exe`): one slash, then letters, no further separator.
+ * Win32 only -- on POSIX `/tmp` is a path.
+ */
+function isWin32SlashFlag(token: string, platform: NodeJS.Platform): boolean {
+  return platform === 'win32' && /^\/[A-Za-z?][A-Za-z0-9:?]*$/.test(token);
+}
+
+/**
+ * Pull script-path candidates out of a hook command line or a `Bash(...)`
+ * rule body. A command can be a bare path ("./.claude/hooks/gate.sh") or an
+ * interpreter invocation ("bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/gate.sh\"
+ * --flag"). Words are split shell-style (hookShellWords), `--flag=value` and
+ * `VAR=value` contribute their value, and only path-shaped words are kept.
+ *
+ * `matcher` is set for permission rules, whose trailing `*` / `:*` is the
+ * rule's prefix wildcard rather than part of a filename.
  */
 function extractCommandPaths(
   command: string,
   projectRoot: string,
-  homeDir: string,
+  homes: Homes,
   platform: NodeJS.Platform,
+  matcher: boolean,
 ): PathCandidate[] {
-  const tokens = command.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
   const out: PathCandidate[] = [];
-  for (const t of tokens) {
-    const token = t.replace(/^['"]|['"]$/g, '');
+  for (const word of hookShellWords(command)) {
+    if (word.redirectTarget) continue;
+    // `--config=./eslint.config.js`, `FOO=./x.sh`: the value is the path.
+    const assigned = /^(?:--?[A-Za-z0-9][\w-]*|[A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(word.text);
+    const token = assigned ? assigned[1] : word.text;
     // Strip the trailing matcher wildcard first: it belongs to the permission
     // rule, not the filename, and would otherwise fail the existence check.
-    const pathToken = stripMatcherWildcard(token);
-    // MSYS `//FLAG` tokens (e.g. `taskkill //F`) are Windows command flags, not
-    // paths -- drop them so they aren't reported as missing files.
-    if (isMsysFlag(pathToken)) continue;
+    const pathToken = matcher ? stripMatcherWildcard(token) : token;
+    // A URL (`curl -fsSL https://get.example.org/install.sh`) is not a file.
+    if (pathToken.includes('://')) continue;
+    // MSYS `//FLAG` tokens (e.g. `taskkill //F`) and native `/FLAG` tokens on
+    // Windows are command flags, not paths.
+    if (isMsysFlag(pathToken) || isWin32SlashFlag(pathToken, platform)) continue;
     // A wildcard surviving the trailing-matcher strip is a mid-token glob
     // (e.g. `/logs/*.json`, `/c/foo/*.sh`), not a single file we can stat --
     // skip rather than report a phantom "missing file" (false negative is
     // safer than a false positive, per the module contract above).
-    if (pathToken.includes('*')) continue;
+    if (/[*?]/.test(pathToken)) continue;
     if (!looksLikePath(pathToken)) continue;
     // Keep the original token in `raw` for the message; resolve the stripped form.
-    out.push({ raw: token, resolved: expandPath(pathToken, projectRoot, homeDir, platform) });
+    out.push({
+      raw: token,
+      resolved: expandPath(pathToken, projectRoot, homes, platform),
+      kind: 'shell',
+    });
   }
   return out;
 }
 
+/** Tools whose rule body is a Claude Code path pattern rather than shell. */
+const PATH_RULE_TOOLS = new Set([
+  'Read',
+  'Edit',
+  'Write',
+  'MultiEdit',
+  'NotebookEdit',
+  'Glob',
+  'Grep',
+]);
+/** Tools whose rule body is a command line. */
+const COMMAND_RULE_TOOLS = new Set(['Bash', 'PowerShell']);
+
 /**
- * Permissions entries are usually tool matchers ("Bash(npm login)"), not file
- * paths -- but some setups reference a script directly. We extract any
- * path-shaped token from the entry (including from inside a `Tool(...)` wrapper)
- * and verify those; non-path entries yield nothing.
+ * Resolve a Read/Edit-style rule body to the path it names, per Claude Code's
+ * permission-rule syntax (code.claude.com/docs/en/permissions, "How path
+ * patterns match"), which is NOT shell syntax:
+ *
+ *   `//path`  filesystem-absolute (`//c/Users/x` names `C:\Users\x` on Windows)
+ *   `~/path`  home-relative
+ *   `/path`   relative to the SETTINGS SOURCE: the project root for project
+ *             and local settings, the config dir (`configDir`, default
+ *             `<homeDir>/.claude`) for the user-global file.
+ *             `Read(/docs/**)` means `<project>/docs`, never `/docs`.
+ *   `path`, `./path`  relative to the working directory (the project root)
+ *
+ * Trailing `/**` or `/*` segments are dropped so the directory they glob is
+ * statted; any other glob, a `!` negation, an env var, or a separator-free
+ * bare name yields null (nothing single to check).
+ */
+export function resolveRulePath(
+  body: string,
+  projectRoot: string,
+  homeDir: string,
+  isUserGlobal: boolean,
+  platform: NodeJS.Platform,
+  configDir: string = homeDir ? path.join(homeDir, '.claude') : '',
+): string | null {
+  let p = body.trim();
+  if (!p || p.startsWith('!') || p.includes('$') || p.includes('%')) return null;
+  p = p.replace(/(?:\/\*{1,2})+\/?$/, '');
+  if (!p || /[*?[\]{}]/.test(p)) return null;
+
+  if (p.startsWith('//')) {
+    if (platform === 'win32') {
+      const win = translateMsysDrivePath(p, platform);
+      // A drive-less `//x` on Windows has no single on-disk meaning here.
+      // Returned unresolved (`c:/Users/x`), which fs accepts on Windows and
+      // keeps the result independent of the host OS for tests.
+      return win === p ? null : win;
+    }
+    return path.resolve(p.slice(1));
+  }
+  if (p === '~' || p.startsWith('~/')) return homeDir ? path.join(homeDir, p.slice(1)) : null;
+  if (p.startsWith('/')) {
+    const anchor = isUserGlobal ? configDir : projectRoot;
+    return anchor ? path.join(anchor, p.slice(1)) : null;
+  }
+  if (!p.includes('/') && !p.includes('\\')) return null;
+  return path.resolve(projectRoot, p);
+}
+
+/**
+ * The path-rule analogue of findExistingVariant: the one confusion the rule
+ * syntax invites is `/x` (settings-source-relative) vs `//x` (absolute). When
+ * the other reading exists, return the rule body spelled that way.
+ */
+function ruleVariant(
+  body: string,
+  projectRoot: string,
+  homes: Homes,
+  isUserGlobal: boolean,
+  platform: NodeJS.Platform,
+): string | null {
+  let alt: string | null = null;
+  if (body.startsWith('//')) alt = body.slice(1);
+  else if (body.startsWith('/')) alt = `/${body}`;
+  if (alt === null) return null;
+  const resolved = resolveRulePath(
+    alt,
+    projectRoot,
+    homes.home,
+    isUserGlobal,
+    platform,
+    homes.configDir,
+  );
+  return resolved !== null && fileExists(resolved) ? alt : null;
+}
+
+/**
+ * Path candidates of one permission rule. `Bash(...)` / `PowerShell(...)`
+ * bodies are shell and go through extractCommandPaths; path-tool bodies use
+ * the rule syntax in resolveRulePath. Anything else -- a bare tool name,
+ * `WebFetch(domain:...)`, an MCP tool -- names no file and yields nothing.
  */
 function extractPermissionPaths(
   entry: string,
+  source: SettingsSource,
   projectRoot: string,
-  homeDir: string,
+  homes: Homes,
   platform: NodeJS.Platform,
 ): PathCandidate[] {
-  // Unwrap a single Tool(...) wrapper if present, e.g. "Bash(./x.sh)".
-  const inner = entry.replace(/^[A-Za-z]+\((.*)\)$/, '$1');
-  return extractCommandPaths(inner, projectRoot, homeDir, platform);
+  const m = /^([A-Za-z][\w-]*)\(([\s\S]*)\)$/.exec(entry.trim());
+  if (!m) return [];
+  const [, tool, body] = m;
+  if (COMMAND_RULE_TOOLS.has(tool)) {
+    return extractCommandPaths(body, projectRoot, homes, platform, true);
+  }
+  if (!PATH_RULE_TOOLS.has(tool)) return [];
+  const resolved = resolveRulePath(
+    body,
+    projectRoot,
+    homes.home,
+    source.isUserGlobal,
+    platform,
+    homes.configDir,
+  );
+  return resolved === null ? [] : [{ raw: body.trim(), resolved, kind: 'rule' }];
 }
 
 function lineForPath(source: SettingsSource, jsonPath: (string | number)[]): number {
@@ -302,7 +483,7 @@ interface SettingsShape {
 function checkSource(
   source: SettingsSource,
   projectRoot: string,
-  homeDir: string,
+  homes: Homes,
   platform: NodeJS.Platform,
 ): LintIssue[] {
   if (!source.tree) return [];
@@ -311,37 +492,61 @@ function checkSource(
 
   const issues: LintIssue[] = [];
 
-  const report = (cand: PathCandidate, line: number, origin: string) => {
+  /**
+   * `origin` says what holds the path, and drives the consequence wording: a
+   * hook with a missing script does not run (the gate no-ops); an allow rule
+   * naming a missing path matches nothing.
+   */
+  type Origin = { kind: 'hook'; event: string } | { kind: 'allow' };
+
+  const report = (cand: PathCandidate, line: number, origin: Origin) => {
     // Unresolvable (env-var) paths are skipped -- can't prove they're dead.
     if (cand.resolved === null) return;
     if (fileExists(cand.resolved)) return;
-    const where = source.isUserGlobal ? ` (in ${source.displayPath})` : '';
+    // Findings from every settings file land under one "(project)" path in
+    // the report, so the file has to be named in the message itself or a
+    // settings.local.json line is indistinguishable from a settings.json one.
+    const where = ` (in ${source.displayPath})`;
+    // The structured twin of `where`: the audit files the finding under this
+    // path. Project sources only -- the user-global file lies outside the
+    // project and stays in the "(project)" bucket.
+    const file = source.isUserGlobal ? {} : { file: source.displayPath };
+    const label = origin.kind === 'hook' ? `${origin.event} hook` : 'permissions.allow entry';
+    const consequence =
+      origin.kind === 'hook' ? 'the gate silently no-ops' : 'the rule silently matches nothing';
 
     // The target may be present under a different spelling. Say so instead of
     // asserting it is gone -- the fix is to correct the path, NOT to delete the
     // entry, and the two remedies are opposites.
-    const variant = findExistingVariant(cand.raw, projectRoot, homeDir, platform);
+    const variant =
+      cand.kind === 'rule'
+        ? ruleVariant(cand.raw, projectRoot, homes, source.isUserGlobal, platform)
+        : findExistingVariant(cand.raw, projectRoot, homes, platform);
     if (variant !== null) {
       issues.push({
         severity: 'warning',
         check: 'hook-coverage',
         ruleId: 'hook-coverage/dead-hook',
         line,
-        message: `${origin} references "${cand.raw}" which does not resolve${where}, but "${variant}" exists — the path form is wrong, so the gate silently no-ops`,
+        ...file,
+        message: `${label} references "${cand.raw}" which does not resolve${where}, but "${variant}" exists — the path form is wrong, so ${consequence}`,
         suggestion: `Rewrite the entry to use "${variant}". Do NOT delete it — the target exists; only the path form is unresolvable.`,
       });
       return;
     }
 
+    const target = source.isUserGlobal ? `the target at ${cand.resolved}` : 'the target';
     issues.push({
       severity: 'warning',
       check: 'hook-coverage',
       ruleId: 'hook-coverage/dead-hook',
       line,
-      message: `${origin} references "${cand.raw}" which does not exist on disk${where} — the gate silently no-ops`,
-      suggestion: source.isUserGlobal
-        ? `Restore the script at ${cand.resolved}, or remove the dead entry from ${source.displayPath}.`
-        : `Restore the script, fix the path, or remove the dead entry. A PreToolUse hook pointing at a missing script does not block anything.`,
+      ...file,
+      message: `${label} references "${cand.raw}" which does not exist on disk${where} — ${consequence}`,
+      suggestion:
+        origin.kind === 'hook'
+          ? `Restore ${target}, fix the path, or remove the dead hook from ${source.displayPath}. A ${origin.event} hook pointing at a missing script does not run, so it blocks nothing.`
+          : `Restore ${target}, fix the path, or remove the stale entry from ${source.displayPath}. An allow rule naming a missing path grants nothing.`,
     });
   };
 
@@ -355,23 +560,25 @@ function checkSource(
       subHooks.forEach((h, hi) => {
         if (!h || typeof h.command !== 'string') return;
         const line = lineForPath(source, ['hooks', event, mi, 'hooks', hi, 'command']);
-        for (const cand of extractCommandPaths(h.command, projectRoot, homeDir, platform)) {
-          report(cand, line, `${event} hook`);
+        for (const cand of extractCommandPaths(h.command, projectRoot, homes, platform, false)) {
+          report(cand, line, { kind: 'hook', event });
         }
       });
     });
   }
 
   // --- Permissions ---
-  const perms = data.permissions ?? {};
-  for (const listName of ['allow', 'deny', 'ask'] as const) {
-    const list = perms[listName];
-    if (!Array.isArray(list)) continue;
-    list.forEach((entry, i) => {
+  // `allow` only. A deny/ask rule naming a path that does not exist is a
+  // guard against it appearing (`Read(./.env)`, `Read(./secrets/**)` in a repo
+  // with no secrets yet) and is doing its job; reporting it as dead invites
+  // deleting a working guard.
+  const allow = data.permissions?.allow;
+  if (Array.isArray(allow)) {
+    allow.forEach((entry, i) => {
       if (typeof entry !== 'string') return;
-      const line = lineForPath(source, ['permissions', listName, i]);
-      for (const cand of extractPermissionPaths(entry, projectRoot, homeDir, platform)) {
-        report(cand, line, `permissions.${listName} entry`);
+      const line = lineForPath(source, ['permissions', 'allow', i]);
+      for (const cand of extractPermissionPaths(entry, source, projectRoot, homes, platform)) {
+        report(cand, line, { kind: 'allow' });
       }
     });
   }
@@ -396,19 +603,23 @@ export interface HookCoverageOptions {
 
 export async function checkHookCoverage(
   projectRoot: string,
-  // homeDir is injectable so tests can isolate from the real user-global
-  // ~/.claude/settings.json. Production callers omit it (defaults to the OS home).
-  homeDir: string = os.homedir(),
+  // home is injectable so tests can isolate from the real user-global
+  // settings. Production callers omit it: the home then resolves the way Claude
+  // Code resolves it (homeDir) and the user-global file is read from
+  // claudeConfigDir(), which honors CLAUDE_CONFIG_DIR. An explicit home pins
+  // the config dir to <home>/.claude, ignoring the ambient CLAUDE_CONFIG_DIR.
+  home?: string,
   options: HookCoverageOptions = {},
   // platform is injectable so tests can exercise the Windows-only MSYS drive-path
   // translation deterministically. Production callers omit it (defaults to the
   // running OS).
   platform: NodeJS.Platform = process.platform,
 ): Promise<LintIssue[]> {
-  const sources = loadSettingsSources(projectRoot, homeDir, options.userGlobal ?? false);
+  const homes: Homes = { home: home ?? homeDir(), configDir: claudeConfigDir(home) };
+  const sources = loadSettingsSources(projectRoot, homes, options.userGlobal ?? false);
   const issues: LintIssue[] = [];
   for (const source of sources) {
-    issues.push(...checkSource(source, projectRoot, homeDir, platform));
+    issues.push(...checkSource(source, projectRoot, homes, platform));
   }
   return issues;
 }

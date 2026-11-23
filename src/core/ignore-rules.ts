@@ -91,7 +91,8 @@ export function compileRules(rules: IgnoreRule[]): CompiledRule[] {
  * Extract the path-list segment from a session-stale-memory message.
  * Current message format (stale-memory.ts:53):
  *   `Memory "<name>" references N path(s) that no longer exist: <a>, <b>`
- * We split on ': ' once and then on ', '. If the format ever changes, this
+ * We split at the LAST ': ' (a memory name containing ': ' stays in the
+ * prefix) and then on ', '. If the format ever changes, this
  * is the single place to update.
  *
  * Documented fallback: `applyIgnoreRules` prefers the structured

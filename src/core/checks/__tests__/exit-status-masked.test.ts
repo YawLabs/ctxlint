@@ -6,6 +6,7 @@ import { parseContextFile } from '../../parser.js';
 import { checkCommands } from '../commands.js';
 import {
   analyzeMaskedExitStatus,
+  fenceBlocks,
   pipefailInScope,
   splitPipes,
   splitSegments,
@@ -57,6 +58,14 @@ describe('verifierName / filterName', () => {
     expect(verifierName('npm test', { test: 'vitest run' })).toBe('vitest');
   });
 
+  it("resolves all of npm's lifecycle shorthands, and only those", () => {
+    expect(verifierName('npm tst', { test: 'vitest run' })).toBe('vitest');
+    expect(verifierName('npm t', { test: 'vitest run' })).toBe('vitest');
+    // npm runs no script for `npm lint` / `npm test-unit`.
+    expect(verifierName('npm lint', { lint: 'eslint .' })).toBeNull();
+    expect(verifierName('npm test-unit', { 'test-unit': 'vitest run', test: 'vitest' })).toBeNull();
+  });
+
   it('is null for non-verifiers', () => {
     expect(verifierName('git log')).toBeNull();
     expect(verifierName('npm run build', { build: 'esbuild src' })).toBeNull();
@@ -65,7 +74,41 @@ describe('verifierName / filterName', () => {
   it('recognises filters, including through wrappers', () => {
     expect(filterName('head -20')).toBe('head');
     expect(filterName('tail -n 5')).toBe('tail');
+    expect(filterName('sudo tail -n 5 /var/log/x')).toBe('tail');
+    expect(filterName('nice -n 10 grep -q error')).toBe('grep');
     expect(filterName('node scripts/x.js')).toBeNull();
+  });
+
+  it('strips value-taking wrapper flags and the two-token `bun x` wrapper', () => {
+    expect(verifierName('nice -n 10 tsc --noEmit')).toBe('tsc');
+    expect(verifierName('bun x vitest run')).toBe('vitest');
+    expect(verifierName('npx -p typescript tsc --noEmit')).toBe('tsc');
+    // `command -v` looks a name up; it does not run it.
+    expect(verifierName('command -v tsc')).toBeNull();
+  });
+
+  it('classifies `pnpm|yarn|bun <name>` as a direct command when <name> is not a script', () => {
+    expect(verifierName('pnpm tsc --noEmit')).toBe('tsc');
+    expect(verifierName('yarn eslint .', { build: 'tsc' })).toBe('eslint');
+    expect(verifierName('bun vitest run', {})).toBe('vitest');
+    // A real script still wins: `pnpm lint` reads the script body.
+    expect(verifierName('pnpm lint', { lint: 'biome check .' })).toBe('biome');
+    // npm does not fall back to binaries.
+    expect(verifierName('npm run tsc')).toBeNull();
+  });
+
+  it('covers the refreshed verifier tables', () => {
+    expect(verifierName('prettier --check .')).toBe('prettier');
+    expect(verifierName('prettier --write .')).toBeNull();
+    expect(verifierName('npx mocha')).toBe('mocha');
+    expect(verifierName('npx playwright test')).toBe('playwright test');
+    expect(verifierName('npx vue-tsc --noEmit')).toBe('vue-tsc');
+    expect(verifierName('deno test -A')).toBe('deno test');
+    expect(verifierName('python -m pytest -q')).toBe('python -m pytest');
+    expect(verifierName('cargo build --release')).toBe('cargo build');
+    expect(verifierName('bun test')).toBe('bun test');
+    // A name that merely starts with a verifier's is not that verifier.
+    expect(verifierName('tsc-watch --onSuccess x')).toBeNull();
   });
 });
 
@@ -131,6 +174,40 @@ describe('analyzeMaskedExitStatus', () => {
     ).toBeNull();
   });
 
+  it('flags a bare-runner binary invocation (`pnpm tsc`) the same as `npx tsc`', () => {
+    const r = analyzeMaskedExitStatus('pnpm tsc --noEmit | head -20 && echo "tsc clean"', {
+      build: 'tsc',
+    });
+    expect(r?.verifier).toBe('tsc');
+    expect(r?.filter).toBe('head');
+  });
+
+  it('is silent when the echo reports failure (negated success word)', () => {
+    // grep finds an error -> say FAIL: a correct gate, not a success claim.
+    expect(
+      analyzeMaskedExitStatus('npx tsc --noEmit | grep -q "error TS" && echo "FAIL: not clean"'),
+    ).toBeNull();
+    expect(
+      analyzeMaskedExitStatus('npx tsc --noEmit | grep error && echo "tests not passing"'),
+    ).toBeNull();
+    // "no errors" is itself the success phrase and still counts.
+    expect(analyzeMaskedExitStatus('npx tsc --noEmit | tail -3 && echo "no errors"')?.kind).toBe(
+      'success-claim',
+    );
+  });
+
+  it.each([
+    ['0 errors, clean'],
+    ['no issues - passed'],
+    ['zero failures, all good'],
+    ['0 failed, 12 passed'],
+    ['errors: 0 -- OK'],
+  ])('still flags a zero count before the success word (%s)', (message) => {
+    expect(analyzeMaskedExitStatus(`npx tsc --noEmit | tail -3 && echo "${message}"`)?.kind).toBe(
+      'success-claim',
+    );
+  });
+
   it('is silent on a bare `; echo done` with no status read', () => {
     // `;` alone claims nothing about the pipeline -- only an explicit `$?` does.
     expect(analyzeMaskedExitStatus('npx tsc --noEmit | head -20; echo done')).toBeNull();
@@ -162,6 +239,29 @@ describe('pipefailInScope', () => {
 
   it('is false outside any fence', () => {
     expect(pipefailInScope(doc, 8)).toBe(false);
+  });
+
+  it('works on CRLF files', () => {
+    expect(pipefailInScope(doc.replace(/\n/g, '\r\n'), 5)).toBe(true);
+  });
+
+  it('is not fooled by a fence-looking line inside an HTML comment', () => {
+    // The comment's ``` used to toggle the hand-rolled tracker, so the real
+    // fence below read as CLOSED and its pipefail was never seen.
+    const md = ['<!--', '```', '-->', '```bash', 'set -o pipefail', 'npx tsc | head', '```'].join(
+      '\n',
+    );
+    expect(pipefailInScope(md, 6)).toBe(true);
+  });
+});
+
+describe('fenceBlocks', () => {
+  it('reads block bounds and info strings from the shared markdown mask', () => {
+    const md = ['x', '```bash title', 'a', '```', '', '```', 'b'].join('\n');
+    expect(fenceBlocks(md.split('\n'))).toEqual([
+      { open: 1, close: 3, info: 'bash title' },
+      { open: 5, close: 7, info: '' },
+    ]);
   });
 });
 
@@ -225,6 +325,27 @@ describe('checkCommands — commands/exit-status-masked in a temp project', () =
     expect(issues).toHaveLength(1);
     expect(issues[0].message).toContain('exit status comes from "tail", not "biome"');
     expect(issues[0].message).toContain('`$?` reports the filter');
+  });
+
+  // The `$?` read is often written on its own line right after the pipeline.
+  it('flags a `$?` echo on the line after the masked pipeline, in the same fence', async () => {
+    const issues = await run('```bash\nnpx tsc --noEmit | head -20\necho "exit=$?"\n```\n', {
+      devDependencies: { typescript: '^5' },
+    });
+    expect(issues.map((i) => i.line)).toEqual([2]);
+    expect(issues[0]?.message).toContain('exit status comes from "head", not "tsc"');
+  });
+
+  // Controls: the `$?` read must be the NEXT line of the SAME fence, and the
+  // line before it must be the masked pipeline itself.
+  it('stays silent when the `$?` line is in another fence, not adjacent, or follows no pipeline', async () => {
+    const issues = await run(
+      '```bash\nnpx tsc --noEmit | head -20\n```\n\n```bash\necho "exit=$?"\n```\n\n' +
+        '```bash\nnpx tsc --noEmit | head -20\nls\necho "exit=$?"\n```\n\n' +
+        '```bash\nnpx tsc --noEmit\necho "exit=$?"\n```\n',
+      { devDependencies: { typescript: '^5' } },
+    );
+    expect(issues).toEqual([]);
   });
 
   it('stays silent when pipefail is set earlier in the same fence', async () => {

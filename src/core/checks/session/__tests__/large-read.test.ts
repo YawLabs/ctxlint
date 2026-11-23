@@ -49,6 +49,8 @@ interface ReadOpts {
   sessionId?: string;
   lines?: number;
   isError?: boolean;
+  /** Write both records as a subagent's (sidechain) records. */
+  sidechain?: boolean;
 }
 
 /** A Read call and its result, as the two records Claude Code writes. */
@@ -56,12 +58,14 @@ function read(path: string, content: string, opts: ReadOpts = {}) {
   const id = opts.id ?? `r${++seq}`;
   const sessionId = opts.sessionId ?? 's1';
   const lines = opts.lines ?? 1;
+  const side = opts.sidechain ? { isSidechain: true } : {};
   return [
     {
       type: 'assistant',
       timestamp: stamp(),
       sessionId,
       gitBranch: 'main',
+      ...side,
       message: {
         id: opts.msgId ?? `m${++seq}`,
         content: [
@@ -73,6 +77,7 @@ function read(path: string, content: string, opts: ReadOpts = {}) {
       type: 'user',
       timestamp: stamp(),
       sessionId,
+      ...side,
       message: {
         content: [
           { type: 'tool_result', tool_use_id: id, content, is_error: opts.isError ?? false },
@@ -117,8 +122,11 @@ async function run(files: unknown[][]): Promise<LintIssue[]> {
 
   const prevHome = process.env.HOME;
   const prevProfile = process.env.USERPROFILE;
+  const prevConfig = process.env.CLAUDE_CONFIG_DIR;
   process.env.HOME = home;
   process.env.USERPROFILE = home;
+  // CLAUDE_CONFIG_DIR outranks HOME; an ambient one would read the real corpus.
+  delete process.env.CLAUDE_CONFIG_DIR;
   clearTranscriptCache();
   try {
     return await checkLargeRead({
@@ -133,6 +141,8 @@ async function run(files: unknown[][]): Promise<LintIssue[]> {
     else process.env.HOME = prevHome;
     if (prevProfile === undefined) delete process.env.USERPROFILE;
     else process.env.USERPROFILE = prevProfile;
+    if (prevConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prevConfig;
     clearTranscriptCache();
   }
 }
@@ -270,6 +280,16 @@ describe('session/large-read', () => {
     );
     expect(issues).toHaveLength(1);
     expect(issues[0].detail).toContain('capped');
+  });
+
+  it("does not charge a subagent's Read to the main session", async () => {
+    // A sidechain Read keeps the parent's session id and turn, so counting it
+    // would bill a full main-session carry for exactly the read the rule
+    // advises delegating -- its result lives in the subagent's context.
+    const issues = await run([
+      [...read(`${PROJECT}/src/big.ts`, BIG, { sidechain: true }), ...turn(), ...turn()],
+    ]);
+    expect(issues).toEqual([]);
   });
 
   it('emits nothing for a project with no transcripts', async () => {

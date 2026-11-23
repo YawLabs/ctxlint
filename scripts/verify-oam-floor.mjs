@@ -28,17 +28,19 @@
  *
  * Which oam: OAM_BIN when set, otherwise the newest of OAM_INSTALL_DIR,
  * %LOCALAPPDATA%\oam\bin (Windows), ~/.oam/bin and PATH -- the launcher's own
- * discovery order. VERIFY_OAM_FLOOR_TIMEOUT_MS bounds each step (default
+ * discovery, shared through scripts/lib/oam-discovery.mjs. A binary counts as
+ * oam only when its --version prints `oam X.Y.Z`, as the launcher requires. VERIFY_OAM_FLOOR_TIMEOUT_MS bounds each step (default
  * 60000: a cold oam start on a loaded Windows box has been measured past 10 s
  * for `oam --version` alone).
  */
 
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { delimiter, dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFloor } from './check-oam-floor.mjs';
+import { discoverOamPaths } from './lib/oam-discovery.mjs';
+import { atLeast, compareVersions, parseOamVersionOutput } from './lib/semver.mjs';
 
 const TAG = '[verify:oam-floor]';
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -56,34 +58,26 @@ const EXPECTED_TOOLS = [
   'ctxlint_validate_path',
 ];
 
+/** @param {string} msg @returns {never} */
 function ok(msg) {
   console.log(`${TAG} OK -- ${msg}`);
   process.exit(0);
 }
+/** @param {string} msg @returns {never} */
 function skip(msg) {
   console.log(`${TAG} SKIP -- ${msg}`);
   process.exit(0);
 }
+/** @param {string} msg @returns {never} */
 function fail(msg) {
   console.log(`${TAG} FAIL -- ${msg}`);
   process.exit(1);
 }
 
-function parseVersion(text) {
-  const m = /(\d+)\.(\d+)\.(\d+)/.exec(text);
-  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
-}
-
-function atLeast(v, min) {
-  for (let i = 0; i < 3; i++) {
-    if (v[i] !== min[i]) return v[i] > min[i];
-  }
-  return true;
-}
-
+/** `<bin> --version` as an oam version, or null when it is not oam's `oam X.Y.Z`. */
 function versionOf(bin) {
   try {
-    return parseVersion(
+    return parseOamVersionOutput(
       execFileSync(bin, ['--version'], {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
@@ -96,27 +90,6 @@ function versionOf(bin) {
   }
 }
 
-function candidates() {
-  const exe = process.platform === 'win32' ? 'oam.exe' : 'oam';
-  const dirs = [];
-  if (process.env.OAM_INSTALL_DIR) dirs.push(process.env.OAM_INSTALL_DIR);
-  if (process.platform === 'win32') {
-    dirs.push(join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'oam', 'bin'));
-  }
-  dirs.push(join(homedir(), '.oam', 'bin'));
-  dirs.push(...(process.env.PATH ?? '').split(delimiter).filter(Boolean));
-  const seen = new Set();
-  const found = [];
-  for (const dir of dirs) {
-    const p = join(dir, exe);
-    const key = process.platform === 'win32' ? p.toLowerCase() : p;
-    if (seen.has(key) || !existsSync(p)) continue;
-    seen.add(key);
-    found.push(p);
-  }
-  return found;
-}
-
 /** The oam to verify with: OAM_BIN as given, else the newest that answers. */
 function chooseOam() {
   if (process.env.OAM_BIN) {
@@ -125,9 +98,9 @@ function chooseOam() {
     return { bin: process.env.OAM_BIN, version };
   }
   let best = null;
-  for (const bin of candidates()) {
+  for (const bin of discoverOamPaths()) {
     const version = versionOf(bin);
-    if (version && (!best || !atLeast(best.version, version))) best = { bin, version };
+    if (version && (!best || compareVersions(version, best.version) > 0)) best = { bin, version };
   }
   return best;
 }
@@ -177,6 +150,7 @@ async function main() {
   // Settle the verdict first and close the client before reporting it: ok()
   // and fail() exit, and an exit with the server still attached would leave
   // the oam child behind on some platforms.
+  /** @type {[(msg: string) => never, string]} */
   let verdict;
   try {
     await Promise.race([client.connect(transport), deadline('initialize')]);
