@@ -8,6 +8,8 @@ See [Versioning policy](#versioning-policy) below.
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-11-23
+
 ### Security
 
 - **Secrets are redacted at every output boundary.** Messages, suggestions and details in text, JSON, SARIF, MCP and LSP output pass through one redaction step (6-char prefix + `...`); `fix.oldText` / `fix.newText` in JSON and the MCP audit tools also mask URL passwords and secret-named query values everywhere, and key-shaped runs in `mcp-*` fixes only, so a CamelCase file name in a `paths/*` fix is not masked. `--fix` still edits with the real text in-process. The `--fix` / `--fix-dry-run` log no longer prints the raw secret it replaces, and the old and new text of every fix it logs (not only secret fixes) is redacted the same way, so a credential sitting next to a `${VAR}` in a URL or header is masked too.
