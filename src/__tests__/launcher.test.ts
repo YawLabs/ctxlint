@@ -127,11 +127,11 @@ describe('launcher runtimePlan()', () => {
     // asking what it was already running on. `auto` and `oam` both have to take
     // the shortcut -- `oam` demands oam, and the host already is one.
     //
-    // 0.20.2 pins the floor as inclusive (it IS the supported release), and
-    // 0.100.0 pins a numeric compare: it sorts BEFORE 0.20.2 as a string, so a
+    // 0.21.1 pins the floor as inclusive (it IS the supported release), and
+    // 0.100.0 pins a numeric compare: it sorts BEFORE 0.21.1 as a string, so a
     // compare over the raw text would treat a newer oam as too old.
     for (const mode of ['auto', 'oam']) {
-      for (const hostOam of ['0.20.2', '0.20.3', '0.21.0', '0.100.0', '1.0.0', '0.21.0-dev']) {
+      for (const hostOam of ['0.21.1', '0.21.2', '0.22.0', '0.100.0', '1.0.0', '0.22.0-dev']) {
         expect(runtimePlan({ mode, hostOam }), `mode=${mode} hostOam=${hostOam}`).toBe(
           'in-process',
         );
@@ -145,6 +145,9 @@ describe('launcher runtimePlan()', () => {
     // MINIMUM OAM VERSION in the launcher).
     for (const mode of ['auto', 'oam']) {
       for (const hostOam of [
+        '0.21.0',
+        '0.21.0-dev',
+        '0.20.2',
         '0.20.1',
         '0.20.0',
         '0.19.5',
@@ -175,7 +178,7 @@ describe('launcher runtimePlan()', () => {
 
   it('runs CTXLINT_RUNTIME=node on Node: in-process on a Node host, handed off from any oam host', () => {
     expect(runtimePlan({ mode: 'node', hostOam: undefined })).toBe('in-process');
-    for (const hostOam of ['0.8.2', '0.20.2', '1.0.0', 'dev']) {
+    for (const hostOam of ['0.8.2', '0.21.1', '1.0.0', 'dev']) {
       expect(runtimePlan({ mode: 'node', hostOam }), `hostOam=${hostOam}`).toBe('handoff-node');
     }
   });
@@ -186,7 +189,7 @@ describe('launcher pickNewest()', () => {
   const at = (p: string, version: number[] | null): Candidate => ({ path: p, version });
 
   it('pins the floor to the latest oam release', () => {
-    expect(floor).toEqual([0, 20, 2]);
+    expect(floor).toEqual([0, 21, 1]);
   });
 
   it('takes the newest usable oam, not the first one found', () => {
@@ -194,23 +197,23 @@ describe('launcher pickNewest()', () => {
     // copy in an earlier location (the installed dir is searched before PATH)
     // hid a newer one later.
     const chosen = pickNewest([
-      at('installed', [0, 20, 2]),
-      at('path-a', [0, 21, 0]),
-      at('path-b', [0, 20, 9]),
+      at('installed', [0, 21, 1]),
+      at('path-a', [0, 22, 0]),
+      at('path-b', [0, 21, 9]),
     ]);
     expect(chosen?.path).toBe('path-a');
   });
 
   it('compares numerically and keeps search order on a tie', () => {
-    expect(pickNewest([at('a', [0, 21, 0]), at('b', [0, 100, 0])])?.path).toBe('b');
-    expect(pickNewest([at('first', [0, 20, 2]), at('second', [0, 20, 2])])?.path).toBe('first');
+    expect(pickNewest([at('a', [0, 22, 0]), at('b', [0, 100, 0])])?.path).toBe('b');
+    expect(pickNewest([at('first', [0, 21, 1]), at('second', [0, 21, 1])])?.path).toBe('first');
   });
 
   it('skips binaries below the floor or with no readable version', () => {
     expect(
-      pickNewest([at('old', [0, 9, 0]), at('broken', null), at('good', [0, 20, 2])])?.path,
+      pickNewest([at('old', [0, 9, 0]), at('broken', null), at('good', [0, 21, 1])])?.path,
     ).toBe('good');
-    expect(pickNewest([at('old', [0, 20, 1]), at('broken', null)])).toBeNull();
+    expect(pickNewest([at('old', [0, 21, 0]), at('broken', null)])).toBeNull();
     expect(pickNewest([])).toBeNull();
   });
 });
@@ -333,7 +336,7 @@ type LauncherRun = { stdout: string; stderr: string; code: number | null };
  * (execFileSync) is posed: spawning the path still runs the real binary.
  * Imported under names no other preload uses, so it composes with them.
  */
-function posingAsOam(paths: string[], version = '0.20.2'): string {
+function posingAsOam(paths: string[], version = '0.21.1'): string {
   if (paths.length === 0) return '';
   return [
     'import __poseCp from "node:child_process";',
@@ -362,7 +365,7 @@ function posingAsOam(paths: string[], version = '0.20.2'): string {
  * outcomes unmistakable without a real oam. In-process, `--version` reaches
  * dist/index.js and prints the package version with exit 0. On the discovery
  * path, the preload (posingAsOam) makes the launcher's `--version` probe of
- * that Node answer `oam 0.20.2`, which clears the floor, so it is chosen and
+ * that Node answer `oam 0.21.1`, which clears the floor, so it is chosen and
  * the launcher spawns `node run <entry> -- --version` -- which has no `run`
  * subcommand, prints no version and exits non-zero. A usable OAM_BIN is taken
  * before discovery runs, so a real oam on the developer's box is never reached
@@ -450,7 +453,7 @@ describe('launcher on an oam host', () => {
     it.skipIf(!buildAvailable)(
       `runs in-process instead of spawning a nested oam (env ${JSON.stringify(extraEnv)})`,
       async () => {
-        const run = await runLauncher('0.20.2', extraEnv);
+        const run = await runLauncher('0.21.1', extraEnv);
         expect(servedByCli(run), JSON.stringify(run)).toBe(true);
         expect(run.stderr).toMatch(/LAUNCHER_ARGV1=.*dist[\\/]index\.js/);
       },
@@ -591,7 +594,7 @@ describe('launcher with no usable oam', () => {
     it.skipIf(!buildAvailable)(
       `hands CTXLINT_RUNTIME=${value} off to Node even on a supported oam host`,
       async () => {
-        const run = await runLauncher('0.20.2', isolated({ CTXLINT_RUNTIME: value }));
+        const run = await runLauncher('0.21.1', isolated({ CTXLINT_RUNTIME: value }));
         expect(run.code, JSON.stringify(run)).toBe(0);
         expect(run.stdout.trim()).toBe(PKG.version);
         expect(run.stderr).toMatch(/LAUNCHER_ARGV1=.*ctxlint\.mjs/);
@@ -742,7 +745,7 @@ describe('launcher discovery honours OAM_INSTALL_DIR', () => {
     'finds an oam installed only in OAM_INSTALL_DIR',
     async () => {
       // A stand-in "oam": the Node binary under oam's name, whose --version
-      // probe is posed to answer `oam 0.20.2`. That clears the floor, so
+      // probe is posed to answer `oam 0.21.1`. That clears the floor, so
       // discovery picks it and spawns `oam run <entry> -- --version`, which
       // Node cannot run -- the same unmistakable spawn signature the OAM_BIN
       // cases use.
@@ -784,7 +787,7 @@ describe('launcher in-process failure', () => {
         '  return next(spec, ctx);',
         '} });',
       ].join('\n');
-      const run = await runLauncher('0.20.2', isolated(), failImport);
+      const run = await runLauncher('0.21.1', isolated(), failImport);
       expect(run.code, JSON.stringify(run)).toBe(1);
       expect(run.stderr).toMatch(/^ctxlint: could not run the CLI \(simulated load failure\)$/m);
     },
